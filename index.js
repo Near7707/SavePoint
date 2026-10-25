@@ -3,7 +3,7 @@
 import {
     emptyMem, cleanMem, detachMem, chunkMessages, promptContext, validateResult, resultLanguageIssues,
     applyResult, closeOpenScene, pushHistory, rollbackFrom, buildInjection, openScene, memStats, validateBoundary,
-    pointInjected, rekeyItems, validateRekey, applyRekey, needsRekey, sceneOutlineText, sceneOutlineParts,
+    pointInjected, pointSymbol, rekeyItems, validateRekey, applyRekey, needsRekey, sceneOutlineText, sceneOutlineParts,
     normalizeResult, validateCheck, checkScope, dupState, pointId,
     recordLine, entityName, estTokens, QUEST_KINDS, WORLD_KINDS, ENTITY_TYPES,
     groupErrors, findQuote, normQuote,
@@ -15,7 +15,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.3.2';
+const VERSION = '0.3.3';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -1388,11 +1388,11 @@ function journalHtml(st) {
                 btn('edit-scene', s.id, '✎', '제목·장소 편집'), btn('del-scene', s.id, '🗑', '삭제')])}</div>`;
         if (isEditing('scene', s.id)) return `<div class="sp-card sp-scene">${head}${editForm()}</div>`;
         const pointHtml = ({ g, p, j }) => isEditing('point', `${s.id}|${g.id}|${j}`) ? editForm()
-            : `<li class="sp-pt sp-${p.kind} ${pointInjected(p) ? 'sp-inj' : 'sp-stored'}">${btn('key-toggle', `${s.id}|${g.id}|${j}`, pointInjected(p) ? '●' : '○',
-                (pointInjected(p) ? '주입 중' : '저장만') + (typeof p.keyUser === 'boolean' ? ' (직접 지정, 누르면 바꿈)' : typeof p.key === 'boolean' ? ' (AI 선택, 누르면 직접 지정)' : ' (예전 기록: 전부 주입)'),
+            : `<li class="sp-pt sp-${p.kind} ${pointInjected(p) ? 'sp-inj' : 'sp-stored'} ${p.pin ? 'sp-point-pinned' : ''}">${btn('key-toggle', `${s.id}|${g.id}|${j}`, pointSymbol(p),
+                p.pin ? '고정 주입 · 누르면 고정 전 선택으로 돌아가요' : (pointInjected(p) ? '일반 주입 대상' : '저장만') + (typeof p.keyUser === 'boolean' ? ' (직접 지정, 누르면 바꿈)' : typeof p.key === 'boolean' ? ' (AI 선택, 누르면 직접 지정)' : ' (예전 기록: 전부 주입)'),
                 'sp-key' + (typeof p.keyUser === 'boolean' ? ' sp-key-user' : ''))}<span class="sp-pk" title="${p.kind === 'change' ? '상태 변화' : '기억할 순간'}">${p.kind === 'change' ? '◆' : '◇'}</span>
-                <span class="sp-pt-t">${esc(T(p.text, p.ko))}${(() => { const d = pointInjected(p) ? dupState(s, p) : null; return d === 'exact' && p.keyUser !== true ? '<span class="sp-dup" title="개요에 같은 문장이 있어서 이번 주입에서는 빼요 (●를 직접 누르면 넣어요)">개요와 같음 · 주입 생략</span>' : d === 'near' ? '<span class="sp-dup" title="개요와 많이 겹쳐요. 필요 없으면 ○로 바꿔 주세요">중복 후보</span>' : ''; })()}${evidenceChips(p.msgs)}</span>
-                ${tools([btn('edit-point', `${s.id}|${g.id}|${j}`, '✎'), btn('del-point', `${s.id}|${g.id}|${j}`, '🗑')])}</li>`;
+                <span class="sp-pt-t">${esc(T(p.text, p.ko))}${(() => { const d = pointInjected(p) && !p.pin ? dupState(s, p) : null; return d === 'exact' && p.keyUser !== true ? '<span class="sp-dup" title="개요에 같은 문장이 있어서 이번 주입에서는 빼요 (직접 선택하면 넣어요)">개요와 같음 · 주입 생략</span>' : d === 'near' ? '<span class="sp-dup" title="개요와 많이 겹쳐요. 필요 없으면 ○로 바꿔 주세요">중복 후보</span>' : ''; })()}${evidenceChips(p.msgs)}</span>
+                ${tools([...(p.pin ? [] : [btn('pin-point', `${s.id}|${g.id}|${j}`, '📌', '이 포인트를 고정 주입 (전체 토큰 상한 내에서 우선 유지)')]), btn('edit-point', `${s.id}|${g.id}|${j}`, '✎'), btn('del-point', `${s.id}|${g.id}|${j}`, '🗑')])}</li>`;
         // One block per part: its own outline (never rewritten later), its points, its notes.
         const segHtml = s.segs.map(g => {
             const list = g.points.map((p, j) => pointHtml({ g, p, j })).join('');
@@ -1410,7 +1410,7 @@ function journalHtml(st) {
             ${s.who.length ? `<div class="sp-who">${whoChips(mem, s.who)}</div>` : ''}
             <div class="sp-outline">${s.segs.filter(g => g.outline).map(g => `<p>${esc(T(g.outline, g.koOutline))}</p>`).join('')}</div>${legacy}${outlineText}
             <details class="sp-more" data-group="scene:${esc(s.id)}" ${(ui.edit && String(ui.edit.id).startsWith(s.id + '|')) || ui.savesOpen.get('scene:' + s.id) ? 'open' : ''}><summary>구간 ${s.segs.length} · 포인트 ${pts.length} (주입 ${pts.filter(x => pointInjected(x.p)).length})</summary>
-                <div class="sp-dim sp-keyhelp">● 주입 / ○ 저장만. 눌러서 바꿀 수 있어요. ${btn('rekey-scene', s.id, '⟳ 주입 고르기', '개요와 상태 목록에 없는 중요한 포인트만 AI가 다시 골라요 (직접 지정한 건 유지)')}</div>
+                <div class="sp-dim sp-keyhelp">● AI 선택 / ◎ 직접 선택 / ○ 저장만 / 📌 고정. 📌를 누르면 고정을 해제해요. ${btn('rekey-scene', s.id, '⟳ 주입 고르기', '개요와 상태 목록에 없는 중요한 포인트만 AI가 다시 골라요 (직접 지정·고정은 유지)')}</div>
                 ${segHtml}</details></div>`;
     }).join('');
 }
@@ -1757,9 +1757,13 @@ async function handle(act, id) {
         case 'key-toggle': return commitEdit(m => {
             const { p } = findPoint(m, id);
             if (!p) return false;
-            const want = !pointInjected(p);
-            // Back to the AI's own choice clears the override; anything else is the user's choice.
-            if (typeof p.key === 'boolean' && want === p.key) delete p.keyUser; else p.keyUser = want;
+            if (p.pin) p.pin = false;
+            else p.keyUser = !pointInjected(p);
+        }, { undoable: false });
+        case 'pin-point': return commitEdit(m => {
+            const { p } = findPoint(m, id);
+            if (!p) return false;
+            p.pin = !p.pin;
         }, { undoable: false });
         case 'rekey-scene': return rekeyScenes([id]);
         case 'rekey-old': return rekeyScenes(state()?.mem.scenes.filter(needsRekey).map(x => x.id) || []);
@@ -1916,3 +1920,4 @@ jQuery(() => {
 
 // Exposed for regression checks only.
 globalThis.__savePoint = { state, settings, summarize, listSaves, vault, migrateLocal, autoCollect, autoBlocked, autoCount, scheduleAuto, undo, loadSave, reconcile, syncHide, refreshInjection, handle, ui, render, estTokens, recordLine, reportText };
+

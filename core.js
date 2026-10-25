@@ -113,7 +113,8 @@ export const pointId = (g, j) => `${g.id}.${j}`;
 // Scenes recorded before v0.2.5 keep their one scene-wide outline as legacyOutline.
 export const sceneOutlineParts = s => [...(s.legacyOutline ? [s.legacyOutline] : []), ...s.segs.map(g => g.outline).filter(Boolean)];
 export const sceneOutlineText = s => sceneOutlineParts(s).join(' ') || s.title;
-export const pointInjected = p => p.keyUser ?? p.key ?? true;
+export const pointInjected = p => p.pin === true || (p.keyUser ?? p.key ?? true);
+export const pointSymbol = p => p.pin === true ? '📌' : pointInjected(p) ? (typeof p.keyUser === 'boolean' ? '◎' : '●') : '○';
 // The open scene's points shown to the AI (newest first within limits); the AI re-judges these.
 export function openPoints(open, { maxCount = 60, maxChars = 8000 } = {}) {
     if (!open) return { shown: [], hidden: 0 };
@@ -737,7 +738,7 @@ export function dupState(scene, p) {
 // Points that go into the injection with their scene: key points, minus exact duplicates of the
 // outline (never a point the user marked ● themselves). Stored choices are not changed.
 export const injectedPoints = s => s.segs.flatMap(g => g.points)
-    .filter(p => pointInjected(p) && !(p.keyUser !== true && dupState(s, p) === 'exact'));
+    .filter(p => !p.pin && pointInjected(p) && !(p.keyUser !== true && dupState(s, p) === 'exact'));
 
 // ───────── recall units ─────────
 
@@ -848,11 +849,15 @@ export function buildInjection(mem, opts = {}) {
         else { pr = 7; alts = [sceneOutline(sc)]; }
         if (sc.pin && pr !== 2) pr = Math.min(pr, 2);
         items.push({ tier: 'journal', pr, scene: sc, idx, pin: !!sc.pin, alts });
+        for (const g of sc.segs) for (const p of g.points) {
+            if (p.pin === true) items.push({ tier: 'journal', pr: 2, scene: sc, point: p, pin: true,
+                alts: [`- From "${sc.title}": ${p.text}`] });
+        }
     });
     const sorted = [...items].sort((a, b) => a.pr - b.pr);
     const used = { state: 0, journal: 0, recall: 0, titles: 0 };
     const caps = { state: budget * share.state, journal: budget * share.journal, recall: budget * share.recall };
-    const headerCost = estTokens(INJECT_HEADER) + 30;
+    const headerCost = estTokens(INJECT_HEADER) + 30 + (items.some(it => it.point) ? estTokens('## Pinned points') + 1 : 0);
     let total = headerCost;
     const chosen = new Map();
     const costOf = alt => estTokens(alt) + 1;
@@ -883,7 +888,7 @@ export function buildInjection(mem, opts = {}) {
     const pinned = sorted.filter(it => it.pin);
     for (const it of [...pinned].sort((a, b) => costOf(a.alts.at(-1)) - costOf(b.alts.at(-1)))) {
         const alt = it.alts.at(-1), cost = costOf(alt);
-        if (total + cost > limit1) continue;
+        if (total + cost > budget) continue;
         chosen.set(it, alt); used[it.tier] += cost; total += cost;
     }
     for (const it of sorted) tryAdd(it, true, limit1);
@@ -936,12 +941,23 @@ export function buildInjection(mem, opts = {}) {
     const recalledScenes = new Set(recallItems.map(it => it.recall.scene));
     for (const it of sorted) if (!recalledScenes.has(it.scene)) tryAdd(it, false, budget);
     upgradePinned(pinned, budget);
+    // A pinned point is its own item even when its scene is old or reduced to a title.
+    // If the selected outline of the same scene already contains it verbatim, show it once.
+    const pinnedPointItems = [];
+    const pointTexts = new Set();
+    for (const it of pinned.filter(it => it.point && chosen.has(it))) {
+        const text = plainText(it.point.text), key = `${it.scene.id}|${text}`;
+        const sceneItem = items.find(x => x.scene === it.scene && !x.point && x.tier === 'journal');
+        if ((sceneItem && chosen.has(sceneItem) && plainText(chosen.get(sceneItem)).includes(text)) || pointTexts.has(key)) {
+            const cost = costOf(chosen.get(it)); used.journal -= cost; total -= cost;
+        } else { pinnedPointItems.push(it); pointTexts.add(key); }
+    }
     const pinMissing = pinned.filter(it => !chosen.has(it)).length;
     const pinOverflow = pinMissing > 0;
 
     // Titles of scenes that did not fit (and were not recalled), newest first under their own cap.
     const recalledIds = new Set(recallItems.map(it => it.recall.scene.id));
-    const left = items.filter(it => it.tier === 'journal' && !chosen.has(it) && !recalledIds.has(it.scene.id)).map(it => it.scene);
+    const left = items.filter(it => it.tier === 'journal' && !it.point && !chosen.has(it) && !recalledIds.has(it.scene.id)).map(it => it.scene);
     const titleList = [];
     let titleCost = 0;
     for (const sc of [...left].reverse()) {
@@ -964,13 +980,14 @@ export function buildInjection(mem, opts = {}) {
         ...group('Resolved threads', r => r.type === 'quest' && r.status !== 'open'),
         ...group('World', r => r.type === 'world'),
     ];
-    const journalItems = items.filter(it => it.tier === 'journal' && chosen.has(it)).sort((a, b) => a.idx - b.idx);
+    const journalItems = items.filter(it => it.tier === 'journal' && !it.point && chosen.has(it)).sort((a, b) => a.idx - b.idx);
     const journalBlock = [
         ...(titleList.length ? [`Earlier scenes (titles only): ${titleList.join('; ')}.`] : []),
         ...journalItems.map(it => chosen.get(it)),
     ];
     const parts = [INJECT_HEADER];
     if (stateBlock.length) parts.push('## Current state', ...stateBlock);
+    if (pinnedPointItems.length) parts.push('## Pinned points', ...pinnedPointItems.map(it => chosen.get(it)));
     if (journalBlock.length) parts.push('## Journal (oldest to newest)', ...journalBlock);
     if (recallItems.length) parts.push('## Recalled details (relevant to the latest messages)', ...recallItems.map(it => chosen.get(it)));
     const text = parts.join('\n');
@@ -1012,6 +1029,7 @@ export function cleanMem(raw) {
                         ...(typeof p.key === 'boolean' ? { key: p.key } : {}),
                         msgs: (Array.isArray(p.msgs) ? p.msgs : []).filter(m => Number.isInteger(m) || isSegRef(m)),
                         ...(typeof p.keyUser === 'boolean' ? { keyUser: p.keyUser } : {}),
+                        ...(p.pin === true ? { pin: true } : {}),
                         ...(str(p.ko) ? { ko: p.ko } : {}) })),
                     notes: str(g.notes), ...(str(g.koNotes) ? { koNotes: g.koNotes } : {}), ...(str(g.koOutline) ? { koOutline: g.koOutline } : {}) };
             }) };
@@ -1122,3 +1140,4 @@ export function groupErrors(errors) {
     const head = names.size ? [`Names used instead of entity ids (declare them in "entities" or use their ids): ${[...names].map(([n, k]) => `"${n}" ×${k}`).join(', ')}`] : [];
     return [...head, ...rest];
 }
+
