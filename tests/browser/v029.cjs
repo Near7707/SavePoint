@@ -107,6 +107,21 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.hud.includes('자동 보정') && r.hud.includes('앞 장면에 합쳤어요') && r.rep.includes('[자동 보정]'), '5. 합친 사실을 상태 바와 결과 복사에 표시');
     await ev(() => { M.laterContinue = false; });
 
+    // 6. pressing ●/○ keeps the scene's point list (and notes) open
+    await ev(() => { __savePoint.handle('tab', 'journal'); });
+    await page.click('.sp-scene .sp-more > summary');
+    await page.click('.sp-scene .sp-notes > summary');
+    const keyBtn = '.sp-scene .sp-more [data-act="key-toggle"]';
+    const before6 = await ev(sel => document.querySelector(sel).textContent, keyBtn);
+    await page.click(keyBtn);
+    await page.waitForTimeout(200);
+    r = await ev(sel => ({ more: document.querySelector('.sp-scene .sp-more').open, notes: document.querySelector('.sp-scene .sp-notes').open, key: document.querySelector(sel).textContent }), keyBtn);
+    ok(r.more && r.notes && r.key !== before6, `6. ●/○를 눌러도 펼친 목록·노트가 접히지 않음 (${before6} → ${r.key})`);
+    await page.click('.sp-scene .sp-more > summary');
+    await page.waitForTimeout(100);   // the browser reports the toggle a moment later
+    await ev(() => __savePoint.render(true));
+    ok(!(await ev(() => document.querySelector('.sp-scene .sp-more').open)), '6. 직접 접은 건 접힌 채로 유지');
+
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();

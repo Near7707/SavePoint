@@ -15,7 +15,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.3.1';
+const VERSION = '0.3.2';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -1399,7 +1399,7 @@ function journalHtml(st) {
             const outline = isEditing('segoutline', `${s.id}|${g.id}`) ? editForm()
                 : g.outline ? `<div class="sp-seg-outline">${esc(T(g.outline, g.koOutline))} ${tools([btn('edit-segoutline', `${s.id}|${g.id}`, '✎', '이 구간 개요 편집')])}</div>` : '';
             const notes = !g.notes ? '' : isEditing('notes', `${s.id}|${g.id}`) ? editForm()
-                : `<details class="sp-notes"><summary>상세 노트 ${tools([btn('edit-notes', `${s.id}|${g.id}`, '✎')])}</summary><p>${esc(T(g.notes, g.koNotes))}</p></details>`;
+                : `<details class="sp-notes" data-group="notes:${esc(g.id)}" ${ui.savesOpen.get('notes:' + g.id) ? 'open' : ''}><summary>상세 노트 ${tools([btn('edit-notes', `${s.id}|${g.id}`, '✎')])}</summary><p>${esc(T(g.notes, g.koNotes))}</p></details>`;
             return `<div class="sp-seg"><div class="sp-seg-h">${esc(g.id)} ${Number.isInteger(g.from) ? `#${g.from}–#${g.to}` : ''}</div>${outline}<ul class="sp-pts">${list}</ul>${notes}</div>`;
         }).join('');
         const legacy = !s.legacyOutline ? '' : isEditing('legacy', s.id) ? editForm()
@@ -1409,7 +1409,7 @@ function journalHtml(st) {
             <div class="sp-title">${esc(T(s.title, s.koTitle))}${s.where ? ` <small>@ ${esc(s.where)}</small>` : ''}</div>
             ${s.who.length ? `<div class="sp-who">${whoChips(mem, s.who)}</div>` : ''}
             <div class="sp-outline">${s.segs.filter(g => g.outline).map(g => `<p>${esc(T(g.outline, g.koOutline))}</p>`).join('')}</div>${legacy}${outlineText}
-            <details class="sp-more" ${ui.edit && String(ui.edit.id).startsWith(s.id + '|') ? 'open' : ''}><summary>구간 ${s.segs.length} · 포인트 ${pts.length} (주입 ${pts.filter(x => pointInjected(x.p)).length})</summary>
+            <details class="sp-more" data-group="scene:${esc(s.id)}" ${(ui.edit && String(ui.edit.id).startsWith(s.id + '|')) || ui.savesOpen.get('scene:' + s.id) ? 'open' : ''}><summary>구간 ${s.segs.length} · 포인트 ${pts.length} (주입 ${pts.filter(x => pointInjected(x.p)).length})</summary>
                 <div class="sp-dim sp-keyhelp">● 주입 / ○ 저장만. 눌러서 바꿀 수 있어요. ${btn('rekey-scene', s.id, '⟳ 주입 고르기', '개요와 상태 목록에 없는 중요한 포인트만 AI가 다시 골라요 (직접 지정한 건 유지)')}</div>
                 ${segHtml}</details></div>`;
     }).join('');
@@ -1428,7 +1428,7 @@ function questsHtml(st) {
             if (isEditing('record', q.id)) return `<div class="sp-quest">${editForm()}</div>`;
             const flow = status === 'open' ? [btn('quest-done', q.id, '완료'), btn('quest-fail', q.id, '실패')] : [btn('quest-open', q.id, '다시 진행')];
             return `<div class="sp-quest sp-q-${status}"><span class="sp-qi">${QUEST_ICON[q.kind] || '•'}</span><div class="sp-qb"><div><span class="sp-kind">${KIND_KO[q.kind]}</span> ${esc(T(q.text, q.ko))}</div>
-                <div class="sp-sub">${whoChips(st.mem, q.who)}${evidenceChips(q.msgs)}</div>${q.terms ? `<details class="sp-terms"><summary>근거 원문 #${q.terms.msg}</summary><div class="sp-terms-q">“${esc(q.terms.quote)}”</div><div class="sp-excerpt">${esc(q.terms.context)}</div></details>` : ''}</div>${tools([...flow, btn('pin-rec', q.id, '📌', '항상 주입', q.pin ? 'sp-on' : ''), btn('edit-rec', q.id, '✎'), btn('del-rec', q.id, '🗑')])}</div>`;
+                <div class="sp-sub">${whoChips(st.mem, q.who)}${evidenceChips(q.msgs)}</div>${q.terms ? `<details class="sp-terms" data-group="terms:${esc(q.id)}" ${ui.savesOpen.get('terms:' + q.id) ? 'open' : ''}><summary>근거 원문 #${q.terms.msg}</summary><div class="sp-terms-q">“${esc(q.terms.quote)}”</div><div class="sp-excerpt">${esc(q.terms.context)}</div></details>` : ''}</div>${tools([...flow, btn('pin-rec', q.id, '📌', '항상 주입', q.pin ? 'sp-on' : ''), btn('edit-rec', q.id, '✎'), btn('del-rec', q.id, '🗑')])}</div>`;
         }).join('')}</div>`;
     };
     const body = group('open', '진행 중') + group('done', '완료') + group('failed', '실패');
@@ -1464,7 +1464,7 @@ function itemsHtml(st) {
             ${r.holder ? `<span class="sp-holder">소지: <b>${esc(entityName(mem, r.holder))}</b></span>` : '<span class="sp-holder sp-dim">소지자 없음</span>'}</div>
             ${recordRow(st, r)}</div>`).join('');
     const itemEnts = mem.entities.filter(e => e.type === 'item' || e.type === 'place');
-    const names = itemEnts.length ? `<details class="sp-more"><summary>물건·장소 이름 ${itemEnts.length}개 (별칭 편집)</summary>${itemEnts.map(e => `<div class="sp-card">${entityHead(st, e)}</div>`).join('')}</details>` : '';
+    const names = itemEnts.length ? `<details class="sp-more" data-group="itemnames" ${ui.savesOpen.get('itemnames') ? 'open' : ''}><summary>물건·장소 이름 ${itemEnts.length}개 (별칭 편집)</summary>${itemEnts.map(e => `<div class="sp-card">${entityHead(st, e)}</div>`).join('')}</details>` : '';
     return addBar('item') + (rows || '<div class="sp-empty">누가 무엇을 가지고 있는지, 물건이 어떤 상태인지 여기에 나타나요.</div>') + names;
 }
 function worldHtml(st) {
