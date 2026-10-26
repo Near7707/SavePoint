@@ -537,3 +537,22 @@ label.sp-has-reset { position: relative; padding-right: 30px; }
 .sp-window[data-theme="vanilla"] .sp-bar-fill { background: linear-gradient(90deg, #f3d36b, #f9e7a1); border-radius: 999px; }
 .sp-window[data-theme="vanilla"] .sp-bar span { color: #4a4524; }
 .sp-window[data-theme="vanilla"] .sp-btn:not(.sp-primary) { border-width: 1px; background: #fffef6; }
+
+/* v0.5.8: game-style saving banner above the chat (wears the status window's theme) */
+#sp_save_banner.sp-window {
+    position: fixed; top: calc(var(--topBarBlockSize, 50px) + 8px); left: 50%; transform: translateX(-50%); z-index: 9998; box-sizing: border-box;
+    width: min(520px, calc(100vw - 20px)); height: auto; min-height: 0; max-height: none; overflow: visible;
+    display: flex; flex-direction: row; align-items: center; gap: 10px; padding: 9px 12px; margin: 0;
+    border: 2px solid var(--sp-border); border-radius: 12px; box-shadow: 0 6px 18px rgba(0, 0, 0, .25); cursor: pointer;
+    font-size: 13px; line-height: 1.35;
+}
+#sp_save_banner[hidden] { display: none; }
+#sp_save_banner .sp-sb-text { min-width: 0; flex: 1; }
+#sp_save_banner .sp-sb-title { font-weight: 800; }
+#sp_save_banner .sp-sb-title b { color: var(--sp-accent); margin-left: 2px; }
+#sp_save_banner .sp-sb-sub { font-size: 11.5px; color: var(--sp-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#sp_save_banner .sp-sb-icon { flex: 0 0 auto; width: 18px; height: 18px; }
+#sp_save_banner .sp-sb-spin { border-radius: 50%; border: 3px solid var(--sp-accent); border-right-color: transparent; animation: sp-sb-rot .9s linear infinite; }
+#sp_save_banner .sp-sb-done::before { content: '✔'; display: block; text-align: center; line-height: 18px; font-weight: 900; color: var(--sp-ok); }
+@keyframes sp-sb-rot { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { #sp_save_banner .sp-sb-spin { animation-duration: 3s; } }

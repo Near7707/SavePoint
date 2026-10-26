@@ -20,7 +20,7 @@ function harness({ count = 10, lastIndex = 9, keepRecent = 2 } = {}) {
     const writes = [], notifications = [];
     let calls = 0;
     const ui = {};
-    const box = {
+    const box = { clearInterrupted() {},
         MODULE: 'savePoint', HIDE_KEY, VISIBLE_KEY, ui, roomEpoch: 0,
         clone: structuredClone, roomKey: () => 'room', state: () => meta.savePoint, ctx: () => ({ chatMetadata: meta, swipe: { refresh() {} } }),
         chat: () => chat, settings: () => settings, num: k => settings[k], hasMemory: mem => !!(mem.scenes.length || mem.records.length),

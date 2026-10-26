@@ -28,7 +28,7 @@ const DEFAULTS = {
     requestStream: true, reasoningEffort: '',
     budget: 6000, titleCap: 600, recentScenes: 3, recall: true, rawRecall: false,
     hide: true, keepRecent: 10, position: 1, depth: 4, role: 0,
-    theme: 'jrpg', showKo: false, autoKeep: 30, guide: DEFAULT_GUIDE, slotCache: [], localSaves: {}, settingsOpen: {},
+    theme: 'jrpg', showKo: false, autoKeep: 30, guide: DEFAULT_GUIDE, slotCache: [], localSaves: {}, settingsOpen: {}, interrupted: {},
 };
 const SETTING_GROUPS = {
     connection: { title: '연결·AI 요청', keys: ['profileId', 'requestStream', 'reasoningEffort', 'responseLength', 'inputChars', 'timeoutSec'] },
@@ -556,10 +556,14 @@ function parseJson(text, open = '{', close = '}') {
     try { return JSON.parse(body.replace(/,\s*([}\]])/g, '$1')); } catch { /* fall through */ }
     throw new Error('요약 AI 응답을 해석하지 못했어요 (JSON 오류). 응답 최대 토큰이 부족해 잘렸을 수 있어요.');
 }
-function newRun(st, end) {
+function newRun(st, end, kind = '') {
+    // kind: 'save' (quick save / scene clear), 'auto' (checkpoint), 'check', 'other' (memory edits by AI),
+    // '' (no banner). The saving banner and the leaving-the-room notice depend on it.
     const run = { st, key: roomKey(), epoch: roomEpoch, cancelled: false, hashes: hashesTo(end),
-        viaMain: !settings().profileId, ctrl: typeof AbortController === 'function' ? new AbortController() : null };
+        viaMain: !settings().profileId, ctrl: typeof AbortController === 'function' ? new AbortController() : null,
+        kind, from: (st?.lastIndex ?? -1) + 1, roomName: `${charInfo()?.name ? charInfo().name + ' · ' : ''}${roomLabel(roomKey())}` };
     ui.run = run;
+    updateSaveBanner();
     return run;
 }
 function assertValid(run, upTo) {
@@ -570,6 +574,8 @@ function assertValid(run, upTo) {
 function endRun(run) {
     if (ui.run === run) { ui.run = null; ui.progress = ''; ui.req = null; }
     render();
+    if (run.doneText && run.key === roomKey()) flashSaveBanner(run.doneText);
+    else updateSaveBanner();
 }
 function checkpoint(st) {
     const { undo, ...rest } = st;
@@ -768,7 +774,7 @@ async function summarize({ close = false } = {}) {
         return;
     }
     st.autoMark = end; st.autoHold = null; persistSoon();
-    const run = newRun(st, end);
+    const run = newRun(st, end, 'save');
     const undoPoint = checkpoint(st);
     const memBefore = st.mem;
     let done = 0, cursor = 0;
@@ -812,13 +818,16 @@ async function summarize({ close = false } = {}) {
         await markStaleLoot(run, queued.filter(x => !attemptedLoot.has(x.id) && !oldLoot.includes(x)));
         ui.lastError = null;
         if (msgs.length || close) toastr.success(close ? '장면 클리어! 진행 중이던 장면까지 기록하고 닫았어요.' : '퀵세이브 완료. 마지막 메시지까지 기록했어요.', 'SavePoint');
+        if (done) run.doneText = `${close ? '장면 클리어 완료' : '저장 완료'}${st.lastIndex >= run.from ? ` · #${run.from}–#${st.lastIndex}` : ''}`;
+        clearInterrupted(run.key);
     } catch (e) {
         if (queued.length && !(e instanceof Cancelled) && state() === st) {
             try { lootFailed += await failPendingLoot(run, queued, e); } catch { /* a failed disk write leaves the queue intact */ }
         }
         if (!(e instanceof Cancelled) && !e.detail) ui.lastError = { at: Date.now(), range: `#${msgs[cursor]?.index ?? start}–#${end}`, detail: [errorText(e)] };
         const where = done ? ` ${done}개 구간(${cursor}개 메시지)은 저장했고, 남은 ${msgs.length - cursor}개 메시지의 원문은 그대로 남겨 뒀어요.` : ' 기억과 원문은 바뀌지 않았어요.';
-        if (e instanceof Cancelled) toastr.info(e.message + where, 'SavePoint');
+        // Leaving the room has its own notice (onChatChanged); don't repeat it in the new room.
+        if (e instanceof Cancelled) { if (run.key === roomKey()) toastr.info(e.message + where, 'SavePoint'); }
         else { console.error('[SavePoint]', e, e.detail || ''); toastr.error(e.message + where, 'SavePoint', { timeOut: 12000 }); }
     } finally {
         if (lootFailed && state() === st) toastr.warning(`⚠ 루팅한 내용 ${lootFailed}개가 반영되지 않았어요`, 'SavePoint');
@@ -880,7 +889,7 @@ async function autoCollect() {
     const limit = num('inputChars', 5000, 1000000);
     const bPrompt = buildBoundaryPrompt({ names: names(), open: open && { ...open, outlineText: sceneOutlineText(open) }, from: indices[0], to: indices[indices.length - 1], text });
     if (bPrompt.length > limit) { st.autoHold = { at: Date.now() }; noteAuto(st, '정지: 입력 한도 초과', { end }); return; }
-    const run = newRun(st, end);
+    const run = newRun(st, end, 'auto');
     run.auto = true;
     const before0 = st.mem, before0LastIndex = st.lastIndex, undoPoint = checkpoint(st);
     let checkAfter = null;
@@ -948,6 +957,8 @@ async function autoCollect() {
             st.lastIndex = plan.boundary; st.hashes = run.hashes.slice(0, plan.boundary + 1);
             st.autoMark = end;
             st.autoLast = { at: Date.now(), result: `장면 ${count}개 기록 (#${chunk.from}–#${plan.boundary})` };
+            run.doneText = `자동 저장 완료 · 장면 ${count}개 (#${chunk.from}–#${plan.boundary})`;
+            clearInterrupted(run.key);
             settleAutoFail(st);
             lootFailed = settleLoot(st, marked, next);
         }, { rehide: true });
@@ -1065,7 +1076,7 @@ function queueCheck(st, before, opts = {}) {
 async function runCheck(st, scope, { auto = false } = {}) {
     if (ui.run) { st.check = { at: Date.now(), status: 'failed', reason: '다른 작업 중이라 건너뜀', scope, issues: [] }; persistSoon(); render(); return; }
     const end = chat().length - 1;
-    const run = newRun(st, end);
+    const run = newRun(st, end, 'check');
     const rev = st.rev;
     st.check = { at: Date.now(), status: 'running', scope, issues: [] }; render();
     let stageNow = '검토 준비';
@@ -1314,7 +1325,7 @@ async function translate() {
         cur.push(it); size += it.text.length;
     }
     if (cur.length) batches.push(cur);
-    const run = newRun(st, -1);
+    const run = newRun(st, -1, 'other');
     let next = clone(st.mem), count = 0;
     const rev = st.rev;
     try {
@@ -1341,7 +1352,7 @@ async function rekeyScenes(ids) {
     if (ui.run || !ids.length) { if (!ids.length) toastr.info('다시 고를 장면이 없어요.'); return; }
     const st = state();
     if (!st) return;
-    const run = newRun(st, -1);
+    const run = newRun(st, -1, 'other');
     const rev = st.rev;
     const results = [];
     let failed = 0;
@@ -1665,7 +1676,7 @@ function openWindow() {
     $('#sp_overlay').css('display', 'flex');
     render(true);
 }
-function closeWindow() { tabResizeObserver?.disconnect(); ui.open = false; ui.edit = null; $('#sp_overlay').hide(); }
+function closeWindow() { tabResizeObserver?.disconnect(); ui.open = false; ui.edit = null; $('#sp_overlay').hide(); updateSaveBanner(); }
 
 // Checks one excerpt against its message and builds the queue item. The excerpt may come from the
 // original or, when a translator shows a translation instead, from that on-screen translation.
@@ -2130,6 +2141,7 @@ function hudHtml(st) {
         <div class="sp-bar" title="기록된 메시지 비율"><div class="sp-bar-fill" style="width:${pct}%"></div><span>기록 ${covered} / ${total}</span></div>
         <div class="sp-hud-meta"><span>미기록 <b>${pending}</b></span>${btn('tab', 'queue', `⏳ 대기열 ${st?.lootQueue?.length || 0}개`)}<span>주입 ${ui.inj ? ui.inj.tokens.toLocaleString() : 0} / ${num('budget', 300, 100000).toLocaleString()} 토큰</span><span>요약 AI: ${esc(profileLabel())}</span>${ui.inj?.pinOverflow ? `<span class="sp-warn">📌 ${ui.inj.pinMissing}개 주입 못 함</span>` : ''}</div>
         <div class="sp-hud-meta sp-auto-line">${autoLine}${autoLast}</div>
+        ${(() => { const it = interruptedNote(st); return it && !busy ? `<div class="sp-hud-meta"><span class="sp-warn">⚠ 지난 저장이 방을 옮기면서 중간에 멈췄어요 (#${it.from}부터 미기록)</span>${btn('run', '', '퀵세이브로 이어서')}</div>` : ''; })()}
         ${autoFailHtml(st)}
         ${checkHtml(st)}
         ${review}
@@ -2187,6 +2199,7 @@ function installTabNavigation(strip, previousScroll) {
     }
 }
 function render(force = false) {
+    updateSaveBanner();
     if (!ui.open) return;
     const win = $('#sp_overlay .sp-window');
     if (!win.length) return;
@@ -2511,10 +2524,88 @@ function addSettingsUI() {
     $('#sp_test_connection').on('click', () => testConnection().catch(reportError));
 }
 
+// ───────── saving banner (game-style "저장 중입니다…") ─────────
+// Shown above the chat while a save or another AI task runs, so leaving the room (which cancels it)
+// is a choice the reader can see. It wears the status window's theme, never blocks the chat, opens
+// SavePoint when pressed, and is hidden while the SavePoint window itself is open.
+const BANNER = {
+    save: ['저장 중입니다…', '다른 채팅방으로 이동하면 저장이 취소돼요'],
+    auto: ['자동 저장 중입니다…', '다른 채팅방으로 이동하면 저장이 취소돼요'],
+    check: ['기록 확인 중입니다…', '다른 채팅방으로 이동하면 확인이 취소돼요 (기억은 이미 저장됐어요)'],
+    other: ['기억 정리 중입니다…', '다른 채팅방으로 이동하면 이 작업이 취소돼요'],
+};
+let bannerTimer = null;
+function saveBanner() {
+    if (typeof document === 'undefined' || !document.body) return null;
+    let el = document.getElementById('sp_save_banner');
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'sp_save_banner'; el.className = 'sp-window sp-save-banner'; el.hidden = true;
+        el.setAttribute('role', 'status'); el.setAttribute('aria-live', 'polite');
+        el.innerHTML = '<span class="sp-sb-icon"></span><div class="sp-sb-text"><div class="sp-sb-title"></div><div class="sp-sb-sub"></div></div>';
+        el.onclick = () => openWindow();
+        document.body.append(el);
+    }
+    el.setAttribute('data-theme', settings().theme in THEMES ? settings().theme : 'jrpg');
+    return el;
+}
+function setBanner(el, { icon, title, count = '', sub }) {
+    el.querySelector('.sp-sb-icon').className = `sp-sb-icon ${icon}`;
+    el.querySelector('.sp-sb-title').innerHTML = `${esc(title)}${count ? ` <b>${esc(count)}</b>` : ''}`;
+    el.querySelector('.sp-sb-sub').textContent = sub;
+    el.hidden = false;
+}
+function updateSaveBanner() {
+    const el = saveBanner();
+    if (!el || el.dataset.flash) return;
+    const run = ui.run, text = run && BANNER[run.kind];
+    if (!text || ui.open || !settings().enabled || run.key !== roomKey()) { el.hidden = true; return; }
+    const m = String(ui.progress || '').match(/(\d+)\/(\d+)메시지/);
+    setBanner(el, { icon: 'sp-sb-spin', title: text[0], count: m && Number(m[1]) > 0 ? `${m[1]}/${m[2]}` : '', sub: text[1] });
+}
+function flashSaveBanner(text) {
+    const el = saveBanner();
+    if (!el) return;
+    clearTimeout(bannerTimer);
+    if (ui.open || !settings().enabled) { delete el.dataset.flash; el.hidden = true; return; }
+    const [title, ...rest] = text.split(' · ');
+    el.dataset.flash = '1';
+    setBanner(el, { icon: 'sp-sb-done', title, sub: rest.join(' · ') });
+    bannerTimer = setTimeout(() => { delete el.dataset.flash; updateSaveBanner(); }, 3500);
+}
+// A save cut off by leaving the room is remembered per room until that room saves again.
+function clearInterrupted(room) {
+    const map = settings().interrupted;
+    if (map && room && map[room]) { delete map[room]; saveSettings(); }
+}
+function noteLeftDuringRun(run) {
+    if (!run || !BANNER[run.kind] || run.key === roomKey()) return;
+    const name = `‘${run.roomName}’ 방을 나가서`;
+    if (run.kind === 'save') {
+        const saved = run.st.lastIndex >= run.from ? `끝난 부분(#${run.from}–#${run.st.lastIndex})은 저장됐고, ` : '저장된 부분은 없어요. ';
+        settings().interrupted[run.key] = { at: Date.now(), from: run.st.lastIndex + 1 }; saveSettings();
+        toastr.warning(`${name} 저장을 멈췄어요. ${saved}나머지는 그 방에서 다시 세이브해 주세요.`, 'SavePoint · 저장이 취소됐어요', { timeOut: 12000 });
+    } else if (run.kind === 'auto') {
+        toastr.warning(`${name} 자동 저장을 멈췄어요. 그 방에 돌아가면 다음 답변 뒤에 다시 시도해요.`, 'SavePoint · 자동 저장 취소', { timeOut: 10000 });
+    } else if (run.kind === 'check') {
+        toastr.info(`${name} 기록 확인을 멈췄어요. 기억은 이미 저장돼 있어요.`, 'SavePoint', { timeOut: 8000 });
+    } else {
+        toastr.info(`${name} 진행 중이던 기억 정리를 멈췄어요. 바뀐 내용은 없어요.`, 'SavePoint', { timeOut: 8000 });
+    }
+}
+function interruptedNote(st) {
+    const it = settings().interrupted?.[roomKey()];
+    if (!it || !st) return null;
+    if (st.lastIndex >= chat().length - 1) { clearInterrupted(roomKey()); return null; }
+    return it;
+}
+
 // ───────── events ─────────
 
 function onChatChanged() {
+    const leaving = ui.run;
     roomEpoch++; cancelRun(); clearTimeout(autoTimer);
+    noteLeftDuringRun(leaving);
     clearTimeout(persistTimer); clearTimeout(chatSaveTimer); clearTimeout(sourceTimer);
     ui.edit = null; ui.lastError = null; ui.lastFix = null; mainGenerating = false;
     document.querySelector?.('#sp_loot_dialog')?.close();
@@ -2526,8 +2617,10 @@ function onChatChanged() {
         }
         reconcile();
         syncHide();
+        const it = interruptedNote(state());
+        if (it) toastr.info(`이 방의 지난 저장이 방을 옮기면서 중간에 멈췄어요 (#${it.from}부터 미기록). SavePoint에서 퀵세이브로 이어서 기록할 수 있어요.`, 'SavePoint', { timeOut: 10000 });
     }
-    refreshInjection(); render(true); installLootBar();
+    refreshInjection(); render(true); installLootBar(); updateSaveBanner();
 }
 function onSourceChanged() {
     clearTimeout(sourceTimer);
