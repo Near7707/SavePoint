@@ -37,7 +37,9 @@ const SETTING_GROUPS = {
     storage: { title: '하이드·보관', keys: ['hide', 'keepRecent', 'autoKeep'] },
     appearance: { title: '화면', keys: ['theme', 'showKo'] },
 };
-const THEMES = { jrpg: '클래식 JRPG', neon: '네온 아케이드', glass: '글래스 사이버', archive: '다크 아카이브', pastel: '파스텔 드림', parchment: '양피지', terminal: '터미널', eggpet: '알 키우기 펫', colorpocket: '컬러 포켓', joycon: '조이 콘솔', dualwhite: '듀얼 화이트', ink: '먹과 한지', st: '실리 테마 따라가기' };
+const THEMES = { jrpg: '클래식 JRPG', neon: '네온 아케이드', glass: '글래스 사이버', archive: '다크 아카이브', pastel: '파스텔 드림', terminal: '터미널', eggpet: '딸기우유', joycon: '조이 콘솔', dualwhite: '듀얼 화이트', ink: '먹과 한지', cream: '크림 라테', vanilla: '바닐라 버터', st: '실리 테마 따라가기' };
+// Themes that were retired, and the closest one now.
+const RETIRED_THEMES = { parchment: 'cream', colorpocket: 'eggpet' };
 const TABS = [
     ['journal', '📜', '저널'], ['queue', '⏳', '대기열'], ['quests', '❗', '퀘스트'], ['party', '👥', '파티'],
     ['items', '🎒', '인벤토리'], ['world', '🗺', '월드'], ['saves', '💾', '세이브'], ['inject', '👁', '주입'],
@@ -64,6 +66,7 @@ function settings() {
     const s = es[MODULE];
     for (const k of Object.keys(DEFAULTS)) if (!(k in s)) s[k] = clone(DEFAULTS[k]);
     if (OLD_GUIDE_HASHES.includes(guideHash(s.guide))) s.guide = DEFAULT_GUIDE;
+    if (RETIRED_THEMES[s.theme]) s.theme = RETIRED_THEMES[s.theme];
     if (!s.settingsOpen || typeof s.settingsOpen !== 'object' || Array.isArray(s.settingsOpen)) s.settingsOpen = {};
     if (!Array.isArray(s.slotCache)) s.slotCache = [];
     if (!s.localSaves || typeof s.localSaves !== 'object' || Array.isArray(s.localSaves)) s.localSaves = {};

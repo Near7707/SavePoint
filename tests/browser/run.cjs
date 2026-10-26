@@ -243,7 +243,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
 
     if (SHOTS) {
         await ev(() => { M.settings.savePoint.budget = 6000; M.settings.savePoint.showKo = false; __savePoint.refreshInjection(); });
-        for (const theme of ['jrpg', 'parchment', 'terminal', 'st']) {
+        for (const theme of ['jrpg', 'cream', 'terminal', 'st']) {
             await ev(t => { M.settings.savePoint.theme = t; __savePoint.handle('tab', 'journal'); }, theme);
             await page.screenshot({ path: `${OUT}/m_${theme}.png` });
         }

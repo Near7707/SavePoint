@@ -27,15 +27,6 @@
     box-shadow: inset 0 0 0 3px #0a0f33, inset 0 0 0 5px var(--sp-line), 0 18px 60px rgba(0, 0, 0, .55);
     font-size: 14px; line-height: 1.5; text-align: left;
 }
-.sp-window[data-theme="parchment"] {
-    --sp-bg: linear-gradient(180deg, #f6ead0 0%, #ecdbb4 100%);
-    --sp-panel: rgba(120, 80, 30, .07); --sp-panel2: rgba(120, 80, 30, .12);
-    --sp-fg: #3a2814; --sp-dim: #7b6343; --sp-accent: #9e2f1c; --sp-accent-fg: #fff6e6;
-    --sp-border: #6e4b25; --sp-line: rgba(110, 75, 37, .3); --sp-chip: rgba(110, 75, 37, .13);
-    --sp-danger: #b3261e; --sp-ok: #2f7a3a; --sp-live: #1f6f8b;
-    --sp-head: Georgia, 'Nanum Myeongjo', 'Batang', serif;
-    box-shadow: inset 0 0 0 3px #f6ead0, inset 0 0 0 4px var(--sp-line), 0 18px 60px rgba(0, 0, 0, .45);
-}
 .sp-window[data-theme="terminal"] {
     --sp-bg: #050d07; --sp-panel: rgba(120, 255, 150, .05); --sp-panel2: rgba(120, 255, 150, .09);
     --sp-fg: #a6ffb8; --sp-dim: #5fae73; --sp-accent: #e8ff6b; --sp-accent-fg: #071000;
@@ -430,52 +421,9 @@ label.sp-has-reset { position: relative; padding-right: 30px; }
 .sp-window[data-theme="pastel"] .sp-holder { background: rgba(255, 255, 255, .8); border: 1px solid rgba(201, 184, 242, .9); border-radius: 999px; padding: 0 8px; }
 .sp-window[data-theme="pastel"] .sp-f select option { background: #fff; }
 
-
 #sp_loot_dialog.sp-window:not([open]) { display: none; }
 
 /* v0.5.5: bright handheld themes and ink on hanji */
-/* 알 키우기 펫: 펄 핑크 알 껍데기 + 회색 액정 */
-.sp-window[data-theme="eggpet"] {
-    --sp-bg: #ffe6ef; --sp-panel: #dfe3cf; --sp-panel2: #d3d8c0;
-    --sp-fg: #2f3326; --sp-dim: #6b7060; --sp-accent: #ff5d8f; --sp-accent-fg: #fff;
-    --sp-border: #ff8fb1; --sp-line: rgba(47, 51, 38, .22); --sp-chip: rgba(255, 93, 143, .14);
-    --sp-danger: #e0335e; --sp-ok: #3f8f5a; --sp-live: #3b7fd1; --sp-radius: 28px;
-    --sp-head: ui-monospace, 'DungGeunMo', 'Galmuri11', monospace;
-    border: 8px solid #ffb3c9; background: radial-gradient(120% 70% at 30% 0%, #fff6fa 0%, #ffd9e6 60%, #ffc6d8 100%);
-    box-shadow: inset 0 0 0 3px #fff, inset 0 0 0 6px #ff8fb1, 0 0 0 2px #ff8fb1, 0 18px 50px rgba(255, 93, 143, .35);
-}
-.sp-window[data-theme="eggpet"] .sp-top { border-bottom: none; }
-.sp-window[data-theme="eggpet"] .sp-logo { color: #ff5d8f; letter-spacing: .14em; }
-.sp-window[data-theme="eggpet"] .sp-hud { margin: 0 12px; border: 4px solid #8a8f7a; border-radius: 14px; background: #dfe3cf; box-shadow: inset 2px 2px 0 rgba(0, 0, 0, .12); }
-.sp-window[data-theme="eggpet"] .sp-bar { border-radius: 2px; border: 2px solid #2f3326; background: #c9cfb4; }
-.sp-window[data-theme="eggpet"] .sp-bar-fill { background: repeating-linear-gradient(90deg, #2f3326 0 6px, transparent 6px 8px); }
-.sp-window[data-theme="eggpet"] .sp-bar span { color: #2f3326; text-shadow: 0 0 3px #dfe3cf, 0 0 3px #dfe3cf; }
-.sp-window[data-theme="eggpet"] .sp-tabs { border-bottom: none; }
-.sp-window[data-theme="eggpet"] .sp-card, .sp-window[data-theme="eggpet"] .sp-quest { background: #fff; border: 2px solid #ffc2d4; border-radius: 18px; }
-.sp-window[data-theme="eggpet"] .sp-btn:not(.sp-primary) { border-radius: 999px; background: #fff; border-color: #ffb3c9; }
-.sp-window[data-theme="eggpet"] .sp-btn.sp-primary { background: #ff5d8f; border-color: #ff5d8f; box-shadow: 0 3px 0 #d93c6e; }
-
-/* 컬러 포켓: 노란 껍데기 + 밝은 액정 */
-.sp-window[data-theme="colorpocket"] {
-    --sp-bg: #ffd43b; --sp-panel: #f4f7ea; --sp-panel2: #e6ecd2;
-    --sp-fg: #233019; --sp-dim: #5e6b4e; --sp-accent: #2f6fd6; --sp-accent-fg: #fff;
-    --sp-border: #3a3d4a; --sp-line: rgba(35, 48, 25, .2); --sp-chip: rgba(47, 111, 214, .12);
-    --sp-danger: #d63a2f; --sp-ok: #2e8a3d; --sp-live: #2f6fd6; --sp-radius: 14px;
-    --sp-head: ui-monospace, 'DungGeunMo', 'Galmuri11', monospace;
-    border: 3px solid #e0b100; border-radius: 14px 14px 46px 14px;
-    box-shadow: inset 0 0 0 4px #ffe58a, 0 6px 0 #d9a800, 0 18px 50px rgba(160, 120, 0, .35);
-}
-.sp-window[data-theme="colorpocket"] .sp-top { border-bottom: none; }
-.sp-window[data-theme="colorpocket"] .sp-logo { color: #3a3d4a; letter-spacing: .12em; }
-.sp-window[data-theme="colorpocket"] .sp-hud { margin: 0 12px; border-radius: 8px 8px 22px 8px; border: 10px solid #3a3d4a; background: #e6ecd2; }
-.sp-window[data-theme="colorpocket"] .sp-tabs { border-bottom: none; padding-top: 10px; }
-.sp-window[data-theme="colorpocket"] .sp-tab { color: #3a3d4a; }
-.sp-window[data-theme="colorpocket"] .sp-tab.sp-active { background: #fff3b8; border-color: #e0b100; }
-.sp-window[data-theme="colorpocket"] .sp-card, .sp-window[data-theme="colorpocket"] .sp-quest { background: #fffdf2; border: 2px solid #3a3d4a; border-radius: 10px; box-shadow: 0 3px 0 #e0b100; }
-.sp-window[data-theme="colorpocket"] .sp-bar { border-color: #233019; border-radius: 3px; }
-.sp-window[data-theme="colorpocket"] .sp-bar-fill { background: linear-gradient(90deg, #45b34a, #8fd14f); }
-.sp-window[data-theme="colorpocket"] .sp-btn:not(.sp-primary) { background: #fffdf2; border-color: #3a3d4a; border-radius: 999px; }
-.sp-window[data-theme="colorpocket"] .sp-btn.sp-primary { background: #d63a6a; border-color: #a82850; color: #fff; box-shadow: 0 3px 0 #a82850; }
 
 /* 조이 콘솔: 하얀 화면 + 빨강·파랑 손잡이 */
 .sp-window[data-theme="joycon"] {
@@ -507,24 +455,22 @@ label.sp-has-reset { position: relative; padding-right: 30px; }
 }
 .sp-window[data-theme="dualwhite"] .sp-top { border-bottom: none; }
 .sp-window[data-theme="dualwhite"] .sp-logo { color: #2b9bea; letter-spacing: .16em; }
-.sp-window[data-theme="dualwhite"] .sp-hud { margin: 0 12px; border-radius: 12px; border: 6px solid #2a2f36; background: #e6f4fd; }
-.sp-window[data-theme="dualwhite"]:not(#sp_loot_dialog) .sp-tab-nav { margin: 10px 12px 0; border: 6px solid #2a2f36; border-bottom: none; border-radius: 12px 12px 0 0; background: #fff; }
+.sp-window[data-theme="dualwhite"] .sp-hud { margin: 0 12px; border-radius: 14px; border: none; background: #e6f4fd; box-shadow: inset 0 0 0 1px #cfe3f2; }
+.sp-window[data-theme="dualwhite"]:not(#sp_loot_dialog) .sp-tab-nav { margin: 10px 12px 0; border: none; border-radius: 14px 14px 0 0; background: #fff; box-shadow: 0 -1px 0 #e3ecf4; }
 .sp-window[data-theme="dualwhite"]:not(#sp_loot_dialog) .sp-tab-nav > .sp-tabs { border: none; margin: 0; }
-.sp-window[data-theme="dualwhite"]:not(#sp_loot_dialog) .sp-body { margin: 0 12px 12px; border: 6px solid #2a2f36; border-top: none; border-radius: 0 0 12px 12px; background: #fff; }
+.sp-window[data-theme="dualwhite"]:not(#sp_loot_dialog) .sp-body { margin: 0 12px 12px; border: none; border-radius: 0 0 14px 14px; background: #fff; box-shadow: 0 6px 16px rgba(40, 80, 120, .08); }
 .sp-window[data-theme="dualwhite"] .sp-card, .sp-window[data-theme="dualwhite"] .sp-quest { border: 1px solid #d6e2ec; border-radius: 12px; background: #f7fbfe; }
 .sp-window[data-theme="dualwhite"] .sp-bar { border: none; border-radius: 999px; background: #cfe6f7; }
 .sp-window[data-theme="dualwhite"] .sp-bar-fill { background: linear-gradient(90deg, #2b9bea, #7fd0ff); border-radius: 999px; }
 .sp-window[data-theme="dualwhite"] .sp-bar span { color: #fff; text-shadow: 0 0 3px rgba(0, 60, 120, .5); }
 .sp-window[data-theme="dualwhite"] .sp-btn:not(.sp-primary) { border-radius: 999px; border-width: 1px; background: #fff; }
-.sp-window[data-theme="eggpet"] .sp-bar-fill { background: repeating-linear-gradient(90deg, #8a8f7a 0 6px, #a4a992 6px 8px); }
-.sp-window[data-theme="eggpet"] .sp-bar span { color: #1c1f16; font-weight: 700; text-shadow: none; }
 .sp-window[data-theme="joycon"] .sp-btn.sp-primary { background: #ff4554; border-color: #ff4554; box-shadow: 0 3px 0 #d02a38; }
 .sp-window[data-theme="dualwhite"] .sp-btn.sp-primary { background: #2b9bea; border-color: #2b9bea; box-shadow: 0 3px 0 #1c79bd; }
 
 /* 먹과 한지: 한지 바탕, 먹 글씨, 붉은 낙관 */
 .sp-window[data-theme="ink"] {
-    --sp-bg: linear-gradient(180deg, #f3ecdc 0%, #ebe1cb 100%);
-    --sp-panel: rgba(40, 30, 20, .045); --sp-panel2: rgba(40, 30, 20, .08);
+    --sp-bg: linear-gradient(180deg, #fbf8f1 0%, #f5efe2 100%);
+    --sp-panel: rgba(190, 150, 90, .06); --sp-panel2: rgba(200, 160, 100, .1);
     --sp-fg: #1d1915; --sp-dim: #6f655a; --sp-accent: #b3241b; --sp-accent-fg: #fff4e8;
     --sp-border: #1d1915; --sp-line: rgba(29, 25, 21, .22); --sp-chip: rgba(29, 25, 21, .08);
     --sp-danger: #b3241b; --sp-ok: #3b6b45; --sp-live: #24536b; --sp-radius: 2px;
@@ -537,4 +483,57 @@ label.sp-has-reset { position: relative; padding-right: 30px; }
 .sp-window[data-theme="ink"] .sp-card, .sp-window[data-theme="ink"] .sp-quest { border: none; border-left: 3px solid #1d1915; border-radius: 0; background: transparent; }
 .sp-window[data-theme="ink"] .sp-bar { border: 1px solid #1d1915; border-radius: 0; background: transparent; }
 .sp-window[data-theme="ink"] .sp-bar-fill { background: linear-gradient(90deg, #1d1915 0%, #4a4038 80%, rgba(74, 64, 56, .4) 100%); }
-.sp-window[data-theme="ink"] .sp-bar span { color: #f3ecdc; text-shadow: 0 0 3px #1d1915; }
+.sp-window[data-theme="ink"] .sp-bar span { color: #fbf8f1; text-shadow: 0 0 3px #1d1915; }
+
+/* 딸기우유: 분홍 우유 바탕, 진한 딸기색 글씨 */
+.sp-window[data-theme="eggpet"] {
+    --sp-bg: linear-gradient(180deg, #fff3f7 0%, #ffe3ec 100%); --sp-panel: #fff9fb; --sp-panel2: #ffeef4;
+    --sp-fg: #5b2b3c; --sp-dim: #a06a7e; --sp-accent: #ff6f9c; --sp-accent-fg: #fff;
+    --sp-border: #ffb3c9; --sp-line: #ffd2df; --sp-chip: #ffe4ec;
+    --sp-danger: #e0335e; --sp-ok: #3f9a6a; --sp-live: #e86a9a; --sp-radius: 26px;
+    --sp-head: 'Avenir Next', 'Segoe UI', 'Pretendard', sans-serif;
+    border: 6px solid #ffc6d7; box-shadow: inset 0 0 0 2px #fff, 0 18px 50px rgba(255, 111, 156, .28);
+}
+.sp-window[data-theme="eggpet"] .sp-top { border-bottom: none; }
+.sp-window[data-theme="eggpet"] .sp-logo { color: #ff6f9c; letter-spacing: .14em; font-weight: 800; }
+.sp-window[data-theme="eggpet"]:not(#sp_loot_dialog) .sp-hud { margin: 0 12px; border: none; border-radius: 20px; background: #fff9fb; box-shadow: inset 0 0 0 2px #ffd2df; }
+.sp-window[data-theme="eggpet"] .sp-bar { border: none; border-radius: 999px; background: #ffe4ec; }
+.sp-window[data-theme="eggpet"] .sp-bar-fill { background: linear-gradient(90deg, #ff8fb1, #ffc2d4); border-radius: 999px; }
+.sp-window[data-theme="eggpet"] .sp-bar span { color: #fff; font-weight: 700; text-shadow: 0 0 3px rgba(214, 70, 115, .6); }
+.sp-window[data-theme="eggpet"] .sp-tab-nav, .sp-window[data-theme="eggpet"] .sp-tabs { border-bottom: none; }
+.sp-window[data-theme="eggpet"] .sp-card, .sp-window[data-theme="eggpet"] .sp-quest { background: #fff; border: 2px solid #ffd2df; border-radius: 18px; }
+.sp-window[data-theme="eggpet"] .sp-btn:not(.sp-primary) { border-radius: 999px; background: #fff; border-color: #ffc6d7; }
+.sp-window[data-theme="eggpet"] .sp-btn.sp-primary { border-radius: 999px; box-shadow: 0 3px 0 #e2507f; }
+
+/* 크림 라테 (후보 A) */
+.sp-window[data-theme="cream"] {
+    --sp-bg: #fbf6ec; --sp-panel: #fffdf8; --sp-panel2: #f4ecdc;
+    --sp-fg: #4a3a2c; --sp-dim: #9a8670; --sp-accent: #c0844a; --sp-accent-fg: #fffaf2;
+    --sp-border: #e5d6bd; --sp-line: #ecdfca; --sp-chip: #f3e8d6;
+    --sp-danger: #c95a43; --sp-ok: #6c9a5a; --sp-live: #b0784a; --sp-radius: 16px;
+    --sp-head: 'Avenir Next', 'Segoe UI', 'Pretendard', sans-serif;
+    border: 1px solid #e5d6bd; box-shadow: 0 18px 50px rgba(120, 90, 50, .18);
+}
+.sp-window[data-theme="cream"] .sp-logo { color: #b0784a; letter-spacing: .14em; }
+.sp-window[data-theme="cream"] .sp-card, .sp-window[data-theme="cream"] .sp-quest { border: 1px solid #ecdfca; border-radius: 14px; box-shadow: 0 2px 8px rgba(120, 90, 50, .06); }
+.sp-window[data-theme="cream"] .sp-bar { border: none; border-radius: 999px; background: #f0e4d0; }
+.sp-window[data-theme="cream"] .sp-bar-fill { background: linear-gradient(90deg, #d7a46e, #e9c79a); border-radius: 999px; }
+.sp-window[data-theme="cream"] .sp-bar span { color: #fffaf2; text-shadow: 0 0 3px rgba(120, 70, 30, .5); }
+.sp-window[data-theme="cream"] .sp-btn:not(.sp-primary) { border-width: 1px; border-radius: 999px; background: #fffdf8; }
+.sp-window[data-theme="cream"] .sp-btn.sp-primary { border-radius: 999px; }
+
+/* 바닐라 버터 (후보 B) */
+.sp-window[data-theme="vanilla"] {
+    --sp-bg: linear-gradient(180deg, #fffbea 0%, #fbf3d6 100%); --sp-panel: #fffef6; --sp-panel2: #f7efcf;
+    --sp-fg: #3f4232; --sp-dim: #8a8a6c; --sp-accent: #7c9a5e; --sp-accent-fg: #fffef6;
+    --sp-border: #e8dca8; --sp-line: #efe5bd; --sp-chip: #f4ecc8;
+    --sp-danger: #c6623f; --sp-ok: #6b9450; --sp-live: #b39a3a; --sp-radius: 12px;
+    --sp-head: 'Avenir Next', 'Segoe UI', 'Pretendard', sans-serif;
+    border: 1px solid #e8dca8; box-shadow: inset 0 0 0 4px #fffef6, 0 18px 50px rgba(140, 120, 40, .16);
+}
+.sp-window[data-theme="vanilla"] .sp-logo { color: #7c9a5e; letter-spacing: .14em; }
+.sp-window[data-theme="vanilla"] .sp-card, .sp-window[data-theme="vanilla"] .sp-quest { border: 1px solid #efe5bd; border-radius: 12px; }
+.sp-window[data-theme="vanilla"] .sp-bar { border: none; border-radius: 999px; background: #f2e8bf; }
+.sp-window[data-theme="vanilla"] .sp-bar-fill { background: linear-gradient(90deg, #f3d36b, #f9e7a1); border-radius: 999px; }
+.sp-window[data-theme="vanilla"] .sp-bar span { color: #4a4524; }
+.sp-window[data-theme="vanilla"] .sp-btn:not(.sp-primary) { border-width: 1px; background: #fffef6; }
