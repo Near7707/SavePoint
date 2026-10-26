@@ -16,7 +16,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.3.4';
+const VERSION = '0.3.5';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -506,11 +506,30 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
     return Promise.reject(fail(`요약 AI 응답이 검사를 통과하지 못했어요 (#${chunk.from}–#${chunk.to}). 이 구간은 저장하지 않았어요.`, detail));
 }
 
+// A failed checkpoint is kept in the room (chat file), so it survives a reload or a room switch.
+// It is cleared only when the failed range has actually been recorded and saved, by a later
+// checkpoint or a quick save; a partial save keeps the part that is still unrecorded.
+const FAIL_STAGE = { boundary: '장면 경계 확인', collect: '장면 기록', save: '채팅 파일 저장' };
+const isTry = l => /^(첫 요청|재요청):/.test(l);
+function recordAutoFail(st, { stage, from, to, error, tries = [], detail = [] }) {
+    const cut = l => String(l).slice(0, 300);
+    st.autoFail = { at: Date.now(), kind: 'collect', stage, from, to, reason: errorText(error).slice(0, 400),
+        attempts: tries.length, tries: tries.map(cut), detail: groupErrors(detail).slice(0, 40).map(cut) };
+    persistSoon();
+    toastr.warning(`체크포인트 실패 (#${from}–#${to}) · 해당 구간 원문 유지`, 'SavePoint');
+}
+function settleAutoFail(st) {
+    const f = st.autoFail;
+    if (!f) return;
+    if (st.lastIndex >= f.to) delete st.autoFail;
+    else if (st.lastIndex >= f.from) f.from = st.lastIndex + 1;
+}
+
 async function summarize({ close = false } = {}) {
     if (ui.run) { toastr.info('이미 기록 중이에요.'); return; }
     if (!hasChat()) { toastr.warning('채팅방을 먼저 열어 주세요.'); return; }
     if (ui.edit) { toastr.warning('편집 중인 항목을 먼저 저장하거나 취소해 주세요.'); return; }
-    if (!settings().profileId && mainBusy()) { toastr.info('본편 생성이 끝난 뒤 눌러 주세요. (연결 프로필을 고르면 생성 중에도 정리할 수 있어요.)'); return; }
+    if (!settings().profileId && mainBusy()) { toastr.info('본편 생성이 끝난 뒤 눌러 주세요. (연결 프로필을 고르면 생성 중에도 세이브할 수 있어요.)'); return; }
     const st = ensureState();
     if (!reconcile()) { render(); toastr.warning('예전 원문이 바뀌었어요. 창 위쪽 안내에서 먼저 처리해 주세요.'); return; }
     const end = chat().length - 1;
@@ -551,6 +570,7 @@ async function summarize({ close = false } = {}) {
                 pushHistory(st, before, next, { kind: 'summary', from: st.lastIndex + 1, to: coverTo });
                 st.lastIndex = coverTo; st.hashes = run.hashes.slice(0, coverTo + 1);
                 st.undo = undoPoint;
+                settleAutoFail(st);
             }, { undoable: false, autosave: false });
             done++; cursor += chunk.indices.length;
         }
@@ -624,22 +644,32 @@ async function autoCollect() {
     run.auto = true;
     const before0 = st.mem;
     let checkAfter = null;
+    const at = { stage: 'boundary', from: indices[0], to: indices[indices.length - 1] }, bTries = [];
     try {
         // Step 1: where do scenes start, and which are confirmed over?
         ui.progress = '체크포인트 · 장면 경계 확인'; render();
         let plan = null, errors = [], bKind = '';
         for (let attempt = 0; attempt < 2 && !plan; attempt++) {
-            const raw = await llm(attempt ? bPrompt + retryNote(errors, []) : bPrompt, run, { attempt, why: attempt ? bKind : '' });
+            const t0 = Date.now(), label = attempt ? '재요청' : '첫 요청';
+            let raw;
+            try { raw = await llm(attempt ? bPrompt + retryNote(errors, []) : bPrompt, run, { attempt, why: attempt ? bKind : '' }); }
+            catch (e) {
+                if (!(e instanceof Cancelled) && !run.cancelled) bTries.push(`${label}: ${fmtSec(Date.now() - t0)} · ${e instanceof RequestTimeout ? '응답 없음 → 제한 시간 초과로 취소' : `요청 오류: ${errorText(e)}`}`);
+                throw e;
+            }
             if (run.cancelled) throw new Cancelled('중지했어요.');
             let parsed = null;
             try { parsed = parseJson(raw); } catch { /* below */ }
             if (parsed) ({ errors, plan } = validateBoundary(parsed, { indices, hasOpen: !!open }));
             else { errors = ['The reply was not valid JSON.']; plan = null; }
             bKind = replyKind(raw) || (!parsed ? 'JSON 해석 실패' : `검사 실패 ${errors.length}건`);
+            bTries.push(`${label}: ${fmtSec(Date.now() - t0)} · 응답 ${String(raw ?? '').length.toLocaleString()}자 · ${plan ? '통과' : bKind}`);
         }
         if (!plan) {
-            ui.lastError = { at: Date.now(), range: `자동 · 경계 #${indices[0]}–#${indices[indices.length - 1]}`, detail: errors };
-            throw new Error('장면 경계 응답이 검사를 통과하지 못했어요.');
+            ui.lastError = { at: Date.now(), range: `자동 · 경계 #${indices[0]}–#${indices[indices.length - 1]}`, detail: [...bTries, ...errors] };
+            const err = new Error('장면 경계 응답이 검사를 통과하지 못했어요.');
+            err.detail = errors;
+            throw err;
         }
         assertValid(run, end);
         if (plan.boundary === null) {
@@ -660,10 +690,12 @@ async function autoCollect() {
         const note = batchNote({ boundary: plan.boundary, continuesOpen: plan.continuesOpen });
         if (extractPrompt(base, chunk, note).length > limit) { st.autoHold = { at: Date.now() }; noteAuto(st, '정지: 입력 한도 초과', { end }); return; }
         ui.progress = `체크포인트 #${chunk.from}–#${plan.boundary}`; render();
+        Object.assign(at, { stage: 'collect', from: chunk.from, to: plan.boundary });
         const data = await extractChunk(base, chunk, run, { note, expectContinue: plan.continuesOpen });
         assertValid(run, end);
         const { mem: next } = applyResult(base, data, chunk, { close: true });
         const count = data.scenes.length;
+        at.stage = 'save';
         await transact(() => {
             const before = st.mem;
             st.mem = next;
@@ -671,6 +703,7 @@ async function autoCollect() {
             st.lastIndex = plan.boundary; st.hashes = run.hashes.slice(0, plan.boundary + 1);
             st.autoMark = end;
             st.autoLast = { at: Date.now(), result: `장면 ${count}개 기록 (#${chunk.from}–#${plan.boundary})` };
+            settleAutoFail(st);
         });
         ui.lastError = null;
         checkAfter = before0;
@@ -678,11 +711,16 @@ async function autoCollect() {
         if (e instanceof Cancelled) { if (state() === st) { st.autoLast = { at: Date.now(), result: '취소됨 (다음 응답 뒤 다시 시도)' }; render(); } }
         else {
             console.error('[SavePoint] auto', e, e.detail || '');
-            if (state() === st) noteAuto(st, '실패: ' + errorText(e), { end });
+            if (state() === st) {
+                const lines = Array.isArray(e.detail) ? e.detail : [];
+                const tries = at.stage === 'boundary' ? bTries : lines.filter(isTry);
+                recordAutoFail(st, { stage: at.stage, from: at.from, to: at.to, error: e, tries, detail: at.stage === 'boundary' ? lines : lines.filter(l => !isTry(l)) });
+                noteAuto(st, `실패 (${FAIL_STAGE[at.stage]}): ${errorText(e)}`, { end });
+            }
         }
     } finally {
         endRun(run);
-        if (checkAfter && state() === st) queueCheck(st, checkAfter);
+        if (checkAfter && state() === st) queueCheck(st, checkAfter, { auto: true });
     }
 }
 
@@ -744,18 +782,20 @@ function checkPrompt(input) {
         terms: input.terms, messages: input.messages, notShown: input.notShown });
 }
 
-function queueCheck(st, before) {
+function queueCheck(st, before, opts = {}) {
     if (!settings().check || !settings().enabled) return;
     const scope = checkScope(before, st.mem);
     if (!scope.records.length && !scope.segs.length) return;
-    setTimeout(() => { if (state() === st) runCheck(st, scope).catch(reportError); }, 300);
+    setTimeout(() => { if (state() === st) runCheck(st, scope, opts).catch(reportError); }, 300);
 }
-async function runCheck(st, scope) {
+async function runCheck(st, scope, { auto = false } = {}) {
     if (ui.run) { st.check = { at: Date.now(), status: 'failed', reason: '다른 작업 중이라 건너뜀', scope, issues: [] }; persistSoon(); render(); return; }
     const end = chat().length - 1;
     const run = newRun(st, end);
     const rev = st.rev;
     st.check = { at: Date.now(), status: 'running', scope, issues: [] }; render();
+    let stageNow = '검토 준비';
+    const cTries = [];
     try {
         const statements = checkStatements(st, scope);
         const plan = planReviewBatches(statements, n => chat()[n] ? { name: speaker(chat()[n]), text: cleanText(chat()[n].mes) } : null,
@@ -764,19 +804,27 @@ async function runCheck(st, scope) {
         const issues = [], keys = new Set(), sent = new Set();
         const coverage = { sent: 0, cut: [], missing: [], batches: plan.batches.length, checked: 0, deferred: plan.deferred.length };
         for (let i = 0; i < plan.batches.length; i++) {
+            stageNow = `검토 ${i + 1}/${plan.batches.length}구간`;
             assertValid(run, end);
             if (st.rev !== rev) throw new Cancelled('검사 중 기억이 바뀌어서 검토를 멈췄어요.');
             const input = plan.batches[i], prompt = checkPrompt(input);
             ui.progress = `기록 확인 ${i + 1}/${plan.batches.length}구간 · 원문 전체 확인`; render();
             let result = null, errors = [], cKind = '';
             for (let attempt = 0; attempt < 2 && !result; attempt++) {
-                const raw = await llm(attempt ? prompt + retryNote(errors, []) : prompt, run, { attempt, why: attempt ? cKind : '' });
+                const t0 = Date.now(), label = `${stageNow} ${attempt ? '재요청' : '첫 요청'}`;
+                let raw;
+                try { raw = await llm(attempt ? prompt + retryNote(errors, []) : prompt, run, { attempt, why: attempt ? cKind : '' }); }
+                catch (e) {
+                    if (!(e instanceof Cancelled)) cTries.push(`${label}: ${fmtSec(Date.now() - t0)} · ${e instanceof RequestTimeout ? '응답 없음 → 제한 시간 초과로 취소' : `요청 오류: ${errorText(e)}`}`);
+                    throw e;
+                }
                 assertValid(run, end);
                 let parsed = null;
                 try { parsed = parseJson(raw); } catch { /* below */ }
                 if (parsed) { const r = validateCheck(parsed, input.ids); errors = r.errors; if (!errors.length) result = r; }
                 else errors = ['The reply was not valid JSON.'];
                 cKind = replyKind(raw) || (!parsed ? 'JSON 해석 실패' : `형식 오류 ${errors.length}건`);
+                cTries.push(`${label}: ${fmtSec(Date.now() - t0)} · 응답 ${String(raw ?? '').length.toLocaleString()}자 · ${result ? '통과' : cKind}`);
             }
             if (!result) throw new Error(`검사 ${i + 1}/${plan.batches.length}구간 응답: ${cKind}`);
             if (st.rev !== rev) throw new Cancelled('검사 중 기억이 바뀌어서 검토를 멈췄어요.');
@@ -808,7 +856,11 @@ async function runCheck(st, scope) {
         }
         st.check = { at: Date.now(), status: issues.length ? 'issues' : 'ok', scope, issues, coverage };
     } catch (e) {
-        if (state() === st) st.check = { at: Date.now(), status: 'failed', reason: e instanceof Cancelled ? '취소됨 · 전체 검토 미완료' : errorText(e), scope, issues: [] };
+        if (state() === st) {
+            st.check = { at: Date.now(), status: 'failed', kind: 'review', auto, stage: stageNow, attempts: cTries.length, tries: cTries.map(l => l.slice(0, 300)),
+                reason: e instanceof Cancelled ? '취소됨 · 전체 검토 미완료' : errorText(e).slice(0, 400), scope, issues: [] };
+            if (auto && !(e instanceof Cancelled)) toastr.warning('체크포인트 저장 후 기록 확인 실패 · 기록은 저장됨', 'SavePoint');
+        }
     } finally {
         endRun(run);
         if (state() === st) { persistSoon(); render(); }
@@ -835,6 +887,7 @@ function reportText(st) {
     const out = [`SavePoint v${VERSION} · 요약 AI: ${profileLabel()}`];
     if (hasChat()) out.push(`방: ${names().char || ''} · 기록 ${st ? st.lastIndex + 1 : 0} / ${chat().length}`);
     if (ui.lastFix) out.push('', `[자동 보정] ${ui.lastFix.range} · ${ui.lastFix.text}`);
+    if (st?.autoFail) out.push('', '[체크포인트 실패 · 수집]', ...autoFailLines(st.autoFail).map(l => `- ${l}`));
     if (ui.lastError) {
         out.push('', `[마지막 실패] ${ui.lastError.range} · ${new Date(ui.lastError.at).toLocaleString()}`);
         for (const d of groupErrors(ui.lastError.detail)) out.push(`- ${d}`);
@@ -842,9 +895,10 @@ function reportText(st) {
     const c = st?.check;
     if (c && c.status !== 'running') {
         const all = c.issues || [];
-        const state = c.status === 'failed' ? `실패 (${c.reason || ''})` : all.filter(x => !x.ignored).length ? `확인 필요 ${all.filter(x => !x.ignored).length}건` : '문제 없음';
+        const state = c.status === 'failed' ? `저장 후 검토 실패 (${c.reason || ''}) · 기록은 저장됨${c.stage ? ` · 단계: ${c.stage}` : ''}${c.attempts !== undefined ? ` · 요청 ${c.attempts}회` : ''}` : all.filter(x => !x.ignored).length ? `확인 필요 ${all.filter(x => !x.ignored).length}건` : '문제 없음';
         out.push('', `[기록 확인] ${new Date(c.at).toLocaleString()} · ${state}`);
         if (c.coverage?.batches !== undefined) out.push(`검토 요청 ${c.coverage.batches}회 · 검토 보류 ${c.coverage.deferred || 0}개 항목`);
+        if (c.status === 'failed') for (const t of c.tries || []) out.push(`- ${t}`);
         if (c.coverage) out.push(`보낸 원문 ${c.coverage.sent}개 · 일부만 보냄: ${c.coverage.cut.map(n => '#' + n).join(', ') || '없음'} · 못 보냄: ${c.coverage.missing.map(n => '#' + n).join(', ') || '없음'}`);
         all.forEach((x, i) => {
             out.push('', `${i + 1}. [${CHECK_KIND[x.kind] || x.kind}]${x.ignored ? ' (무시함)' : ''} ${ABOUT_LABEL(st.mem, x.about)}${x.also ? ` ↔ ${ABOUT_LABEL(st.mem, x.also)}` : ''}`);
@@ -874,12 +928,21 @@ async function copyReport() {
     else { ui.copyText = text; toastr.info('자동 복사가 막혀서 아래 칸에 띄웠어요. 길게 눌러 전체 선택 후 복사해 주세요.', 'SavePoint'); }
     render();
 }
+function autoFailLines(f) {
+    return [`시각: ${new Date(f.at).toLocaleString()}`, `단계: ${FAIL_STAGE[f.stage] || f.stage}`, `메시지 범위: #${f.from}–#${f.to}`, `이유: ${f.reason}`,
+        `요청 횟수: ${f.attempts}`, ...(f.tries || []), ...(f.detail || [])];
+}
+function autoFailHtml(st) {
+    const f = st?.autoFail;
+    if (!f) return '';
+    return `<details class="sp-err" data-group="hud-autofail" ${ui.savesOpen.get('hud-autofail') ? 'open' : ''}><summary>⚠ 체크포인트 실패 #${f.from}–#${f.to} · ${new Date(f.at).toLocaleTimeString()} — 자세히</summary><ul class="sp-scroll">${autoFailLines(f).map(l => `<li>${esc(l)}</li>`).join('')}<li class="sp-dim">해당 구간 원문은 그대로예요. 다음 체크포인트나 퀵세이브로 이 구간이 저장되면 이 기록이 사라져요.</li></ul></details>`;
+}
 function checkHtml(st) {
     const c = st?.check;
     if (!c || !settings().check) return '';
     const at = new Date(c.at).toLocaleTimeString();
     if (c.status === 'running') return '';
-    if (c.status === 'failed') return `<div class="sp-hud-meta"><span class="sp-warn">기록 확인 실패 (${esc(c.reason || '')}) · ${at}</span>${btn('check-rerun', '', '다시 확인')}</div>`;
+    if (c.status === 'failed') return `<div class="sp-hud-meta"><span class="sp-warn">저장 후 기록 확인 실패 (${esc(c.reason || '')}) · 기록은 저장됨 · ${at}</span>${btn('check-rerun', '', '다시 확인')}</div>`;
     const open = c.issues.filter(x => !x.ignored);
     if (!open.length) return `<div class="sp-hud-meta"><span class="sp-dim">기록 확인: 문제 없음 · ${at}</span></div>`;
     return `<details class="sp-checks" data-group="hud-checks" ${ui.savesOpen.get('hud-checks') ? 'open' : ''}><summary class="sp-warn">⚠ 확인 필요 ${open.length}건 · ${at}</summary><div class="sp-scroll">${open.map(x => `<div class="sp-check">
@@ -1539,7 +1602,7 @@ function injectHtml(st) {
         ${inj.omittedScenes ? `<div class="sp-warn">예산 때문에 제목도 넣지 못한 장면이 ${inj.omittedScenes}개 있어요.</div>` : ''}
         ${inj.pinOverflow ? `<div class="sp-warn">📌 고정 항목 ${inj.pinMissing}개가 주입 상한 안에 들어가지 못해 빠졌어요. 고정을 줄이거나 상한을 늘려 주세요.</div>` : ''}
         <div class="sp-aspect">회상한 장면과 이유</div>${rec}
-        ${(() => { const n = st.mem.scenes.filter(needsRekey).length; return n ? `<div class="sp-row" style="margin-top:8px">${btn('rekey-old', '', `⟳ 예전 기록 주입 포인트 고르기 (${n}장면)`, '예전 버전에서 기록한 장면은 포인트가 전부 주입돼요. 다시 정리하지 않고 주입할 포인트만 골라요')}</div>` : ''; })()}</div>
+        ${(() => { const n = st.mem.scenes.filter(needsRekey).length; return n ? `<div class="sp-row" style="margin-top:8px">${btn('rekey-old', '', `⟳ 예전 기록 주입 포인트 고르기 (${n}장면)`, '예전 버전에서 기록한 장면은 포인트가 전부 주입돼요. 다시 기록하지 않고 주입할 포인트만 골라요')}</div>` : ''; })()}</div>
         <pre class="sp-pre">${esc(inj.text)}</pre>
         <div class="sp-dim">마지막 메시지를 기준으로 계산했어요. 실제 생성 직전에 한 번 더 계산해요.</div>`;
 }
@@ -1563,6 +1626,7 @@ function hudHtml(st) {
         <div class="sp-bar" title="기록된 메시지 비율"><div class="sp-bar-fill" style="width:${pct}%"></div><span>기록 ${covered} / ${total}</span></div>
         <div class="sp-hud-meta"><span>미기록 <b>${pending}</b></span><span>주입 ${ui.inj ? ui.inj.tokens.toLocaleString() : 0} / ${num('budget', 300, 100000).toLocaleString()} 토큰</span><span>요약 AI: ${esc(profileLabel())}</span>${ui.inj?.pinOverflow ? `<span class="sp-warn">📌 ${ui.inj.pinMissing}개 주입 못 함</span>` : ''}</div>
         <div class="sp-hud-meta sp-auto-line">${autoLine}${autoLast}</div>
+        ${autoFailHtml(st)}
         ${checkHtml(st)}
         ${review}
         <div class="sp-row sp-actions">
@@ -1573,7 +1637,7 @@ function hudHtml(st) {
             ${busy ? btn('stop', '', '중지', '', 'sp-danger') : ''}
         </div>
         ${ui.lastFix ? `<div class="sp-hud-meta"><span class="sp-dim">자동 보정 ${esc(ui.lastFix.range)}: ${esc(ui.lastFix.text)} · ${new Date(ui.lastFix.at).toLocaleTimeString()}</span></div>` : ''}
-        ${(ui.lastError || (st?.check && st.check.status !== 'running')) && !busy ? `<div class="sp-row sp-copyrow">${btn('copy-report', '', '📋 결과 복사', '마지막 실패와 기록 확인 결과를 글로 복사해요 (캡처 대신)')}</div>` : ''}
+        ${(ui.lastError || st?.autoFail || (st?.check && st.check.status !== 'running')) && !busy ? `<div class="sp-row sp-copyrow">${btn('copy-report', '', '📋 결과 복사', '마지막 실패와 기록 확인 결과를 글로 복사해요 (캡처 대신)')}</div>` : ''}
         ${ui.copyText ? `<div class="sp-copybox"><textarea readonly rows="8">${esc(ui.copyText)}</textarea>${btn('copy-close', '', '닫기')}</div>` : ''}
         ${busy ? `<div class="sp-progress"><span class="sp-spin">◐</span> ${esc(ui.progress)}${ui.req ? ` · <span class="sp-req">${esc(reqText())}</span>` : ''}</div>` : ''}${err}
     </div>`;
@@ -1787,7 +1851,7 @@ function settingsHtml() {
             <label>깊이 <input type="number" data-set="depth" min="0" max="999"></label>
             <label>역할 <select data-set="role"><option value="0">시스템</option><option value="1">사용자</option><option value="2">어시스턴트</option></select></label>
             <hr>
-            <label class="checkbox_label"><input type="checkbox" data-set="hide"> 정리한 메시지 하이드</label>
+            <label class="checkbox_label"><input type="checkbox" data-set="hide"> 세이브한 메시지 하이드</label>
             <label>하이드하지 않을 최근 메시지 <input type="number" data-set="keepRecent" min="0" max="200"></label>
             <label>오토세이브를 보관할 방 수 (방마다 최근 3개) <input type="number" data-set="autoKeep" min="1" max="500"></label>
             <label>테마 <select data-set="theme">${Object.entries(THEMES).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
