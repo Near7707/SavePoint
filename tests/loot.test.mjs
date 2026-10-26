@@ -296,6 +296,18 @@ test('an excerpt picked from an on-screen translation is queued, marked, flagged
     h.context.chat[0].extra.display_text = '참가자는 작은 토큰을 버렸다.';
     assert.match(h.app.queueHtml(h.app.state()), /번역문이 바뀜/);
     assert.doesNotMatch(loot.lootBlock([h.app.state().lootQueue[1]]), /excerpt_is_translation/);
+    // A changed translation only warns: the unchanged original is still summarized with the excerpt.
+    await h.app.summarize();
+    assert(h.calls[0].includes(item.id), 'the item still goes into the save request');
+});
+
+test('excerpts copied from the screen match translations with line breaks and HTML entities', async () => {
+    const h = harness({ messages: ['A participant said "keep it" and left.'] });
+    h.context.chat[0].extra.display_text = '참가자는 &quot;간직해&quot;라고 말했다.<br>그리고 떠났다.';
+    await h.app.addLoot(0, '"간직해"라고 말했다. 그리고 떠났다', '');
+    assert.equal(h.app.state().lootQueue[0].view, true);
+    await h.app.addLoot(0, 'said "keep it" and left');
+    assert.equal(h.app.state().lootQueue[1].view, undefined);
 });
 
 test('an oversized historical source does not prevent a separate small selection being saved', async () => {

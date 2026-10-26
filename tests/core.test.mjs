@@ -475,7 +475,7 @@ test('retry note asks to reread the cited message instead of swapping fields', a
 });
 
 // ───── v0.2.4: stored vs injected points ─────
-import { sceneFull, pointInjected, openPoints, validateRekey, applyRekey, rekeyItems } from '../core.js';
+import { foldLegacyOutline, sceneFull, pointInjected, openPoints, validateRekey, applyRekey, rekeyItems } from '../core.js';
 
 test('only key points are injected, also for the open scene; all false means outline only', () => {
     const { mem } = applyResult(emptyMem(), lanternResult(), chunkOf(0, 5));
@@ -642,3 +642,21 @@ test('recall takes matching units within a hard share and never repeats injected
     assert.doesNotMatch(rec, /drew sketches at the stall/, 'already injected');
 });
 
+
+test('an early scene-wide outline is folded into the first part so it stays in the injection', () => {
+    const { mem } = applyResult(emptyMem(), lanternResult(), chunkOf(0, 5));
+    const old = JSON.parse(JSON.stringify(mem));
+    old.scenes[0].legacyOutline = 'Old scene-wide outline about the card game.';
+    old.scenes[0].koOutline = '옛 번역';
+    const cleaned = cleanMem(old);
+    assert.match(cleaned.scenes[0].segs[0].outline, /^Old scene-wide outline about the card game\. /);
+    assert.equal(cleaned.scenes[0].legacyOutline, undefined);
+    assert.match(sceneFull(cleaned.scenes[0]), /Old scene-wide outline/);
+    const bare = JSON.parse(JSON.stringify(mem));
+    bare.scenes[0].outline = 'Bare outline from the first release.';
+    for (const g of bare.scenes[0].segs) delete g.outline;
+    const live = JSON.parse(JSON.stringify(bare));
+    assert.equal(foldLegacyOutline(live), true);
+    assert.equal(live.scenes[0].segs[0].outline, 'Bare outline from the first release.');
+    assert.equal(foldLegacyOutline(live), false, 'folds once');
+});

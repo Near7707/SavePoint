@@ -111,6 +111,22 @@ export function chunkMessages(messages, limit) {
 // key = the AI's choice, keyUser = the user's own choice (always wins). Old points without
 // either are injected as before.
 export const pointId = (g, j) => `${g.id}.${j}`;
+// Scenes from early releases kept one scene-wide outline (legacyOutline, or a bare outline with no
+// part outlines). Fold it into the first part's outline so its content stays in the injection.
+export function foldLegacyOutline(mem) {
+    let changed = false;
+    for (const s of mem?.scenes || []) {
+        const first = s.segs?.[0];
+        const legacy = typeof s.legacyOutline === 'string' && s.legacyOutline.trim() ? s.legacyOutline.trim()
+            : typeof s.outline === 'string' && s.outline.trim() && !(s.segs || []).some(g => g.outline) ? s.outline.trim() : '';
+        if (legacy && first) {
+            first.outline = [legacy, first.outline].filter(Boolean).join(' ');
+            delete first.koOutline;
+        }
+        if ('legacyOutline' in s || 'outline' in s || 'koOutline' in s) { delete s.legacyOutline; delete s.outline; delete s.koOutline; changed = true; }
+    }
+    return changed;
+}
 // A scene's outline is the outlines of its parts in order; nothing written earlier is rewritten.
 export const sceneOutlineParts = s => s.segs.map(g => g.outline).filter(Boolean);
 export const sceneOutlineText = s => sceneOutlineParts(s).join(' ') || s.title;
@@ -1043,6 +1059,7 @@ export function cleanMem(raw) {
                     notes: str(g.notes), ...(str(g.koNotes) ? { koNotes: g.koNotes } : {}), ...(str(g.koOutline) ? { koOutline: g.koOutline } : {}) };
             }) };
         if (str(s.koTitle)) scene.koTitle = s.koTitle;
+        foldLegacyOutline({ scenes: [Object.assign(scene, { legacyOutline: s.legacyOutline, outline: s.outline })] });
         if (s.external) scene.external = true;
         out.scenes.push(scene);
     }

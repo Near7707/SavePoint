@@ -276,7 +276,7 @@ test('opening existing chat metadata migrates old evidence once and schedules pe
     const meta = { savePoint: { v: 1, mem: legacyMixed() } };
     let saves = 0;
     const state = vm.runInNewContext(section('function state() {', '\nfunction freshState') + ';state', {
-        MODULE: 'savePoint', ctx: () => ({ chatMetadata: meta }), upgradeEvidence: provenance.upgradeEvidence, persistSoon: () => saves++,
+        MODULE: 'savePoint', ctx: () => ({ chatMetadata: meta }), upgradeEvidence: provenance.upgradeEvidence, foldLegacyOutline: core.foldLegacyOutline, persistSoon: () => saves++,
     });
     assert.equal(state().mem.records[0].msgs.length, 0);
     assert.equal(state().mem.records[0].terms.source.room, null);
@@ -319,4 +319,24 @@ test('continue and route-copy into a different chat start at #0 while keeping th
         assert.deepEqual(st.mem.records[0].msgs, []);
         assert.equal(st.linkedSave, mode === 'continue' ? 'slot' : null);
     }
+});
+
+test('a current-room contradiction must quote a line that was sent; an invented quote becomes a deferred judgement', async () => {
+    const h = reviewHarness(updateInNextRoom(original()));
+    h.box.llm = async () => JSON.stringify({ issues: [{ about: 'r1', kind: 'misread', basis: 'contradicted', problem: 'The original says it was burned.', conflict: ['A statement.', 'Participant burned the borrowed token.'], msgs: [0] }] });
+    await h.runCheck(h.st, { records: ['r1'], segs: ['g2'] });
+    assert(!h.st.check.issues.some(i => i.kind === 'misread'));
+    assert(h.st.check.issues.some(i => i.kind === 'partial' && i.was === 'misread' && i.gaps.some(g => g.label === '인용 확인 실패')));
+    h.box.llm = async () => JSON.stringify({ issues: [{ about: 'r1', kind: 'misread', basis: 'contradicted', problem: 'Real quote.', conflict: ['A statement.', 'Participant returned the borrowed token.'], msgs: [0] }] });
+    await h.runCheck(h.st, { records: ['r1'], segs: ['g2'] });
+    assert(h.st.check.issues.some(i => i.kind === 'misread'));
+});
+
+test('the record check tells the reviewer which selected excerpts are on-screen translations', () => {
+    const mem = updateInNextRoom(original());
+    const g = mem.scenes[0].segs.at(-1);
+    g.points[0].loot = [{ id: 'l1', room: 'r', msg: 0, quote: '참가자가 토큰을 돌려주었다', view: true, viewHash: 'v' }, { id: 'l2', room: 'r', msg: 0, quote: 'returned the borrowed token' }];
+    const h = reviewHarness(mem);
+    const text = JSON.stringify(h.checkStatements(h.st, { records: [], segs: [g.id] }));
+    assert(text.includes('on_screen_translation') && text.includes('original_excerpt') && text.includes('never its wording'));
 });

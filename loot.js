@@ -14,13 +14,17 @@ export function cleanLootSources(value) {
 export function lootSource(item) {
     return cleanLootSources([{ ...item, quote: item.text }])[0];
 }
-// An excerpt picked from an on-screen translation (view) also goes stale when that translation changes.
-export function lootStatus(item, room, messages, fingerprint, viewHash) {
+// Reasons an item cannot be used now. A changed on-screen translation is not one of them: the
+// save reads the unchanged original and only uses the stored translation as a pointer (lootWarning).
+export function lootStatus(item, room, messages, fingerprint) {
     if (item.room !== room) return '출처가 다른 방이에요';
     if (!item.hash) return '원문 확인 필요';
     const m = messages[item.msg];
-    if (!m || fingerprint(m) !== item.hash) return '원문이 바뀜';
-    return item.view && viewHash && viewHash(m) !== item.viewHash ? '번역문이 바뀜' : '';
+    return !m || fingerprint(m) !== item.hash ? '원문이 바뀜' : '';
+}
+export function lootWarning(item, messages, viewHash) {
+    const m = messages[item.msg];
+    return item.view && m && viewHash && viewHash(m) !== item.viewHash ? '번역문이 바뀜 · 원문은 그대로라 저장해 둔 구절로 반영해요' : '';
 }
 export function lootInChunk(items, indices) {
     const included = new Set(indices);
