@@ -16,13 +16,14 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.3.6';
+const VERSION = '0.3.7';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
 
 const DEFAULTS = {
     enabled: true, check: true, auto: true, autoEvery: 20, profileId: '', responseLength: 8000, inputChars: 60000, timeoutSec: 300,
+    requestStream: true, reasoningEffort: '',
     budget: 6000, titleCap: 600, recentScenes: 3, recall: true, rawRecall: false,
     hide: true, keepRecent: 10, position: 1, depth: 4, role: 0,
     theme: 'jrpg', showKo: false, autoKeep: 30, guide: DEFAULT_GUIDE, slotCache: [], localSaves: {},
@@ -375,8 +376,8 @@ function cancelRun() {
     try { ui.run.ctrl?.abort(); } catch { /* ignore */ }
     for (const f of ui.run.onCancel || []) { try { f(); } catch { /* ignore */ } }
 }
-// One request. What the extension can know is only: waiting for a reply, reply received, or
-// asking again. Whether the model is still thinking or the server is stalled cannot be told apart.
+// A profile can stream cumulative answer text and reasoning separately. Keep only lengths
+// in diagnostics; reasoning and partial JSON never enter memory or hiding decisions.
 // A request that passes the time limit is abandoned: its signal is aborted and, if a reply still
 // arrives later, nobody is waiting for it any more, so it can neither be saved nor touch the
 // progress line of a newer task.
@@ -386,36 +387,78 @@ function reqText() {
     const r = ui.req;
     if (!r) return '';
     const step = (r.attempt ? `재요청${r.why ? ` (${r.why})` : ''}` : '첫 요청') + ` · 입력 ${r.chars.toLocaleString()}자`;
-    return r.phase === 'got' ? `${step} · 응답 받음 (${fmtSec(r.ms)}) · 검사 중` : `${step} · 응답 대기 ${fmtSec(Date.now() - r.start)}`;
+    if (r.phase === 'got') return `${step} · 응답 받음 (${fmtSec(r.ms)}) · 검사 중`;
+    const elapsed = fmtSec(Date.now() - r.start);
+    if (r.phase === 'stream') return `${step} · 수신 중 ${elapsed} · 사고 ${(r.reasoningChars || 0).toLocaleString()}자 / 본문 ${(r.textChars || 0).toLocaleString()}자`;
+    return `${step} · 응답 대기 ${elapsed}`;
 }
 function tickReq() {
     clearInterval(reqTicker);
     reqTicker = setInterval(() => {
-        if (!ui.req || ui.req.phase !== 'wait') { clearInterval(reqTicker); reqTicker = null; return; }
+        if (!ui.req || !['wait', 'stream'].includes(ui.req.phase)) { clearInterval(reqTicker); reqTicker = null; return; }
         $('#sp_overlay .sp-req').text(reqText());
+        if (ui.progress === '짧은 연결 시험') $('#sp_probe_result').text(reqText());
     }, 1000);
 }
-async function llm(prompt, run, { attempt = 0, why = '' } = {}) {
-    const s = settings(), c = ctx(), max = num('responseLength', 500, 64000);
+async function readModelReply(reply, progress, active) {
+    if (typeof reply === 'function') reply = await reply();
+    let text = '', reasoningChars = 0, finishReason = null;
+    const take = value => {
+        if (!active()) throw new Cancelled('중지했어요.');
+        const msg = value?.choices?.[0]?.message;
+        const body = typeof value === 'string' ? value : value?.text ?? value?.content ?? msg?.content;
+        if (typeof body === 'string') text = body;
+        const thought = value?.state?.reasoning ?? value?.reasoning ?? msg?.reasoning_content;
+        reasoningChars = typeof thought === 'string' ? thought.length : reasoningChars;
+        finishReason = value?.finish_reason ?? value?.choices?.[0]?.finish_reason ?? finishReason;
+        progress({ textChars: text.length, reasoningChars, finishReason });
+    };
+    if (reply && typeof reply[Symbol.asyncIterator] === 'function') {
+        for await (const chunk of reply) take(chunk);
+    } else take(reply);
+    return { text, reasoningChars, finishReason };
+}
+async function llm(prompt, run, { attempt = 0, why = '', responseLength, timeoutSeconds } = {}) {
+    const s = settings(), c = ctx(), max = responseLength ?? num('responseLength', 500, 64000);
     assertPromptFits(prompt, num('inputChars', 5000, 1000000));
-    const limit = num('timeoutSec', 5, 3600) * 1000;
+    const limit = (timeoutSeconds ?? num('timeoutSec', 5, 3600)) * 1000;
     const id = ++reqSeq;
+    const profileId = s.profileId;
+    const stream = !!profileId && !!s.requestStream;
+    const effort = ['low', 'high', 'max'].includes(s.reasoningEffort) ? s.reasoningEffort : '';
+    const start = Date.now();
+    let accepting = true;
+    const stats = { at: start, task: ui.progress || '요청', profile: profileLabel(), stream: false,
+        effort: profileId ? effort || '프로필 설정' : '메인 API 설정', chars: prompt.length,
+        maxTokens: max, textChars: 0, reasoningChars: 0, firstDataMs: null, finishReason: null };
     const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
-    if (run?.ctrl?.signal?.aborted) ctrl?.abort(); else run?.ctrl?.signal?.addEventListener?.('abort', () => ctrl?.abort());
+    const onRunAbort = () => ctrl?.abort();
+    if (run?.ctrl?.signal?.aborted) ctrl?.abort(); else run?.ctrl?.signal?.addEventListener?.('abort', onRunAbort);
+    const active = () => accepting && !run?.cancelled && !ctrl?.signal?.aborted;
+    const progress = part => {
+        if (!active() || (run && ui.req?.id !== id)) return;
+        Object.assign(stats, part);
+        if (stats.firstDataMs === null && (stats.textChars || stats.reasoningChars)) stats.firstDataMs = Date.now() - start;
+        if (run && stats.stream) ui.req = { ...ui.req, ...part, phase: 'stream' };
+    };
     const send = async () => {
-        if (s.profileId) {
+        let res;
+        if (profileId) {
             const svc = c.ConnectionManagerRequestService;
             if (!svc?.sendRequest) throw new Error('이 실리태번 버전에서는 연결 프로필로 요청할 수 없어요. 설정에서 요약 AI를 메인 API로 바꿔 주세요.');
-            const p = profiles().find(x => x.id === s.profileId);
+            const p = profiles().find(x => x.id === profileId);
             if (!p) throw new Error('선택한 연결 프로필을 찾을 수 없어요. 설정에서 요약 AI를 다시 골라 주세요.');
+            stats.model = p.model || '';
             const payload = p.mode === 'tc' ? prompt : [{ role: 'user', content: prompt }];
-            const res = await svc.sendRequest(p.id, payload, max,
-                { stream: false, signal: ctrl?.signal ?? null, extractData: true, includePreset: true, includeInstruct: true });
-            return typeof res === 'string' ? res : String(res?.content ?? '');
-        }
-        return String(await c.generateRaw({ prompt, responseLength: max }) ?? '');
+            if (p.mode === 'tc') stats.effort = '프로필 설정 (텍스트 완성)';
+            const overrides = effort && p.mode !== 'tc' ? { reasoning_effort: effort } : {};
+            res = await svc.sendRequest(p.id, payload, max,
+                { stream, signal: ctrl?.signal ?? null, extractData: true, includePreset: true, includeInstruct: true }, overrides);
+        } else res = await c.generateRaw({ prompt, responseLength: max });
+        stats.stream = typeof res === 'function' || !!res?.[Symbol.asyncIterator];
+        const result = await readModelReply(res, progress, active);
+        return result.text;
     };
-    const start = Date.now();
     if (run) { ui.req = { id, attempt, why, start, phase: 'wait', chars: prompt.length }; render(); tickReq(); }
     let timer, onCancel;
     const request = send();
@@ -424,14 +467,42 @@ async function llm(prompt, run, { attempt = 0, why = '' } = {}) {
     const cancelP = new Promise((_, reject) => { onCancel = () => reject(new Cancelled('중지했어요.')); if (run) (run.onCancel ||= []).push(onCancel); });
     try {
         const raw = await Promise.race([request, limitP, cancelP]);
+        stats.status = 'received';
         if (run && ui.req?.id === id) { ui.req = { ...ui.req, phase: 'got', ms: Date.now() - start }; render(); }
         return raw;
     } catch (e) {
+        stats.status = e instanceof RequestTimeout ? 'timeout' : run?.cancelled || e instanceof Cancelled ? 'cancelled' : 'error';
         if (e instanceof RequestTimeout) { try { ctrl?.abort(); } catch { /* ignore */ } }
         throw e;
     } finally {
+        accepting = false;
+        stats.ms = Date.now() - start;
+        if (!run || ui.req?.id === id) ui.lastRequest = { ...stats };
         clearTimeout(timer);
+        run?.ctrl?.signal?.removeEventListener?.('abort', onRunAbort);
         if (run?.onCancel) run.onCancel = run.onCancel.filter(f => f !== onCancel);
+    }
+}
+async function testConnection() {
+    if (ui.run) { toastr.info('진행 중인 요청이 끝난 뒤 시험해 주세요.'); return; }
+    if (!settings().profileId && mainBusy()) { toastr.info('본편 생성이 끝난 뒤 시험해 주세요.'); return; }
+    const run = newRun(state(), -1);
+    ui.progress = '짧은 연결 시험';
+    $('#sp_probe_result').text('짧은 연결 시험 · 응답 대기 중…');
+    try {
+        const raw = await llm('Reply with only this JSON object: {"ok":true}', run, { responseLength: 1024, timeoutSeconds: Math.min(60, num('timeoutSec', 5, 3600)) });
+        if (run.cancelled) throw new Cancelled('중지했어요.');
+        if (!raw.trim()) throw new Error(`응답은 왔지만 본문이 비어 있어요 (사고 ${ui.lastRequest?.reasoningChars || 0}자).`);
+        ui.probeResult = `짧은 요청 응답: ${fmtSec(ui.lastRequest.ms)} · 본문 ${raw.length.toLocaleString()}자 / 사고 ${ui.lastRequest.reasoningChars.toLocaleString()}자. 긴 대화의 수집 성공 여부는 별도로 확인해야 해요.`;
+        ui.lastError = null;
+        toastr.success(ui.probeResult);
+    } catch (e) {
+        ui.probeResult = `짧은 연결 시험: ${errorText(e)}`;
+        ui.lastError = { at: Date.now(), range: '짧은 연결 시험', detail: [ui.probeResult] };
+        toastr.warning(ui.probeResult);
+    } finally {
+        endRun(run);
+        $('#sp_probe_result').text(ui.probeResult || '');
     }
 }
 // The full error text: SillyTavern wraps the real error as "API request failed" with the
@@ -512,8 +583,9 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
         catch (e) {
             if (run.cancelled || e instanceof Cancelled) throw new Cancelled('중지했어요.');
             if (e instanceof RequestTimeout) {
-                tries.push(`${fmtSec(Date.now() - start)} · 응답 없음 → 제한 시간 초과로 취소`);
-                throw fail(`${e.message} 이 구간(#${chunk.from}–#${chunk.to})은 취소했고 저장하지 않았어요.`, ['늦게 도착하는 응답은 버려요. 띵킹 모델이면 설정의 "요청 제한 시간"을 늘려 볼 수 있어요.']);
+                const r = ui.lastRequest;
+                tries.push(`${fmtSec(Date.now() - start)} · 제한 시간 초과로 취소${r ? ` · 수신 본문 ${r.textChars}자 / 사고 ${r.reasoningChars}자` : ''}`);
+                throw fail(`${e.message} 이 구간(#${chunk.from}–#${chunk.to})은 취소했고 저장하지 않았어요.`, ['부분 응답과 늦게 도착하는 응답은 저장하지 않아요. 결과 복사의 마지막 요청에서 수신 여부를 확인할 수 있어요.']);
             }
             tries.push(`${fmtSec(Date.now() - start)} · 요청 오류: ${errorText(e)}`);
             throw fail(`요약 AI 요청이 실패했어요 (#${chunk.from}–#${chunk.to}): ${errorText(e)}`, []);
@@ -922,6 +994,10 @@ function statementText(mem, id) {
 }
 function reportText(st) {
     const out = [`SavePoint v${VERSION} · 요약 AI: ${profileLabel()}`];
+    const r = ui.lastRequest;
+    if (r) out.push('', `[마지막 요청] ${r.task} · ${r.profile}${r.model ? ' · ' + r.model : ''} · ${r.status} · ${fmtSec(r.ms)}`,
+        `입력 ${r.chars}자 · 응답 상한 ${r.maxTokens}토큰 · ${r.stream ? '실시간 수신' : '일괄 응답'} · 추론 요청: ${r.effort}`,
+        `수신 본문 ${r.textChars}자 / 사고 ${r.reasoningChars}자 · 첫 내용 수신 ${r.firstDataMs === null ? '없음' : fmtSec(r.firstDataMs)} · 종료 사유 ${r.finishReason || 'API에서 제공하지 않음'}`);
     if (hasChat()) out.push(`방: ${names().char || ''} · 기록 ${st ? st.lastIndex + 1 : 0} / ${chat().length}`);
     if (ui.lastFix) out.push('', `[자동 보정] ${ui.lastFix.range} · ${ui.lastFix.text}`);
     if (st?.autoFail) out.push('', '[체크포인트 실패 · 수집]', ...autoFailLines(st.autoFail).map(l => `- ${l}`));
@@ -1804,6 +1880,7 @@ async function handle(act, id) {
         case 'stop': cancelRun(); return;
         case 'undo': return undo();
         case 'translate': return translate();
+        case 'test-connection': return testConnection();
         case 'review-accept': return acceptCurrentSource();
         case 'edit-cancel': ui.edit = null; return render(true);
         case 'edit-save': return saveEdit();
@@ -1872,6 +1949,10 @@ function settingsHtml() {
             <div class="sp-set-row"><button class="menu_button" id="sp_open">SavePoint 열기</button></div>
             <label class="checkbox_label"><input type="checkbox" data-set="enabled"> 사용 (기억 주입·하이드)</label>
             <label>요약 AI <select data-set="profileId" id="sp_profiles"></select></label>
+            <label class="checkbox_label"><input type="checkbox" data-set="requestStream"> 연결 프로필 응답을 실시간으로 받기</label>
+            <label>추론 강도 (채팅 완성 연결 프로필) <select data-set="reasoningEffort"><option value="">프로필 설정 따르기</option><option value="low">낮음 (low)</option><option value="high">높음 (high)</option><option value="max">최대 (max)</option></select></label>
+            <div class="sp-set-note">실시간 수신은 사고·본문의 수신량만 표시해요. 기억은 응답과 검사가 끝난 뒤 저장해요. 추론 강도는 API가 지원할 때 적용되며, 메인 API 설정은 바꾸지 않아요.</div>
+            <div class="sp-set-row"><button class="menu_button" id="sp_test_connection">짧은 연결 시험</button></div><div class="sp-set-note" id="sp_probe_result">대화 원문을 보내거나 기억을 바꾸지 않고 짧은 요청으로 연결을 시험해요 (API 호출 1회, 최대 60초).</div>
             <label class="checkbox_label"><input type="checkbox" data-set="check"> 기록 후 확인 (모순·원문과 다른 해석을 찾아 경고 · 분량에 따라 추가 요청)</label>
             <label class="checkbox_label"><input type="checkbox" data-set="auto"> 체크포인트 (끝난 장면을 자동 기록)</label>
             <label>체크포인트 간격 (새 메시지 수, 유저+캐릭터) <input type="number" data-set="autoEvery" min="5" max="500"></label>
@@ -1928,6 +2009,7 @@ function addSettingsUI() {
         refreshInjection(); render(true);
     });
     $('#sp_open').on('click', openWindow);
+    $('#sp_test_connection').on('click', () => testConnection().catch(reportError));
     $('#sp_guide_reset').on('click', () => { settings().guide = DEFAULT_GUIDE; saveSettings(); fillSettings(); });
 }
 
@@ -1997,6 +2079,7 @@ jQuery(() => {
 
 // Exposed for regression checks only.
 globalThis.__savePoint = { state, settings, summarize, listSaves, vault, migrateLocal, autoCollect, autoBlocked, autoCount, scheduleAuto, undo, loadSave, reconcile, syncHide, refreshInjection, handle, ui, render, estTokens, recordLine, reportText };
+
 
 
 
