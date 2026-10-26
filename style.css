@@ -258,30 +258,33 @@
     line-height: 1; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; transition: background .2s;
 }
 #sp_loot_bar:hover, #sp_loot_bar:focus-visible { background: #8884; background: color-mix(in srgb, var(--SmartThemeBodyColor, #888) 24%, transparent); }
-#sp_loot_dialog .sp-loot-part { display: flex; flex-direction: column; gap: 6px; padding: 8px 0; border-top: 1px solid var(--SmartThemeBorderColor, #7775); }
-#sp_loot_dialog .sp-loot-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+/* The looting dialog wears the status window's theme (.sp-window + data-theme); only its size and layout differ. */
+#sp_loot_dialog.sp-window {
+    position: fixed; inset: 0; margin: auto; display: block;
+    width: min(560px, calc(100vw - 24px)); max-width: calc(100vw - 24px); min-width: 0;
+    height: fit-content; max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px);
+    overflow: auto; overscroll-behavior: contain; padding: 14px 16px 16px;
+}
+.sp-loot-dialog::backdrop { background: rgba(4, 6, 18, .62); }
+#sp_loot_dialog form { display: flex; flex-direction: column; gap: 10px; margin: 0; min-width: 0; }
+#sp_loot_dialog .sp-loot-title { font-family: var(--sp-head); font-size: 16px; font-weight: 700; letter-spacing: .04em; }
+#sp_loot_dialog .sp-loot-tabs { padding: 0; margin: 0 -2px; }
+#sp_loot_dialog .sp-loot-body { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+#sp_loot_dialog p { margin: 0; }
+#sp_loot_dialog .sp-loot-part { display: flex; flex-direction: column; gap: 6px; padding: 10px; border: 1px solid var(--sp-line); border-radius: 8px; background: var(--sp-panel); }
+#sp_loot_dialog .sp-loot-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-family: var(--sp-head); }
 #sp_loot_dialog .sp-loot-nav { display: inline-flex; gap: 6px; }
-#sp_loot_dialog .sp-loot-nav button.menu_button { min-height: 32px; padding: 4px 10px; }
-#sp_loot_dialog {
-    box-sizing: border-box; width: min(560px, calc(100vw - 24px)); min-width: 0; max-width: calc(100vw - 24px);
-    height: fit-content; max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); margin: auto; inset: 0;
-    overflow: auto; overscroll-behavior: contain; border-radius: 10px; border: 1px solid var(--SmartThemeBorderColor, #777);
-    background: var(--SmartThemeBlurTintColor, #242424); color: var(--SmartThemeBodyColor, #eee); padding: 16px; font: inherit;
+#sp_loot_dialog label { display: flex; flex-direction: column; gap: 6px; margin: 0; color: var(--sp-dim); font-size: 13px; }
+#sp_loot_dialog textarea, #sp_loot_dialog input {
+    box-sizing: border-box; width: 100%; min-width: 0; margin: 0; font: inherit; font-size: max(16px, 1em);
+    color: var(--sp-fg); background: var(--sp-panel2); border: 1px solid var(--sp-line); border-radius: 6px; padding: 8px 10px;
 }
-.sp-loot-dialog::backdrop { background: #0009; }
-#sp_loot_dialog form, #sp_loot_dialog label { display: flex; flex-direction: column; gap: 8px; min-width: 0; text-align: left; margin: 0; }
-#sp_loot_dialog h3, #sp_loot_dialog p { margin: 0 0 4px; }
-#sp_loot_dialog textarea, #sp_loot_dialog input { box-sizing: border-box; width: 100%; min-width: 0; margin: 0; font: inherit; font-size: max(16px, 1em); }
 #sp_loot_dialog textarea { height: auto; min-height: 3.4em; max-height: 45vh; max-height: 40dvh; resize: vertical; line-height: 1.5; }
-/* SillyTavern's .menu_button defaults to min-content, which stacks Korean labels. */
-#sp_loot_dialog button.menu_button {
-    box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; align-self: flex-start;
-    flex: 0 0 auto; width: auto; min-width: max-content; max-width: 100%; height: auto; min-height: 36px;
-    margin: 0; padding: 8px 12px; font: inherit; line-height: 1.25; white-space: nowrap; word-break: keep-all;
-    overflow-wrap: normal; writing-mode: horizontal-tb;
-}
-#sp_loot_dialog .sp-loot-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; width: 100%; margin-top: 4px; }
-#sp_loot_dialog .sp-loot-error { color: #ffb1a7; margin: 0; }
+#sp_loot_dialog textarea:focus, #sp_loot_dialog input:focus { outline: none; border-color: var(--sp-accent); }
+#sp_loot_dialog .sp-loot-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+#sp_loot_dialog .sp-loot-actions .sp-btn { padding: 8px 14px; font-size: 14px; }
+#sp_loot_dialog .sp-loot-error { color: var(--sp-danger); }
+#sp_loot_dialog .sp-loot-error:empty { display: none; }
 .sp-notes summary { cursor: pointer; display: flex; align-items: center; gap: 6px; font-family: var(--sp-head); font-size: 10px; color: var(--sp-dim); }
 .sp-savegroup { margin-bottom: 10px; }
 .sp-savegroup > summary { cursor: pointer; list-style: none; padding: 4px 0; }
@@ -407,3 +410,4 @@
 .sp-window[data-theme="pastel"] .sp-f select option { background: #fff; }
 
 
+#sp_loot_dialog.sp-window:not([open]) { display: none; }

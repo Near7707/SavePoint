@@ -74,6 +74,15 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r = await ev(() => ({ head: document.querySelector('#sp_loot_dialog .sp-loot-head b')?.textContent, text: document.querySelector('#sp_loot_dialog textarea').value, nav: !!document.querySelector('#sp_loot_dialog .sp-loot-prev') }));
     ok(r.head === '#2' && r.text === '작은 놋쇠 열쇠를 건넸다' && !r.nav, '3. 드래그한 구절이 있으면 그 메시지·구절로 열림');
     if (SHOTS) await page.screenshot({ path: path.join(OUT, 'loot-selection.png') });
+    r = await ev(() => [...document.querySelectorAll('#sp_loot_dialog .sp-tab')].map(t => [t.textContent.trim(), t.classList.contains('sp-active')]));
+    ok(r.length === 2 && r[0][1] && !r[1][1], '3. 드래그 루팅이면 [선택한 구절 | 원문 전체] 탭, 선택 탭이 먼저');
+    await page.click('#sp_loot_dialog .sp-tab[data-tab="full"]');
+    r = await ev(() => ({ head: document.querySelector('#sp_loot_dialog .sp-loot-head b').textContent, text: document.querySelector('#sp_loot_dialog textarea').value, nav: !!document.querySelector('#sp_loot_dialog .sp-loot-prev') }));
+    ok(r.head === '#2' && r.text.startsWith('The guide') && r.nav, '3. 원문 전체 탭은 선택한 메시지의 원문 전체 (◀ ▶ 있음)');
+    if (SHOTS) await page.screenshot({ path: path.join(OUT, 'loot-full-tab.png') });
+    await page.click('#sp_loot_dialog .sp-tab[data-tab="sel"]');
+    r = await ev(() => document.querySelector('#sp_loot_dialog textarea').value);
+    ok(r === '작은 놋쇠 열쇠를 건넸다', '3. 선택 탭으로 돌아오면 구절 그대로');
     await ev(() => { document.querySelector('#sp_loot_dialog [name=note]').value = 'key matters'; });
     await page.click('#sp_loot_dialog [type=submit]');
     await sleep(100);
@@ -105,6 +114,27 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r = await ev(() => document.querySelector('#sp_loot_dialog .sp-loot-head b').textContent);
     ok(r === '#4' && await ev(() => !!document.querySelector('#sp_loot_dialog .sp-loot-prev')), '5. 오래전에 푼 선택은 쓰지 않음 (전체 보기)');
     await page.click('#sp_loot_dialog .sp-loot-cancel');
+
+    // 5b. submitting from the whole-reply tab queues the whole reply
+    await selectIn(4, 'rain kept falling');
+    await page.click('#sp_loot_bar');
+    await page.click('#sp_loot_dialog .sp-tab[data-tab="full"]');
+    await page.click('#sp_loot_dialog [type=submit]');
+    await sleep(100);
+    r = await ev(() => __savePoint.state().lootQueue.at(-1));
+    ok(r.msg === 4 && r.text.startsWith('The lantern flickered') && !r.view, '5b. 원문 전체 탭에서 담으면 전체 원문으로 담김');
+
+    // 5c. the dialog wears the status window's theme
+    for (const t of ['jrpg', 'parchment', 'st']) {
+        await ev(t => { M.settings.savePoint.theme = t; }, t);
+        await selectIn(2, '작은 놋쇠 열쇠를 건넸다');
+        await page.click('#sp_loot_bar');
+        r = await ev(() => { const d = document.getElementById('sp_loot_dialog'); return { theme: d.getAttribute('data-theme'), win: d.classList.contains('sp-window'), bg: getComputedStyle(d).backgroundImage + getComputedStyle(d).backgroundColor }; });
+        ok(r.theme === t && r.win, `5c. 루팅 창이 상태창 테마를 따름 (${t})`);
+        if (SHOTS) await page.screenshot({ path: path.join(OUT, `loot-theme-${t}.png`) });
+        await page.click('#sp_loot_dialog .sp-loot-cancel');
+    }
+    await ev(() => { M.settings.savePoint.theme = 'jrpg'; });
 
     // 6. a selection only in a user message is not taken
     await selectIn(1, 'from Me');

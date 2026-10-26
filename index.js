@@ -1679,45 +1679,59 @@ function nearLootable(from, step) {
     for (let i = from; i >= 0 && i < chat().length; i += step) if (lootable(chat()[i])) return i;
     return -1;
 }
-// parts: [{ index, text }] from a selection; without them the dialog shows the latest AI reply in
-// full and can step to earlier ones. Each part becomes its own queue item.
+// parts: [{ index, text }] from a selection. With a selection the dialog has two tabs: the selected
+// passages (one item per message) and the whole reply, starting at the selected message. Without one
+// it opens on the whole latest AI reply. ◀ ▶ step through AI replies. The dialog wears the status
+// window's theme. Submitting takes what the open tab shows.
 function openLootDialog(parts = null) {
     if (ui.run || mainBusy()) { toastr.info('진행 중인 생성이나 기록이 끝난 뒤 루팅해 주세요.'); return; }
     if (!hasChat()) { toastr.warning('채팅방을 먼저 열어 주세요.'); return; }
     if (typeof parts === 'number') parts = [{ index: parts, text: '' }];
-    const picked = Array.isArray(parts) && parts.length;
-    const blocks = (picked ? parts : [{ index: nearLootable(chat().length - 1, -1), text: '' }]).filter(p => lootable(chat()[p.index]));
-    if (!blocks.length) { toastr.info(picked ? '선택한 구절이 AI 답변에 없어요. AI 답변에서 골라 주세요.' : '담을 AI 답변이 없어요.'); return; }
+    const picked = (Array.isArray(parts) ? parts : []).filter(p => lootable(chat()[p.index]) && String(p.text || '').trim());
+    if (Array.isArray(parts) && parts.length && !picked.length) { toastr.info('선택한 구절이 AI 답변에 없어요. AI 답변에서 골라 주세요.'); return; }
+    const start = picked.length ? picked[0].index : nearLootable(chat().length - 1, -1);
+    if (start < 0) { toastr.info('담을 AI 답변이 없어요.'); return; }
     document.querySelector('#sp_loot_dialog')?.remove();
-    const dialog = document.createElement('dialog');
-    dialog.id = 'sp_loot_dialog'; dialog.className = 'sp-loot-dialog';
     const source = i => ({ room: roomKey(), hash: fingerprint(chat()[i]) });
-    const slots = blocks.map(b => ({ index: b.index, text: b.text || cleanText(chat()[b.index].mes), source: source(b.index) }));
-    const blockHtml = (b, k) => `<div class="sp-loot-part" data-k="${k}"><div class="sp-loot-head"><b>#${b.index}</b>${picked ? '' :
-        `<span class="sp-loot-nav"><button type="button" class="menu_button sp-loot-prev" title="이전 AI 답변">◀</button><button type="button" class="menu_button sp-loot-next" title="다음 AI 답변">▶</button></span>`}</div>
-        <label>${picked ? '선택한 구절' : '원문 전체'}<textarea name="excerpt" rows="${Math.min(9, Math.max(2, Math.ceil(b.text.length / 32) + 1))}" required>${esc(b.text)}</textarea></label>
-        <button type="button" class="menu_button sp-loot-full">전체 담기</button></div>`;
-    dialog.innerHTML = `<form><h3>💎 루팅</h3><p>${picked ? (slots.length > 1 ? `선택이 메시지 ${slots.length}개에 걸쳐 있어서 메시지별로 나눠 담아요.` : '선택한 구절을 담아요. 고치거나 전체로 바꿀 수 있어요.')
-        : '가장 최근 AI 답변이에요. ◀ ▶로 다른 답변을 고르거나, 필요한 구절만 남겨 주세요.'} 다음 세이브 때 반영해요.</p>
-        ${slots.map(blockHtml).join('')}
-        <label>메모 (선택)<input name="note" type="text" placeholder="왜 중요한지 적어 주세요"></label>
-        <p class="sp-loot-error" role="alert"></p><div class="sp-loot-actions"><button type="button" class="menu_button sp-loot-cancel">취소</button><button type="submit" class="menu_button">⏳ 대기열에 담기</button></div></form>`;
-    const fill = k => {
-        const part = dialog.querySelector(`.sp-loot-part[data-k="${k}"]`), b = slots[k];
-        part.querySelector('b').textContent = `#${b.index}`;
-        part.querySelector('[name=excerpt]').value = b.text;
-    };
-    dialog.querySelectorAll('.sp-loot-part').forEach(part => {
-        const k = Number(part.getAttribute('data-k')), b = slots[k];
-        part.querySelector('.sp-loot-full').onclick = () => { b.text = cleanText(chat()[b.index].mes); fill(k); };
+    const full = i => cleanText(chat()[i].mes);
+    const rows = t => Math.min(9, Math.max(2, Math.ceil(t.length / 32) + 1));
+    const sel = picked.map(p => ({ index: p.index, text: p.text.trim(), source: source(p.index) }));
+    const whole = { index: start, text: full(start), source: source(start) };
+    let tab = sel.length ? 'sel' : 'full';
+    const theme = settings().theme in THEMES ? settings().theme : 'jrpg';
+    const dialog = document.createElement('dialog');
+    dialog.id = 'sp_loot_dialog'; dialog.className = 'sp-loot-dialog sp-window';
+    dialog.setAttribute('data-theme', theme);
+    const selHtml = () => `<p class="sp-dim">${sel.length > 1 ? `선택이 메시지 ${sel.length}개에 걸쳐 있어서 메시지별로 나눠 담아요.` : '선택한 구절을 담아요. 고쳐서 담을 수도 있어요.'}</p>` +
+        sel.map((b, k) => `<div class="sp-loot-part"><div class="sp-loot-head"><b>#${b.index}</b></div>
+            <textarea name="excerpt" data-k="${k}" rows="${rows(b.text)}" required>${esc(b.text)}</textarea></div>`).join('');
+    const fullHtml = () => `<p class="sp-dim">${sel.length ? '선택한 메시지의 원문 전체예요.' : '가장 최근 AI 답변이에요.'} ◀ ▶로 다른 답변을 고르거나, 필요한 부분만 남겨 주세요.</p>
+        <div class="sp-loot-part"><div class="sp-loot-head"><b>#${whole.index}</b><span class="sp-loot-nav">
+        <button type="button" class="sp-btn sp-mini sp-loot-prev" title="이전 AI 답변">◀</button><button type="button" class="sp-btn sp-mini sp-loot-next" title="다음 AI 답변">▶</button></span></div>
+        <textarea name="excerpt" data-k="full" rows="9" required>${esc(whole.text)}</textarea></div>`;
+    dialog.innerHTML = `<form><div class="sp-loot-title">💎 루팅</div>
+        ${sel.length ? `<div class="sp-tabs sp-loot-tabs"><button type="button" class="sp-tab" data-tab="sel">선택한 구절 <em>${sel.length}</em></button><button type="button" class="sp-tab" data-tab="full">원문 전체</button></div>` : ''}
+        <div class="sp-loot-body"></div>
+        <label class="sp-loot-note">메모 (선택)<input name="note" type="text" placeholder="왜 중요한지 적어 주세요"></label>
+        <p class="sp-dim sp-loot-hint">다음 세이브 때 반영해요.</p>
+        <p class="sp-loot-error" role="alert"></p><div class="sp-loot-actions"><button type="button" class="sp-btn sp-loot-cancel">취소</button><button type="submit" class="sp-btn sp-primary">⏳ 대기열에 담기</button></div></form>`;
+    const body = dialog.querySelector('.sp-loot-body');
+    const draw = () => {
+        body.innerHTML = tab === 'sel' ? selHtml() : fullHtml();
+        dialog.querySelectorAll('.sp-loot-tabs .sp-tab').forEach(t => t.classList.toggle('sp-active', t.getAttribute('data-tab') === tab));
+        body.querySelectorAll('textarea').forEach(t => {
+            t.oninput = () => { const k = t.getAttribute('data-k'); (k === 'full' ? whole : sel[Number(k)]).text = t.value; };
+        });
         const go = step => () => {
-            const i = nearLootable(b.index + step, step);
+            const i = nearLootable(whole.index + step, step);
             if (i < 0) return;
-            Object.assign(b, { index: i, text: cleanText(chat()[i].mes), source: source(i) }); fill(k);
+            Object.assign(whole, { index: i, text: full(i), source: source(i) }); draw();
         };
-        if (part.querySelector('.sp-loot-prev')) { part.querySelector('.sp-loot-prev').onclick = go(-1); part.querySelector('.sp-loot-next').onclick = go(1); }
-        part.querySelector('[name=excerpt]').oninput = e => { b.text = e.target.value; };
-    });
+        const prev = body.querySelector('.sp-loot-prev'), next = body.querySelector('.sp-loot-next');
+        if (prev) { prev.onclick = go(-1); next.onclick = go(1); }
+    };
+    dialog.querySelectorAll('.sp-loot-tabs .sp-tab').forEach(t => { t.onclick = () => { tab = t.getAttribute('data-tab'); draw(); }; });
+    draw();
     dialog.querySelector('.sp-loot-cancel').onclick = () => dialog.close();
     dialog.addEventListener('close', () => dialog.remove(), { once: true });
     dialog.querySelector('form').onsubmit = async e => {
@@ -1725,7 +1739,7 @@ function openLootDialog(parts = null) {
         const submit = dialog.querySelector('[type=submit]'); submit.disabled = true;
         try {
             const note = dialog.querySelector('[name=note]').value;
-            const items = slots.map(b => prepareLoot(b.index, b.text, note, b.source));
+            const items = (tab === 'sel' ? sel : [whole]).map(b => prepareLoot(b.index, b.text, note, b.source));
             const added = await addLootItems(items);
             dialog.close();
             const n = state().lootQueue?.length || 0;
