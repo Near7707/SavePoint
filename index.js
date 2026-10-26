@@ -37,7 +37,7 @@ const SETTING_GROUPS = {
     storage: { title: '하이드·보관', keys: ['hide', 'keepRecent', 'autoKeep'] },
     appearance: { title: '화면', keys: ['theme', 'showKo'] },
 };
-const THEMES = { jrpg: '클래식 JRPG', neon: '네온 아케이드', glass: '글래스 사이버', archive: '다크 아카이브', pastel: '파스텔 드림', parchment: '양피지', terminal: '터미널', st: '실리 테마 따라가기' };
+const THEMES = { jrpg: '클래식 JRPG', neon: '네온 아케이드', glass: '글래스 사이버', archive: '다크 아카이브', pastel: '파스텔 드림', parchment: '양피지', terminal: '터미널', eggpet: '알 키우기 펫', colorpocket: '컬러 포켓', joycon: '조이 콘솔', dualwhite: '듀얼 화이트', ink: '먹과 한지', st: '실리 테마 따라가기' };
 const TABS = [
     ['journal', '📜', '저널'], ['queue', '⏳', '대기열'], ['quests', '❗', '퀘스트'], ['party', '👥', '파티'],
     ['items', '🎒', '인벤토리'], ['world', '🗺', '월드'], ['saves', '💾', '세이브'], ['inject', '👁', '주입'],
@@ -2360,8 +2360,8 @@ function settingSection(key, content) {
     const group = SETTING_GROUPS[key], saved = settings().settingsOpen[key];
     const open = typeof saved === 'boolean' ? saved : key === 'connection';
     return `<details class="sp-setting-group" data-settings-group="${key}" ${open ? 'open' : ''}>
-        <summary><b>${group.title}</b><span class="sp-setting-summary" data-settings-summary="${key}"></span></summary>
-        <div class="sp-setting-fields">${content}<div class="sp-set-row"><button type="button" class="menu_button" data-reset-group="${key}">이 묶음 기본값으로 복원</button></div></div>
+        <summary><b>${group.title}</b><span class="sp-changed" data-changed-group="${key}"></span><span class="sp-setting-summary" data-settings-summary="${key}"></span></summary>
+        <div class="sp-setting-fields">${content}<div class="sp-set-row sp-group-reset"><button type="button" class="menu_button" data-reset-group="${key}">↺ 이 묶음 되돌리기</button></div></div>
     </details>`;
 }
 function settingsHtml() {
@@ -2384,9 +2384,8 @@ function settingsHtml() {
                 <label class="checkbox_label"><input type="checkbox" data-set="check"> 기록 후 확인 (모순·원문과 다른 해석을 찾아 경고 · 분량에 따라 추가 요청)</label>
                 <label class="checkbox_label"><input type="checkbox" data-set="auto"> 체크포인트 (끝난 장면을 자동 기록)</label>
                 <label>체크포인트 간격 (새 메시지 수, 유저+캐릭터) <input type="number" data-set="autoEvery" min="5" max="500"></label>
-                <label>기록 지침 (영어 권장, {{char}} {{user}} 사용 가능)</label>
+                <label data-reset-host="guide">기록 지침 (영어 권장, {{char}} {{user}} 사용 가능)</label>
                 <textarea data-set="guide" rows="10" class="text_pole"></textarea>
-                <div class="sp-set-row"><button class="menu_button" id="sp_guide_reset">기본 지침으로 되돌리기</button></div>
                 <div class="sp-set-note">데이터 목록과 응답 형식은 지침 뒤에 자동으로 붙어요.</div>
             `)}
             ${settingSection('injection', `
@@ -2420,6 +2419,29 @@ function updateSettingsSummaries() {
         appearance: `${THEMES[s.theme] || THEMES.jrpg} · ${s.showKo ? '한국어' : 'EN'}`,
     };
     $('#sp_settings [data-settings-summary]').each(function () { this.textContent = summaries[this.dataset.settingsSummary]; });
+    updateChangeMarks();
+}
+// Defaults stay out of sight: a field shows ↺ only after it was changed (the default is in its
+// tooltip), and a group shows how many of its settings differ, with one button to undo them.
+const isChanged = k => JSON.stringify(settings()[k]) !== JSON.stringify(DEFAULTS[k]);
+function defaultLabel(k) {
+    const v = DEFAULTS[k], field = document.querySelector(`#sp_settings [data-set="${k}"]`);
+    if (typeof v === 'boolean') return v ? '켜짐' : '꺼짐';
+    if (k === 'guide') return '기본 지침';
+    if (field?.tagName === 'SELECT') return field.querySelector(`option[value="${CSS.escape(String(v))}"]`)?.textContent || String(v);
+    return typeof v === 'number' ? v.toLocaleString() : String(v);
+}
+function updateChangeMarks() {
+    $('#sp_settings [data-reset-key]').each(function () {
+        const k = this.dataset.resetKey;
+        this.hidden = !isChanged(k);
+        this.title = `기본값(${defaultLabel(k)})으로 되돌리기`;
+    });
+    for (const [key, group] of Object.entries(SETTING_GROUPS)) {
+        const n = group.keys.filter(isChanged).length;
+        $(`#sp_settings [data-changed-group="${key}"]`).text(n ? `변경 ${n}` : '').toggle(!!n);
+        $(`#sp_settings [data-settings-group="${key}"] .sp-group-reset`).toggle(!!n);
+    }
 }
 function settingsChanged(keys) {
     saveSettings();
@@ -2449,8 +2471,11 @@ function fillSettings() {
 function addSettingsUI() {
     if ($('#sp_settings').length) return;
     $('#extensions_settings2').append(settingsHtml());
-    $('#sp_settings input[type=number][data-set]').each(function () {
-        $(this).after($('<small class="sp-setting-default"></small>').text('기본값 ' + Number(DEFAULTS[this.dataset.set]).toLocaleString()));
+    $('#sp_settings [data-set]').each(function () {
+        const k = this.dataset.set;
+        if (k === 'enabled' || !(k in DEFAULTS)) return;
+        const host = k === 'guide' ? $('#sp_settings [data-reset-host="guide"]') : $(this).closest('label');
+        host.addClass('sp-has-reset').append($('<button type="button" class="sp-field-reset" hidden>↺</button>').attr('data-reset-key', k).attr('aria-label', '기본값으로 되돌리기'));
     });
     fillSettings();
     document.getElementById('sp_settings').addEventListener('toggle', e => {
@@ -2466,7 +2491,13 @@ function addSettingsUI() {
         const s = settings();
         for (const key of group.keys) s[key] = clone(DEFAULTS[key]);
         fillSettings(); settingsChanged(group.keys);
-        toastr.info(group.title + ' 설정을 기본값으로 복원했어요.');
+        toastr.info(group.title + ' 설정을 기본값으로 되돌렸어요.');
+    });
+    $('#sp_settings').on('click', '[data-reset-key]', function (e) {
+        e.preventDefault(); e.stopPropagation();
+        const k = this.dataset.resetKey;
+        settings()[k] = clone(DEFAULTS[k]);
+        fillSettings(); settingsChanged([k]);
     });
     $('#sp_settings').on('input change', '[data-set]', function () {
         const k = this.dataset.set, s = settings();
@@ -2475,7 +2506,6 @@ function addSettingsUI() {
     });
     $('#sp_open').on('click', openWindow);
     $('#sp_test_connection').on('click', () => testConnection().catch(reportError));
-    $('#sp_guide_reset').on('click', () => { settings().guide = DEFAULT_GUIDE; saveSettings(); fillSettings(); });
 }
 
 // ───────── events ─────────

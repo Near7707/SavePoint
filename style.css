@@ -214,7 +214,12 @@
 .sp-setting-group > summary { cursor: pointer; padding: 9px 10px; overflow-wrap: anywhere; }
 .sp-setting-summary { display: block; margin: 3px 0 0 16px; font-size: 12px; opacity: .7; }
 .sp-setting-fields { padding: 0 10px 10px; min-width: 0; }
-.sp-setting-default { display: block; margin-top: 2px; font-size: 11px; opacity: .65; }
+label.sp-has-reset { position: relative; padding-right: 30px; }
+.sp-field-reset { position: absolute; top: 0; right: 0; width: 24px; height: 22px; padding: 0; border: 1px solid var(--SmartThemeBorderColor, #666); border-radius: 6px; background: transparent; color: inherit; font-size: 13px; line-height: 1; cursor: pointer; opacity: .8; }
+.sp-field-reset:hover { opacity: 1; background: color-mix(in srgb, var(--SmartThemeBodyColor, #888) 15%, transparent); }
+.sp-field-reset[hidden] { display: none; }
+.sp-changed { display: inline-block; margin-left: 8px; padding: 0 7px; border-radius: 999px; font-size: 11px; line-height: 18px; vertical-align: 1px; background: color-mix(in srgb, var(--SmartThemeQuoteColor, #e8a95c) 25%, transparent); }
+.sp-changed:empty { display: none; }
 .sp-setting-fields textarea { width: 100%; box-sizing: border-box; }
 
 @keyframes sp-blink { to { visibility: hidden; } }
@@ -264,11 +269,13 @@
 .sp-point-detail > div { padding-top: 4px; font-size: .85em; }
 .sp-queued blockquote { white-space: pre-wrap; overflow-wrap: anywhere; margin: 10px 0; padding: 8px; border-left: 3px solid var(--sp-accent, #baa77b); max-height: 240px; overflow: auto; }
 .sp-queued p { overflow-wrap: anywhere; }
+/* 💎 in the chat bar: a small pill with a faint theme-coloured background, sized to the bar's icons. */
 #sp_loot_bar {
-    display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; box-sizing: border-box;
-    width: var(--bottomFormBlockSize, 32px); height: var(--bottomFormBlockSize, 32px); padding: 0; margin: 0; border: none; border-radius: 6px; cursor: pointer; align-self: center;
-    background: transparent;
-    font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif; font-size: var(--bottomFormIconSize, 20px); font-weight: normal;
+    display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; box-sizing: border-box; align-self: center;
+    height: calc(var(--bottomFormBlockSize, 32px) * .8); min-width: calc(var(--bottomFormBlockSize, 32px) * 1.15);
+    padding: 0 .45em; margin: 0 2px; border: none; border-radius: 999px; cursor: pointer;
+    background: #8882; background: color-mix(in srgb, var(--SmartThemeBodyColor, #888) 14%, transparent);
+    font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif; font-size: calc(var(--bottomFormIconSize, 20px) * .8); font-weight: normal;
     line-height: 1; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; transition: background .2s;
 }
 #sp_loot_bar:hover, #sp_loot_bar:focus-visible { background: #8884; background: color-mix(in srgb, var(--SmartThemeBodyColor, #888) 24%, transparent); }
@@ -425,3 +432,109 @@
 
 
 #sp_loot_dialog.sp-window:not([open]) { display: none; }
+
+/* v0.5.5: bright handheld themes and ink on hanji */
+/* 알 키우기 펫: 펄 핑크 알 껍데기 + 회색 액정 */
+.sp-window[data-theme="eggpet"] {
+    --sp-bg: #ffe6ef; --sp-panel: #dfe3cf; --sp-panel2: #d3d8c0;
+    --sp-fg: #2f3326; --sp-dim: #6b7060; --sp-accent: #ff5d8f; --sp-accent-fg: #fff;
+    --sp-border: #ff8fb1; --sp-line: rgba(47, 51, 38, .22); --sp-chip: rgba(255, 93, 143, .14);
+    --sp-danger: #e0335e; --sp-ok: #3f8f5a; --sp-live: #3b7fd1; --sp-radius: 28px;
+    --sp-head: ui-monospace, 'DungGeunMo', 'Galmuri11', monospace;
+    border: 8px solid #ffb3c9; background: radial-gradient(120% 70% at 30% 0%, #fff6fa 0%, #ffd9e6 60%, #ffc6d8 100%);
+    box-shadow: inset 0 0 0 3px #fff, inset 0 0 0 6px #ff8fb1, 0 0 0 2px #ff8fb1, 0 18px 50px rgba(255, 93, 143, .35);
+}
+.sp-window[data-theme="eggpet"] .sp-top { border-bottom: none; }
+.sp-window[data-theme="eggpet"] .sp-logo { color: #ff5d8f; letter-spacing: .14em; }
+.sp-window[data-theme="eggpet"] .sp-hud { margin: 0 12px; border: 4px solid #8a8f7a; border-radius: 14px; background: #dfe3cf; box-shadow: inset 2px 2px 0 rgba(0, 0, 0, .12); }
+.sp-window[data-theme="eggpet"] .sp-bar { border-radius: 2px; border: 2px solid #2f3326; background: #c9cfb4; }
+.sp-window[data-theme="eggpet"] .sp-bar-fill { background: repeating-linear-gradient(90deg, #2f3326 0 6px, transparent 6px 8px); }
+.sp-window[data-theme="eggpet"] .sp-bar span { color: #2f3326; text-shadow: 0 0 3px #dfe3cf, 0 0 3px #dfe3cf; }
+.sp-window[data-theme="eggpet"] .sp-tabs { border-bottom: none; }
+.sp-window[data-theme="eggpet"] .sp-card, .sp-window[data-theme="eggpet"] .sp-quest { background: #fff; border: 2px solid #ffc2d4; border-radius: 18px; }
+.sp-window[data-theme="eggpet"] .sp-btn:not(.sp-primary) { border-radius: 999px; background: #fff; border-color: #ffb3c9; }
+.sp-window[data-theme="eggpet"] .sp-btn.sp-primary { background: #ff5d8f; border-color: #ff5d8f; box-shadow: 0 3px 0 #d93c6e; }
+
+/* 컬러 포켓: 노란 껍데기 + 밝은 액정 */
+.sp-window[data-theme="colorpocket"] {
+    --sp-bg: #ffd43b; --sp-panel: #f4f7ea; --sp-panel2: #e6ecd2;
+    --sp-fg: #233019; --sp-dim: #5e6b4e; --sp-accent: #2f6fd6; --sp-accent-fg: #fff;
+    --sp-border: #3a3d4a; --sp-line: rgba(35, 48, 25, .2); --sp-chip: rgba(47, 111, 214, .12);
+    --sp-danger: #d63a2f; --sp-ok: #2e8a3d; --sp-live: #2f6fd6; --sp-radius: 14px;
+    --sp-head: ui-monospace, 'DungGeunMo', 'Galmuri11', monospace;
+    border: 3px solid #e0b100; border-radius: 14px 14px 46px 14px;
+    box-shadow: inset 0 0 0 4px #ffe58a, 0 6px 0 #d9a800, 0 18px 50px rgba(160, 120, 0, .35);
+}
+.sp-window[data-theme="colorpocket"] .sp-top { border-bottom: none; }
+.sp-window[data-theme="colorpocket"] .sp-logo { color: #3a3d4a; letter-spacing: .12em; }
+.sp-window[data-theme="colorpocket"] .sp-hud { margin: 0 12px; border-radius: 8px 8px 22px 8px; border: 10px solid #3a3d4a; background: #e6ecd2; }
+.sp-window[data-theme="colorpocket"] .sp-tabs { border-bottom: none; padding-top: 10px; }
+.sp-window[data-theme="colorpocket"] .sp-tab { color: #3a3d4a; }
+.sp-window[data-theme="colorpocket"] .sp-tab.sp-active { background: #fff3b8; border-color: #e0b100; }
+.sp-window[data-theme="colorpocket"] .sp-card, .sp-window[data-theme="colorpocket"] .sp-quest { background: #fffdf2; border: 2px solid #3a3d4a; border-radius: 10px; box-shadow: 0 3px 0 #e0b100; }
+.sp-window[data-theme="colorpocket"] .sp-bar { border-color: #233019; border-radius: 3px; }
+.sp-window[data-theme="colorpocket"] .sp-bar-fill { background: linear-gradient(90deg, #45b34a, #8fd14f); }
+.sp-window[data-theme="colorpocket"] .sp-btn:not(.sp-primary) { background: #fffdf2; border-color: #3a3d4a; border-radius: 999px; }
+.sp-window[data-theme="colorpocket"] .sp-btn.sp-primary { background: #d63a6a; border-color: #a82850; color: #fff; box-shadow: 0 3px 0 #a82850; }
+
+/* 조이 콘솔: 하얀 화면 + 빨강·파랑 손잡이 */
+.sp-window[data-theme="joycon"] {
+    --sp-bg: #f7f8fa; --sp-panel: #ffffff; --sp-panel2: #eef0f4;
+    --sp-fg: #23262d; --sp-dim: #7a8090; --sp-accent: #ff4554; --sp-accent-fg: #fff;
+    --sp-border: #2c2f36; --sp-line: #e1e4ea; --sp-chip: #eef0f4;
+    --sp-danger: #ff4554; --sp-ok: #20b26b; --sp-live: #0ab9e6; --sp-radius: 16px;
+    --sp-head: 'Avenir Next', 'Segoe UI', 'Pretendard', sans-serif;
+    border: 12px solid #2c2f36; border-left: 14px solid #0ab9e6; border-right: 14px solid #ff4554;
+    box-shadow: 0 18px 50px rgba(30, 40, 60, .25);
+}
+.sp-window[data-theme="joycon"] .sp-logo { color: #23262d; letter-spacing: .08em; font-weight: 800; }
+.sp-window[data-theme="joycon"] .sp-card, .sp-window[data-theme="joycon"] .sp-quest { border: none; border-radius: 14px; box-shadow: 0 2px 10px rgba(30, 40, 60, .08); }
+.sp-window[data-theme="joycon"] .sp-bar { border: none; border-radius: 999px; background: #e1e4ea; height: 14px; }
+.sp-window[data-theme="joycon"] .sp-bar-fill { background: linear-gradient(90deg, #0ab9e6, #ff4554); border-radius: 999px; }
+.sp-window[data-theme="joycon"] .sp-bar span { color: #fff; font-size: 10px; text-shadow: 0 0 3px rgba(0, 0, 0, .35); }
+.sp-window[data-theme="joycon"] .sp-btn:not(.sp-primary) { border: none; border-radius: 999px; background: #eef0f4; }
+.sp-window[data-theme="joycon"] .sp-tab.sp-active { background: #fff; border-color: #e1e4ea; }
+.sp-window[data-theme="joycon"] .sp-tab.sp-active::before { color: #0ab9e6; }
+
+/* 듀얼 화이트: 반짝이는 흰 본체 + 하늘색 화면 */
+.sp-window[data-theme="dualwhite"] {
+    --sp-bg: linear-gradient(180deg, #ffffff 0%, #eef3f8 100%); --sp-panel: #ffffff; --sp-panel2: #e6f4fd;
+    --sp-fg: #1f3446; --sp-dim: #7590a6; --sp-accent: #2b9bea; --sp-accent-fg: #fff;
+    --sp-border: #c9d6e2; --sp-line: #d6e2ec; --sp-chip: #e6f4fd;
+    --sp-danger: #e5484d; --sp-ok: #2fa86e; --sp-live: #2b9bea; --sp-radius: 20px;
+    --sp-head: 'Avenir Next', 'Segoe UI', 'Pretendard', sans-serif;
+    border: 2px solid #c9d6e2; box-shadow: inset 0 2px 0 #fff, inset 0 -3px 0 #dbe5ee, 0 18px 50px rgba(40, 80, 120, .2);
+}
+.sp-window[data-theme="dualwhite"] .sp-top { border-bottom: none; }
+.sp-window[data-theme="dualwhite"] .sp-logo { color: #2b9bea; letter-spacing: .16em; }
+.sp-window[data-theme="dualwhite"] .sp-hud { margin: 0 12px; border-radius: 12px; border: 6px solid #2a2f36; background: #e6f4fd; }
+.sp-window[data-theme="dualwhite"]:not(#sp_loot_dialog) .sp-tab-nav { margin: 10px 12px 0; border: 6px solid #2a2f36; border-bottom: none; border-radius: 12px 12px 0 0; background: #fff; }
+.sp-window[data-theme="dualwhite"]:not(#sp_loot_dialog) .sp-tab-nav > .sp-tabs { border: none; margin: 0; }
+.sp-window[data-theme="dualwhite"]:not(#sp_loot_dialog) .sp-body { margin: 0 12px 12px; border: 6px solid #2a2f36; border-top: none; border-radius: 0 0 12px 12px; background: #fff; }
+.sp-window[data-theme="dualwhite"] .sp-card, .sp-window[data-theme="dualwhite"] .sp-quest { border: 1px solid #d6e2ec; border-radius: 12px; background: #f7fbfe; }
+.sp-window[data-theme="dualwhite"] .sp-bar { border: none; border-radius: 999px; background: #cfe6f7; }
+.sp-window[data-theme="dualwhite"] .sp-bar-fill { background: linear-gradient(90deg, #2b9bea, #7fd0ff); border-radius: 999px; }
+.sp-window[data-theme="dualwhite"] .sp-bar span { color: #fff; text-shadow: 0 0 3px rgba(0, 60, 120, .5); }
+.sp-window[data-theme="dualwhite"] .sp-btn:not(.sp-primary) { border-radius: 999px; border-width: 1px; background: #fff; }
+.sp-window[data-theme="eggpet"] .sp-bar-fill { background: repeating-linear-gradient(90deg, #8a8f7a 0 6px, #a4a992 6px 8px); }
+.sp-window[data-theme="eggpet"] .sp-bar span { color: #1c1f16; font-weight: 700; text-shadow: none; }
+.sp-window[data-theme="joycon"] .sp-btn.sp-primary { background: #ff4554; border-color: #ff4554; box-shadow: 0 3px 0 #d02a38; }
+.sp-window[data-theme="dualwhite"] .sp-btn.sp-primary { background: #2b9bea; border-color: #2b9bea; box-shadow: 0 3px 0 #1c79bd; }
+
+/* 먹과 한지: 한지 바탕, 먹 글씨, 붉은 낙관 */
+.sp-window[data-theme="ink"] {
+    --sp-bg: linear-gradient(180deg, #f3ecdc 0%, #ebe1cb 100%);
+    --sp-panel: rgba(40, 30, 20, .045); --sp-panel2: rgba(40, 30, 20, .08);
+    --sp-fg: #1d1915; --sp-dim: #6f655a; --sp-accent: #b3241b; --sp-accent-fg: #fff4e8;
+    --sp-border: #1d1915; --sp-line: rgba(29, 25, 21, .22); --sp-chip: rgba(29, 25, 21, .08);
+    --sp-danger: #b3241b; --sp-ok: #3b6b45; --sp-live: #24536b; --sp-radius: 2px;
+    --sp-head: 'Nanum Myeongjo', 'Batang', Georgia, serif;
+    border-width: 0; border-top: 10px solid #2b241e; border-bottom: 10px solid #2b241e;
+    box-shadow: 0 18px 60px rgba(0, 0, 0, .45);
+}
+.sp-window[data-theme="ink"] .sp-logo { color: #1d1915; letter-spacing: .3em; }
+.sp-window[data-theme="ink"] .sp-logo::after { content: '印'; margin-left: 8px; padding: 0 4px; color: #fff4e8; background: #b3241b; border-radius: 2px; font-size: .8em; letter-spacing: 0; }
+.sp-window[data-theme="ink"] .sp-card, .sp-window[data-theme="ink"] .sp-quest { border: none; border-left: 3px solid #1d1915; border-radius: 0; background: transparent; }
+.sp-window[data-theme="ink"] .sp-bar { border: 1px solid #1d1915; border-radius: 0; background: transparent; }
+.sp-window[data-theme="ink"] .sp-bar-fill { background: linear-gradient(90deg, #1d1915 0%, #4a4038 80%, rgba(74, 64, 56, .4) 100%); }
+.sp-window[data-theme="ink"] .sp-bar span { color: #f3ecdc; text-shadow: 0 0 3px #1d1915; }

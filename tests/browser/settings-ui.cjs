@@ -47,15 +47,27 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     });
     let r = await ev(() => {
         const rect = id => document.getElementById(id).getBoundingClientRect();
-        return { n: document.querySelectorAll('#sp_loot_bar').length, good: rect('options_button').right <= rect('extensionsMenuButton').left && rect('extensionsMenuButton').right <= rect('sp_loot_bar').left, aligned: rect('sp_loot_bar').top === rect('extensionsMenuButton').top };
+        return { n: document.querySelectorAll('#sp_loot_bar').length, good: rect('options_button').right <= rect('extensionsMenuButton').left && rect('extensionsMenuButton').right <= rect('sp_loot_bar').left, aligned: Math.abs((rect('sp_loot_bar').top + rect('sp_loot_bar').bottom) - (rect('extensionsMenuButton').top + rect('extensionsMenuButton').bottom)) <= 2, pill: getComputedStyle(document.getElementById('sp_loot_bar')).borderRadius === '999px' && getComputedStyle(document.getElementById('sp_loot_bar')).backgroundColor !== 'rgba(0, 0, 0, 0)' };
     });
-    ok(r.n === 1 && r.good && r.aligned, 'flex order가 있는 채팅창에서도 ☰ → 🪄 → 💎 정렬');
+    ok(r.n === 1 && r.good && r.aligned && r.pill, 'flex order가 있는 채팅창에서도 ☰ → 🪄 → 💎 정렬, 💎는 옅은 바탕의 버튼형');
     r = await ev(() => [...document.querySelectorAll('[data-settings-group]')].map(d => [d.dataset.settingsGroup, d.open]));
     ok(r.length === 5 && r.filter(x => x[1]).map(x => x[0]).join() === 'connection', '첫 화면은 5개 묶음 중 연결만 펼침');
     await page.click('[data-settings-group=injection] > summary');
+    r = await ev(() => ({ marks: [...document.querySelectorAll('#sp_settings [data-reset-key]')].filter(b => !b.hidden).length, groupBtn: getComputedStyle(document.querySelector('[data-settings-group=injection] .sp-group-reset')).display, badge: document.querySelector('[data-changed-group=injection]').textContent, text: document.getElementById('sp_settings').textContent }));
+    ok(r.marks === 0 && r.groupBtn === 'none' && r.badge === '' && !r.text.includes('기본값 '), '바꾼 설정이 없으면 기본값 안내·되돌리기 버튼이 하나도 안 보임');
     await page.fill('[data-set=budget]', '9200');
-    r = await ev(() => ({ summary: document.querySelector('[data-settings-summary=injection]').textContent, label: document.querySelector('[data-set=budget]').nextElementSibling.textContent }));
-    ok(r.summary.includes('9,200') && r.label.includes('6,000'), '현재 설정 요약과 기본값 숫자를 구분');
+    r = await ev(() => { const b = document.querySelector('[data-reset-key=budget]'); return { summary: document.querySelector('[data-settings-summary=injection]').textContent, shown: !b.hidden, title: b.title, badge: document.querySelector('[data-changed-group=injection]').textContent, groupBtn: getComputedStyle(document.querySelector('[data-settings-group=injection] .sp-group-reset')).display }; });
+    ok(r.summary.includes('9,200') && r.shown && r.title.includes('6,000') && r.badge === '변경 1' && r.groupBtn !== 'none', '바꾼 칸에만 ↺ (툴팁에 기본값), 묶음에 "변경 1"과 되돌리기 버튼');
+    await page.click('[data-reset-key=budget]');
+    r = await ev(() => ({ budget: M.settings.savePoint.budget, hidden: document.querySelector('[data-reset-key=budget]').hidden, badge: document.querySelector('[data-changed-group=injection]').textContent }));
+    ok(r.budget === 6000 && r.hidden && r.badge === '', '↺를 누르면 그 칸만 기본값으로, 표시도 사라짐');
+    await page.fill('[data-set=budget]', '9200');
+    await page.click('[data-settings-group=recording] > summary');
+    await page.fill('[data-set=guide]', 'Custom guide.');
+    r = await ev(() => ({ shown: !document.querySelector('[data-reset-key=guide]').hidden, title: document.querySelector('[data-reset-key=guide]').title }));
+    ok(r.shown && r.title.includes('기본 지침'), '기록 지침도 바꿨을 때만 ↺ 기본 지침');
+    await page.click('[data-reset-key=guide]');
+    await page.click('[data-settings-group=recording] > summary');
     await ev(() => __savePoint.handle('run'));
     await ev(() => __savePoint.addLoot(2, M.chat[2].mes, 'keep this note'));
     await ev(() => {
