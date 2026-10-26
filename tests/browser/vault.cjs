@@ -76,7 +76,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => __savePoint.handle('tab', 'saves'));
     let html = await ev(() => $('.sp-body').html());
     ok(!html.includes('덮어쓰기:') && (html.match(/data-act="save-over"/g) || []).length === 1, '3. 위쪽 덮어쓰기 없음, 저장 버튼은 FILE 슬롯에만');
-    ok(html.includes('연결됨'), '3. 이 방과 연결된 슬롯 표시');
+    ok(html.includes('▶ 플레이 중') && !html.includes('이어하기') && !html.includes('루트 분기'), '3. 이 방에서 쓰는 슬롯에 플레이 중 표시, 불러오기 버튼은 하나');
     await ev(() => M.add(4));
     await ev(() => __savePoint.handle('run'));
     const before = await ev(id => __savePoint.listSaves().find(x => x.id === id).msgCount, slotId);
@@ -86,7 +86,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
 
     // ── 4. loading an older autosave restores the record position and the hiding ──
     const oldest = await ev(() => __savePoint.listSaves().filter(x => x.auto).at(-1));
-    await ev(id => __savePoint.handle('load-continue', id), oldest.id);
+    await ev(id => __savePoint.handle('load', id), oldest.id);
     let r = await ev(() => ({ last: __savePoint.state().lastIndex, hidden: M.chat.filter(m => m.is_system).length, len: M.chat.length }));
     ok(r.last === oldest.msgCount - 1 && r.hidden === Math.min(r.last + 1, r.len - 10), `4. 오토세이브 불러오기 → 그때 위치(#${r.last})와 하이드로 돌아감`);
     await ev(() => __savePoint.handle('undo'));
@@ -108,7 +108,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r = await page.evaluate(() => __savePoint.listSaves().map(x => x.name));
     ok(r.includes('Route A') && r.filter(n => n.startsWith('오토세이브')).length === 3, '6. 설정이 비어도 서버 목록에서 슬롯이 그대로 보임');
     await page.evaluate(() => { M.add(10); });
-    await page.evaluate(id => __savePoint.handle('load-copy', id), slotId);
+    await page.evaluate(id => __savePoint.handle('load', id), slotId);
     ok((await page.evaluate(() => __savePoint.state()?.mem.scenes.length)) > 0, '6. 서버 파일에서 슬롯 불러오기');
     await page.close();
 

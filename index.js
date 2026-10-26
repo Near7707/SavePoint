@@ -1528,7 +1528,7 @@ async function overwriteSave(id) {
     if (res.local) toastr.warning(`설정에만 저장했어요. 서버 백업 실패: ${res.error?.message || ''}`);
     else toastr.success(`"${old.name}"에 저장했어요.`);
 }
-async function loadSave(id, mode) {
+async function loadSave(id) {
     if (ui.run) return;
     const save = findSave(id);
     if (!save || !hasChat()) return;
@@ -1540,7 +1540,7 @@ async function loadSave(id, mode) {
     } catch (e) { reportError(e); return; }
     const cur = state();
     if (cur && hasMemory(cur.mem) && !(await confirmBox('이 방의 지금 기억을 이 세이브 슬롯으로 바꿀까요? (⏪ 리와인드로 되돌릴 수 있어요)'))) return;
-    const st = freshState({ mem, lootQueue: clone(cur?.lootQueue || []), linkedSave: mode === 'continue' && !save.auto ? id : null, autoMark: chat().length - 1 });
+    const st = freshState({ mem, lootQueue: clone(cur?.lootQueue || []), linkedSave: save.auto ? null : id, autoMark: chat().length - 1 });
     const p = save.pos;
     let exact = false;
     if (p && Number.isInteger(p.lastIndex) && p.lastIndex >= 0 && p.lastIndex < chat().length) {
@@ -2050,10 +2050,10 @@ function saveCard(sv, st, { showRoom = false, autoRank = 0 } = {}) {
     const linked = st?.linkedSave === sv.id;
     const genLabel = sv.auto ? ['최신', '이전', '그 전'][autoRank] || '' : '';
     return `<div class="sp-card sp-save ${sv.auto ? 'sp-auto' : ''} ${linked ? 'sp-linked' : ''}">
-        <div class="sp-save-h"><span class="sp-slot">${sv.auto ? 'AUTO' : 'FILE'}</span><span class="sp-save-n">${esc(sv.name)}</span>${genLabel ? `<span class="sp-badge">${genLabel}</span>` : ''}${linked ? '<span class="sp-badge sp-badge-on">연결됨</span>' : ''}${sv.local ? '<span class="sp-badge sp-badge-warn">설정에만 있음</span>' : ''}</div>
+        <div class="sp-save-h"><span class="sp-slot">${sv.auto ? 'AUTO' : 'FILE'}</span><span class="sp-save-n">${esc(sv.name)}</span>${genLabel ? `<span class="sp-badge">${genLabel}</span>` : ''}${linked ? '<span class="sp-badge sp-badge-on" title="이 방에서 마지막으로 저장하거나 불러온 슬롯이에요">▶ 플레이 중</span>' : ''}${sv.local ? '<span class="sp-badge sp-badge-warn">설정에만 있음</span>' : ''}</div>
         <div class="sp-save-meta">${showRoom ? `📁 ${esc(roomLabel(sv.room))} · ` : ''}${esc(sv.char || '')} · ${fmtDate(sv.updated)}</div>
         <div class="sp-save-stats"><span>장면 ${s.scenes ?? 0}</span><span>메시지 ${sv.msgCount ?? 0}</span><span>❗ ${s.openQuests ?? 0}</span>${s.place ? `<span>📍 ${esc(s.place)}</span>` : ''}</div>
-        <div class="sp-row">${btn('load-continue', sv.id, '이어하기', '이 방에서 이 세이브를 이어서 사용', 'sp-primary')}${btn('load-copy', sv.id, '루트 분기', '이 세이브에서 갈라져 다른 이야기로 (원래 슬롯은 덮어쓰지 않아요)')}
+        <div class="sp-row">${btn('load', sv.id, '불러오기', '이 방의 기억을 이 슬롯으로 바꿔요. 슬롯은 저장을 누를 때만 덮어써요', 'sp-primary')}
             ${sv.auto ? '' : btn('save-over', sv.id, '저장', '이 슬롯을 지금 기억으로 덮어써요')}${btn('save-rename', sv.id, '이름')}${btn('save-export', sv.id, '📤', '이 슬롯을 .json 파일로 내보내기')}${btn('save-del', sv.id, '삭제', '', 'sp-danger')}</div></div>`;
 }
 function cardsOf(list, st, opts) {
@@ -2342,8 +2342,8 @@ async function handle(act, id) {
         case 'del-rec': return commitEdit(m => { m.records = m.records.filter(x => x.id !== id); });
         case 'save-new': return saveNew();
         case 'save-over': return overwriteSave(id);
-        case 'load-continue': return loadSave(id, 'continue');
-        case 'load-copy': return loadSave(id, 'copy');
+        // 'load-continue' and 'load-copy' were two names for the same load; kept for old callers.
+        case 'load': case 'load-continue': case 'load-copy': return loadSave(id);
         case 'save-rename': return renameSave(id);
         case 'save-export': return exportSave(id);
         case 'find': return findBackups();

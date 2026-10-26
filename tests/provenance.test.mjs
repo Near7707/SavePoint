@@ -310,14 +310,14 @@ test('loading a verified identical-prefix branch retains active indexes and an o
     assert.equal(st.mem.scenes[0].external, undefined);
 });
 
-test('continue and route-copy into a different chat start at #0 while keeping the old scene open', async () => {
-    for (const mode of ['continue', 'copy']) {
+test('loading into a different chat starts at #0, keeps the old scene open and marks the slot as playing', async () => {
+    for (const mode of ['load']) {
         const st = await loadFixture(false, mode);
         assert.equal(st.lastIndex, -1);
         assert.equal(core.openScene(st.mem).id, 's1');
         assert.equal(st.mem.scenes[0].segs[0].source.room, 'room-A');
         assert.deepEqual(st.mem.records[0].msgs, []);
-        assert.equal(st.linkedSave, mode === 'continue' ? 'slot' : null);
+        assert.equal(st.linkedSave, 'slot');
     }
 });
 

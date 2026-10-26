@@ -133,15 +133,15 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const saveId = await ev(() => __savePoint.listSaves().find(x => !x.auto).id);
     const mainChat = await ev(() => ({ chat: structuredClone(M.chat), last: __savePoint.state().lastIndex }));
     await ev(async () => { await M.switchChat('chatB', [], {}); M.add(3); });
-    await ev(id => __savePoint.handle('load-copy', id), saveId);
+    await ev(id => __savePoint.handle('load', id), saveId);
     r = await ev(() => { const st = __savePoint.state(); return { last: st.lastIndex, ext: st.mem.scenes.every(s => s.external), linked: st.linkedSave, inj: (M.prompts.savepoint?.v || '').length }; });
-    ok(r.last === -1 && r.ext && r.linked === null && r.inj > 0, '다른 방에 복사해서 시작 → 기억만 가져오고 이 방 메시지는 정리 전');
+    ok(r.last === -1 && r.ext && r.linked === saveId && r.inj > 0, '다른 방에서 불러오기 → 기억만 가져오고 이 방 메시지는 정리 전, 슬롯에 플레이 중');
     await ev(() => __savePoint.handle('run'));
     ok(await ev(() => __savePoint.state().mem.scenes.length) > await ev(() => 0) , '새 방에서 이어서 기록');
     await ev(async c => { await M.switchChat('chatC', c.chat.map(m => ({ ...m, is_system: false, extra: {} })), {}); }, mainChat);
-    await ev(id => __savePoint.handle('load-continue', id), saveId);
+    await ev(id => __savePoint.handle('load', id), saveId);
     r = await ev(() => { const st = __savePoint.state(); return { last: st.lastIndex, ext: st.mem.scenes.some(s => s.external), linked: st.linkedSave, hid: M.chat[5].is_system }; });
-    ok(r.last === mainChat.last && !r.ext && r.linked === saveId && r.hid, '같은 원문 분기에서 이어하기 → 저장 위치 그대로 복원 + 하이드');
+    ok(r.last === mainChat.last && !r.ext && r.linked === saveId && r.hid, '같은 원문 분기에서 불러오기 → 저장 위치 그대로 복원 + 하이드');
 
     // 12. an edit before the restored floor needs a decision
     await ev(async () => { M.chat[3].mes = 'changed'; await M.eventSource.emit('message_edited', 3); });
