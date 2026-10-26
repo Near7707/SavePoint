@@ -1682,10 +1682,11 @@ function installLootButtons() {
         const index = Number(element.getAttribute('mesid')), m = chat()[index];
         const old = element.querySelector('.sp-loot-button');
         if (!eligible(m) || m.is_user || !settings().enabled) { old?.remove(); continue; }
-        // Kept out of SillyTavern's own tool row: a small separate button at its right end,
-        // visible without opening the ⋯ menu.
-        const toolbar = element.querySelector('.mes_buttons');
-        if (!toolbar || old) continue;
+        // Sits on the name line, after whatever icons other extensions put next to the name,
+        // and takes that line's font size so it matches them. Falls back to the tool row.
+        const name = element.querySelector('.name_text');
+        const row = name?.parentElement || element.querySelector('.mes_buttons');
+        if (!row || old) continue;
         const button = document.createElement('div');
         button.className = 'sp-loot-button interactable';
         button.textContent = '💎';
@@ -1694,7 +1695,8 @@ function installLootButtons() {
         const open = e => { e.preventDefault(); e.stopPropagation(); openLootDialog(Number(element.getAttribute('mesid'))); };
         button.onclick = open;
         button.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') open(e); };
-        toolbar.append(button);
+        const stamp = row.querySelector?.(':scope > .timestamp');
+        if (stamp) row.insertBefore(button, stamp); else row.append(button);
     }
 }
 function queueHtml(st) {
