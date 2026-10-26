@@ -3,7 +3,7 @@
 import {
     emptyMem, cleanMem, detachMem, chunkMessages, promptContext, validateResult, resultLanguageIssues,
     applyResult, closeOpenScene, pushHistory, rollbackFrom, buildInjection, openScene, memStats, validateBoundary,
-    pointInjected, pointSymbol, rekeyItems, validateRekey, applyRekey, needsRekey, sceneOutlineText, sceneOutlineParts,
+    pointInjected, pointSymbol, rekeyItems, validateRekey, applyRekey, sceneOutlineText, sceneOutlineParts,
     normalizeResult, validateCheck, checkScope, dupState, pointId,
     recordLine, entityName, estTokens, QUEST_KINDS, WORLD_KINDS, ENTITY_TYPES,
     groupErrors, findQuote, mostlyNonEnglish,
@@ -57,14 +57,6 @@ function settings() {
     const s = es[MODULE];
     for (const k of Object.keys(DEFAULTS)) if (!(k in s)) s[k] = clone(DEFAULTS[k]);
     if (OLD_GUIDE_HASHES.includes(guideHash(s.guide))) s.guide = DEFAULT_GUIDE;
-    // v0.2.1 and earlier kept whole slots (with memory) in settings. Keep them locally until
-    // they are safely on the server (see migrateLocal).
-    if (s.saves && typeof s.saves === 'object' && !Array.isArray(s.saves)) {
-        if (!s.localSaves || typeof s.localSaves !== 'object') s.localSaves = {};
-        for (const [id, rec] of Object.entries(s.saves)) if (rec && rec.mem && !s.localSaves[id]) s.localSaves[id] = rec;
-        if (s.autoKeep === 20) s.autoKeep = 30;
-        delete s.saves;
-    }
     if (!Array.isArray(s.slotCache)) s.slotCache = [];
     if (!s.localSaves || typeof s.localSaves !== 'object' || Array.isArray(s.localSaves)) s.localSaves = {};
     return s;
@@ -1251,7 +1243,6 @@ function translationTargets(mem) {
     const items = [];
     for (const s of mem.scenes) {
         if (!s.koTitle) items.push({ id: `${s.id}|title`, text: s.title });
-        if (s.legacyOutline && !s.koOutline) items.push({ id: `${s.id}|outline`, text: s.legacyOutline });
         for (const g of s.segs) {
             if (g.notes && !g.koNotes) items.push({ id: `${s.id}|${g.id}|notes`, text: g.notes });
             if (g.outline && !g.koOutline) items.push({ id: `${s.id}|${g.id}|outline`, text: g.outline });
@@ -1267,7 +1258,6 @@ function applyTranslation(mem, id, ko) {
     const s = mem.scenes.find(x => x.id === a);
     if (!s) return;
     if (b === 'title') s.koTitle = ko;
-    else if (b === 'outline') s.koOutline = ko;
     else {
         const g = s.segs.find(x => x.id === b);
         if (!g) return;
@@ -1694,10 +1684,14 @@ function installLootButtons() {
         if (!eligible(m) || m.is_user || !settings().enabled) { old?.remove(); continue; }
         const toolbar = element.querySelector('.extraMesButtons') || element.querySelector('.mes_buttons');
         if (!toolbar || old) continue;
-        const button = document.createElement('button');
-        button.type = 'button'; button.className = 'mes_button sp-loot-button';
-        button.title = '💎 루팅'; button.setAttribute('aria-label', '💎 루팅'); button.textContent = '💎';
-        button.onclick = e => { e.preventDefault(); e.stopPropagation(); openLootDialog(Number(element.getAttribute('mesid'))); };
+        // Same markup as SillyTavern's own toolbar icons, so it inherits their size, colour and alignment.
+        const button = document.createElement('div');
+        button.className = 'mes_button sp-loot-button fa-solid fa-gem interactable';
+        button.title = '💎 루팅'; button.setAttribute('aria-label', '💎 루팅');
+        button.setAttribute('role', 'button'); button.tabIndex = 0;
+        const open = e => { e.preventDefault(); e.stopPropagation(); openLootDialog(Number(element.getAttribute('mesid'))); };
+        button.onclick = open;
+        button.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') open(e); };
         toolbar.append(button);
     }
 }
@@ -1766,7 +1760,6 @@ function editForm() {
     let body = '';
     if (e.kind === 'scene') body = field('title', '제목') + field('where', '장소');
     else if (e.kind === 'segoutline') body = field('outline', '이 구간 개요 (영어)', 3);
-    else if (e.kind === 'legacy') body = field('outline', '이전 버전 장면 개요 (영어)', 4);
     else if (e.kind === 'point') body = field('text', '포인트 (영어)', 3);
     else if (e.kind === 'notes') body = field('notes', '상세 노트 (영어)', 7);
     else if (e.kind === 'entity') body = field('name', '이름 (영어)') + field('aliases', '별칭 (쉼표로 구분, 원문 표기 그대로)') + select('type', '종류', ENTITY_TYPES.map(t => [t, KIND_KO[t]]));
@@ -1806,13 +1799,11 @@ function journalHtml(st) {
                 : `<details class="sp-notes" data-group="notes:${esc(g.id)}" ${ui.savesOpen.get('notes:' + g.id) ? 'open' : ''}><summary>상세 노트 ${tools([btn('edit-notes', `${s.id}|${g.id}`, '✎')])}</summary><p>${esc(T(g.notes, g.koNotes))}</p></details>`;
             return `<div class="sp-seg"><div class="sp-seg-h">${esc(g.id)} ${g.source ? esc(priorRoomLabel(g.source.room)) + (Number.isInteger(g.source.from) ? ` #${g.source.from}–#${g.source.to}` : '') : Number.isInteger(g.from) ? `#${g.from}–#${g.to}` : ''}</div>${outline}<ul class="sp-pts">${list}</ul>${notes}</div>`;
         }).join('');
-        const legacy = !s.legacyOutline ? '' : isEditing('legacy', s.id) ? editForm()
-            : `<div class="sp-legacy"><span class="sp-badge">이전 버전 개요</span> ${esc(T(s.legacyOutline, s.koOutline))} ${tools([btn('edit-legacy', s.id, '✎', '이전 버전 개요 편집')])}</div>`;
         const outlineText = sceneOutlineParts(s).length ? '' : '<p class="sp-dim">개요 없음</p>';
         return `<div class="sp-card sp-scene ${s.status === 'open' ? 'sp-open' : ''} ${s.star ? 'sp-star' : ''}">${head}
             <div class="sp-title">${esc(T(s.title, s.koTitle))}${s.where ? ` <small>@ ${esc(s.where)}</small>` : ''}</div>
             ${s.who.length ? `<div class="sp-who">${whoChips(mem, s.who)}</div>` : ''}
-            <div class="sp-outline">${s.segs.filter(g => g.outline).map(g => `<p>${esc(T(g.outline, g.koOutline))}</p>`).join('')}</div>${legacy}${outlineText}
+            <div class="sp-outline">${s.segs.filter(g => g.outline).map(g => `<p>${esc(T(g.outline, g.koOutline))}</p>`).join('')}</div>${outlineText}
             <details class="sp-more" data-group="scene:${esc(s.id)}" ${(ui.edit && String(ui.edit.id).startsWith(s.id + '|')) || ui.savesOpen.get('scene:' + s.id) ? 'open' : ''}><summary>구간 ${s.segs.length} · 포인트 ${pts.length} (주입 ${pts.filter(x => pointInjected(x.p)).length})</summary>
                 <div class="sp-dim sp-keyhelp">● 선택됨 / ○ 선택 안 함 / 📌 우선 주입 고정. 선택한 내용은 기억 주입에 우선 반영해요. ${btn('rekey-scene', s.id, '⟳ 주입 고르기', '개요와 상태 목록에 없는 중요한 포인트만 AI가 다시 골라요 (직접 지정·고정은 유지)')}</div>
                 ${segHtml}</details></div>`;
@@ -1967,7 +1958,7 @@ function injectHtml(st) {
         ${inj.omittedScenes ? `<div class="sp-warn">예산 때문에 제목도 넣지 못한 장면이 ${inj.omittedScenes}개 있어요.</div>` : ''}
         ${inj.pinOverflow ? `<div class="sp-warn">📌 고정 항목 ${inj.pinMissing}개가 주입 상한 안에 들어가지 못해 빠졌어요. 고정을 줄이거나 상한을 늘려 주세요.</div>` : ''}
         <div class="sp-aspect">회상한 장면과 이유</div>${rec}
-        ${(() => { const n = st.mem.scenes.filter(needsRekey).length; return n ? `<div class="sp-row" style="margin-top:8px">${btn('rekey-old', '', `⟳ 예전 기록 주입 포인트 고르기 (${n}장면)`, '예전 버전에서 기록한 장면은 포인트가 전부 주입돼요. 다시 기록하지 않고 주입할 포인트만 골라요')}</div>` : ''; })()}</div>
+        </div>
         <pre class="sp-pre">${esc(inj.text)}</pre>
         <div class="sp-dim">마지막 메시지를 기준으로 계산했어요. 실제 생성 직전에 한 번 더 계산해요.</div>`;
 }
@@ -2062,7 +2053,6 @@ function startEdit(kind, id) {
     let values = {};
     if (kind === 'scene') { const s = mem.scenes.find(x => x.id === id); values = { title: s.title, where: s.where }; }
     if (kind === 'segoutline') { const [sid, gid] = id.split('|'); values = { outline: mem.scenes.find(x => x.id === sid).segs.find(g => g.id === gid).outline || '' }; }
-    if (kind === 'legacy') values = { outline: mem.scenes.find(x => x.id === id).legacyOutline || '' };
     if (kind === 'point') values = { text: findPoint(mem, id).p.text };
     if (kind === 'notes') { const [sid, gid] = id.split('|'); values = { notes: mem.scenes.find(x => x.id === sid).segs.find(g => g.id === gid).notes }; }
     if (kind === 'entity') { const e = mem.entities.find(x => x.id === id); values = { name: e.name, aliases: (e.aliases || []).join(', '), type: e.type }; }
@@ -2090,11 +2080,6 @@ async function saveEdit() {
             const g = mem.scenes.find(x => x.id === sid)?.segs.find(x => x.id === gid);
             if (!g) return false;
             if ((g.outline || '') !== trim(v.outline)) { g.outline = trim(v.outline); delete g.koOutline; if (!g.outline) delete g.outline; }
-        } else if (e.kind === 'legacy') {
-            const sc = mem.scenes.find(x => x.id === e.id);
-            if (!sc) return false;
-            if (trim(v.outline)) { if (sc.legacyOutline !== trim(v.outline)) { sc.legacyOutline = trim(v.outline); delete sc.koOutline; } }
-            else { delete sc.legacyOutline; delete sc.koOutline; }
         } else if (e.kind === 'point') {
             const { p } = findPoint(mem, e.id);
             if (!p || !trim(v.text)) return false;
@@ -2143,7 +2128,6 @@ async function handle(act, id) {
         case 'edit-point': return startEdit('point', id);
         case 'edit-notes': return startEdit('notes', id);
         case 'edit-segoutline': return startEdit('segoutline', id);
-        case 'edit-legacy': return startEdit('legacy', id);
         case 'edit-ent': return startEdit('entity', id);
         case 'edit-rec': return startEdit('record', id);
         case 'add-rec':
@@ -2175,7 +2159,6 @@ async function handle(act, id) {
             p.pin = !p.pin;
         }, { undoable: false });
         case 'rekey-scene': return rekeyScenes([id]);
-        case 'rekey-old': return rekeyScenes(state()?.mem.scenes.filter(needsRekey).map(x => x.id) || []);
         case 'del-point': return commitEdit(m => { const { g, j } = findPoint(m, id); if (!g) return false; g.points.splice(j, 1); });
         case 'del-rec': return commitEdit(m => { m.records = m.records.filter(x => x.id !== id); });
         case 'save-new': return saveNew();

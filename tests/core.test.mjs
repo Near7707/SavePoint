@@ -475,7 +475,7 @@ test('retry note asks to reread the cited message instead of swapping fields', a
 });
 
 // ───── v0.2.4: stored vs injected points ─────
-import { sceneFull, pointInjected, openPoints, validateRekey, applyRekey, needsRekey, rekeyItems } from '../core.js';
+import { sceneFull, pointInjected, openPoints, validateRekey, applyRekey, rekeyItems } from '../core.js';
 
 test('only key points are injected, also for the open scene; all false means outline only', () => {
     const { mem } = applyResult(emptyMem(), lanternResult(), chunkOf(0, 5));
@@ -494,7 +494,6 @@ test('points stored before v0.2.4 (no key) are still injected', () => {
     const { mem } = applyResult(emptyMem(), lanternResult(), chunkOf(0, 5));
     for (const p of mem.scenes[0].segs[0].points) delete p.key;
     assert.equal(sceneFull(mem.scenes[0]).split('\n').length, 3);
-    assert.equal(needsRekey(mem.scenes[0]), true);
 });
 
 // ───── v0.2.5: part outlines are never rewritten ─────
@@ -522,22 +521,6 @@ test('a continue reply no longer needs keys for earlier points', () => {
     assert.deepEqual(e, []);
     const noKey = lanternResult(); delete noKey.scenes[0].points[0].key;
     assert.ok(validateResult(noKey, { mem: emptyMem(), chunk: chunkOf(0, 5) }).some(x => x.includes('.key must be true or false')));
-});
-
-test('a pre-v0.2.5 scene outline is kept as the legacy outline, never moved into a part', () => {
-    const { mem } = applyResult(emptyMem(), lanternResult(), chunkOf(0, 5));
-    const old = JSON.parse(JSON.stringify(mem));
-    const sc = old.scenes[0];
-    sc.outline = 'Old scene-wide outline about the card game and the walk home.';   // v0.2.4 shape
-    for (const g of sc.segs) delete g.outline;
-    const cleaned = cleanMem(old);
-    assert.equal(cleaned.scenes[0].legacyOutline, sc.outline);
-    assert.ok(cleaned.scenes[0].segs.every(g => !g.outline));
-    assert.equal(cleaned.scenes[0].outline, undefined);
-    // a new part continues next to it
-    const cont = { scenes: [{ scene: 'continue', title: 'x', outline: 'They parted at the harbor.', points: [], ended: true }] };
-    const next = applyResult(cleaned, cont, chunkOf(6, 7)).mem;
-    assert.match(sceneFull(next.scenes[0]), /Old scene-wide outline.*They parted at the harbor/s);
 });
 
 // ───── v0.2.5: recall by what was actually injected ─────

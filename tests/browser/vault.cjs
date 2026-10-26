@@ -44,21 +44,11 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const files = page => page.evaluate(() => Object.fromEntries(M.files));
     const settingsOf = page => page.evaluate(() => JSON.parse(JSON.stringify(M.settings)));
 
-    // ── 1. migration of v0.2.1 settings slots ──
-    const legacyMem = { scenes: [{ id: 's1', title: 'Old scene', where: '', who: [], status: 'closed', star: false, pin: false, outline: 'Old outline.', segs: [{ id: 'g1', from: 0, to: 3, points: [], notes: '' }] }], entities: [], records: [], next: { s: 2, g: 2, e: 1, r: 1 } };
+    const oldMem = { scenes: [{ id: 's1', title: 'Old scene', where: '', who: [], status: 'closed', star: false, pin: false, segs: [{ id: 'g1', from: 0, to: 3, outline: 'Old outline.', points: [], notes: '' }] }], entities: [], records: [], next: { s: 2, g: 2, e: 1, r: 1 } };
     const room = JSON.stringify(['ari.png', 'chatA']);
-    let page = await session({ settings: { savePoint: { saves: {
-        manual1: { id: 'manual1', name: 'Legacy slot', auto: false, room, char: 'Ari', created: 1, updated: 2, stats: { scenes: 1 }, msgCount: 4, pos: null, mem: legacyMem },
-        auto_x: { id: 'auto_x', name: 'Legacy auto', auto: true, room, char: 'Ari', created: 1, updated: 3, stats: { scenes: 1 }, msgCount: 4, pos: null, mem: legacyMem },
-    } } } });
-    await page.waitForTimeout(500);
-    let f = await files(page), st = await settingsOf(page);
-    ok(f['savepoint-index.json'] && f['savepoint-slot-manual1.json'] && Object.keys(f).some(k => k.startsWith('savepoint-auto-')), '1. 설정의 기존 슬롯 → 서버 파일 + 목록으로 이전');
-    ok(!st.savePoint.saves && Object.keys(st.savePoint.localSaves).length === 0 && st.savePoint.slotCache.length === 2 && st.savePoint.slotCache.every(e => !e.mem), '1. 이전 성공분만 설정에서 비움, 설정에는 목록 캐시(기억 없음)만');
-    await page.close();
-
-    // ── 2. migration blocked by a failing server keeps the slots in settings ──
-    page = await session({ serverDown: true, settings: { savePoint: { saves: { m2: { id: 'm2', name: 'Keep me', auto: false, room, char: 'Ari', created: 1, updated: 2, stats: {}, msgCount: 1, pos: null, mem: legacyMem } } } } });
+    let page, st, f;
+    // ── 2. a slot kept only in settings stays there while the server cannot be written ──
+    page = await session({ serverDown: true, settings: { savePoint: { localSaves: { m2: { id: 'm2', name: 'Keep me', auto: false, room, char: 'Ari', created: 1, updated: 2, stats: {}, msgCount: 1, pos: null, mem: oldMem } } } } });
     st = await settingsOf(page);
     ok(st.savePoint.localSaves.m2?.mem && (await page.evaluate(() => __savePoint.listSaves().length)) === 1, '2. 서버를 쓸 수 없으면 기존 슬롯은 설정에 그대로');
     await page.evaluate(() => { __savePoint.handle('tab', 'saves'); $('#sp_wand').trigger('click'); });

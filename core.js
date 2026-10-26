@@ -112,8 +112,7 @@ export function chunkMessages(messages, limit) {
 // either are injected as before.
 export const pointId = (g, j) => `${g.id}.${j}`;
 // A scene's outline is the outlines of its parts in order; nothing written earlier is rewritten.
-// Scenes recorded before v0.2.5 keep their one scene-wide outline as legacyOutline.
-export const sceneOutlineParts = s => [...(s.legacyOutline ? [s.legacyOutline] : []), ...s.segs.map(g => g.outline).filter(Boolean)];
+export const sceneOutlineParts = s => s.segs.map(g => g.outline).filter(Boolean);
 export const sceneOutlineText = s => sceneOutlineParts(s).join(' ') || s.title;
 export const pointInjected = p => p.pin === true || (p.keyUser ?? p.key ?? true);
 export const pointSymbol = p => p.pin === true ? '📌' : pointInjected(p) ? '●' : '○';
@@ -1044,9 +1043,6 @@ export function cleanMem(raw) {
                     notes: str(g.notes), ...(str(g.koNotes) ? { koNotes: g.koNotes } : {}), ...(str(g.koOutline) ? { koOutline: g.koOutline } : {}) };
             }) };
         if (str(s.koTitle)) scene.koTitle = s.koTitle;
-        // Pre-v0.2.5 scenes had one scene-wide outline; it is kept apart, never assigned to a part.
-        const legacy = str(s.legacyOutline) || (scene.segs.some(g => g.outline) ? '' : str(s.outline));
-        if (legacy) { scene.legacyOutline = legacy; if (str(s.koOutline)) scene.koOutline = s.koOutline; }
         if (s.external) scene.external = true;
         out.scenes.push(scene);
     }
@@ -1108,8 +1104,6 @@ export function applyRekey(mem, sceneId, keys) {
     for (const [id, v] of Object.entries(keys)) { const p = findPointById(scene, id); if (p && typeof v === 'boolean') p.key = v; }
     return next;
 }
-// Scenes whose points were stored before key points existed.
-export const needsRekey = scene => scene.segs.some(g => g.points.some(p => typeof p.key !== 'boolean'));
 
 // ───────── record check (warnings only) ─────────
 

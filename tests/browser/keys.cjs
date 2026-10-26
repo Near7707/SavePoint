@@ -77,17 +77,6 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.pin && r.symbol === '📌' && r.inj.includes('## Pinned points'), '4. 포인트 핀은 📌로 표시하고 별도로 주입');
     await ev(() => __savePoint.handle('key-toggle', 's1|g1|0'));
     ok((await ev(() => document.querySelector('[data-act="key-toggle"][data-id="s1|g1|0"]').textContent)) === '●', '4. 📌를 누르면 고정 전 직접 선택으로 복귀');
-    // legacy scenes (no key at all): all injected, "예전 기록 주입 포인트 고르기" fixes it without re-collecting
-    await ev(() => { const st = __savePoint.state(); for (const g of st.mem.scenes[0].segs) for (const p of g.points) { delete p.key; delete p.keyUser; } st.mem.scenes[0].segs[0].points[0].keyUser = false; __savePoint.refreshInjection(); __savePoint.handle('tab', 'inject'); });
-    r = await ev(() => $('.sp-body').text());
-    ok(r.includes('예전 기록 주입 포인트 고르기 (1장면)'), '5. 예전 기록이 있으면 주입 탭에 다시 고르기 버튼');
-    const last = await ev(() => __savePoint.state().lastIndex);
-    await ev(() => __savePoint.handle('rekey-old'));
-    r = await ev(() => ({ calls: M.rekeyCalls, pts: __savePoint.state().mem.scenes[0].segs.flatMap(g => g.points), last: __savePoint.state().lastIndex, hidden: M.chat.filter(m => m.is_system).length }));
-    ok(r.calls === 1 && r.pts.every(p => typeof p.key === 'boolean') && r.last === last, '5. 원문 다시 수집 없이 key만 다시 고름 (기록 위치 그대로)');
-    ok(r.pts[0].keyUser === false, '5. 직접 지정한 포인트는 그대로');
-    await ev(() => __savePoint.handle('undo'));
-    ok((await ev(() => __savePoint.state().mem.scenes[0].segs[0].points.some(p => typeof p.key !== 'boolean'))), '5. ⏪ 리와인드로 되돌릴 수 있음');
     // reset label
     await ev(() => __savePoint.handle('tab', 'saves'));
     r = await ev(() => $('.sp-body [data-act="clear-room"]').text());
