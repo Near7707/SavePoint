@@ -286,7 +286,7 @@ test('message tool buttons appear once on RP replies, open the looting form, and
     const elements = h.context.chat.map((_, index) => {
         const element = { children: [], getAttribute: () => String(index) };
         const toolbar = { append(node) { element.children.push(node); node.remove = () => { element.children = element.children.filter(x => x !== node); }; } };
-        element.querySelector = q => q === '.sp-loot-button' ? element.children[0] : q === '.extraMesButtons' ? toolbar : null;
+        element.querySelector = q => q === '.sp-loot-button' ? element.children[0] : q === '.mes_buttons' ? toolbar : null;
         return element;
     });
     const previous = globalThis.document;

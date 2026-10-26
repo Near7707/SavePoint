@@ -250,6 +250,15 @@
 .sp-point-detail > div { padding-top: 4px; font-size: .85em; }
 .sp-queued blockquote { white-space: pre-wrap; overflow-wrap: anywhere; margin: 10px 0; padding: 8px; border-left: 3px solid var(--sp-accent, #baa77b); max-height: 240px; overflow: auto; }
 .sp-queued p { overflow-wrap: anywhere; }
+.mes_buttons .sp-loot-button {
+    display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; box-sizing: border-box;
+    position: relative; height: 26px; min-width: 38px; padding: 0 9px; margin-left: 15px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--SmartThemeBorderColor, #8884); background: var(--SmartThemeBlurTintColor, #8881);
+    font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif; font-size: 15px; line-height: 1;
+    opacity: .9; transition: opacity .2s, filter .2s; user-select: none;
+}
+.mes_buttons .sp-loot-button::before { content: ''; position: absolute; left: -9px; top: 50%; width: 1px; height: 16px; transform: translateY(-50%); background: var(--SmartThemeBodyColor, currentColor); opacity: .25; }
+.mes_buttons .sp-loot-button:hover, .mes_buttons .sp-loot-button:focus-visible { opacity: 1; filter: brightness(1.15); }
 #sp_loot_dialog {
     box-sizing: border-box; width: min(560px, calc(100vw - 24px)); min-width: 0; max-width: calc(100vw - 24px);
     height: auto; max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); margin: auto; inset: 0;

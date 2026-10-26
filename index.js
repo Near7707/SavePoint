@@ -1682,11 +1682,13 @@ function installLootButtons() {
         const index = Number(element.getAttribute('mesid')), m = chat()[index];
         const old = element.querySelector('.sp-loot-button');
         if (!eligible(m) || m.is_user || !settings().enabled) { old?.remove(); continue; }
-        const toolbar = element.querySelector('.extraMesButtons') || element.querySelector('.mes_buttons');
+        // Kept out of SillyTavern's own tool row: a small separate button at its right end,
+        // visible without opening the ⋯ menu.
+        const toolbar = element.querySelector('.mes_buttons');
         if (!toolbar || old) continue;
-        // Same markup as SillyTavern's own toolbar icons, so it inherits their size, colour and alignment.
         const button = document.createElement('div');
-        button.className = 'mes_button sp-loot-button fa-solid fa-gem interactable';
+        button.className = 'sp-loot-button interactable';
+        button.textContent = '💎';
         button.title = '💎 루팅'; button.setAttribute('aria-label', '💎 루팅');
         button.setAttribute('role', 'button'); button.tabIndex = 0;
         const open = e => { e.preventDefault(); e.stopPropagation(); openLootDialog(Number(element.getAttribute('mesid'))); };
