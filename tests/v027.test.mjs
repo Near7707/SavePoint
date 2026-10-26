@@ -21,7 +21,7 @@ test('bare names are linked to the one entity they name (declared in this reply)
 
 test('a name shared by two entities is not guessed', () => {
     const mem = emptyMem();
-    mem.entities.push({ id: 'e1', type: 'item', name: 'Pip the paper kite', aliases: ['Pip'] }, { id: 'e2', type: 'place', name: 'Pip Crossing', aliases: ['Pip'] },
+    mem.entities.push({ id: 'e1', type: 'item', name: 'Pip the paper kite', aliases: ['Pip'] }, { id: 'e2', type: 'place', name: 'Pip Lane', aliases: ['Pip'] },
         { id: 'e3', type: 'person', name: 'Theo', aliases: [] });
     const data = { scenes: [{ scene: 'new', title: 'T', outline: 'O', who: ['theo'], points: [pt('x', [0])] }],
         changes: [{ op: 'add', type: 'item', entity: 'Pip', holder: 'Theo', text: 't', msgs: [0] }] };

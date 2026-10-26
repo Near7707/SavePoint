@@ -166,7 +166,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => {
         M.settings.savePoint.inputChars = 60000; M.manyPoints = true;
         const base = M.chat.length;
-        M.add(90, i => (i === base + 80 ? 'PROMISE: rematch on Tuesday. ' : `Lap ${i}: `) + 'the band plays on and the crowd claps along. '.repeat(14));
+        M.add(90, i => (i === base + 80 ? 'PROMISE: picnic on Sunday. ' : `Note ${i}: `) + 'the band plays on and the crowd claps along. '.repeat(14));
     });
     await ev(() => __savePoint.handle('run'));
     await page.waitForTimeout(900);
