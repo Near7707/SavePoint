@@ -1,3 +1,4 @@
+import { upgradeEvidence, detachEvidence, cleanPrior, cleanSource } from './provenance.js';
 // SavePoint core: pure data logic (no SillyTavern, no DOM).
 // Memory = scenes (journal) + entities (who/what) + records (current state).
 
@@ -16,7 +17,7 @@ const strList = v => (Array.isArray(v) ? v.map(str).filter(Boolean) : []);
 const uniq = list => [...new Set(list)];
 
 export function emptyMem() {
-    return { scenes: [], entities: [], records: [], next: { s: 1, g: 1, e: 1, r: 1 } };
+    return { evidenceVersion: 1, scenes: [], entities: [], records: [], next: { s: 1, g: 1, e: 1, r: 1 } };
 }
 function takeId(mem, k) {
     const n = mem.next[k] || 1;
@@ -560,7 +561,7 @@ function numEvidence(msgs) {
     return (msgs || []).map(m => (typeof m === 'string' && /^#?\d+$/.test(m.trim()) ? Number(m.replace('#', '')) : m));
 }
 export function applyResult(mem, data, chunk, { close = false } = {}) {
-    const next = clone(mem);
+    const next = clone(upgradeEvidence(mem));
     const refs = new Map();
     for (const e of data.entities || []) {
         if (str(e.id)) {
@@ -600,6 +601,7 @@ export function applyResult(mem, data, chunk, { close = false } = {}) {
         const who = uniq(strList(s.who).map(resolve).filter(Boolean));
         if (s.scene === 'continue' && current && i === 0) {
             current.segs.push(seg);
+            delete current.external;
             // The scene keeps the title it started with; a later part does not rename it.
             if (str(s.where)) current.where = str(s.where);
             current.who = uniq([...current.who, ...who]);
@@ -624,7 +626,7 @@ export function applyResult(mem, data, chunk, { close = false } = {}) {
         const msgs = numEvidence(c.msgs);
         const src = segFor(msgs);
         if (c.op === 'add') {
-            const r = { id: takeId(next, 'r'), type: c.type, text: str(c.text), src: [src], msgs, pin: false };
+            const r = { id: takeId(next, 'r'), type: c.type, text: str(c.text), src: [src], msgs, pin: false, evidenceVersion: 1 };
             if (c.type === 'party') { r.entity = resolve(c.entity); r.aspect = c.aspect; }
             if (c.type === 'item') { r.entity = resolve(c.entity); r.holder = resolve(c.holder); }
             if (c.type === 'quest') {
@@ -686,7 +688,8 @@ export function applyDiff(mem, diff, backwards = false) {
         out[kind] = [...order.filter(id => map.has(id)).map(id => map.get(id)), ...[...map.values()].filter(e => !order.includes(e.id))];
     }
     out.next = clone(backwards ? diff.nextBefore : diff.nextAfter);
-    return out;
+    out.evidenceVersion = 0;
+    return upgradeEvidence(out);
 }
 // st: { mem, lastIndex, history, floor }
 export function pushHistory(st, before, after, meta = {}) {
@@ -1003,6 +1006,7 @@ export function buildInjection(mem, opts = {}) {
 export function cleanMem(raw) {
     if (!plain(raw) || !Array.isArray(raw.scenes) || !Array.isArray(raw.entities) || !Array.isArray(raw.records)) throw new Error('SavePoint 기억 형식이 아니에요.');
     const out = emptyMem();
+    out.evidenceVersion = raw.evidenceVersion === 1 ? 1 : 0;
     const ids = new Set();
     const id = (v, prefix) => {
         const s = str(v);
@@ -1022,11 +1026,12 @@ export function cleanMem(raw) {
             status: s.status === 'open' ? 'open' : 'closed', star: !!s.star, pin: !!s.pin,
             segs: s.segs.map(g => {
                 if (!plain(g)) throw new Error('장면 기록이 잘못됐어요.');
-                return { id: id(g.id, 'g'), from: Number.isInteger(g.from) ? g.from : null, to: Number.isInteger(g.to) ? g.to : null,
+                return { ...(g.external ? { external: true } : {}), ...(cleanSource(g.source) ? { source: cleanSource(g.source) } : {}), id: id(g.id, 'g'), from: Number.isInteger(g.from) ? g.from : null, to: Number.isInteger(g.to) ? g.to : null,
                     ...(str(g.outline) ? { outline: str(g.outline) } : {}),
                     points: (Array.isArray(g.points) ? g.points : []).filter(p => plain(p) && str(p.text)).map(p => ({
                         text: str(p.text), kind: p.kind === 'change' ? 'change' : 'moment',
                         ...(typeof p.key === 'boolean' ? { key: p.key } : {}),
+                        ...(cleanPrior(p.oldEvidence).length ? { oldEvidence: cleanPrior(p.oldEvidence) } : {}),
                         msgs: (Array.isArray(p.msgs) ? p.msgs : []).filter(m => Number.isInteger(m) || isSegRef(m)),
                         ...(typeof p.keyUser === 'boolean' ? { keyUser: p.keyUser } : {}),
                         ...(p.pin === true ? { pin: true } : {}),
@@ -1042,12 +1047,12 @@ export function cleanMem(raw) {
     }
     for (const r of raw.records) {
         if (!plain(r) || !RECORD_TYPES.includes(r.type) || !str(r.text)) throw new Error('상태 항목이 잘못됐어요.');
-        const rec = { id: id(r.id, 'r'), type: r.type, text: str(r.text), src: strList(r.src), msgs: (Array.isArray(r.msgs) ? r.msgs : []).filter(m => Number.isInteger(m) || isSegRef(m)), pin: !!r.pin };
+        const rec = { evidenceVersion: r.evidenceVersion === 1 ? 1 : 0, ...(cleanPrior(r.oldEvidence).length ? { oldEvidence: cleanPrior(r.oldEvidence) } : {}), id: id(r.id, 'r'), type: r.type, text: str(r.text), src: strList(r.src), msgs: (Array.isArray(r.msgs) ? r.msgs : []).filter(m => Number.isInteger(m) || isSegRef(m)), pin: !!r.pin };
         if (r.type === 'party') { rec.entity = eref(r.entity); rec.aspect = ASPECTS.includes(r.aspect) ? r.aspect : 'relation'; }
         if (r.type === 'item') { rec.entity = eref(r.entity); rec.holder = eref(r.holder); }
         if (r.type === 'quest') {
             rec.kind = QUEST_KINDS.includes(r.kind) ? r.kind : 'goal'; rec.status = QUEST_STATUS.includes(r.status) ? r.status : 'open'; rec.who = uniq((r.who || []).map(eref).filter(Boolean));
-            if (plain(r.terms) && Number.isInteger(r.terms.msg) && str(r.terms.quote)) rec.terms = { msg: r.terms.msg, quote: str(r.terms.quote), context: str(r.terms.context) || str(r.terms.quote) };
+            if (plain(r.terms) && (Number.isInteger(r.terms.msg) || cleanSource(r.terms.source)) && str(r.terms.quote)) rec.terms = { msg: Number.isInteger(r.terms.msg) ? r.terms.msg : null, quote: str(r.terms.quote), context: str(r.terms.context) || str(r.terms.quote), ...(cleanSource(r.terms.source) ? { source: cleanSource(r.terms.source) } : {}) };
         }
         if (r.type === 'world') { rec.kind = WORLD_KINDS.includes(r.kind) ? r.kind : 'rule'; rec.knownBy = uniq((r.knownBy || []).map(eref).filter(Boolean)); if (eref(r.entity)) rec.entity = r.entity; }
         if (str(r.ko)) rec.ko = r.ko;
@@ -1057,13 +1062,11 @@ export function cleanMem(raw) {
     out.next = { s: max('s') + 1, g: max('g') + 1, e: max('e') + 1, r: max('r') + 1 };
     if (plain(raw.next)) for (const k of ['s', 'g', 'e', 'r']) if (Number.isInteger(raw.next[k]) && raw.next[k] > out.next[k]) out.next[k] = raw.next[k];
     for (let i = 0; i < out.scenes.length - 1; i++) out.scenes[i].status = 'closed';
-    return out;
+    return upgradeEvidence(out);
 }
-// A memory taken into another chat: message numbers no longer point anywhere.
-export function detachMem(mem) {
-    const out = clone(mem);
-    for (const s of out.scenes) { s.external = true; if (s.status === 'open') s.status = 'closed'; }
-    return out;
+// Preserve the narrative scene; detach only references to the original chat.
+export function detachMem(mem, sourceRoom = null) {
+    return detachEvidence(mem, sourceRoom);
 }
 
 // ───────── summary numbers for save files and status ─────────
@@ -1140,4 +1143,5 @@ export function groupErrors(errors) {
     const head = names.size ? [`Names used instead of entity ids (declare them in "entities" or use their ids): ${[...names].map(([n, k]) => `"${n}" ×${k}`).join(', ')}`] : [];
     return [...head, ...rest];
 }
+
 

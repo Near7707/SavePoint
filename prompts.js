@@ -211,6 +211,7 @@ ${terms ? `
 ${terms}
 
 For each record with TERMS, read the context and the messages from its first to its last evidence, then check: who must do what for whom, under which condition, whether it was actually agreed, and whether the terms changed later in the messages. If both sides were to do the same thing, nobody owes anyone. Report the record as a misread if it states an obligation, a debtor or a condition that the terms do not create.
+When TERMS is labelled as a cached quotation from a previous chat, its old message number is not a current-chat reference. Compare the supplied current events with that saved quotation and context only. The complete earlier agreement cannot be rechecked here; never report an earlier fact as unsupported merely because the earlier original messages are unavailable.
 ` : ''}
 [RECORDS] (id: text)
 ${records || '(none)'}
@@ -226,4 +227,5 @@ Return ONLY one JSON object:
 "basis": "contradicted" when a message line says something different (copy that line word for word as the second "conflict" entry); "unsupported" when the messages simply do not show it.
 If nothing is wrong, return {"issues": []}.`, names);
 }
+
 

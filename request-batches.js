@@ -75,7 +75,7 @@ export function planReviewBatches(statements, readMessage, makePrompt, limit, { 
         if (input.notShown.length || chars > limit || !first.messages.length) {
             pending.delete(first);
             deferred.push({ ...first, missing: input.notShown, chars,
-                reason: input.notShown.length ? 'missing' : !first.messages.length ? 'no-evidence' : 'size' });
+                reason: !first.messages.length && first.external?.length ? 'foreign' : input.notShown.length ? 'missing' : !first.messages.length ? 'no-evidence' : 'size' });
             continue;
         }
         const evidence = new Set(first.messages);
@@ -89,3 +89,4 @@ export function planReviewBatches(statements, readMessage, makePrompt, limit, { 
     flush();
     return { batches, deferred };
 }
+

@@ -7,6 +7,7 @@ import vm from 'node:vm';
 import * as core from '../core.js';
 import * as prompts from '../prompts.js';
 import * as batches from '../request-batches.js';
+import * as provenance from '../provenance.js';
 
 const src = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 const section = (a, b) => src.slice(src.indexOf(a), src.indexOf(b, src.indexOf(a)));
@@ -22,7 +23,7 @@ function harness({ count = 40, chars = 1000, limit = 20000, failAt = Infinity, c
     const s = { guide: prompts.DEFAULT_GUIDE, inputChars: limit, profileId: 'fake', responseLength: 8000 };
     const calls = [], notifications = [];
     const ui = {};
-    const sandbox = { ...core, ...prompts, ...batches, Cancelled, RequestTimeout, ui,
+    const sandbox = { ...core, ...prompts, ...batches, ...provenance, Cancelled, RequestTimeout, ui,
         structuredClone, Set, Map, Date, console: { error() {} },
         settings: () => s, num: key => s[key], names: () => ({}), cardText: () => '',
         chat: () => chat, state: () => st, ensureState: () => st, hasChat: () => true, mainBusy: () => false, reconcile: () => true,
@@ -165,3 +166,4 @@ test('a stored checkpoint failure keeps only its unrecorded part after a partial
     assert.equal(h.st.lastIndex, 39);
     assert.equal(h.st.autoFail, undefined);
 });
+

@@ -366,14 +366,16 @@ test('chunks stay under the limit and keep message numbers', () => {
     assert.deepEqual(chunks.flatMap(c => c.indices), msgs.map(m => m.index));
 });
 
-test('stored memory survives cleaning; detached memory closes scenes', () => {
+test('stored memory survives cleaning; detached memory preserves an open scene and separates evidence', () => {
     const { mem } = applyResult(emptyMem(), lanternResult(), chunkOf(0, 5));
     const back = cleanMem(JSON.parse(JSON.stringify(mem)));
     assert.equal(JSON.stringify(back.scenes), JSON.stringify(mem.scenes));
     assert.deepEqual(back.next, mem.next);
     const d = detachMem(back);
     assert.equal(d.scenes[0].external, true);
-    assert.equal(openScene(d), null);
+    assert.equal(openScene(d).id, back.scenes[0].id);
+    assert.deepEqual(d.scenes[0].segs[0].points[0].msgs, []);
+    assert.equal(d.scenes[0].segs[0].source.room, null);
     assert.throws(() => cleanMem({ scenes: [{ id: 'x' }], entities: [], records: [] }));
 });
 
@@ -656,3 +658,4 @@ test('recall takes matching units within a hard share and never repeats injected
     assert.doesNotMatch(rec, /tea stand/, 'unrelated note sentences are not pulled in');
     assert.doesNotMatch(rec, /drew sketches at the stall/, 'already injected');
 });
+

@@ -6,9 +6,10 @@ import {
     pointInjected, pointSymbol, rekeyItems, validateRekey, applyRekey, needsRekey, sceneOutlineText, sceneOutlineParts,
     normalizeResult, validateCheck, checkScope, dupState, pointId,
     recordLine, entityName, estTokens, QUEST_KINDS, WORLD_KINDS, ENTITY_TYPES,
-    groupErrors,
+    groupErrors, findQuote,
 } from './core.js';
 import { Vault, roomHash } from './vault.js';
+import { upgradeEvidence, segmentPrior, evidenceNumbers } from './provenance.js';
 import { assertPromptFits, nextMessageChunk, planReviewBatches } from './request-batches.js';
 import { DEFAULT_GUIDE, guideHash, OLD_GUIDE_HASHES, buildCheckPrompt, buildRekeyPrompt, buildExtractPrompt, buildBoundaryPrompt, batchNote, retryNote, TRANSLATE_PROMPT } from './prompts.js';
 
@@ -16,7 +17,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.3.7';
+const VERSION = '0.3.8';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -110,7 +111,9 @@ function hasChat() { return roomKey() !== null; }
 function chat() { return ctx().chat || []; }
 function state() {
     const st = ctx().chatMetadata?.[MODULE];
-    return st && st.v === 1 ? st : null;
+    if (!st || st.v !== 1) return null;
+    if (st.mem.evidenceVersion !== 1) { st.mem = upgradeEvidence(st.mem); persistSoon(); }
+    return st;
 }
 function freshState(extra = {}) {
     return { v: 1, roomKey: roomKey(), mem: emptyMem(), lastIndex: -1, hashes: [], history: [], floor: -1, linkedSave: null, undo: null, review: null, rev: 0, ...extra };
@@ -345,8 +348,8 @@ function recentQuery() {
     return out.join('\n').slice(-5000);
 }
 function rawExcerpt(scene) {
-    if (scene.external) return '';
-    for (const g of scene.segs) for (const p of g.points) for (const n of p.msgs) {
+    if (scene.external && scene.segs.every(g => !g.external && !g.source)) return '';
+    for (const g of scene.segs.filter(g => !g.external && !g.source)) for (const p of g.points) for (const n of p.msgs) {
         if (Number.isInteger(n) && chat()[n]) return cleanText(chat()[n].mes).slice(0, 600);
     }
     return '';
@@ -842,50 +845,70 @@ async function autoCollect() {
 // A target and every original message needed to judge it travel together.
 // Missing/oversized evidence is deferred explicitly, never shortened.
 function checkStatements(st, scope) {
-    const mem = st.mem;
+    const mem = upgradeEvidence(st.mem);
     const recs = mem.records.filter(r => scope.records.includes(r.id));
     const segIds = new Set(scope.segs);
     for (const r of recs) for (const id of r.src || []) segIds.add(id);
     const segments = new Map(mem.scenes.flatMap(sc => sc.segs.map(g => [g.id, g])));
-    const ints = list => (list || []).filter(n => Number.isInteger(n) && n >= 0);
     const range = (from, to) => {
         const out = [];
         if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from) return out;
-        // A damaged/imported reference must not allocate an unbounded range.
         if (to >= chat().length) return [from, to];
         for (let n = from; n <= to; n++) if (!chat()[n] || eligible(chat()[n])) out.push(n);
         return out;
     };
-    const segmentNumbers = g => {
-        const full = range(g.from, g.to);
-        return full.length ? full : [...new Set(g.points.flatMap(p => ints(p.msgs)))];
+    const segmentNumbers = g => g.external || g.source ? [] : range(g.from, g.to);
+    const numbers = refs => {
+        const result = evidenceNumbers(mem, refs);
+        for (const ref of refs || []) {
+            const g = segments.get(ref);
+            if (g && !g.external && !g.source) result.messages.push(...segmentNumbers(g));
+        }
+        result.messages = [...new Set(result.messages)].sort((a, b) => a - b);
+        return result;
     };
-    const numbers = list => [...new Set((list || []).flatMap(n => {
-        if (Number.isInteger(n) && n >= 0) return [n];
-        const g = segments.get(n);
-        return g ? segmentNumbers(g) : [];
-    }))].sort((a, b) => a - b);
-    const points = [...segments.values()].filter(g => segIds.has(g.id)).flatMap(g => g.points);
+    const localSegments = [...segments.values()].filter(g => segIds.has(g.id) && !g.external && !g.source);
+    const points = localSegments.flatMap(g => g.points);
     const statements = [];
     for (const r of recs) {
-        let msgs = numbers(r.msgs);
-        // Include the rest of the event when a point cites more than the record.
-        for (const p of points) if (numbers(p.msgs).some(n => msgs.includes(n))) msgs = [...new Set([...msgs, ...numbers(p.msgs)])];
+        const evidence = numbers(r.msgs);
+        let msgs = evidence.messages;
+        const external = [...(r.oldEvidence || []), ...evidence.external];
+        for (const p of points) {
+            const pe = numbers(p.msgs);
+            if (pe.messages.some(n => msgs.includes(n))) {
+                msgs = [...new Set([...msgs, ...pe.messages])]; external.push(...pe.external);
+            }
+        }
         let terms = '';
         if (r.type === 'quest' && r.terms) {
-            msgs = [...new Set([...msgs, r.terms.msg])];
-            msgs = range(Math.min(...msgs), Math.max(...msgs));
-            terms = `${r.id} (#${r.terms.msg}): "${r.terms.quote}"\n  context: ${r.terms.context}`;
+            if (r.terms.source) {
+                external.push({ room: r.terms.source.room, msgs: Number.isInteger(r.terms.source.msg) ? [r.terms.source.msg] : [] });
+                terms = `${r.id} (cached quotation from a previous chat, not a current message number): "${r.terms.quote}"\n  cached context: ${r.terms.context}`;
+            } else {
+                msgs = [...new Set([...msgs, r.terms.msg])];
+                msgs = range(Math.min(...msgs), Math.max(...msgs));
+                terms = `${r.id} (#${r.terms.msg}): "${r.terms.quote}"\n  context: ${r.terms.context}`;
+            }
         }
-        statements.push({ id: r.id, kind: 'record', line: `${r.id}: ${recordLine(mem, r, false)}`, terms, messages: msgs });
+        const caveat = external.length ? '\n  Earlier supporting messages are in another chat. Check only the supplied current messages and cached quotation; never treat missing earlier evidence as an unsupported claim.' : '';
+        statements.push({ id: r.id, kind: 'record', line: `${r.id}: ${recordLine(mem, r, false)}${caveat}`, terms, messages: msgs, external });
     }
     for (const g of segments.values()) {
         if (!segIds.has(g.id)) continue;
-        if (g.outline) statements.push({ id: g.id, kind: 'journal', line: `${g.id}: ${g.outline}`, messages: segmentNumbers(g) });
-        g.points.forEach((p, j) => statements.push({ id: pointId(g, j), kind: 'journal', line: `${pointId(g, j)}: ${p.text}`, messages: numbers(p.msgs) }));
+        // Updating an imported record must not recheck every unchanged old scene.
+        if ((g.external || g.source) && !scope.segs.includes(g.id)) continue;
+        const prior = segmentPrior(g);
+        if (g.outline) statements.push({ id: g.id, kind: 'journal', line: `${g.id}: ${g.outline}`, messages: segmentNumbers(g), external: prior });
+        g.points.forEach((p, j) => {
+            const evidence = numbers(p.msgs);
+            statements.push({ id: pointId(g, j), kind: 'journal', line: `${pointId(g, j)}: ${p.text}`, messages: evidence.messages,
+                external: [...(p.oldEvidence || []), ...prior, ...evidence.external] });
+        });
     }
     return statements;
 }
+
 function checkPrompt(input) {
     return buildCheckPrompt({ names: names(), records: input.records, journal: input.journal,
         terms: input.terms, messages: input.messages, notShown: input.notShown });
@@ -909,6 +932,7 @@ async function runCheck(st, scope, { auto = false } = {}) {
         const statements = checkStatements(st, scope);
         const plan = planReviewBatches(statements, n => chat()[n] ? { name: speaker(chat()[n]), text: cleanText(chat()[n].mes) } : null,
             checkPrompt, num('inputChars', 5000, 1000000));
+        const partial = new Map(statements.filter(s => s.external?.length).map(s => [s.id, s]));
         const stamp = Date.now().toString(36);
         const issues = [], keys = new Set(), sent = new Set();
         const coverage = { sent: 0, cut: [], missing: [], batches: plan.batches.length, checked: 0, deferred: plan.deferred.length };
@@ -940,6 +964,13 @@ async function runCheck(st, scope, { auto = false } = {}) {
             for (const n of Object.keys(input.sent)) sent.add(Number(n));
             coverage.checked += input.ids.size;
             for (const x of result.issues) {
+                if (partial.has(x.about) || (x.also && partial.has(x.also))) {
+                    // Old numbers are never fetched. An absent old source is not
+                    // proof of an error. Keep only contradictions quoting a line
+                    // actually present in this request's current-room originals.
+                    const quote = x.conflict[1];
+                    if (x.kind !== 'misread' || x.basis !== 'contradicted' || !quote || !Object.values(input.sent).some(t => findQuote(t, quote))) continue;
+                }
                 // A model cannot supply evidence from outside this request.
                 const outside = x.msgs.filter(n => input.cover[n] !== 'whole');
                 if (outside.length) { x.kind = 'partial'; x.gaps = outside.map(n => ({ n, how: '이 검토 요청에 없는 근거 번호' })); }
@@ -947,7 +978,7 @@ async function runCheck(st, scope, { auto = false } = {}) {
                 if (keys.has(key)) continue;
                 keys.add(key);
                 issues.push({ ...x, id: `c${stamp}${issues.length}`, ignored: false,
-                    excerpt: x.msgs.map(n => chat()[n] ? `#${n} ${speaker(chat()[n])}: ${cleanText(chat()[n].mes).slice(0, 220)}` : '').filter(Boolean).slice(0, 2) });
+                    excerpt: x.msgs.filter(n => input.cover[n] === 'whole').map(n => `#${n} ${speaker(chat()[n])}: ${input.sent[n].slice(0, 220)}`).slice(0, 2) });
             }
         }
         assertValid(run, end);
@@ -955,13 +986,18 @@ async function runCheck(st, scope, { auto = false } = {}) {
         const allNeeded = new Set(statements.flatMap(s => s.messages));
         coverage.sent = sent.size;
         coverage.missing = [...allNeeded].filter(n => !sent.has(n)).sort((a, b) => a - b);
+        const deferredIds = new Set(plan.deferred.map(d => d.id));
+        for (const entry of partial.values()) if (!deferredIds.has(entry.id)) plan.deferred.push({ ...entry, reason: 'foreign', missing: [] });
+        coverage.deferred = plan.deferred.length;
         for (const d of plan.deferred) {
-            const problem = d.reason === 'size'
+            const problem = d.reason === 'foreign'
+                ? '근거가 이전 방에 있음 · 이전 원문 전체 확인은 보류했어요. 현재 방 근거와 저장된 조건 인용·문맥이 있으면 그 범위만 비교했어요. 기록 저장·업데이트는 유지돼요.'
+                : d.reason === 'size'
                 ? `근거 원문 전체를 함께 보내려면 ${d.chars.toLocaleString()}자가 필요해요 (입력 한도 ${num('inputChars', 5000, 1000000).toLocaleString()}자). 원문을 자르지 않고 이 항목의 검토를 보류했어요. 입력 한도를 늘린 뒤 다시 확인해 주세요.`
                 : d.reason === 'missing' ? '근거 원문을 찾을 수 없어 이 항목의 검토를 보류했어요.' : '근거 메시지 번호가 없어 이 항목의 검토를 보류했어요.';
             issues.push({ id: `c${stamp}${issues.length}`, about: d.id, kind: 'partial', ignored: false,
                 msgs: d.messages, conflict: [], excerpt: [], problem,
-                gaps: (d.missing.length ? d.missing : d.messages).map(n => ({ n, how: d.reason === 'missing' ? '원문 없음' : '이 항목의 검토 보류' })) });
+                gaps: d.reason === 'foreign' ? [{ label: '이전 방 근거', how: '현재 방 번호로 조회하지 않음' }] : (d.missing.length ? d.missing : d.messages).map(n => ({ n, how: d.reason === 'missing' ? '원문 없음' : '이 항목의 검토 보류' })) });
         }
         st.check = { at: Date.now(), status: issues.length ? 'issues' : 'ok', scope, issues, coverage };
     } catch (e) {
@@ -976,7 +1012,7 @@ async function runCheck(st, scope, { auto = false } = {}) {
     }
 }
 
-const gapText = gaps => gaps.map(g => `#${g.n} ${g.how}`).join(', ');
+const gapText = gaps => gaps.map(g => `${g.label || '#' + g.n} ${g.how}`).join(', ');
 const CHECK_KIND = { misread: '원문과 다름', unclear: '충돌 · 판단 보류', partial: '근거 일부 누락 · 판단 보류', contradiction: '모순' };
 const ABOUT_LABEL = (mem, about) => {
     if (/^r\d+$/.test(about)) {
@@ -1341,8 +1377,12 @@ async function loadSave(id, mode) {
     if (ui.run) return;
     const save = findSave(id);
     if (!save || !hasChat()) return;
-    let mem;
-    try { mem = cleanMem((await readSave(save))?.mem); } catch (e) { reportError(e); return; }
+    let mem, sourceRoom;
+    try {
+        const body = await readSave(save);
+        mem = cleanMem(body?.mem);
+        sourceRoom = typeof body?.room === 'string' ? body.room : typeof save.room === 'string' ? save.room : null;
+    } catch (e) { reportError(e); return; }
     const cur = state();
     if (cur && hasMemory(cur.mem) && !(await confirmBox('이 방의 지금 기억을 이 세이브 슬롯으로 바꿀까요? (⏪ 리와인드로 되돌릴 수 있어요)'))) return;
     const st = freshState({ mem, linkedSave: mode === 'continue' && !save.auto ? id : null, autoMark: chat().length - 1 });
@@ -1352,7 +1392,7 @@ async function loadSave(id, mode) {
         const h = hashesTo(p.lastIndex);
         if (digest(h) === p.digest) { exact = true; st.lastIndex = p.lastIndex; st.hashes = h; st.floor = p.lastIndex; }
     }
-    if (!exact) st.mem = detachMem(mem);
+    if (!exact) st.mem = detachMem(mem, sourceRoom);
     try { await transact(() => { ctx().chatMetadata[MODULE] = st; }); }
     catch (e) { reportError(e); return; }
     toastr.success(exact ? `저장 당시 위치(#${st.lastIndex})로 돌아갔어요. 그 뒤 메시지는 미기록이에요.`
@@ -1484,8 +1524,19 @@ function evidenceText(msgs) {
     }
     return [...out, ...refs.map(String)];
 }
-function evidenceChips(msgs) {
-    const list = evidenceText(msgs);
+function priorRoomLabel(room) {
+    if (!room) return '이전 방·출처 미상';
+    const mem = state()?.mem;
+    const rooms = [...new Set((mem?.scenes || []).flatMap(s => s.segs.flatMap(g => [g.source?.room, ...g.points.flatMap(p => (p.oldEvidence || []).map(e => e.room))]))
+        .concat((mem?.records || []).flatMap(r => [r.terms?.source?.room, ...(r.oldEvidence || []).map(e => e.room)])).filter(Boolean))];
+    if (!rooms.includes(room)) rooms.push(room);
+    return rooms.length > 1 ? `이전 방 ${rooms.indexOf(room) + 1}` : '이전 방';
+}
+function priorTermsLabel(terms) {
+    return terms.source ? `${priorRoomLabel(terms.source.room)}${Number.isInteger(terms.source.msg) ? ' #' + terms.source.msg : ''}` : `#${terms.msg}`;
+}
+function evidenceChips(msgs, oldEvidence = []) {
+    const list = [...evidenceText(msgs), ...oldEvidence.flatMap(e => evidenceText(e.msgs).map(t => `${priorRoomLabel(e.room)} ${t}`))];
     if (!list.length) return '';
     const shown = list.slice(0, 3).map(x => `<span class="sp-ev">${esc(x)}</span>`).join('');
     return `<span class="sp-evs" title="근거 메시지: ${esc(list.join(', '))}">${shown}${list.length > 3 ? `<span class="sp-ev">+${list.length - 3}</span>` : ''}</span>`;
@@ -1498,9 +1549,10 @@ function btn(act, id, label, title = '', extra = '') {
     return `<button class="sp-btn sp-mini ${extra}" data-act="${act}" data-id="${esc(id)}" title="${esc(title)}">${label}</button>`;
 }
 function rangeOf(s) {
-    if (s.external) return '다른 방에서 가져옴';
-    const a = s.segs[0]?.from, b = s.segs[s.segs.length - 1]?.to;
-    return Number.isInteger(a) && Number.isInteger(b) ? `#${a}–#${b}` : '';
+    const local = s.segs.filter(g => !g.external && !g.source);
+    if (!local.length) return '다른 방에서 가져옴';
+    const a = local[0]?.from, b = local[local.length - 1]?.to;
+    return Number.isInteger(a) && Number.isInteger(b) ? `${local.length < s.segs.length ? '이전 방 구간 포함 · ' : ''}#${a}–#${b}` : '';
 }
 function editForm() {
     const e = ui.edit, v = e.values;
@@ -1543,7 +1595,7 @@ function journalHtml(st) {
             : `<li class="sp-pt sp-${p.kind} ${pointInjected(p) ? 'sp-inj' : 'sp-stored'} ${p.pin ? 'sp-point-pinned' : ''}">${btn('key-toggle', `${s.id}|${g.id}|${j}`, pointSymbol(p),
                 p.pin ? '고정 주입 · 누르면 고정 전 선택으로 돌아가요' : (pointInjected(p) ? '일반 주입 대상' : '저장만') + (typeof p.keyUser === 'boolean' ? ' (직접 지정, 누르면 바꿈)' : typeof p.key === 'boolean' ? ' (AI 선택, 누르면 직접 지정)' : ' (예전 기록: 전부 주입)'),
                 'sp-key' + (typeof p.keyUser === 'boolean' ? ' sp-key-user' : ''))}<span class="sp-pk" title="${p.kind === 'change' ? '상태 변화' : '기억할 순간'}">${p.kind === 'change' ? '◆' : '◇'}</span>
-                <span class="sp-pt-t">${esc(T(p.text, p.ko))}${(() => { const d = pointInjected(p) && !p.pin ? dupState(s, p) : null; return d === 'exact' && p.keyUser !== true ? '<span class="sp-dup" title="개요에 같은 문장이 있어서 이번 주입에서는 빼요 (직접 선택하면 넣어요)">개요와 같음 · 주입 생략</span>' : d === 'near' ? '<span class="sp-dup" title="개요와 많이 겹쳐요. 필요 없으면 ○로 바꿔 주세요">중복 후보</span>' : ''; })()}${evidenceChips(p.msgs)}</span>
+                <span class="sp-pt-t">${esc(T(p.text, p.ko))}${(() => { const d = pointInjected(p) && !p.pin ? dupState(s, p) : null; return d === 'exact' && p.keyUser !== true ? '<span class="sp-dup" title="개요에 같은 문장이 있어서 이번 주입에서는 빼요 (직접 선택하면 넣어요)">개요와 같음 · 주입 생략</span>' : d === 'near' ? '<span class="sp-dup" title="개요와 많이 겹쳐요. 필요 없으면 ○로 바꿔 주세요">중복 후보</span>' : ''; })()}${evidenceChips(p.msgs, p.oldEvidence)}</span>
                 ${tools([...(p.pin ? [] : [btn('pin-point', `${s.id}|${g.id}|${j}`, '📌', '이 포인트를 고정 주입 (전체 토큰 상한 내에서 우선 유지)')]), btn('edit-point', `${s.id}|${g.id}|${j}`, '✎'), btn('del-point', `${s.id}|${g.id}|${j}`, '🗑')])}</li>`;
         // One block per part: its own outline (never rewritten later), its points, its notes.
         const segHtml = s.segs.map(g => {
@@ -1552,7 +1604,7 @@ function journalHtml(st) {
                 : g.outline ? `<div class="sp-seg-outline">${esc(T(g.outline, g.koOutline))} ${tools([btn('edit-segoutline', `${s.id}|${g.id}`, '✎', '이 구간 개요 편집')])}</div>` : '';
             const notes = !g.notes ? '' : isEditing('notes', `${s.id}|${g.id}`) ? editForm()
                 : `<details class="sp-notes" data-group="notes:${esc(g.id)}" ${ui.savesOpen.get('notes:' + g.id) ? 'open' : ''}><summary>상세 노트 ${tools([btn('edit-notes', `${s.id}|${g.id}`, '✎')])}</summary><p>${esc(T(g.notes, g.koNotes))}</p></details>`;
-            return `<div class="sp-seg"><div class="sp-seg-h">${esc(g.id)} ${Number.isInteger(g.from) ? `#${g.from}–#${g.to}` : ''}</div>${outline}<ul class="sp-pts">${list}</ul>${notes}</div>`;
+            return `<div class="sp-seg"><div class="sp-seg-h">${esc(g.id)} ${g.source ? esc(priorRoomLabel(g.source.room)) + (Number.isInteger(g.source.from) ? ` #${g.source.from}–#${g.source.to}` : '') : Number.isInteger(g.from) ? `#${g.from}–#${g.to}` : ''}</div>${outline}<ul class="sp-pts">${list}</ul>${notes}</div>`;
         }).join('');
         const legacy = !s.legacyOutline ? '' : isEditing('legacy', s.id) ? editForm()
             : `<div class="sp-legacy"><span class="sp-badge">이전 버전 개요</span> ${esc(T(s.legacyOutline, s.koOutline))} ${tools([btn('edit-legacy', s.id, '✎', '이전 버전 개요 편집')])}</div>`;
@@ -1568,7 +1620,7 @@ function journalHtml(st) {
 }
 function recordRow(st, r, extraTools = []) {
     if (isEditing('record', r.id)) return `<div class="sp-rec">${editForm()}</div>`;
-    return `<div class="sp-rec ${r.pin ? 'sp-pinned' : ''}"><span class="sp-rec-t">${esc(T(r.text, r.ko))}</span>${evidenceChips(r.msgs)}
+    return `<div class="sp-rec ${r.pin ? 'sp-pinned' : ''}"><span class="sp-rec-t">${esc(T(r.text, r.ko))}</span>${evidenceChips(r.msgs, r.oldEvidence)}
         ${tools([...extraTools, btn('pin-rec', r.id, '📌', '항상 주입', r.pin ? 'sp-on' : ''), btn('edit-rec', r.id, '✎'), btn('del-rec', r.id, '🗑')])}</div>`;
 }
 function questsHtml(st) {
@@ -1580,7 +1632,7 @@ function questsHtml(st) {
             if (isEditing('record', q.id)) return `<div class="sp-quest">${editForm()}</div>`;
             const flow = status === 'open' ? [btn('quest-done', q.id, '완료'), btn('quest-fail', q.id, '실패')] : [btn('quest-open', q.id, '다시 진행')];
             return `<div class="sp-quest sp-q-${status}"><span class="sp-qi">${QUEST_ICON[q.kind] || '•'}</span><div class="sp-qb"><div><span class="sp-kind">${KIND_KO[q.kind]}</span> ${esc(T(q.text, q.ko))}</div>
-                <div class="sp-sub">${whoChips(st.mem, q.who)}${evidenceChips(q.msgs)}</div>${q.terms ? `<details class="sp-terms" data-group="terms:${esc(q.id)}" ${ui.savesOpen.get('terms:' + q.id) ? 'open' : ''}><summary>근거 원문 #${q.terms.msg}</summary><div class="sp-terms-q">“${esc(q.terms.quote)}”</div><div class="sp-excerpt">${esc(q.terms.context)}</div></details>` : ''}</div>${tools([...flow, btn('pin-rec', q.id, '📌', '항상 주입', q.pin ? 'sp-on' : ''), btn('edit-rec', q.id, '✎'), btn('del-rec', q.id, '🗑')])}</div>`;
+                <div class="sp-sub">${whoChips(st.mem, q.who)}${evidenceChips(q.msgs, q.oldEvidence)}</div>${q.terms ? `<details class="sp-terms" data-group="terms:${esc(q.id)}" ${ui.savesOpen.get('terms:' + q.id) ? 'open' : ''}><summary>근거 원문 ${esc(priorTermsLabel(q.terms))}</summary><div class="sp-terms-q">“${esc(q.terms.quote)}”</div><div class="sp-excerpt">${esc(q.terms.context)}</div></details>` : ''}</div>${tools([...flow, btn('pin-rec', q.id, '📌', '항상 주입', q.pin ? 'sp-on' : ''), btn('edit-rec', q.id, '✎'), btn('del-rec', q.id, '🗑')])}</div>`;
         }).join('')}</div>`;
     };
     const body = group('open', '진행 중') + group('done', '완료') + group('failed', '실패');
@@ -2079,7 +2131,3 @@ jQuery(() => {
 
 // Exposed for regression checks only.
 globalThis.__savePoint = { state, settings, summarize, listSaves, vault, migrateLocal, autoCollect, autoBlocked, autoCount, scheduleAuto, undo, loadSave, reconcile, syncHide, refreshInjection, handle, ui, render, estTokens, recordLine, reportText };
-
-
-
-
