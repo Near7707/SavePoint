@@ -8,7 +8,7 @@ import {
     recordLine, entityName, estTokens, QUEST_KINDS, WORLD_KINDS, ENTITY_TYPES,
     groupErrors, findQuote, mostlyNonEnglish,
 } from './core.js';
-import { lootStatus, lootInChunk, lootBlock, attachLoot, settleLoot, lootTarget, applyLootSupplement } from './loot.js';
+import { lootStatus, lootInChunk, lootBlock, attachLoot, settleLoot, lootTarget, applyLootSupplement, restoreLostLoot } from './loot.js';
 import { Vault, roomHash } from './vault.js';
 import { upgradeEvidence, segmentPrior, evidenceNumbers } from './provenance.js';
 import { assertPromptFits, nextMessageChunk, planReviewBatches } from './request-batches.js';
@@ -18,7 +18,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.4.0';
+const VERSION = '0.4.1';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -589,7 +589,11 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
         const start = Date.now();
         const why = attempt ? lastKind : '';
         const requestPrompt = attempt ? prompt + retryNote(groupErrors(errors), lang) : prompt;
-        try { raw = await llm(requestPrompt, run, { attempt, why }); }
+        try {
+            assertPromptFits(requestPrompt, num('inputChars', 5000, 1000000));
+            run.lootAttempted = lootForChunk(chunk).map(x => x.id);
+            raw = await llm(requestPrompt, run, { attempt, why });
+        }
         catch (e) {
             if (run.cancelled || e instanceof Cancelled) throw new Cancelled('중지했어요.');
             if (e instanceof RequestTimeout) {
@@ -651,7 +655,8 @@ async function markStaleLoot(run, items) {
 }
 async function failPendingLoot(run, items, error) {
     if (state() !== run.st || run.cancelled || error instanceof Cancelled) return 0;
-    const ids = new Set(items.map(x => x.id));
+    const sent = new Set(run.lootAttempted || []);
+    const ids = new Set(items.filter(x => sent.has(x.id)).map(x => x.id));
     const pending = (run.st.lootQueue || []).filter(x => ids.has(x.id) && !lootStatus(x, roomKey(), chat(), fingerprint));
     if (!pending.length) return 0;
     await transact(() => { for (const item of pending) item.error = `반영 실패 · ${errorText(error).slice(0, 300)}`; }, { undoable: false, autosave: false });
@@ -690,7 +695,10 @@ async function supplementLoot(run, items, undoPoint = checkpoint(run.st)) {
             ui.progress = `루팅한 기억 반영 · ${group.length}개`; render();
             let data, errors = [];
             for (let attempt = 0; attempt < 2; attempt++) {
-                const raw = await llm(attempt ? prompt + retryNote(errors, []) : prompt, run, { attempt, why: attempt ? '루팅 응답 검사' : '' });
+                const requestPrompt = attempt ? prompt + retryNote(errors, []) : prompt;
+                assertPromptFits(requestPrompt, num('inputChars', 5000, 1000000));
+                run.lootAttempted = group.map(x => x.id);
+                const raw = await llm(requestPrompt, run, { attempt, why: attempt ? '루팅 응답 검사' : '' });
                 assertValid(run, chat().length - 1);
                 try { data = parseJson(raw); } catch { data = null; }
                 errors = !data || !Array.isArray(data.points) ? ['Return a JSON object with a points array.'] :
@@ -793,7 +801,7 @@ async function summarize({ close = false } = {}) {
         if (msgs.length || close) toastr.success(close ? '장면 클리어! 진행 중이던 장면까지 기록하고 닫았어요.' : '퀵세이브 완료. 마지막 메시지까지 기록했어요.', 'SavePoint');
     } catch (e) {
         if (queued.length && !(e instanceof Cancelled) && state() === st) {
-            try { lootFailed = await failPendingLoot(run, queued, e); } catch { /* a failed disk write leaves the queue intact */ }
+            try { lootFailed += await failPendingLoot(run, queued, e); } catch { /* a failed disk write leaves the queue intact */ }
         }
         if (!(e instanceof Cancelled) && !e.detail) ui.lastError = { at: Date.now(), range: `#${msgs[cursor]?.index ?? start}–#${end}`, detail: [errorText(e)] };
         const where = done ? ` ${done}개 구간(${cursor}개 메시지)은 저장했고, 남은 ${msgs.length - cursor}개 메시지의 원문은 그대로 남겨 뒀어요.` : ' 기억과 원문은 바뀌지 않았어요.';
@@ -1362,6 +1370,7 @@ async function undo() {
     const st = state();
     if (!st?.undo || ui.run) return;
     const restored = { ...clone(st.undo), undo: null };
+    restored.lootQueue = restoreLostLoot(st.lootQueue, st.mem, restored.mem, { room: roomKey(), hashes: st.hashes, fallback: st.undo.lootQueue });
     await transact(() => { ctx().chatMetadata[MODULE] = restored; }, { undoable: false });
     if (!reconcile()) { render(); return; }
     toastr.info('⏪ 리와인드: 마지막 작업 전으로 돌아갔어요.');
@@ -1514,6 +1523,7 @@ async function loadSave(id, mode) {
         if (digest(h) === p.digest) { exact = true; st.lastIndex = p.lastIndex; st.hashes = h; st.floor = p.lastIndex; }
     }
     if (!exact) st.mem = detachMem(mem, sourceRoom);
+    if (cur) st.lootQueue = restoreLostLoot(cur.lootQueue, cur.mem, st.mem, { room: roomKey(), hashes: cur.hashes, fallback: cur.undo?.lootQueue });
     try { await transact(() => { ctx().chatMetadata[MODULE] = st; }); }
     catch (e) { reportError(e); return; }
     toastr.success(exact ? `저장 당시 위치(#${st.lastIndex})로 돌아갔어요. 그 뒤 메시지는 미기록이에요.`
@@ -1635,7 +1645,9 @@ function closeWindow() { ui.open = false; ui.edit = null; $('#sp_overlay').hide(
 async function addLoot(index, excerpt, note = '', source = {}) {
     if (!hasChat() || ui.run) throw new Error('기록이 끝난 뒤 루팅해 주세요.');
     const message = chat()[index], full = cleanText(message?.mes);
-    const quote = String(excerpt || '').trim();
+    let quote = String(excerpt || '').trim();
+    const match = quote && !full.includes(quote) ? findQuote(full, quote) : null;
+    if (match) quote = full.slice(match.start, match.end);
     if (source.room && source.room !== roomKey() || source.hash && source.hash !== fingerprint(message))
         throw new Error('창을 연 뒤 원문이나 방이 바뀌었어요. 다시 루팅해 주세요.');
     if (!eligible(message) || !quote || !full.includes(quote))
@@ -1692,7 +1704,7 @@ function installLootButtons() {
 function queueHtml(st) {
     const items = st.lootQueue || [];
     if (!items.length) return '<div class="sp-empty">⏳ 대기열이 비었어요.<br>RP 답변의 💎 루팅 버튼으로 담아 주세요.</div>';
-    return `<p class="sp-dim">다음 퀵세이브·체크포인트 때 반영해요. 선택한 내용은 기억을 압축할 때 우선 반영해요.</p>` + items.map(item => {
+    return `<p class="sp-dim">다음 퀵세이브·체크포인트 때 반영해요. 선택한 내용은 기억 주입에 우선 반영해요.</p>` + items.map(item => {
         const changed = lootStatus(item, roomKey(), chat(), fingerprint);
         return `<div class="sp-card sp-queued"><div class="sp-row"><b>${item.room === roomKey() ? '' : '이전 방 '}#${item.msg}</b>${tools([btn('loot-delete', item.id, '🗑', '대기열에서 삭제', ui.run ? 'sp-disabled' : '')])}</div>
             ${changed ? `<div class="sp-warn">${esc(changed)}</div>` : ''}${item.error && item.error !== changed ? `<div class="sp-warn">⚠ ${esc(item.error)}</div>` : ''}
@@ -1802,7 +1814,7 @@ function journalHtml(st) {
             ${s.who.length ? `<div class="sp-who">${whoChips(mem, s.who)}</div>` : ''}
             <div class="sp-outline">${s.segs.filter(g => g.outline).map(g => `<p>${esc(T(g.outline, g.koOutline))}</p>`).join('')}</div>${legacy}${outlineText}
             <details class="sp-more" data-group="scene:${esc(s.id)}" ${(ui.edit && String(ui.edit.id).startsWith(s.id + '|')) || ui.savesOpen.get('scene:' + s.id) ? 'open' : ''}><summary>구간 ${s.segs.length} · 포인트 ${pts.length} (주입 ${pts.filter(x => pointInjected(x.p)).length})</summary>
-                <div class="sp-dim sp-keyhelp">● 선택됨 / ○ 선택 안 함 / 📌 우선 주입 고정. 선택한 내용은 기억을 압축할 때 우선 반영해요. ${btn('rekey-scene', s.id, '⟳ 주입 고르기', '개요와 상태 목록에 없는 중요한 포인트만 AI가 다시 골라요 (직접 지정·고정은 유지)')}</div>
+                <div class="sp-dim sp-keyhelp">● 선택됨 / ○ 선택 안 함 / 📌 우선 주입 고정. 선택한 내용은 기억 주입에 우선 반영해요. ${btn('rekey-scene', s.id, '⟳ 주입 고르기', '개요와 상태 목록에 없는 중요한 포인트만 AI가 다시 골라요 (직접 지정·고정은 유지)')}</div>
                 ${segHtml}</details></div>`;
     }).join('');
 }

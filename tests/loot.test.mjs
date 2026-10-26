@@ -25,7 +25,7 @@ function harness({ messages = ['A participant kept a token.'], recorded = false 
         setHidden = () => {}; render = () => {}; autosave = () => {}; persistSoon = () => {}; saveChatSoon = () => {};
         queueCheck = (st, before) => checks.push(checkScope(before, st.mem));
         return { ensureState, state, settings, addLoot, summarize, autoCollect, fingerprint, roomKey, ui, handle, journalHtml, queueHtml,
-            supplementLoot, newRun, endRun, checkStatements, reportText, installLootButtons, openLootDialog,
+            supplementLoot, newRun, endRun, checkStatements, reportText, installLootButtons, openLootDialog, reconcile, saveRecord,
             setSlot(record) { findSave = () => record; readSave = async () => record; confirmBox = async () => true; },
             setModel(fn) { llm = fn; }, sourceChanged: onSourceChanged, loadSave,
             finishSource() { if (sourceTimer) clearTimeout(sourceTimer); }, Cancelled, RequestTimeout };
@@ -323,4 +323,162 @@ test('an oversized historical source does not prevent a separate small selection
     await h.app.summarize();
     assert.equal(h.calls.length, 1); assert.equal(h.app.state().lootQueue.length, 1);
     assert.equal(h.app.state().lootQueue[0].msg, 0); assert.equal(points(h)[0].loot[0].msg, 1);
+});
+
+test('rewind preserves selections added after a save and does not resurrect a manually deleted pending item', async () => {
+    const h = harness(); await h.app.addLoot(0, 'kept a token.');
+    const consumed = h.app.state().lootQueue[0].id;
+    await h.app.summarize(); await h.app.addLoot(0, 'a token.');
+    const later = h.app.state().lootQueue[0].id;
+    await h.app.handle('undo');
+    assert.deepEqual(new Set(h.app.state().lootQueue.map(x => x.id)), new Set([consumed, later]));
+
+    const f = harness(); await f.app.addLoot(0, 'kept a token.');
+    const deleted = f.app.state().lootQueue[0].id;
+    f.model = async () => JSON.stringify({ scenes: [{ scene: 'new', title: 'A trip', where: '', who: [], outline: 'A trip began.', notes: '', points: [], ended: false }], entities: [], changes: [] });
+    await f.app.summarize(); await f.app.handle('loot-delete', deleted);
+    await f.app.handle('undo');
+    assert.equal(f.app.state().lootQueue.length, 0);
+});
+
+test('source rollback returns lost looting with its original note and fingerprint, without rebinding edits', async () => {
+    for (const editIndex of [0, 2]) {
+        const h = harness({ messages: Array(3).fill('A participant kept a token.') });
+        await h.app.addLoot(2, 'kept a token.', 'Remember this event');
+        const item = structuredClone(h.app.state().lootQueue[0]);
+        await h.app.summarize();
+        h.context.chat[editIndex].mes += ' An edit.';
+        assert(h.app.reconcile());
+        assert.equal(h.app.state().lastIndex, -1); assert.equal(points(h).length, 0);
+        const restored = h.app.state().lootQueue.find(x => x.id === item.id);
+        assert(restored); assert.equal(restored.note, item.note); assert.equal(restored.hash, item.hash);
+        assert.equal(loot.lootStatus(restored, h.app.roomKey(), h.context.chat, h.app.fingerprint), editIndex === 2 ? '원문이 바뀜' : '');
+    }
+});
+
+test('an earlier exact-position save restores removed loot; undoing that load avoids duplicate queued work', async () => {
+    const h = harness(); await h.app.summarize();
+    const slot = h.app.saveRecord(h.app.state(), 'Earlier', 'slot');
+    h.context.chat.push({ name: 'Participant', mes: 'A participant kept a token.', is_user: false, extra: {} });
+    await h.app.addLoot(1, 'kept a token.', 'Later selection');
+    const item = structuredClone(h.app.state().lootQueue[0]);
+    await h.app.summarize();
+    h.app.setSlot(slot); await h.app.loadSave('slot', 'continue');
+    assert.equal(h.app.state().lastIndex, 0); assert.equal(points(h).length, 0);
+    assert.equal(h.app.state().lootQueue[0].id, item.id);
+    assert.equal(h.app.state().lootQueue[0].note, item.note);
+    await h.app.handle('undo');
+    assert.equal(h.app.state().lastIndex, 1); assert.equal(points(h)[0].loot[0].id, item.id);
+    assert.equal(h.app.state().lootQueue.length, 0);
+});
+
+test('a boundary failure never marks ongoing-scene selections as failed', async () => {
+    const h = harness({ messages: Array(5).fill('A participant kept a token.') });
+    await h.app.addLoot(4, 'kept a token.');
+    h.model = async () => { throw new h.app.RequestTimeout('Boundary timed out'); };
+    await h.app.autoCollect();
+    assert.equal(h.app.state().lootQueue.length, 1);
+    assert.equal(h.app.state().lootQueue[0].error, undefined);
+    assert(!h.notices.some(([, msg]) => /루팅한 내용 .*반영되지/.test(msg)));
+});
+
+test('a failed quicksave batch does not mark a later unsent selection as failed', async () => {
+    const h = harness({ messages: Array.from({ length: 40 }, () => 'A participant kept a token. ' + 'x'.repeat(1000)) });
+    h.app.settings().inputChars = 20000;
+    await h.app.addLoot(0, 'kept a token.'); await h.app.addLoot(39, 'kept a token.');
+    h.model = async (prompt, run, items) => {
+        if (h.calls.length === 2) throw new h.app.RequestTimeout('Second batch timed out');
+        return JSON.stringify({ scenes: [{ scene: 'new', title: 'A trip', where: '', who: [], outline: 'A trip began.', notes: '',
+            points: items.map(x => ({ text: 'The participant kept a token.', kind: 'moment', key: false, msgs: [x.msg], lootIds: [x.id] })), ended: false }], entities: [], changes: [] });
+    };
+    await h.app.summarize();
+    assert(h.app.state().lastIndex >= 0 && h.app.state().lastIndex < 39);
+    assert.equal(h.app.state().lootQueue.length, 1);
+    assert.equal(h.app.state().lootQueue[0].msg, 39);
+    assert.equal(h.app.state().lootQueue[0].error, undefined);
+    assert(!h.calls.some(p => p.includes(h.app.state().lootQueue[0].id)));
+});
+
+test('rendered excerpts tolerate markdown and whitespace differences but store the actual contiguous source', async () => {
+    const raw = '*A participant* kept **a token**.\n\nIt was blue.';
+    const h = harness({ messages: [raw] });
+    await h.app.addLoot(0, 'A participant kept a token. It was blue.');
+    const item = h.app.state().lootQueue[0];
+    assert(raw.includes(item.text)); assert(core.findQuote(raw, item.text));
+    await assert.rejects(h.app.addLoot(0, 'A participant destroyed a token.'), /원문/);
+});
+
+test('later saves cannot erase the recovery note and original hash stored on older looted points', async () => {
+    const h = harness(); await h.app.addLoot(0, 'kept a token.', 'An early selection');
+    const item = structuredClone(h.app.state().lootQueue[0]); await h.app.summarize();
+    const source = core.cleanMem(h.app.state().mem).scenes[0].segs[0].points[0].loot[0];
+    assert.equal(source.hash, item.hash); assert.equal(source.note, item.note); assert.equal(source.at, item.at);
+    h.context.chat.push({ name: 'Participant', mes: 'The journey continued.', is_user: false, extra: {} });
+    await h.app.summarize(); assert.equal(h.app.state().undo.lootQueue.length, 0);
+    h.context.chat[0].mes += ' An edit.';
+    assert(h.app.reconcile());
+    const restored = h.app.state().lootQueue[0];
+    assert.equal(restored.hash, item.hash); assert.equal(restored.note, item.note);
+    assert.equal(loot.lootStatus(restored, h.app.roomKey(), h.context.chat, h.app.fingerprint), '원문이 바뀜');
+});
+
+test('legacy loot uses only saved snapshot or recorded hashes for recovery, never a fresh fingerprint', async () => {
+    const h = harness(); await h.app.addLoot(0, 'kept a token.', 'Old note');
+    const item = structuredClone(h.app.state().lootQueue[0]); await h.app.summarize();
+    const source = points(h)[0].loot[0]; delete source.hash; delete source.note; delete source.at;
+    await h.app.handle('undo');
+    assert.equal(h.app.state().lootQueue[0].hash, item.hash);
+    assert.equal(h.app.state().lootQueue[0].note, item.note);
+
+    await h.app.summarize(); delete points(h)[0].loot[0].hash;
+    h.app.state().undo = null; h.context.chat[0].mes += ' Changed';
+    assert(h.app.reconcile());
+    assert.equal(h.app.state().lootQueue[0].hash, item.hash);
+
+    const unknown = loot.restoreLostLoot([], { scenes: [{ segs: [{ points: [{ loot: [{ id: 'old', room: 'room-A', msg: 0, quote: 'Old text' }] }] }] }] }, core.emptyMem(), { room: 'room-A' });
+    assert.equal(unknown[0].hash, '');
+    assert.equal(loot.lootStatus(unknown[0], 'room-A', [], () => 'new fingerprint'), '원문 확인 필요');
+});
+
+test('foreign restored loot keeps its source and cannot borrow current-room hashes or message numbers', () => {
+    const before = { scenes: [{ segs: [{ points: [{ loot: [{ id: 'foreign', room: 'other-room', msg: 0, quote: 'A prior event' }] }] }] }] };
+    const queue = loot.restoreLostLoot([], before, core.emptyMem(), { room: 'current-room', hashes: ['current fingerprint'] });
+    assert.equal(queue.length, 1); assert.equal(queue[0].room, 'other-room'); assert.equal(queue[0].hash, '');
+    assert.equal(loot.lootStatus(queue[0], 'current-room', [], () => { throw new Error('Must not inspect current original'); }), '출처가 다른 방이에요');
+});
+
+test('legacy evidence moved back to its original room still cannot borrow new hashes for imported segments', () => {
+    const before = { scenes: [{ segs: [{ external: true, source: { room: 'room-A', from: 0, to: 0 }, points: [{ msgs: [],
+        loot: [{ id: 'roundtrip', room: 'room-A', msg: 0, quote: 'An older version of the event' }] }] }] }] };
+    const queue = loot.restoreLostLoot([], before, core.emptyMem(), { room: 'room-A', hashes: ['new unrelated fingerprint'] });
+    assert.equal(queue[0].hash, '');
+    assert.equal(loot.lootStatus(queue[0], 'room-A', [], () => 'new unrelated fingerprint'), '원문 확인 필요');
+});
+
+test('failed undo and earlier-slot writes preserve both existing queue edits and current looted memory', async () => {
+    const h = harness(); await h.app.summarize();
+    const slot = h.app.saveRecord(h.app.state(), 'Earlier', 'slot');
+    await h.app.addLoot(0, 'kept a token.'); await h.app.summarize(); await h.app.addLoot(0, 'a token.');
+    const before = JSON.stringify(h.app.state());
+    h.failWrite = true;
+    await assert.rejects(h.app.handle('undo'), /채팅 파일/);
+    assert.equal(JSON.stringify(h.app.state()), before);
+    h.app.setSlot(slot);
+    await h.app.loadSave('slot', 'continue');
+    assert(h.notices.some(([kind, message]) => kind === 'error' && message.includes('채팅 파일')));
+    assert.equal(JSON.stringify(h.app.state()), before);
+});
+
+test('a failed checkpoint extraction marks only the selections actually sent in its finished range', async () => {
+    const h = harness({ messages: Array(5).fill('A participant kept a token.') });
+    await h.app.addLoot(0, 'kept a token.'); await h.app.addLoot(4, 'kept a token.');
+    h.model = async prompt => {
+        if (prompt.startsWith('You are marking')) return JSON.stringify({ continues_open_scene: false, scenes: [{ start: 0, ended: true }, { start: 3, ended: false }] });
+        throw new h.app.RequestTimeout('Extraction timed out');
+    };
+    await h.app.autoCollect();
+    const items = h.app.state().lootQueue;
+    assert.equal(items.length, 2); assert.match(items.find(x => x.msg === 0).error, /반영 실패/);
+    assert.equal(items.find(x => x.msg === 4).error, undefined);
+    assert(h.notices.some(([, msg]) => msg.includes('루팅한 내용 1개')));
 });

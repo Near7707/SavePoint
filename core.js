@@ -1,4 +1,4 @@
-import { cleanLootSources } from './loot.js';
+import { cleanLootSources, restoreLostLoot } from './loot.js';
 import { upgradeEvidence, detachEvidence, cleanPrior, cleanSource } from './provenance.js';
 // SavePoint core: pure data logic (no SillyTavern, no DOM).
 // Memory = scenes (journal) + entities (who/what) + records (current state).
@@ -706,10 +706,13 @@ export function rollbackFrom(st, messageIndex) {
     if (messageIndex <= (st.floor ?? -1)) return false;
     const i = st.history.findIndex(h => h.kind === 'summary' && h.to >= messageIndex);
     if (i < 0) return false;
+    const before = st.mem;
     for (let k = st.history.length - 1; k >= i; k--) st.mem = applyDiff(st.mem, st.history[k].diff, true);
     const from = st.history[i].from;
     st.history.splice(i);
     st.lastIndex = from - 1;
+    const queue = restoreLostLoot(st.lootQueue, before, st.mem, { room: st.roomKey, hashes: st.hashes, fallback: st.undo?.lootQueue });
+    if (st.lootQueue || queue.length) st.lootQueue = queue;
     return true;
 }
 

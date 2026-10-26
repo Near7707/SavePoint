@@ -4,12 +4,18 @@ export function cleanLootSources(value) {
     const seen = new Set();
     return (Array.isArray(value) ? value : []).filter(x => x && text(x.id) && text(x.room) &&
         Number.isInteger(x.msg) && x.msg >= 0 && text(x.quote))
-        .map(x => ({ id: text(x.id), room: text(x.room), msg: x.msg, quote: text(x.quote) }))
+        .map(x => ({ id: text(x.id), room: text(x.room), msg: x.msg, quote: text(x.quote),
+            ...(typeof x.note === 'string' ? { note: x.note } : {}),
+            ...(text(x.hash) ? { hash: text(x.hash) } : {}),
+            ...(Number.isFinite(x.at) ? { at: x.at } : {}) }))
         .filter(x => !seen.has(x.id) && seen.add(x.id));
 }
-export function lootSource(item) { return { id: item.id, room: item.room, msg: item.msg, quote: item.text }; }
+export function lootSource(item) {
+    return cleanLootSources([{ ...item, quote: item.text }])[0];
+}
 export function lootStatus(item, room, messages, fingerprint) {
     if (item.room !== room) return '출처가 다른 방이에요';
+    if (!item.hash) return '원문 확인 필요';
     const m = messages[item.msg];
     return !m || fingerprint(m) !== item.hash ? '원문이 바뀜' : '';
 }
@@ -43,6 +49,33 @@ export function attachLoot(data, items) {
 }
 export function recordedLoot(mem) {
     return new Set(mem.scenes.flatMap(s => s.segs.flatMap(g => g.points.flatMap(p => (p.loot || []).map(x => x.id)))));
+}
+// History rewinds memory, not later queue edits. Restore only source selections
+// actually removed from memory, never an entire old queue snapshot. Old source
+// hashes come from saved evidence/snapshots, never from the possibly edited chat.
+export function restoreLostLoot(queue, before, after, { room, hashes = [], fallback = [] } = {}) {
+    const accepted = recordedLoot(after);
+    const out = structuredClone((queue || []).filter(x => !accepted.has(x.id)));
+    const seen = new Set(out.map(x => x.id));
+    const saved = new Map((fallback || []).map(x => [x.id, x]));
+    const local = new Set(), allSources = [];
+    for (const scene of before.scenes) for (const seg of scene.segs) for (const point of seg.points) {
+        const sources = cleanLootSources(point.loot);
+        allSources.push(...sources);
+        if (!seg.external && !seg.source && !scene.external)
+            for (const source of sources) if ((point.msgs || []).includes(source.msg)) local.add(source.id);
+    }
+    const sources = cleanLootSources(allSources);
+    for (const source of sources) {
+        if (accepted.has(source.id) || seen.has(source.id)) continue;
+        const prior = saved.get(source.id);
+        const original = prior?.room === source.room && prior.msg === source.msg ? prior : {};
+        out.push({ id: source.id, room: source.room, msg: source.msg, text: source.quote,
+            note: source.note ?? original.note ?? '', hash: source.hash || original.hash || (source.room === room && local.has(source.id) ? hashes[source.msg] : '') || '',
+            at: source.at ?? original.at ?? 0 });
+        seen.add(source.id);
+    }
+    return out;
 }
 export function settleLoot(st, attempted, mem) {
     const accepted = recordedLoot(mem), ids = new Set(attempted.map(x => x.id));
