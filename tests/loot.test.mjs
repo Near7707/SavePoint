@@ -25,7 +25,7 @@ function harness({ messages = ['A participant kept a token.'], recorded = false 
         setHidden = () => {}; render = () => {}; autosave = () => {}; persistSoon = () => {}; saveChatSoon = () => {};
         queueCheck = (st, before) => checks.push(checkScope(before, st.mem));
         return { ensureState, state, settings, addLoot, summarize, autoCollect, fingerprint, roomKey, ui, handle, journalHtml, queueHtml,
-            supplementLoot, newRun, endRun, checkStatements, reportText, installLootButtons, openLootDialog, reconcile, saveRecord,
+            supplementLoot, newRun, endRun, checkStatements, reportText, installLootBar, openLootDialog, reconcile, saveRecord,
             setSlot(record) { findSave = () => record; readSave = async () => record; confirmBox = async () => true; },
             setModel(fn) { llm = fn; }, sourceChanged: onSourceChanged, loadSave,
             finishSource() { if (sourceTimer) clearTimeout(sourceTimer); }, Cancelled, RequestTimeout };
@@ -279,42 +279,23 @@ test('a deleted historical scene leaves its selection queued with an explicit fa
     assert.match(h.app.state().lootQueue[0].error, /해당 장면이 없어요/);
 });
 
-test('message tool buttons appear once on RP replies, open the looting form, and queue only on submit', async () => {
-    const h = harness({ messages: ['A participant kept a token.', 'A user reply.'] });
+test('an excerpt picked from an on-screen translation is queued, marked, flagged when the translation changes, and explained to the model', async () => {
+    const h = harness({ messages: ['A participant kept a small token.', 'A user reply.'] });
+    h.context.chat[0].extra.display_text = '참가자는 작은 토큰을 간직했다.';
     h.context.chat[1].is_user = true;
-    let dialog;
-    const elements = h.context.chat.map((_, index) => {
-        const element = { children: [], getAttribute: () => String(index) };
-        const row = { querySelector: () => null, append(node) { element.children.push(node); node.remove = () => { element.children = element.children.filter(x => x !== node); }; } };
-        const nameText = { parentElement: row, contains: () => false, append(node) { node.parentElement = nameText; if (!element.children.includes(node)) row.append(node); } };
-        element.querySelector = q => q === '.sp-loot-button' ? element.children[0] : q === '.name_text' ? nameText : null;
-        return element;
-    });
-    const previous = globalThis.document;
-    const fields = Object.fromEntries(['[name=excerpt]', '[name=note]', '.sp-loot-full', '.sp-loot-cancel', '.sp-loot-error', '[type=submit]', 'form'].map(k => [k, { value: '' }]));
-    globalThis.document = {
-        querySelectorAll: () => elements, querySelector: () => dialog,
-        body: { append(node) { dialog = node; } },
-        createElement(tag) {
-            if (tag !== 'dialog') return { setAttribute() {} };
-            let onClose;
-            return { querySelector: q => fields[q], showModal() { this.open = true; },
-                addEventListener(name, fn) { if (name === 'close') onClose = fn; },
-                close() { this.open = false; onClose?.(); }, remove() { dialog = undefined; } };
-        },
-    };
-    try {
-        h.app.installLootButtons(); h.app.installLootButtons();
-        assert.equal(elements[0].children.length, 1); assert.equal(elements[1].children.length, 0);
-        elements[0].children[0].onclick({ preventDefault() {}, stopPropagation() {} });
-        assert(dialog.open); assert.match(dialog.innerHTML, /💎 루팅/);
-        assert.match(dialog.innerHTML, /메모 \(선택\)/);
-        assert.equal(h.calls.length, 0); assert.equal(h.app.state().lootQueue.length, 0);
-        fields['.sp-loot-full'].onclick(); assert.equal(fields['[name=excerpt]'].value, h.context.chat[0].mes);
-        fields['[name=excerpt]'].value = 'kept a token.'; fields['[name=note]'].value = 'Important';
-        await fields.form.onsubmit({ preventDefault() {} });
-        assert.equal(h.app.state().lootQueue.length, 1); assert.equal(h.calls.length, 0); assert.equal(dialog, undefined);
-    } finally { if (previous === undefined) delete globalThis.document; else globalThis.document = previous; }
+    await h.app.addLoot(0, '작은 토큰을 간직했다', 'why it matters');
+    const item = h.app.state().lootQueue[0];
+    assert.equal(item.view, true); assert(item.viewHash); assert.equal(item.text, '작은 토큰을 간직했다');
+    await h.app.addLoot(0, 'kept a small token');
+    assert.equal(h.app.state().lootQueue[1].view, undefined, 'an excerpt found in the original is not marked');
+    await assert.rejects(h.app.addLoot(1, 'A user reply.'), /AI 답변이 아니에요/);
+    await assert.rejects(h.app.addLoot(0, '없는 문장입니다 정말로'), /번역문/);
+    const block = loot.lootBlock(h.app.state().lootQueue);
+    assert.match(block, /"excerpt_is_translation":true/); assert.match(block, /translation wording is only a pointer/);
+    assert.equal(h.app.queueHtml(h.app.state()).includes('번역문이 바뀜'), false);
+    h.context.chat[0].extra.display_text = '참가자는 작은 토큰을 버렸다.';
+    assert.match(h.app.queueHtml(h.app.state()), /번역문이 바뀜/);
+    assert.doesNotMatch(loot.lootBlock([h.app.state().lootQueue[1]]), /excerpt_is_translation/);
 });
 
 test('an oversized historical source does not prevent a separate small selection being saved', async () => {

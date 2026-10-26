@@ -204,6 +204,9 @@ function fingerprint(m) {
     if (!m || typeof m !== 'object') return 'x';
     return hashString(JSON.stringify([m.name || '', !!m.is_user, m.mes || '', m.swipe_id ?? null]));
 }
+// The translation a translator extension shows instead of the original (SillyTavern's display_text).
+function viewText(m) { return typeof m?.extra?.display_text === 'string' ? cleanText(m.extra.display_text) : ''; }
+function viewHash(m) { return hashString(viewText(m)); }
 function hashesTo(end) { return chat().slice(0, end + 1).map(fingerprint); }
 function digest(list) { return hashString(list.join('|')); }
 function firstMismatch(hashes) {
@@ -563,7 +566,7 @@ function extractPrompt(mem, chunk, note = '') {
 function lootForChunk(chunk) {
     const items = state()?.lootQueue || [];
     if (!items.length) return [];
-    return lootInChunk(items.filter(x => !lootStatus(x, roomKey(), chat(), fingerprint)), chunk.indices);
+    return lootInChunk(items.filter(x => !lootStatus(x, roomKey(), chat(), fingerprint, viewHash)), chunk.indices);
 }
 async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {}) {
     const prompt = extractPrompt(mem, chunk, note);
@@ -637,19 +640,19 @@ function settleAutoFail(st) {
 }
 
 async function markStaleLoot(run, items) {
-    const stale = items.filter(x => lootStatus(x, roomKey(), chat(), fingerprint));
+    const stale = items.filter(x => lootStatus(x, roomKey(), chat(), fingerprint, viewHash));
     if (!stale.length) return;
     assertValid(run, -1);
     await transact(() => {
         for (const item of run.st.lootQueue || []) if (stale.some(x => x.id === item.id))
-            item.error = lootStatus(item, roomKey(), chat(), fingerprint);
+            item.error = lootStatus(item, roomKey(), chat(), fingerprint, viewHash);
     }, { undoable: false, autosave: false });
 }
 async function failPendingLoot(run, items, error) {
     if (state() !== run.st || run.cancelled || error instanceof Cancelled) return 0;
     const sent = new Set(run.lootAttempted || []);
     const ids = new Set(items.filter(x => sent.has(x.id)).map(x => x.id));
-    const pending = (run.st.lootQueue || []).filter(x => ids.has(x.id) && !lootStatus(x, roomKey(), chat(), fingerprint));
+    const pending = (run.st.lootQueue || []).filter(x => ids.has(x.id) && !lootStatus(x, roomKey(), chat(), fingerprint, viewHash));
     if (!pending.length) return 0;
     await transact(() => { for (const item of pending) item.error = `반영 실패 · ${errorText(error).slice(0, 300)}`; }, { undoable: false, autosave: false });
     return pending.length;
@@ -663,7 +666,7 @@ async function supplementLoot(run, items, undoPoint = checkpoint(run.st)) {
     let saved = 0, failed = 0;
     if (!items.length) return { saved, failed };
     await markStaleLoot(run, items);
-    const left = items.filter(x => !lootStatus(x, roomKey(), chat(), fingerprint));
+    const left = items.filter(x => !lootStatus(x, roomKey(), chat(), fingerprint, viewHash));
     while (left.length) {
         assertValid(run, chat().length - 1);
         const first = left.shift(), target = lootTarget(st.mem, first.msg);
@@ -1632,124 +1635,168 @@ function openWindow() {
 }
 function closeWindow() { ui.open = false; ui.edit = null; $('#sp_overlay').hide(); }
 
-async function addLoot(index, excerpt, note = '', source = {}) {
-    if (!hasChat() || ui.run) throw new Error('기록이 끝난 뒤 루팅해 주세요.');
-    const message = chat()[index], full = cleanText(message?.mes);
-    let quote = String(excerpt || '').trim();
-    const match = quote && !full.includes(quote) ? findQuote(full, quote) : null;
-    if (match) quote = full.slice(match.start, match.end);
+// Checks one excerpt against its message and builds the queue item. The excerpt may come from the
+// original or, when a translator shows a translation instead, from that on-screen translation.
+function prepareLoot(index, excerpt, note = '', source = {}) {
+    const message = chat()[index];
     if (source.room && source.room !== roomKey() || source.hash && source.hash !== fingerprint(message))
         throw new Error('창을 연 뒤 원문이나 방이 바뀌었어요. 다시 루팅해 주세요.');
-    if (!eligible(message) || !quote || !full.includes(quote))
-        throw new Error('원문에 있는 연속된 구절을 남겨 주세요.');
+    if (!eligible(message) || message.is_user) throw new Error(`#${index}은(는) 담을 수 있는 AI 답변이 아니에요.`);
+    const pick = (full, raw) => {
+        let quote = String(raw || '').trim();
+        if (!quote || !full) return '';
+        if (full.includes(quote)) return quote;
+        const match = findQuote(full, quote);
+        return match ? full.slice(match.start, match.end) : '';
+    };
+    const full = cleanText(message.mes), shown = viewText(message);
+    let quote = pick(full, excerpt), view = false;
+    if (!quote && shown) { quote = pick(shown, excerpt); view = !!quote; }
+    if (!quote) throw new Error(`#${index}: 원문이나 화면의 번역문에 있는 연속된 구절을 남겨 주세요. (아주 짧은 구절은 찾지 못할 수 있어요)`);
+    return { id: newId(), room: roomKey(), msg: index, text: quote, note: String(note || '').trim(),
+        hash: fingerprint(message), at: Date.now(), ...(view ? { view: true, viewHash: viewHash(message) } : {}) };
+}
+async function addLootItems(items) {
+    if (!hasChat() || ui.run) throw new Error('기록이 끝난 뒤 루팅해 주세요.');
     const st = ensureState();
-    const item = { id: newId(), room: roomKey(), msg: index, text: quote, note: String(note || '').trim(),
-        hash: fingerprint(message), at: Date.now() };
+    let added = 0;
     await transact(() => {
         st.lootQueue ||= [];
-        if (st.lootQueue.some(x => x.room === item.room && x.msg === index && x.text === quote && x.hash === item.hash && x.note === item.note)) return false;
-        st.lootQueue.push(item);
+        for (const item of items) {
+            if (st.lootQueue.some(x => x.room === item.room && x.msg === item.msg && x.text === item.text && x.hash === item.hash && x.note === item.note)) continue;
+            st.lootQueue.push(item); added++;
+        }
+        if (!added) return false;
     }, { undoable: false, autosave: false });
+    return added;
 }
-function openLootDialog(index) {
+async function addLoot(index, excerpt, note = '', source = {}) {
+    if (!hasChat() || ui.run) throw new Error('기록이 끝난 뒤 루팅해 주세요.');
+    return addLootItems([prepareLoot(index, excerpt, note, source)]);
+}
+const lootable = m => eligible(m) && !m.is_user;
+function nearLootable(from, step) {
+    for (let i = from; i >= 0 && i < chat().length; i += step) if (lootable(chat()[i])) return i;
+    return -1;
+}
+// parts: [{ index, text }] from a selection; without them the dialog shows the latest AI reply in
+// full and can step to earlier ones. Each part becomes its own queue item.
+function openLootDialog(parts = null) {
     if (ui.run || mainBusy()) { toastr.info('진행 중인 생성이나 기록이 끝난 뒤 루팅해 주세요.'); return; }
-    if (!hasChat() || !eligible(chat()[index])) return;
+    if (!hasChat()) { toastr.warning('채팅방을 먼저 열어 주세요.'); return; }
+    if (typeof parts === 'number') parts = [{ index: parts, text: '' }];
+    const picked = Array.isArray(parts) && parts.length;
+    const blocks = (picked ? parts : [{ index: nearLootable(chat().length - 1, -1), text: '' }]).filter(p => lootable(chat()[p.index]));
+    if (!blocks.length) { toastr.info(picked ? '선택한 구절이 AI 답변에 없어요. AI 답변에서 골라 주세요.' : '담을 AI 답변이 없어요.'); return; }
     document.querySelector('#sp_loot_dialog')?.remove();
-    const full = cleanText(chat()[index].mes), source = { room: roomKey(), hash: fingerprint(chat()[index]) };
     const dialog = document.createElement('dialog');
     dialog.id = 'sp_loot_dialog'; dialog.className = 'sp-loot-dialog';
-    dialog.innerHTML = `<form><h3>💎 루팅 · #${index}</h3><p>전체 메시지를 담거나, 필요한 구절만 남겨 주세요. 다음 세이브 때 반영해요.</p>
-        <label>담을 원문<textarea name="excerpt" rows="9" required>${esc(full)}</textarea></label>
-        <button type="button" class="menu_button sp-loot-full">전체 담기</button>
+    const source = i => ({ room: roomKey(), hash: fingerprint(chat()[i]) });
+    const slots = blocks.map(b => ({ index: b.index, text: b.text || cleanText(chat()[b.index].mes), source: source(b.index) }));
+    const blockHtml = (b, k) => `<div class="sp-loot-part" data-k="${k}"><div class="sp-loot-head"><b>#${b.index}</b>${picked ? '' :
+        `<span class="sp-loot-nav"><button type="button" class="menu_button sp-loot-prev" title="이전 AI 답변">◀</button><button type="button" class="menu_button sp-loot-next" title="다음 AI 답변">▶</button></span>`}</div>
+        <label>${picked ? '선택한 구절' : '원문 전체'}<textarea name="excerpt" rows="${Math.min(9, Math.max(2, Math.ceil(b.text.length / 32) + 1))}" required>${esc(b.text)}</textarea></label>
+        <button type="button" class="menu_button sp-loot-full">전체 담기</button></div>`;
+    dialog.innerHTML = `<form><h3>💎 루팅</h3><p>${picked ? (slots.length > 1 ? `선택이 메시지 ${slots.length}개에 걸쳐 있어서 메시지별로 나눠 담아요.` : '선택한 구절을 담아요. 고치거나 전체로 바꿀 수 있어요.')
+        : '가장 최근 AI 답변이에요. ◀ ▶로 다른 답변을 고르거나, 필요한 구절만 남겨 주세요.'} 다음 세이브 때 반영해요.</p>
+        ${slots.map(blockHtml).join('')}
         <label>메모 (선택)<input name="note" type="text" placeholder="왜 중요한지 적어 주세요"></label>
         <p class="sp-loot-error" role="alert"></p><div class="sp-loot-actions"><button type="button" class="menu_button sp-loot-cancel">취소</button><button type="submit" class="menu_button">⏳ 대기열에 담기</button></div></form>`;
-    dialog.querySelector('.sp-loot-full').onclick = () => { dialog.querySelector('[name=excerpt]').value = full; };
+    const fill = k => {
+        const part = dialog.querySelector(`.sp-loot-part[data-k="${k}"]`), b = slots[k];
+        part.querySelector('b').textContent = `#${b.index}`;
+        part.querySelector('[name=excerpt]').value = b.text;
+    };
+    dialog.querySelectorAll('.sp-loot-part').forEach(part => {
+        const k = Number(part.getAttribute('data-k')), b = slots[k];
+        part.querySelector('.sp-loot-full').onclick = () => { b.text = cleanText(chat()[b.index].mes); fill(k); };
+        const go = step => () => {
+            const i = nearLootable(b.index + step, step);
+            if (i < 0) return;
+            Object.assign(b, { index: i, text: cleanText(chat()[i].mes), source: source(i) }); fill(k);
+        };
+        if (part.querySelector('.sp-loot-prev')) { part.querySelector('.sp-loot-prev').onclick = go(-1); part.querySelector('.sp-loot-next').onclick = go(1); }
+        part.querySelector('[name=excerpt]').oninput = e => { b.text = e.target.value; };
+    });
     dialog.querySelector('.sp-loot-cancel').onclick = () => dialog.close();
     dialog.addEventListener('close', () => dialog.remove(), { once: true });
     dialog.querySelector('form').onsubmit = async e => {
         e.preventDefault();
         const submit = dialog.querySelector('[type=submit]'); submit.disabled = true;
         try {
-            await addLoot(index, dialog.querySelector('[name=excerpt]').value, dialog.querySelector('[name=note]').value, source);
+            const note = dialog.querySelector('[name=note]').value;
+            const items = slots.map(b => prepareLoot(b.index, b.text, note, b.source));
+            const added = await addLootItems(items);
             dialog.close();
+            const n = state().lootQueue?.length || 0;
+            toastr.success(added ? `⏳ 대기열에 담았어요 (${n}개)` : '이미 대기열에 있는 구절이에요.', 'SavePoint', { timeOut: 2000 });
         } catch (err) { dialog.querySelector('.sp-loot-error').textContent = errorText(err); submit.disabled = false; }
     };
     document.body.append(dialog); dialog.showModal();
 }
-// Where the 💎 goes: right after the last thing shown on the same line as the character's name
-// (icons other extensions or themes add there), whatever the layout. Found by position on screen,
-// so it works whether those icons sit inside the name's box or next to it. Timestamps, timers
-// and the tool row never count. Returns where to put it: inside the name's box at its end, or
-// right after another element.
-const LOOT_SKIP = '.sp-loot-button, .timestamp, .mes_timer, .tokenCounterDisplay, .mesIDDisplay, .mes_buttons, .mes_edit_buttons';
-function lootAnchor(element) {
-    const name = element.querySelector('.name_text');
-    if (!name) return null;
-    const box = element.querySelector('.ch_name') || name.parentElement;
-    const nr = typeof name.getBoundingClientRect === 'function' ? name.getBoundingClientRect() : null;
-    let best = null, right = -Infinity;
-    if (box && nr && nr.height) {
-        // The name's own line: measured on its text, since the box itself may span the whole row.
-        const range = document.createRange?.();
-        let line = nr;
-        try { if (range) { range.selectNodeContents(name); const rects = range.getClientRects(); if (rects.length) line = rects[0]; } } catch { /* use the box */ }
-        const mid = line.top + line.height / 2;
-        right = line.right;
-        for (const el of box.querySelectorAll('*')) {
-            if (el.children.length || el === name || el.closest(LOOT_SKIP)) continue;
-            const r = el.getBoundingClientRect();
-            if (r.width && r.height && r.top <= mid && r.bottom >= mid && r.right > right) { right = r.right; best = el; }
+// ───────── 💎 in the chat bar ─────────
+// One button next to the extensions wand. With text selected in AI replies it opens the looting
+// form with that selection (split per message); without a selection, with the latest reply.
+// Selections are remembered, because on phones tapping a button can clear the selection first.
+let lootSelection = null;   // { parts, clearedAt }
+function selectionParts() {
+    const sel = globalThis.getSelection?.();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+    const box = document.getElementById('chat');
+    if (!box || !(box.contains(sel.anchorNode) || box.contains(sel.focusNode))) return null;
+    const parts = [];
+    for (let r = 0; r < sel.rangeCount; r++) {
+        const range = sel.getRangeAt(r);
+        for (const el of box.querySelectorAll('.mes[mesid] .mes_text')) {
+            if (!range.intersectsNode(el)) continue;
+            const sub = document.createRange();
+            sub.selectNodeContents(el);
+            if (range.compareBoundaryPoints(Range.START_TO_START, sub) > 0) sub.setStart(range.startContainer, range.startOffset);
+            if (range.compareBoundaryPoints(Range.END_TO_END, sub) < 0) sub.setEnd(range.endContainer, range.endOffset);
+            const text = sub.toString().trim();
+            if (text) parts.push({ index: Number(el.closest('.mes').getAttribute('mesid')), text });
         }
     }
-    if (!best || name.contains(best)) return { inside: name };
-    // Step out of another extension's own wrapper so its redraws cannot remove the button.
-    while (best.parentElement && best.parentElement !== box && !best.parentElement.contains(name)) best = best.parentElement;
-    return { after: best };
+    return parts.length ? parts.sort((x, y) => x.index - y.index) : null;
 }
-function lootButton(element) {
-    const button = document.createElement('div');
-    button.className = 'sp-loot-button interactable';
+function trackSelection() {
+    const parts = selectionParts();
+    if (parts) lootSelection = { parts, clearedAt: 0 };
+    else if (lootSelection && !lootSelection.clearedAt) lootSelection.clearedAt = Date.now();
+}
+function lootFromBar() {
+    const now = selectionParts();
+    const recent = lootSelection && (!lootSelection.clearedAt || Date.now() - lootSelection.clearedAt < 1500) ? lootSelection.parts : null;
+    const parts = now || recent;
+    lootSelection = null;
+    openLootDialog(parts);
+    if (parts) globalThis.getSelection?.()?.removeAllRanges?.();
+}
+function installLootBar() {
+    if (typeof document === 'undefined' || !document.getElementById) return;
+    let button = document.getElementById('sp_loot_bar');
+    if (!settings().enabled) { button?.remove(); return; }
+    if (button) return;
+    const host = document.getElementById('leftSendForm') || document.getElementById('send_form');
+    if (!host) return;
+    button = document.createElement('div');
+    button.id = 'sp_loot_bar'; button.className = 'sp-loot-bar interactable';
     button.textContent = '💎';
-    button.title = '💎 루팅'; button.setAttribute('aria-label', '💎 루팅');
+    button.title = '💎 루팅 · 드래그한 구절이 있으면 그 구절, 없으면 최근 AI 답변'; button.setAttribute('aria-label', '💎 루팅');
     button.setAttribute('role', 'button'); button.tabIndex = 0;
-    const open = e => { e.preventDefault(); e.stopPropagation(); openLootDialog(Number(element.getAttribute('mesid'))); };
-    button.onclick = open;
-    button.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') open(e); };
-    return button;
-}
-let lootTimer = null;
-function installLootButtons() {
-    if (typeof document === 'undefined' || !document.querySelectorAll) return;
-    for (const element of document.querySelectorAll('#chat .mes[mesid]')) {
-        const index = Number(element.getAttribute('mesid')), m = chat()[index];
-        const old = element.querySelector('.sp-loot-button');
-        if (!eligible(m) || m.is_user || !settings().enabled) { old?.remove(); continue; }
-        const anchor = lootAnchor(element);
-        if (anchor?.inside) {
-            if (old && old.parentElement === anchor.inside && !old.nextElementSibling) continue;
-            anchor.inside.append(old || lootButton(element));
-            continue;
-        }
-        if (anchor?.after) {
-            if (old && old.previousElementSibling === anchor.after) continue;
-            anchor.after.insertAdjacentElement('afterend', old || lootButton(element));
-            continue;
-        }
-        if (old) continue;
-        element.querySelector('.mes_buttons')?.append(lootButton(element));
-    }
-}
-// Other extensions may add their icons a moment after a message is drawn; place once more after them.
-function installLootButtonsSoon() {
-    installLootButtons();
-    clearTimeout(lootTimer);
-    lootTimer = setTimeout(installLootButtons, 800);
+    // Keep the text selection when the button is pressed.
+    button.addEventListener('pointerdown', e => e.preventDefault());
+    button.addEventListener('mousedown', e => e.preventDefault());
+    button.onclick = e => { e.preventDefault(); e.stopPropagation(); lootFromBar(); };
+    button.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); lootFromBar(); } };
+    const wand = document.getElementById('extensionsMenuButton');
+    if (wand?.parentElement === host) wand.insertAdjacentElement('afterend', button); else host.append(button);
 }
 function queueHtml(st) {
     const items = st.lootQueue || [];
-    if (!items.length) return '<div class="sp-empty">⏳ 대기열이 비었어요.<br>RP 답변의 💎 루팅 버튼으로 담아 주세요.</div>';
+    if (!items.length) return '<div class="sp-empty">⏳ 대기열이 비었어요.<br>채팅창의 💎로 담아 주세요. 구절을 드래그한 뒤 누르면 그 구절만 담겨요.</div>';
     return `<p class="sp-dim">다음 퀵세이브·체크포인트 때 반영해요. 선택한 내용은 기억 주입에 우선 반영해요.</p>` + items.map(item => {
-        const changed = lootStatus(item, roomKey(), chat(), fingerprint);
+        const changed = lootStatus(item, roomKey(), chat(), fingerprint, viewHash);
         return `<div class="sp-card sp-queued"><div class="sp-row"><b>${item.room === roomKey() ? '' : '이전 방 '}#${item.msg}</b>${tools([btn('loot-delete', item.id, '🗑', '대기열에서 삭제', ui.run ? 'sp-disabled' : '')])}</div>
             ${changed ? `<div class="sp-warn">${esc(changed)}</div>` : ''}${item.error && item.error !== changed ? `<div class="sp-warn">⚠ ${esc(item.error)}</div>` : ''}
             <blockquote>${esc(item.text)}</blockquote>${item.note ? `<p class="sp-dim">메모: ${esc(item.note)}</p>` : ''}</div>`;
@@ -2294,6 +2341,7 @@ function addSettingsUI() {
         saveSettings();
         if (['hide', 'keepRecent', 'enabled'].includes(k)) syncHide();
         if (['auto', 'autoEvery', 'enabled'].includes(k)) scheduleAuto();
+        if (k === 'enabled') installLootBar();
         refreshInjection(); render(true);
     });
     $('#sp_open').on('click', openWindow);
@@ -2317,14 +2365,14 @@ function onChatChanged() {
         reconcile();
         syncHide();
     }
-    refreshInjection(); render(true); installLootButtonsSoon();
+    refreshInjection(); render(true); installLootBar();
 }
 function onSourceChanged() {
     clearTimeout(sourceTimer);
     const epoch = roomEpoch;
     sourceTimer = setTimeout(() => {
         if (epoch !== roomEpoch || !hasChat()) return;
-        reconcile(); syncHide(); refreshInjection(); render(); installLootButtons();
+        reconcile(); syncHide(); refreshInjection(); render();
     }, 150);
 }
 function onGenerationStarted(type, options, dryRun) {
@@ -2334,7 +2382,7 @@ function onGenerationStarted(type, options, dryRun) {
     // Recall depends on the newest message, so rebuild right before the prompt is assembled.
     reconcile(); refreshInjection();
 }
-function onGenerationEnded() { mainGenerating = false; render(); installLootButtons(); scheduleAuto(); }
+function onGenerationEnded() { mainGenerating = false; render(); scheduleAuto(); }
 
 jQuery(() => {
     settings();
@@ -2358,7 +2406,8 @@ jQuery(() => {
     const on = (t, f) => { if (ev[t]) eventSource.on(ev[t], f); };
     on('CHAT_CHANGED', onChatChanged);
     for (const t of ['MESSAGE_SENT', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_UPDATED', 'MESSAGE_SWIPE_DELETED']) on(t, onSourceChanged);
-    for (const t of ['CHARACTER_MESSAGE_RENDERED', 'USER_MESSAGE_RENDERED', 'MORE_MESSAGES_LOADED']) on(t, installLootButtonsSoon);
+    globalThis.document?.addEventListener?.('selectionchange', trackSelection);
+    installLootBar();
     on('GENERATION_STARTED', onGenerationStarted);
     for (const t of ['GENERATION_ENDED', 'GENERATION_STOPPED']) on(t, onGenerationEnded);
     for (const t of ['CONNECTION_PROFILE_UPDATED', 'CONNECTION_PROFILE_DELETED', 'CONNECTION_PROFILE_CREATED']) on(t, fillProfiles);
@@ -2368,4 +2417,4 @@ jQuery(() => {
 });
 
 // Exposed for regression checks only.
-globalThis.__savePoint = { state, settings, summarize, listSaves, vault, migrateLocal, autoCollect, autoBlocked, autoCount, scheduleAuto, undo, loadSave, reconcile, syncHide, refreshInjection, handle, ui, render, estTokens, recordLine, reportText, addLoot, queueHtml };
+globalThis.__savePoint = { state, settings, summarize, listSaves, vault, migrateLocal, autoCollect, autoBlocked, autoCount, scheduleAuto, undo, loadSave, reconcile, syncHide, refreshInjection, handle, ui, render, estTokens, recordLine, reportText, addLoot, queueHtml, installLootBar, openLootDialog };

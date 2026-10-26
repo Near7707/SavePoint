@@ -250,17 +250,21 @@
 .sp-point-detail > div { padding-top: 4px; font-size: .85em; }
 .sp-queued blockquote { white-space: pre-wrap; overflow-wrap: anywhere; margin: 10px 0; padding: 8px; border-left: 3px solid var(--sp-accent, #baa77b); max-height: 240px; overflow: auto; }
 .sp-queued p { overflow-wrap: anywhere; }
-.sp-loot-button {
+#sp_loot_bar {
     display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; box-sizing: border-box;
-    height: 1.35em; padding: 0 .3em; margin: 0 .25em; border: 0; border-radius: 999px; cursor: pointer;
-    background: #8882; background: color-mix(in srgb, var(--SmartThemeBodyColor, #888) 12%, transparent);
-    font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif; font-size: .85em; font-weight: normal;
-    line-height: 1; vertical-align: middle; user-select: none; transition: background .2s;
+    height: 1.6em; padding: 0 .35em; margin: 0 2px; border-radius: 999px; cursor: pointer; align-self: center;
+    background: #8882; background: color-mix(in srgb, var(--SmartThemeBodyColor, #888) 14%, transparent);
+    font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif; font-size: 15px; font-weight: normal;
+    line-height: 1; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; transition: background .2s;
 }
-.sp-loot-button:hover, .sp-loot-button:focus-visible { background: #8884; background: color-mix(in srgb, var(--SmartThemeBodyColor, #888) 22%, transparent); }
+#sp_loot_bar:hover, #sp_loot_bar:focus-visible { background: #8884; background: color-mix(in srgb, var(--SmartThemeBodyColor, #888) 24%, transparent); }
+#sp_loot_dialog .sp-loot-part { display: flex; flex-direction: column; gap: 6px; padding: 8px 0; border-top: 1px solid var(--SmartThemeBorderColor, #7775); }
+#sp_loot_dialog .sp-loot-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+#sp_loot_dialog .sp-loot-nav { display: inline-flex; gap: 6px; }
+#sp_loot_dialog .sp-loot-nav button.menu_button { min-height: 32px; padding: 4px 10px; }
 #sp_loot_dialog {
     box-sizing: border-box; width: min(560px, calc(100vw - 24px)); min-width: 0; max-width: calc(100vw - 24px);
-    height: auto; max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); margin: auto; inset: 0;
+    height: fit-content; max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); margin: auto; inset: 0;
     overflow: auto; overscroll-behavior: contain; border-radius: 10px; border: 1px solid var(--SmartThemeBorderColor, #777);
     background: var(--SmartThemeBlurTintColor, #242424); color: var(--SmartThemeBodyColor, #eee); padding: 16px; font: inherit;
 }
@@ -268,7 +272,7 @@
 #sp_loot_dialog form, #sp_loot_dialog label { display: flex; flex-direction: column; gap: 8px; min-width: 0; text-align: left; margin: 0; }
 #sp_loot_dialog h3, #sp_loot_dialog p { margin: 0 0 4px; }
 #sp_loot_dialog textarea, #sp_loot_dialog input { box-sizing: border-box; width: 100%; min-width: 0; margin: 0; font: inherit; font-size: max(16px, 1em); }
-#sp_loot_dialog textarea { height: 180px; height: clamp(140px, 28dvh, 280px); min-height: 100px; max-height: 45dvh; resize: vertical; line-height: 1.5; }
+#sp_loot_dialog textarea { height: auto; min-height: 3.4em; max-height: 45vh; max-height: 40dvh; resize: vertical; line-height: 1.5; }
 /* SillyTavern's .menu_button defaults to min-content, which stacks Korean labels. */
 #sp_loot_dialog button.menu_button {
     box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; align-self: flex-start;
