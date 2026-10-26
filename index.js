@@ -6,16 +6,17 @@ import {
     pointInjected, pointSymbol, rekeyItems, validateRekey, applyRekey, needsRekey, sceneOutlineText, sceneOutlineParts,
     normalizeResult, validateCheck, checkScope, dupState, pointId,
     recordLine, entityName, estTokens, QUEST_KINDS, WORLD_KINDS, ENTITY_TYPES,
-    groupErrors, findQuote, normQuote,
+    groupErrors,
 } from './core.js';
 import { Vault, roomHash } from './vault.js';
-import { DEFAULT_GUIDE, guideHash, OLD_GUIDE_HASHES, OUTPUT_FORMAT, buildCheckPrompt, buildRekeyPrompt, buildExtractPrompt, buildBoundaryPrompt, batchNote, retryNote, TRANSLATE_PROMPT } from './prompts.js';
+import { assertPromptFits, nextMessageChunk, planReviewBatches } from './request-batches.js';
+import { DEFAULT_GUIDE, guideHash, OLD_GUIDE_HASHES, buildCheckPrompt, buildRekeyPrompt, buildExtractPrompt, buildBoundaryPrompt, batchNote, retryNote, TRANSLATE_PROMPT } from './prompts.js';
 
 const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.3.3';
+const VERSION = '0.3.4';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -352,7 +353,7 @@ const fmtSec = ms => { const t = Math.floor(ms / 1000); return t >= 60 ? `${Math
 function reqText() {
     const r = ui.req;
     if (!r) return '';
-    const step = r.attempt ? `재요청${r.why ? ` (${r.why})` : ''}` : '첫 요청';
+    const step = (r.attempt ? `재요청${r.why ? ` (${r.why})` : ''}` : '첫 요청') + ` · 입력 ${r.chars.toLocaleString()}자`;
     return r.phase === 'got' ? `${step} · 응답 받음 (${fmtSec(r.ms)}) · 검사 중` : `${step} · 응답 대기 ${fmtSec(Date.now() - r.start)}`;
 }
 function tickReq() {
@@ -364,6 +365,7 @@ function tickReq() {
 }
 async function llm(prompt, run, { attempt = 0, why = '' } = {}) {
     const s = settings(), c = ctx(), max = num('responseLength', 500, 64000);
+    assertPromptFits(prompt, num('inputChars', 5000, 1000000));
     const limit = num('timeoutSec', 5, 3600) * 1000;
     const id = ++reqSeq;
     const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
@@ -382,7 +384,7 @@ async function llm(prompt, run, { attempt = 0, why = '' } = {}) {
         return String(await c.generateRaw({ prompt, responseLength: max }) ?? '');
     };
     const start = Date.now();
-    if (run) { ui.req = { id, attempt, why, start, phase: 'wait' }; render(); tickReq(); }
+    if (run) { ui.req = { id, attempt, why, start, phase: 'wait', chars: prompt.length }; render(); tickReq(); }
     let timer, onCancel;
     const request = send();
     request.catch(() => {});   // a late failure after the time limit is ignored
@@ -473,7 +475,8 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
         let raw;
         const start = Date.now();
         const why = attempt ? lastKind : '';
-        try { raw = await llm(attempt ? prompt + retryNote(groupErrors(errors), lang) : prompt, run, { attempt, why }); }
+        const requestPrompt = attempt ? prompt + retryNote(groupErrors(errors), lang) : prompt;
+        try { raw = await llm(requestPrompt, run, { attempt, why }); }
         catch (e) {
             if (run.cancelled || e instanceof Cancelled) throw new Cancelled('중지했어요.');
             if (e instanceof RequestTimeout) {
@@ -484,7 +487,7 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
             throw fail(`요약 AI 요청이 실패했어요 (#${chunk.from}–#${chunk.to}): ${errorText(e)}`, []);
         }
         if (run.cancelled) throw new Cancelled('중지했어요.');
-        const took = `${fmtSec(Date.now() - start)} · 응답 ${String(raw ?? '').length.toLocaleString()}자`;
+        const took = `${fmtSec(Date.now() - start)} · 입력 ${requestPrompt.length.toLocaleString()}자 (원문 ${chunk.text.length.toLocaleString()}자) · 응답 ${String(raw ?? '').length.toLocaleString()}자`;
         const kind = replyKind(raw);
         let parsed = false;
         let fixes = [];
@@ -525,23 +528,17 @@ async function summarize({ close = false } = {}) {
         } else toastr.info('기록할 새 메시지가 없어요.');
         return;
     }
-    // Message budget = input limit minus everything else in the prompt.
-    const all = msgs.map(m => `#${m.index} ${m.name}: ${m.text}`).join('\n\n');
-    const ctxNow = promptContext(st.mem, all);
-    const fixed = (settings().guide || DEFAULT_GUIDE).length + OUTPUT_FORMAT.length + 600 + cardText().length +
-        ctxNow.entities.length + ctxNow.state.length + ctxNow.open.length + ctxNow.recent.length;
-    const msgBudget = Math.max(4000, num('inputChars', 5000, 1000000) - fixed);
-    const chunks = chunkMessages(msgs, msgBudget);
     st.autoMark = end; st.autoHold = null; persistSoon();
     const run = newRun(st, end);
     const undoPoint = checkpoint(st);
     const memBefore = st.mem;
-    let done = 0;
+    let done = 0, cursor = 0;
     try {
-        for (let i = 0; i < chunks.length; i++) {
-            const chunk = chunks[i];
-            const last = i === chunks.length - 1;
-            ui.progress = `${close ? '장면 클리어' : '퀵세이브'} ${chunks.length > 1 ? `${i + 1}/${chunks.length}구간 ` : ''}#${chunk.from}–#${chunk.to}`;
+        while (cursor < msgs.length) {
+            assertValid(run, end);
+            const chunk = nextMessageChunk(msgs.slice(cursor), c => extractPrompt(st.mem, c), num('inputChars', 5000, 1000000));
+            const last = cursor + chunk.indices.length === msgs.length;
+            ui.progress = `${close ? '장면 클리어' : '퀵세이브'} ${done + 1}구간 #${chunk.from}–#${chunk.to} · ${cursor}/${msgs.length}메시지 완료`;
             render();
             const data = await extractChunk(st.mem, chunk, run);
             const coverTo = last ? end : chunk.to;
@@ -555,13 +552,13 @@ async function summarize({ close = false } = {}) {
                 st.lastIndex = coverTo; st.hashes = run.hashes.slice(0, coverTo + 1);
                 st.undo = undoPoint;
             }, { undoable: false, autosave: false });
-            done++;
+            done++; cursor += chunk.indices.length;
         }
         ui.lastError = null;
         toastr.success(close ? '장면 클리어! 진행 중이던 장면까지 기록하고 닫았어요.' : '퀵세이브 완료. 마지막 메시지까지 기록했어요.', 'SavePoint');
     } catch (e) {
-        const left = chunks.length - done;
-        const where = done ? ` ${chunks.length}개 구간 중 ${done}개는 저장했고, 나머지 ${left}개 구간의 원문은 그대로 남겨 뒀어요.` : ' 기억과 원문은 바뀌지 않았어요.';
+        if (!(e instanceof Cancelled) && !e.detail) ui.lastError = { at: Date.now(), range: `#${msgs[cursor]?.index ?? start}–#${end}`, detail: [errorText(e)] };
+        const where = done ? ` ${done}개 구간(${cursor}개 메시지)은 저장했고, 남은 ${msgs.length - cursor}개 메시지의 원문은 그대로 남겨 뒀어요.` : ' 기억과 원문은 바뀌지 않았어요.';
         if (e instanceof Cancelled) toastr.info(e.message + where, 'SavePoint');
         else { console.error('[SavePoint]', e, e.detail || ''); toastr.error(e.message + where, 'SavePoint', { timeOut: 12000 }); }
     } finally {
@@ -695,86 +692,58 @@ async function autoCollect() {
 // records and the journal, and for misreadings of the original messages. Nothing is changed:
 // each finding shows the two conflicting sentences and the evidence, with "편집" or "무시".
 
-// The message numbers behind a record, a point (g2.4) or a part outline (g2).
-function evidenceOf(mem, id) {
-    const ints = l => (l || []).filter(Number.isInteger);
-    if (/^r\d+$/.test(id)) { const r = mem.records.find(x => x.id === id); return r ? [...ints(r.msgs), ...(r.terms ? [r.terms.msg] : [])] : []; }
-    const [gid, j] = String(id).split('.');
-    for (const sc of mem.scenes) for (const g of sc.segs) {
-        if (g.id !== gid) continue;
-        if (j === undefined) return g.points.flatMap(p => ints(p.msgs));
-        return ints(g.points[Number(j)]?.msgs);
-    }
-    return [];
-}
-// Does a line the check quotes as its counter-evidence really appear in what was sent?
-function seenInSent(lines, sent) {
-    const texts = Object.values(sent || {});
-    const pieces = [];
-    for (const l of lines || []) {
-        const t = String(l || '');
-        pieces.push(t.replace(/^[^:"“']{1,24}:\s*/, ''));
-        for (const m of t.matchAll(/["“'‘]([^"”’]{12,}?)["”'’](?=[\s,.;)/]|$)/g)) pieces.push(m[1]);
-    }
-    return pieces.some(q => normQuote(q).length >= 12 && texts.some(tx => findQuote(tx, q)));
-}
-function checkInput(st, scope) {
+// A target and every original message needed to judge it travel together.
+// Missing/oversized evidence is deferred explicitly, never shortened.
+function checkStatements(st, scope) {
     const mem = st.mem;
     const recs = mem.records.filter(r => scope.records.includes(r.id));
     const segIds = new Set(scope.segs);
-    // Parts that the records point to count too.
-    for (const r of recs) for (const g of r.src || []) segIds.add(g);
-    const lines = [], ids = new Set(recs.map(r => r.id)), points = [];
-    for (const sc of mem.scenes) for (const g of sc.segs) {
-        if (!segIds.has(g.id)) continue;
-        if (g.outline) { lines.push(`${g.id}: ${g.outline}`); ids.add(g.id); }
-        g.points.forEach((p, j) => { lines.push(`${pointId(g, j)}: ${p.text}`); ids.add(pointId(g, j)); points.push(p); });
-    }
-    // Which original messages to show, most useful first:
-    //   0. for a debt or promise with terms: EVERY message from its first to its last evidence,
-    //      so a later change of terms (#52 between #48 and #54) is never left out. If any of these
-    //      cannot be sent whole, that record is marked "근거 일부 누락 · 판단 보류", not checked;
-    //   1. messages the changed records cite;
-    //   2. every message of a point that shares one of those (a game point citing #10-#16 when the
-    //      record cites #15), so the whole event is seen, not just its last line;
-    //   3. the rest of the cited messages.
-    const ints = l => (l || []).filter(Number.isInteger);
-    const required = new Map();   // message -> record ids that need it whole
-    const termLines = [];
+    for (const r of recs) for (const id of r.src || []) segIds.add(id);
+    const segments = new Map(mem.scenes.flatMap(sc => sc.segs.map(g => [g.id, g])));
+    const ints = list => (list || []).filter(n => Number.isInteger(n) && n >= 0);
+    const range = (from, to) => {
+        const out = [];
+        if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from) return out;
+        // A damaged/imported reference must not allocate an unbounded range.
+        if (to >= chat().length) return [from, to];
+        for (let n = from; n <= to; n++) if (!chat()[n] || eligible(chat()[n])) out.push(n);
+        return out;
+    };
+    const segmentNumbers = g => {
+        const full = range(g.from, g.to);
+        return full.length ? full : [...new Set(g.points.flatMap(p => ints(p.msgs)))];
+    };
+    const numbers = list => [...new Set((list || []).flatMap(n => {
+        if (Number.isInteger(n) && n >= 0) return [n];
+        const g = segments.get(n);
+        return g ? segmentNumbers(g) : [];
+    }))].sort((a, b) => a - b);
+    const points = [...segments.values()].filter(g => segIds.has(g.id)).flatMap(g => g.points);
+    const statements = [];
     for (const r of recs) {
-        if (r.type !== 'quest' || !r.terms) continue;
-        const all = [...ints(r.msgs), r.terms.msg];
-        for (let n = Math.min(...all); n <= Math.max(...all); n++) { if (!required.has(n)) required.set(n, []); required.get(n).push(r.id); }
-        termLines.push(`${r.id} (#${r.terms.msg}): "${r.terms.quote}"\n  context: ${r.terms.context}`);
+        let msgs = numbers(r.msgs);
+        // Include the rest of the event when a point cites more than the record.
+        for (const p of points) if (numbers(p.msgs).some(n => msgs.includes(n))) msgs = [...new Set([...msgs, ...numbers(p.msgs)])];
+        let terms = '';
+        if (r.type === 'quest' && r.terms) {
+            msgs = [...new Set([...msgs, r.terms.msg])];
+            msgs = range(Math.min(...msgs), Math.max(...msgs));
+            terms = `${r.id} (#${r.terms.msg}): "${r.terms.quote}"\n  context: ${r.terms.context}`;
+        }
+        statements.push({ id: r.id, kind: 'record', line: `${r.id}: ${recordLine(mem, r, false)}`, terms, messages: msgs });
     }
-    const tier1 = new Set(recs.flatMap(r => ints(r.msgs)));
-    const tier2 = new Set();
-    for (const p of points) { const m = ints(p.msgs); if (m.some(n => tier1.has(n))) m.forEach(n => tier2.add(n)); }
-    const tier3 = new Set(points.flatMap(p => ints(p.msgs)));
-    const asc = set => [...set].sort((x, y) => x - y);
-    const order = [...new Set([...asc(required.keys()), ...asc(tier1), ...asc(tier2), ...asc(tier3)])];
-    const fixed = lines.join('\n').length + termLines.join('\n').length + recs.reduce((n, r) => n + recordLine(mem, r, false).length + 8, 0) + 3500;
-    const budget = Math.max(14000, Math.min(60000, num('inputChars', 5000, 1000000) - fixed));
-    const shown = [], skipped = [], missing = new Map();   // record id -> message numbers not sent whole
-    const miss = n => { for (const id of required.get(n) || []) { if (!missing.has(id)) missing.set(id, []); missing.get(id).push(n); } };
-    let size = 0;
-    const cover = {}, sent = {};   // message -> 'whole' | 'cut' | 'missing'; the text actually sent
-    for (const n of order) {
-        const m = chat()[n];
-        if (!m) { miss(n); cover[n] = 'missing'; continue; }
-        const cap = required.has(n) ? 6000 : tier1.has(n) || tier2.has(n) ? 2000 : 700;
-        const text = cleanText(m.mes);
-        const cut = text.length > cap;
-        const line = `#${n} ${speaker(m)}: ${cut ? text.slice(0, cap) + ' [...cut]' : text}`;
-        if (size + line.length > budget) { skipped.push(n); miss(n); cover[n] = 'missing'; continue; }
-        if (cut) miss(n);
-        cover[n] = cut ? 'cut' : 'whole'; sent[n] = cut ? text.slice(0, cap) : text;
-        shown.push([n, line]); size += line.length;
+    for (const g of segments.values()) {
+        if (!segIds.has(g.id)) continue;
+        if (g.outline) statements.push({ id: g.id, kind: 'journal', line: `${g.id}: ${g.outline}`, messages: segmentNumbers(g) });
+        g.points.forEach((p, j) => statements.push({ id: pointId(g, j), kind: 'journal', line: `${pointId(g, j)}: ${p.text}`, messages: numbers(p.msgs) }));
     }
-    shown.sort((x, y) => x[0] - y[0]);
-    return { records: recs.map(r => `${r.id}: ${recordLine(mem, r, false)}`).join('\n'), journal: lines.join('\n'), terms: termLines.join('\n'),
-        messages: shown.map(x => x[1]).join('\n\n'), notShown: skipped.sort((x, y) => x - y), missing, ids, cover, sent };
+    return statements;
 }
+function checkPrompt(input) {
+    return buildCheckPrompt({ names: names(), records: input.records, journal: input.journal,
+        terms: input.terms, messages: input.messages, notShown: input.notShown });
+}
+
 function queueCheck(st, before) {
     if (!settings().check || !settings().enabled) return;
     const scope = checkScope(before, st.mem);
@@ -783,63 +752,69 @@ function queueCheck(st, before) {
 }
 async function runCheck(st, scope) {
     if (ui.run) { st.check = { at: Date.now(), status: 'failed', reason: '다른 작업 중이라 건너뜀', scope, issues: [] }; persistSoon(); render(); return; }
-    const input = checkInput(st, scope);
-    if (!input.ids.size) return;
-    const run = newRun(st, -1);
+    const end = chat().length - 1;
+    const run = newRun(st, end);
     const rev = st.rev;
     st.check = { at: Date.now(), status: 'running', scope, issues: [] }; render();
     try {
-        ui.progress = '기록 확인'; render();
-        const prompt = buildCheckPrompt({ names: names(), records: input.records, journal: input.journal, terms: input.terms, messages: input.messages, notShown: input.notShown });
-        let result = null, errors = [], cKind = '';
-        for (let attempt = 0; attempt < 2 && !result; attempt++) {
-            const raw = await llm(attempt ? prompt + retryNote(errors, []) : prompt, run, { attempt, why: attempt ? cKind : '' });
-            if (run.cancelled) throw new Cancelled('중지했어요.');
-            let parsed = null;
-            try { parsed = parseJson(raw); } catch { /* below */ }
-            if (parsed) { const r = validateCheck(parsed, input.ids); errors = r.errors; if (!errors.length) result = r; }
-            else errors = ['The reply was not valid JSON.'];
-            cKind = replyKind(raw) || (!parsed ? 'JSON 해석 실패' : `형식 오류 ${errors.length}건`);
-        }
-        if (state() !== st) return;
-        if (!result) { st.check = { at: Date.now(), status: 'failed', reason: `검사 응답: ${cKind}`, scope, issues: [] }; return; }
-        if (st.rev !== rev) { st.check = { at: Date.now(), status: 'failed', reason: '검사 중 기억이 바뀜', scope, issues: [] }; return; }
+        const statements = checkStatements(st, scope);
+        const plan = planReviewBatches(statements, n => chat()[n] ? { name: speaker(chat()[n]), text: cleanText(chat()[n].mes) } : null,
+            checkPrompt, num('inputChars', 5000, 1000000));
         const stamp = Date.now().toString(36);
-        const issues = result.issues.map((x, i) => ({ ...x, id: `c${stamp}${i}`, ignored: false,
-            excerpt: x.msgs.map(n => chat()[n] ? `#${n} ${speaker(chat()[n])}: ${cleanText(chat()[n].mes).slice(0, 220)}` : '').filter(Boolean).slice(0, 2) }));
-        // A finding is only as good as what the check could read. Look at the evidence of the
-        // statement it names (and the other one, for "unclear"), not only the numbers it cites:
-        // if any of it was cut or not sent, the finding is held back, unless a contradicting line
-        // it quotes is really there in what was sent.
-        for (const x of issues) {
-            const need = [...new Set([...x.msgs, ...evidenceOf(st.mem, x.about), ...(x.also ? evidenceOf(st.mem, x.also) : [])])].sort((a, b) => a - b);
-            const gaps = need.filter(n => input.cover[n] !== 'whole');
-            if (!gaps.length) continue;
-            const g = gaps.map(n => ({ n, how: input.cover[n] === 'cut' ? '일부만 보냄' : '못 보냄' }));
-            if (x.kind === 'unclear') { x.gaps = g; continue; }   // already held back
-            // Kept only when a sent line visibly says otherwise; "the messages don't say it" is not
-            // provable while part of the evidence was not read.
-            if (x.basis === 'contradicted' && seenInSent(x.conflict.slice(1), input.sent)) continue;
-            x.was = x.kind; x.kind = 'partial'; x.gaps = g;
+        const issues = [], keys = new Set(), sent = new Set();
+        const coverage = { sent: 0, cut: [], missing: [], batches: plan.batches.length, checked: 0, deferred: plan.deferred.length };
+        for (let i = 0; i < plan.batches.length; i++) {
+            assertValid(run, end);
+            if (st.rev !== rev) throw new Cancelled('검사 중 기억이 바뀌어서 검토를 멈췄어요.');
+            const input = plan.batches[i], prompt = checkPrompt(input);
+            ui.progress = `기록 확인 ${i + 1}/${plan.batches.length}구간 · 원문 전체 확인`; render();
+            let result = null, errors = [], cKind = '';
+            for (let attempt = 0; attempt < 2 && !result; attempt++) {
+                const raw = await llm(attempt ? prompt + retryNote(errors, []) : prompt, run, { attempt, why: attempt ? cKind : '' });
+                assertValid(run, end);
+                let parsed = null;
+                try { parsed = parseJson(raw); } catch { /* below */ }
+                if (parsed) { const r = validateCheck(parsed, input.ids); errors = r.errors; if (!errors.length) result = r; }
+                else errors = ['The reply was not valid JSON.'];
+                cKind = replyKind(raw) || (!parsed ? 'JSON 해석 실패' : `형식 오류 ${errors.length}건`);
+            }
+            if (!result) throw new Error(`검사 ${i + 1}/${plan.batches.length}구간 응답: ${cKind}`);
+            if (st.rev !== rev) throw new Cancelled('검사 중 기억이 바뀌어서 검토를 멈췄어요.');
+            for (const n of Object.keys(input.sent)) sent.add(Number(n));
+            coverage.checked += input.ids.size;
+            for (const x of result.issues) {
+                // A model cannot supply evidence from outside this request.
+                const outside = x.msgs.filter(n => input.cover[n] !== 'whole');
+                if (outside.length) { x.kind = 'partial'; x.gaps = outside.map(n => ({ n, how: '이 검토 요청에 없는 근거 번호' })); }
+                const key = JSON.stringify([x.about, x.also || '', x.kind, [...x.msgs].sort((a, b) => a - b)]);
+                if (keys.has(key)) continue;
+                keys.add(key);
+                issues.push({ ...x, id: `c${stamp}${issues.length}`, ignored: false,
+                    excerpt: x.msgs.map(n => chat()[n] ? `#${n} ${speaker(chat()[n])}: ${cleanText(chat()[n].mes).slice(0, 220)}` : '').filter(Boolean).slice(0, 2) });
+            }
         }
-        // Records whose evidence range could not be sent whole were not really checked.
-        for (const [rid, nums] of input.missing) {
-            const list = [...new Set(nums)].sort((a, b) => a - b);
-            issues.push({ id: `c${stamp}p${rid}`, about: rid, kind: 'partial', ignored: false, msgs: list, conflict: [], excerpt: [],
-                gaps: list.map(n => ({ n, how: input.cover[n] === 'cut' ? '일부만 보냄' : '못 보냄' })),
-                problem: `근거 원문 ${list.map(n => '#' + n).join(', ')}을(를) 길이 한도 때문에 온전히 보내지 못해서 이 기록은 확인하지 못했어요. 입력 한도를 늘리거나 직접 확인해 주세요.` });
+        assertValid(run, end);
+        if (st.rev !== rev) throw new Cancelled('검사 중 기억이 바뀌어서 검토를 멈췄어요.');
+        const allNeeded = new Set(statements.flatMap(s => s.messages));
+        coverage.sent = sent.size;
+        coverage.missing = [...allNeeded].filter(n => !sent.has(n)).sort((a, b) => a - b);
+        for (const d of plan.deferred) {
+            const problem = d.reason === 'size'
+                ? `근거 원문 전체를 함께 보내려면 ${d.chars.toLocaleString()}자가 필요해요 (입력 한도 ${num('inputChars', 5000, 1000000).toLocaleString()}자). 원문을 자르지 않고 이 항목의 검토를 보류했어요. 입력 한도를 늘린 뒤 다시 확인해 주세요.`
+                : d.reason === 'missing' ? '근거 원문을 찾을 수 없어 이 항목의 검토를 보류했어요.' : '근거 메시지 번호가 없어 이 항목의 검토를 보류했어요.';
+            issues.push({ id: `c${stamp}${issues.length}`, about: d.id, kind: 'partial', ignored: false,
+                msgs: d.messages, conflict: [], excerpt: [], problem,
+                gaps: (d.missing.length ? d.missing : d.messages).map(n => ({ n, how: d.reason === 'missing' ? '원문 없음' : '이 항목의 검토 보류' })) });
         }
-        const sentNums = Object.keys(input.cover).map(Number);
-        const coverage = { sent: sentNums.filter(n => input.cover[n] !== 'missing').length,
-            cut: sentNums.filter(n => input.cover[n] === 'cut').sort((a, b) => a - b), missing: sentNums.filter(n => input.cover[n] === 'missing').sort((a, b) => a - b) };
         st.check = { at: Date.now(), status: issues.length ? 'issues' : 'ok', scope, issues, coverage };
     } catch (e) {
-        if (state() === st) st.check = { at: Date.now(), status: 'failed', reason: e instanceof Cancelled ? '취소됨' : errorText(e), scope, issues: [] };
+        if (state() === st) st.check = { at: Date.now(), status: 'failed', reason: e instanceof Cancelled ? '취소됨 · 전체 검토 미완료' : errorText(e), scope, issues: [] };
     } finally {
         endRun(run);
         if (state() === st) { persistSoon(); render(); }
     }
 }
+
 const gapText = gaps => gaps.map(g => `#${g.n} ${g.how}`).join(', ');
 const CHECK_KIND = { misread: '원문과 다름', unclear: '충돌 · 판단 보류', partial: '근거 일부 누락 · 판단 보류', contradiction: '모순' };
 const ABOUT_LABEL = (mem, about) => {
@@ -869,6 +844,7 @@ function reportText(st) {
         const all = c.issues || [];
         const state = c.status === 'failed' ? `실패 (${c.reason || ''})` : all.filter(x => !x.ignored).length ? `확인 필요 ${all.filter(x => !x.ignored).length}건` : '문제 없음';
         out.push('', `[기록 확인] ${new Date(c.at).toLocaleString()} · ${state}`);
+        if (c.coverage?.batches !== undefined) out.push(`검토 요청 ${c.coverage.batches}회 · 검토 보류 ${c.coverage.deferred || 0}개 항목`);
         if (c.coverage) out.push(`보낸 원문 ${c.coverage.sent}개 · 일부만 보냄: ${c.coverage.cut.map(n => '#' + n).join(', ') || '없음'} · 못 보냄: ${c.coverage.missing.map(n => '#' + n).join(', ') || '없음'}`);
         all.forEach((x, i) => {
             out.push('', `${i + 1}. [${CHECK_KIND[x.kind] || x.kind}]${x.ignored ? ' (무시함)' : ''} ${ABOUT_LABEL(st.mem, x.about)}${x.also ? ` ↔ ${ABOUT_LABEL(st.mem, x.also)}` : ''}`);
@@ -1795,7 +1771,7 @@ function settingsHtml() {
             <div class="sp-set-row"><button class="menu_button" id="sp_open">SavePoint 열기</button></div>
             <label class="checkbox_label"><input type="checkbox" data-set="enabled"> 사용 (기억 주입·하이드)</label>
             <label>요약 AI <select data-set="profileId" id="sp_profiles"></select></label>
-            <label class="checkbox_label"><input type="checkbox" data-set="check"> 기록 후 확인 (AI가 모순·원문과 다른 해석을 찾아 경고만, 호출 1회 추가)</label>
+            <label class="checkbox_label"><input type="checkbox" data-set="check"> 기록 후 확인 (모순·원문과 다른 해석을 찾아 경고 · 분량에 따라 추가 요청)</label>
             <label class="checkbox_label"><input type="checkbox" data-set="auto"> 체크포인트 (끝난 장면을 자동 기록)</label>
             <label>체크포인트 간격 (새 메시지 수, 유저+캐릭터) <input type="number" data-set="autoEvery" min="5" max="500"></label>
             <label>응답 최대 토큰 <input type="number" data-set="responseLength" min="500" max="64000"></label>
@@ -1920,4 +1896,5 @@ jQuery(() => {
 
 // Exposed for regression checks only.
 globalThis.__savePoint = { state, settings, summarize, listSaves, vault, migrateLocal, autoCollect, autoBlocked, autoCount, scheduleAuto, undo, loadSave, reconcile, syncHide, refreshInjection, handle, ui, render, estTokens, recordLine, reportText };
+
 

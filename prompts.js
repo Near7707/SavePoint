@@ -205,7 +205,7 @@ Report only real problems, of these two kinds:
 1. misread: a record, a point or an outline states something the ORIGINAL MESSAGES contradict, for example a joke treated as a binding bet or debt, an obligation nobody agreed to, the terms of a bet, stake or rule written differently from how they were stated, the wrong person doing something, a result reversed. Put the id of the WRONG statement in "about". When a record and a journal line disagree, read the messages and report only the one they contradict; never report a statement the messages support just because another line disagrees with it.
 2. unclear: two statements disagree and the messages shown do not settle which one is right. Put one id in "about" and the other in "also". Do not guess which is wrong.
 Do not report wording, style, missing minor details, or things that only seem unlikely. When the messages are ambiguous, do not report.
-Some cited messages are cut ("[...cut]") or not shown. Report a misread only when the messages shown contradict the statement or clearly show something else in its place. If the message that would support it is simply not shown or cut off, do not report it.
+This is one batch of a larger review. Each supplied statement travels with its full cited messages; never assume a statement or an event outside this batch was checked. Report a misread only when the messages shown contradict the statement or clearly show something else in its place. If supporting evidence is unavailable, do not report a misread. Use only message numbers actually shown in this request.
 ${terms ? `
 [TERMS] (the words that set each debt or promise, with the sentences around them, copied by code from the original)
 ${terms}
@@ -226,3 +226,4 @@ Return ONLY one JSON object:
 "basis": "contradicted" when a message line says something different (copy that line word for word as the second "conflict" entry); "unsupported" when the messages simply do not show it.
 If nothing is wrong, return {"issues": []}.`, names);
 }
+
