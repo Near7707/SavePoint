@@ -18,7 +18,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.4.2';
+const VERSION = '0.5.4';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -28,7 +28,14 @@ const DEFAULTS = {
     requestStream: true, reasoningEffort: '',
     budget: 6000, titleCap: 600, recentScenes: 3, recall: true, rawRecall: false,
     hide: true, keepRecent: 10, position: 1, depth: 4, role: 0,
-    theme: 'jrpg', showKo: false, autoKeep: 30, guide: DEFAULT_GUIDE, slotCache: [], localSaves: {},
+    theme: 'jrpg', showKo: false, autoKeep: 30, guide: DEFAULT_GUIDE, slotCache: [], localSaves: {}, settingsOpen: {},
+};
+const SETTING_GROUPS = {
+    connection: { title: '연결·AI 요청', keys: ['profileId', 'requestStream', 'reasoningEffort', 'responseLength', 'inputChars', 'timeoutSec'] },
+    recording: { title: '체크포인트·기록 확인', keys: ['check', 'auto', 'autoEvery', 'guide'] },
+    injection: { title: '기억 주입', keys: ['budget', 'titleCap', 'recentScenes', 'recall', 'rawRecall', 'position', 'depth', 'role'] },
+    storage: { title: '하이드·보관', keys: ['hide', 'keepRecent', 'autoKeep'] },
+    appearance: { title: '화면', keys: ['theme', 'showKo'] },
 };
 const THEMES = { jrpg: '클래식 JRPG', neon: '네온 아케이드', glass: '글래스 사이버', archive: '다크 아카이브', pastel: '파스텔 드림', parchment: '양피지', terminal: '터미널', st: '실리 테마 따라가기' };
 const TABS = [
@@ -57,6 +64,7 @@ function settings() {
     const s = es[MODULE];
     for (const k of Object.keys(DEFAULTS)) if (!(k in s)) s[k] = clone(DEFAULTS[k]);
     if (OLD_GUIDE_HASHES.includes(guideHash(s.guide))) s.guide = DEFAULT_GUIDE;
+    if (!s.settingsOpen || typeof s.settingsOpen !== 'object' || Array.isArray(s.settingsOpen)) s.settingsOpen = {};
     if (!Array.isArray(s.slotCache)) s.slotCache = [];
     if (!s.localSaves || typeof s.localSaves !== 'object' || Array.isArray(s.localSaves)) s.localSaves = {};
     return s;
@@ -1654,7 +1662,7 @@ function openWindow() {
     $('#sp_overlay').css('display', 'flex');
     render(true);
 }
-function closeWindow() { ui.open = false; ui.edit = null; $('#sp_overlay').hide(); }
+function closeWindow() { tabResizeObserver?.disconnect(); ui.open = false; ui.edit = null; $('#sp_overlay').hide(); }
 
 // Checks one excerpt against its message and builds the queue item. The excerpt may come from the
 // original or, when a translator shows a translation instead, from that on-screen translation.
@@ -1811,21 +1819,26 @@ function installLootBar() {
     if (typeof document === 'undefined' || !document.getElementById) return;
     let button = document.getElementById('sp_loot_bar');
     if (!settings().enabled) { button?.remove(); return; }
-    if (button) return;
     const host = document.getElementById('leftSendForm') || document.getElementById('send_form');
     if (!host) return;
-    button = document.createElement('div');
-    button.id = 'sp_loot_bar'; button.className = 'sp-loot-bar interactable';
-    button.textContent = '💎';
-    button.title = '💎 루팅 · 드래그한 구절이 있으면 그 구절, 없으면 최근 AI 답변'; button.setAttribute('aria-label', '💎 루팅');
-    button.setAttribute('role', 'button'); button.tabIndex = 0;
-    // Keep the text selection when the button is pressed.
-    button.addEventListener('pointerdown', e => e.preventDefault());
-    button.addEventListener('mousedown', e => e.preventDefault());
-    button.onclick = e => { e.preventDefault(); e.stopPropagation(); lootFromBar(); };
-    button.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); lootFromBar(); } };
+    if (!button) {
+        button = document.createElement('div');
+        button.id = 'sp_loot_bar'; button.className = 'sp-loot-bar interactable';
+        button.textContent = '💎';
+        button.title = '💎 루팅 · 드래그한 구절이 있으면 그 구절, 없으면 최근 AI 답변'; button.setAttribute('aria-label', '💎 루팅');
+        button.setAttribute('role', 'button'); button.tabIndex = 0;
+        // Keep the text selection when the button is pressed.
+        button.addEventListener('pointerdown', e => e.preventDefault());
+        button.addEventListener('mousedown', e => e.preventDefault());
+        button.onclick = e => { e.preventDefault(); e.stopPropagation(); lootFromBar(); };
+        button.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); lootFromBar(); } };
+    }
     const wand = document.getElementById('extensionsMenuButton');
-    if (wand?.parentElement === host) wand.insertAdjacentElement('afterend', button); else host.append(button);
+    if (wand && host.contains(wand)) {
+        // SillyTavern orders the wand with flex order; DOM placement alone puts 💎 first.
+        button.style.order = globalThis.getComputedStyle(wand).order;
+        if (wand.nextElementSibling !== button) wand.insertAdjacentElement('afterend', button);
+    } else if (button.parentElement !== host) host.append(button);
 }
 function queueHtml(st) {
     const items = st.lootQueue || [];
@@ -2130,6 +2143,46 @@ function hudHtml(st) {
         ${busy ? `<div class="sp-progress"><span class="sp-spin">◐</span> ${esc(ui.progress)}${ui.req ? ` · <span class="sp-req">${esc(reqText())}</span>` : ''}</div>` : ''}${err}
     </div>`;
 }
+let tabResizeObserver = null;
+function installTabNavigation(strip, previousScroll) {
+    tabResizeObserver?.disconnect();
+    if (!strip) return;
+    const nav = strip.parentElement;
+    const prev = nav.querySelector('[data-tab-scroll=prev]'), next = nav.querySelector('[data-tab-scroll=next]');
+    const update = () => {
+        nav.classList.toggle('sp-overflow', strip.scrollWidth > nav.clientWidth + 1);
+        const max = Math.max(0, strip.scrollWidth - strip.clientWidth);
+        const left = strip.scrollLeft > 1, right = strip.scrollLeft < max - 1;
+        nav.classList.toggle('sp-more-left', left); nav.classList.toggle('sp-more-right', right);
+        prev.disabled = !left; next.disabled = !right;
+    };
+    strip.scrollLeft = previousScroll;
+    const active = strip.querySelector('.sp-active');
+    const reveal = () => {
+        if (active) {
+            const a = active.getBoundingClientRect(), b = strip.getBoundingClientRect();
+            if (a.left < b.left) strip.scrollLeft -= b.left - a.left + 8;
+            else if (a.right > b.right) strip.scrollLeft += a.right - b.right + 8;
+        }
+        update();
+    };
+    update(); reveal();
+    prev.onclick = () => strip.scrollBy({ left: -Math.max(120, strip.clientWidth * .7), behavior: 'smooth' });
+    next.onclick = () => strip.scrollBy({ left: Math.max(120, strip.clientWidth * .7), behavior: 'smooth' });
+    strip.addEventListener('scroll', update, { passive: true });
+    strip.addEventListener('wheel', e => {
+        if (e.ctrlKey) return;
+        const raw = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+        const delta = raw * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? strip.clientWidth : 1);
+        const before = strip.scrollLeft;
+        strip.scrollLeft += delta;
+        if (strip.scrollLeft !== before) e.preventDefault();
+    }, { passive: false });
+    if (typeof ResizeObserver === 'function') {
+        tabResizeObserver = new ResizeObserver(reveal);
+        tabResizeObserver.observe(strip);
+    }
+}
 function render(force = false) {
     if (!ui.open) return;
     const win = $('#sp_overlay .sp-window');
@@ -2158,19 +2211,10 @@ function render(force = false) {
                 <button class="sp-btn sp-mini ${showKo() ? 'sp-on' : ''}" data-act="ko" title="한국어 보기">${showKo() ? '한' : 'EN'}</button>
                 <button class="sp-btn sp-mini" data-act="close" title="닫기">✕</button></div></div>
         ${hasChat() ? hudHtml(st) : ''}
-        <div class="sp-tabs">${tabs}</div>
+        <div class="sp-tab-nav"><button type="button" class="sp-tab-arrow" data-tab-scroll="prev" aria-label="이전 탭 보기" title="이전 탭 보기">◀</button><div class="sp-tabs">${tabs}</div><button type="button" class="sp-tab-arrow" data-tab-scroll="next" aria-label="다음 탭 보기" title="다음 탭 보기">▶</button></div>
         <div class="sp-body">${body}</div>`);
     win.find('.sp-body').scrollTop(scroll);
-    // Keep the tab strip where it was, and make sure the selected tab is in view.
-    const strip = win.find('.sp-tabs')[0], active = win.find('.sp-tab.sp-active')[0];
-    if (strip) {
-        strip.scrollLeft = tabScroll;
-        if (active) {
-            const left = active.offsetLeft - strip.offsetLeft, right = left + active.offsetWidth;
-            if (left < strip.scrollLeft) strip.scrollLeft = left - 8;
-            else if (right > strip.scrollLeft + strip.clientWidth) strip.scrollLeft = right - strip.clientWidth + 8;
-        }
-    }
+    installTabNavigation(win.find('.sp-tab-nav .sp-tabs')[0], tabScroll);
 }
 
 // ───────── UI actions ─────────
@@ -2246,7 +2290,7 @@ async function handle(act, id) {
         case 'loot-delete':
             if (ui.run) return;
             return transact(() => { const st = state(); if (st) st.lootQueue = (st.lootQueue || []).filter(x => x.id !== id); }, { undoable: false, autosave: false });
-        case 'ko': settings().showKo = !showKo(); saveSettings(); return render(true);
+        case 'ko': settings().showKo = !showKo(); saveSettings(); fillSettings(); return render(true);
         case 'run': return summarize();
         case 'run-close': return summarize({ close: true });
         case 'stop': cancelRun(); return;
@@ -2312,44 +2356,79 @@ async function handle(act, id) {
 
 // ───────── settings panel ─────────
 
+function settingSection(key, content) {
+    const group = SETTING_GROUPS[key], saved = settings().settingsOpen[key];
+    const open = typeof saved === 'boolean' ? saved : key === 'connection';
+    return `<details class="sp-setting-group" data-settings-group="${key}" ${open ? 'open' : ''}>
+        <summary><b>${group.title}</b><span class="sp-setting-summary" data-settings-summary="${key}"></span></summary>
+        <div class="sp-setting-fields">${content}<div class="sp-set-row"><button type="button" class="menu_button" data-reset-group="${key}">이 묶음 기본값으로 복원</button></div></div>
+    </details>`;
+}
 function settingsHtml() {
     return `<div id="sp_settings" class="sp-settings"><div class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header"><b>◆ SavePoint</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div>
         <div class="inline-drawer-content">
             <div class="sp-set-row"><button class="menu_button" id="sp_open">SavePoint 열기</button></div>
             <label class="checkbox_label"><input type="checkbox" data-set="enabled"> 사용 (기억 주입·하이드)</label>
-            <label>요약 AI <select data-set="profileId" id="sp_profiles"></select></label>
-            <label class="checkbox_label"><input type="checkbox" data-set="requestStream"> 연결 프로필 응답을 실시간으로 받기</label>
-            <label>추론 강도 (채팅 완성 연결 프로필) <select data-set="reasoningEffort"><option value="">프로필 설정 따르기</option><option value="low">낮음 (low)</option><option value="high">높음 (high)</option><option value="max">최대 (max)</option></select></label>
-            <div class="sp-set-note">실시간 수신은 사고·본문의 수신량만 표시해요. 기억은 응답과 검사가 끝난 뒤 저장해요. 추론 강도는 API가 지원할 때 적용되며, 메인 API 설정은 바꾸지 않아요.</div>
-            <div class="sp-set-row"><button class="menu_button" id="sp_test_connection">짧은 연결 시험</button></div><div class="sp-set-note" id="sp_probe_result">대화 원문을 보내거나 기억을 바꾸지 않고 짧은 요청으로 연결을 시험해요 (API 호출 1회, 최대 60초).</div>
-            <label class="checkbox_label"><input type="checkbox" data-set="check"> 기록 후 확인 (모순·원문과 다른 해석을 찾아 경고 · 분량에 따라 추가 요청)</label>
-            <label class="checkbox_label"><input type="checkbox" data-set="auto"> 체크포인트 (끝난 장면을 자동 기록)</label>
-            <label>체크포인트 간격 (새 메시지 수, 유저+캐릭터) <input type="number" data-set="autoEvery" min="5" max="500"></label>
-            <label>응답 최대 토큰 <input type="number" data-set="responseLength" min="500" max="64000"></label>
-            <label>한 번에 보낼 입력 한도 (글자) <input type="number" data-set="inputChars" min="5000" max="1000000"></label>
-            <label title="이 시간 안에 응답이 오지 않으면 그 요청을 취소해요. 그 구간은 저장하지 않고 원문을 그대로 둬요. 늦게 도착한 응답은 버려요.">요청 제한 시간 (초) <input type="number" data-set="timeoutSec" min="5" max="3600"></label>
-            <hr>
-            <label>주입 상한 (토큰) <input type="number" data-set="budget" min="300" max="100000"></label>
-            <label>오래된 장면 제목 목록 상한 (토큰) <input type="number" data-set="titleCap" min="0" max="20000"></label>
-            <label>자세히 넣을 최근 장면 수 <input type="number" data-set="recentScenes" min="0" max="20"></label>
-            <label class="checkbox_label"><input type="checkbox" data-set="recall"> 상세 기억 회상 (관련된 예전 장면의 영어 노트)</label>
-            <label class="checkbox_label"><input type="checkbox" data-set="rawRecall"> 원문 회상 (예전 원문 일부를 그대로, 한국어 섞일 수 있음)</label>
-            <label>주입 위치 <select data-set="position"><option value="2">메인 프롬프트 앞</option><option value="0">메인 프롬프트 뒤</option><option value="1">채팅 안 (깊이)</option></select></label>
-            <label>깊이 <input type="number" data-set="depth" min="0" max="999"></label>
-            <label>역할 <select data-set="role"><option value="0">시스템</option><option value="1">사용자</option><option value="2">어시스턴트</option></select></label>
-            <hr>
-            <label class="checkbox_label"><input type="checkbox" data-set="hide"> 세이브한 메시지 하이드</label>
-            <label>하이드하지 않을 최근 메시지 <input type="number" data-set="keepRecent" min="0" max="200"></label>
-            <label>오토세이브를 보관할 방 수 (방마다 최근 3개) <input type="number" data-set="autoKeep" min="1" max="500"></label>
-            <label>테마 <select data-set="theme">${Object.entries(THEMES).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
-            <hr>
-            <label>기록 지침 (영어 권장, {{char}} {{user}} 사용 가능)</label>
-            <textarea data-set="guide" rows="10" class="text_pole"></textarea>
-            <div class="sp-set-row"><button class="menu_button" id="sp_guide_reset">기본 지침으로 되돌리기</button></div>
-            <div class="sp-set-note">데이터 목록과 응답 형식은 지침 뒤에 자동으로 붙어요.</div>
+            ${settingSection('connection', `
+                <label>요약 AI <select data-set="profileId" id="sp_profiles"></select></label>
+                <label class="checkbox_label"><input type="checkbox" data-set="requestStream"> 연결 프로필 응답을 실시간으로 받기</label>
+                <label>추론 강도 (채팅 완성 연결 프로필) <select data-set="reasoningEffort"><option value="">프로필 설정 따르기</option><option value="low">낮음 (low)</option><option value="high">높음 (high)</option><option value="max">최대 (max)</option></select></label>
+                <div class="sp-set-note">실시간 수신은 사고·본문의 수신량만 표시해요. 기억은 응답과 검사가 끝난 뒤 저장해요. 추론 강도는 API가 지원할 때 적용되며, 메인 API 설정은 바꾸지 않아요.</div>
+                <div class="sp-set-row"><button class="menu_button" id="sp_test_connection">짧은 연결 시험</button></div><div class="sp-set-note" id="sp_probe_result">대화 원문을 보내거나 기억을 바꾸지 않고 짧은 요청으로 연결을 시험해요 (API 호출 1회, 최대 60초).</div>
+                <label>응답 최대 토큰 <input type="number" data-set="responseLength" min="500" max="64000"></label>
+                <label>한 번에 보낼 입력 한도 (글자) <input type="number" data-set="inputChars" min="5000" max="1000000"></label>
+                <label title="이 시간 안에 응답이 오지 않으면 그 요청을 취소해요. 그 구간은 저장하지 않고 원문을 그대로 둬요. 늦게 도착한 응답은 버려요.">요청 제한 시간 (초) <input type="number" data-set="timeoutSec" min="5" max="3600"></label>
+            `)}
+            ${settingSection('recording', `
+                <label class="checkbox_label"><input type="checkbox" data-set="check"> 기록 후 확인 (모순·원문과 다른 해석을 찾아 경고 · 분량에 따라 추가 요청)</label>
+                <label class="checkbox_label"><input type="checkbox" data-set="auto"> 체크포인트 (끝난 장면을 자동 기록)</label>
+                <label>체크포인트 간격 (새 메시지 수, 유저+캐릭터) <input type="number" data-set="autoEvery" min="5" max="500"></label>
+                <label>기록 지침 (영어 권장, {{char}} {{user}} 사용 가능)</label>
+                <textarea data-set="guide" rows="10" class="text_pole"></textarea>
+                <div class="sp-set-row"><button class="menu_button" id="sp_guide_reset">기본 지침으로 되돌리기</button></div>
+                <div class="sp-set-note">데이터 목록과 응답 형식은 지침 뒤에 자동으로 붙어요.</div>
+            `)}
+            ${settingSection('injection', `
+                <label>주입 상한 (토큰) <input type="number" data-set="budget" min="300" max="100000"></label>
+                <label>오래된 장면 제목 목록 상한 (토큰) <input type="number" data-set="titleCap" min="0" max="20000"></label>
+                <label>자세히 넣을 최근 장면 수 <input type="number" data-set="recentScenes" min="0" max="20"></label>
+                <label class="checkbox_label"><input type="checkbox" data-set="recall"> 상세 기억 회상 (관련된 예전 장면의 영어 노트)</label>
+                <label class="checkbox_label"><input type="checkbox" data-set="rawRecall"> 원문 회상 (예전 원문 일부를 그대로, 한국어 섞일 수 있음)</label>
+                <label>주입 위치 <select data-set="position"><option value="2">메인 프롬프트 앞</option><option value="0">메인 프롬프트 뒤</option><option value="1">채팅 안 (깊이)</option></select></label>
+                <label>깊이 <input type="number" data-set="depth" min="0" max="999"></label>
+                <label>역할 <select data-set="role"><option value="0">시스템</option><option value="1">사용자</option><option value="2">어시스턴트</option></select></label>
+            `)}
+            ${settingSection('storage', `
+                <label class="checkbox_label"><input type="checkbox" data-set="hide"> 세이브한 메시지 하이드</label>
+                <label>하이드하지 않을 최근 메시지 <input type="number" data-set="keepRecent" min="0" max="200"></label>
+                <label>오토세이브를 보관할 방 수 (방마다 최근 3개) <input type="number" data-set="autoKeep" min="1" max="500"></label>
+            `)}
+            ${settingSection('appearance', `
+                <label>테마 <select data-set="theme">${Object.entries(THEMES).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
+                <label class="checkbox_label"><input type="checkbox" data-set="showKo"> 한국어 보기</label>
+            `)}
         </div></div></div>`;
 }
+function updateSettingsSummaries() {
+    const s = settings();
+    const summaries = {
+        connection: `${profileLabel()} · 제한 ${s.timeoutSec}초`,
+        recording: `${s.auto ? s.autoEvery + '개마다' : '체크포인트 꺼짐'} · 확인 ${s.check ? '켜짐' : '꺼짐'}`,
+        injection: `${Number(s.budget).toLocaleString()}토큰 · 최근 ${s.recentScenes}장면`,
+        storage: `${s.hide ? '최근 ' + s.keepRecent + '개 남김' : '하이드 꺼짐'} · 보관 ${s.autoKeep}개 방`,
+        appearance: `${THEMES[s.theme] || THEMES.jrpg} · ${s.showKo ? '한국어' : 'EN'}`,
+    };
+    $('#sp_settings [data-settings-summary]').each(function () { this.textContent = summaries[this.dataset.settingsSummary]; });
+}
+function settingsChanged(keys) {
+    saveSettings();
+    if (keys.some(k => ['hide', 'keepRecent', 'enabled'].includes(k))) syncHide();
+    if (keys.some(k => ['auto', 'autoEvery', 'enabled'].includes(k))) scheduleAuto();
+    if (keys.includes('enabled')) installLootBar();
+    updateSettingsSummaries(); refreshInjection(); render(true);
+}
+
 function fillProfiles() {
     const sel = $('#sp_profiles');
     if (!sel.length) return;
@@ -2365,19 +2444,34 @@ function fillSettings() {
         else $(this).val(String(s[k] ?? ''));
     });
     fillProfiles();
+    updateSettingsSummaries();
 }
 function addSettingsUI() {
     if ($('#sp_settings').length) return;
     $('#extensions_settings2').append(settingsHtml());
+    $('#sp_settings input[type=number][data-set]').each(function () {
+        $(this).after($('<small class="sp-setting-default"></small>').text('기본값 ' + Number(DEFAULTS[this.dataset.set]).toLocaleString()));
+    });
     fillSettings();
+    document.getElementById('sp_settings').addEventListener('toggle', e => {
+        const d = e.target;
+        if (!d.matches?.('details[data-settings-group]')) return;
+        const key = d.dataset.settingsGroup;
+        if (settings().settingsOpen[key] === d.open) return;
+        settings().settingsOpen[key] = d.open; saveSettings();
+    }, true);
+    $('#sp_settings').on('click', '[data-reset-group]', function () {
+        const group = SETTING_GROUPS[this.dataset.resetGroup];
+        if (!group) return;
+        const s = settings();
+        for (const key of group.keys) s[key] = clone(DEFAULTS[key]);
+        fillSettings(); settingsChanged(group.keys);
+        toastr.info(group.title + ' 설정을 기본값으로 복원했어요.');
+    });
     $('#sp_settings').on('input change', '[data-set]', function () {
         const k = this.dataset.set, s = settings();
         s[k] = this.type === 'checkbox' ? this.checked : this.type === 'number' || ['position', 'role'].includes(k) ? Number(this.value) : this.value;
-        saveSettings();
-        if (['hide', 'keepRecent', 'enabled'].includes(k)) syncHide();
-        if (['auto', 'autoEvery', 'enabled'].includes(k)) scheduleAuto();
-        if (k === 'enabled') installLootBar();
-        refreshInjection(); render(true);
+        settingsChanged([k]);
     });
     $('#sp_open').on('click', openWindow);
     $('#sp_test_connection').on('click', () => testConnection().catch(reportError));
@@ -2445,7 +2539,7 @@ jQuery(() => {
     installLootBar();
     on('GENERATION_STARTED', onGenerationStarted);
     for (const t of ['GENERATION_ENDED', 'GENERATION_STOPPED']) on(t, onGenerationEnded);
-    for (const t of ['CONNECTION_PROFILE_UPDATED', 'CONNECTION_PROFILE_DELETED', 'CONNECTION_PROFILE_CREATED']) on(t, fillProfiles);
+    for (const t of ['CONNECTION_PROFILE_UPDATED', 'CONNECTION_PROFILE_DELETED', 'CONNECTION_PROFILE_CREATED']) on(t, () => { fillProfiles(); updateSettingsSummaries(); });
     onChatChanged();
     // Server-side save slots: the server index is the list; then move any settings-only slots over.
     vault.init(settings().slotCache).then(migrateLocal).catch(e => console.warn('[SavePoint] vault', e)).finally(() => render(true));

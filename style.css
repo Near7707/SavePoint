@@ -83,6 +83,14 @@
 .sp-scroll { max-height: 30vh; max-height: 30dvh; overflow-wrap: anywhere; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; touch-action: pan-y; }
 
 /* tabs (sticky by layout: only the body scrolls) */
+.sp-tab-nav { position: relative; display: flex; min-width: 0; flex-shrink: 0; border-bottom: 2px solid var(--sp-line); }
+.sp-tab-nav > .sp-tabs { flex: 1; min-width: 0; border-bottom: 0; }
+.sp-tab-arrow { display: none; flex: 0 0 30px; width: 30px; padding: 4px; margin: 0; border: 0; border-radius: 0; background: var(--sp-panel2); color: var(--sp-accent); cursor: pointer; font: inherit; }
+.sp-tab-nav.sp-overflow > .sp-tab-arrow { display: block; }
+.sp-tab-arrow:disabled { opacity: .3; cursor: default; }
+.sp-tab-nav.sp-more-left > .sp-tabs { box-shadow: inset 12px 0 12px -12px var(--sp-accent); }
+.sp-tab-nav.sp-more-right > .sp-tabs { box-shadow: inset -12px 0 12px -12px var(--sp-accent); }
+.sp-tab-nav.sp-more-left.sp-more-right > .sp-tabs { box-shadow: inset 12px 0 12px -12px var(--sp-accent), inset -12px 0 12px -12px var(--sp-accent); }
 .sp-tabs { display: flex; gap: 2px; padding: 6px 8px 0; overflow-x: auto; scrollbar-width: none; border-bottom: 2px solid var(--sp-line); flex-shrink: 0; }
 .sp-tabs::-webkit-scrollbar { display: none; }
 .sp-tab {
@@ -202,6 +210,12 @@
 .sp-set-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
 .sp-set-row .menu_button { width: auto; white-space: nowrap; word-break: keep-all; flex: 0 0 auto; }
 .sp-set-note { font-size: 12px; opacity: .75; }
+.sp-setting-group { margin: 8px 0; border: 1px solid var(--SmartThemeBorderColor, #666); border-radius: 6px; }
+.sp-setting-group > summary { cursor: pointer; padding: 9px 10px; overflow-wrap: anywhere; }
+.sp-setting-summary { display: block; margin: 3px 0 0 16px; font-size: 12px; opacity: .7; }
+.sp-setting-fields { padding: 0 10px 10px; min-width: 0; }
+.sp-setting-default { display: block; margin-top: 2px; font-size: 11px; opacity: .65; }
+.sp-setting-fields textarea { width: 100%; box-sizing: border-box; }
 
 @keyframes sp-blink { to { visibility: hidden; } }
 @keyframes sp-bob { 50% { transform: translateY(-2px); } }
@@ -252,9 +266,9 @@
 .sp-queued p { overflow-wrap: anywhere; }
 #sp_loot_bar {
     display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; box-sizing: border-box;
-    height: 1.6em; padding: 0 .35em; margin: 0 2px; border-radius: 999px; cursor: pointer; align-self: center;
-    background: #8882; background: color-mix(in srgb, var(--SmartThemeBodyColor, #888) 14%, transparent);
-    font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif; font-size: 15px; font-weight: normal;
+    width: var(--bottomFormBlockSize, 32px); height: var(--bottomFormBlockSize, 32px); padding: 0; margin: 0; border: none; border-radius: 6px; cursor: pointer; align-self: center;
+    background: transparent;
+    font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif; font-size: var(--bottomFormIconSize, 20px); font-weight: normal;
     line-height: 1; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; transition: background .2s;
 }
 #sp_loot_bar:hover, #sp_loot_bar:focus-visible { background: #8884; background: color-mix(in srgb, var(--SmartThemeBodyColor, #888) 24%, transparent); }
