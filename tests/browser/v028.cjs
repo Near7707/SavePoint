@@ -52,7 +52,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const p1 = ev(() => __savePoint.handle('run'));
     await page.waitForTimeout(2300);
     let r = await ev(() => $('.sp-progress').text());
-    ok(/첫 요청 · 응답 대기 [12]초/.test(r), `1. 진행 표시: 단계 · 응답 대기 경과 시간 (${r.trim()})`);
+    ok(/첫 요청 · 입력 [\d,]+자 · 응답 대기 [12]초/.test(r), `1. 진행 표시: 단계 · 응답 대기 경과 시간 (${r.trim()})`);
     await p1;
     r = await ev(() => ({ last: __savePoint.state()?.lastIndex ?? -1, err: $('.sp-err').text(), toast: toastr.log.map(x => x[1]).pop(), run: !!__savePoint.ui.run }));
     ok(r.last === -1 && !r.run, '1. 제한 시간이 지나면 취소, 아무것도 저장 안 함');
@@ -75,7 +75,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => { M.settings.savePoint.timeoutSec = 300; M.add(4); M.failAt = M.chat.length - 2; });
     await ev(() => __savePoint.handle('run'));
     r = await ev(() => $('.sp-err li').map((i, e) => e.textContent).get());
-    ok(/^첫 요청: \d+초 · 응답 [\d,]+자 · 검사 실패 \d+건$/.test(r[0]) && /^재요청: .*검사 실패 \d+건$/.test(r[1]), `2. 시도마다 걸린 시간·응답 길이·결과 (${r.slice(0, 2).join(' | ')})`);
+    ok(/^첫 요청: \d+초 · 입력 [\d,]+자 \(원문 [\d,]+자\) · 응답 [\d,]+자 · 검사 실패 \d+건$/.test(r[0]) && /^재요청: .*검사 실패 \d+건$/.test(r[1]), `2. 시도마다 걸린 시간·응답 길이·결과 (${r.slice(0, 2).join(' | ')})`);
     await ev(() => { M.failAt = undefined; });
     await ev(() => __savePoint.handle('run'));
 
@@ -92,9 +92,16 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => { M.settings.savePoint.check = true; M.add(3); M.chat[M.chat.length - 2].mes = 'PROMISE: we both wash. ' + 'The band plays on. '.repeat(400); });
     await ev(() => __savePoint.handle('run'));
     await page.waitForTimeout(900);
-    r = await ev(() => ({ st: __savePoint.state().check, hud: $('.sp-checks').text(), prompt: M.lastCheck }));
-    ok(r.st.status === 'issues' && r.st.issues.some(x => x.kind === 'partial') && r.hud.includes('근거 일부 누락 · 판단 보류'), '4. 근거를 온전히 못 보내면 판단 보류로 표시');
+    r = await ev(() => ({ prompt: M.lastCheck }));
     ok(r.prompt.includes('[TERMS]') && r.prompt.includes('context:'), '4. 확인 AI에 조건 원문과 앞뒤 문맥 전달');
+    // Originals are never cut: when the whole evidence no longer fits the input limit, the item is deferred.
+    await ev(() => { M.settings.savePoint.inputChars = 6000; });
+    const c4 = await ev(() => M.calls.length);
+    await ev(() => __savePoint.handle('check-rerun'));
+    await page.waitForTimeout(600);
+    r = await ev(c0 => ({ st: __savePoint.state().check, hud: $('.sp-checks').text(), cut: M.calls.slice(c0).some(p => p.startsWith('You are checking') && p.length > 6000) }), c4);
+    ok(r.st.status === 'issues' && r.st.issues.some(x => x.kind === 'partial' && x.problem.includes('입력 한도')) && r.hud.includes('근거 일부 누락 · 판단 보류') && !r.cut, '4. 근거를 온전히 못 보내면 원문을 자르지 않고 판단 보류로 표시');
+    await ev(() => { M.settings.savePoint.inputChars = 60000; });
 
     // 5. the whole range from first to last evidence is sent for a promise
     await ev(() => { M.promiseRange = true; M.add(5); M.chat[M.chat.length - 1].mes = 'PROMISE kept for later.'; M.chat[M.chat.length - 3].mes = 'Plan update: we both wash.'; });

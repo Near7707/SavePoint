@@ -252,6 +252,7 @@ node tests/browser/vault.cjs   # 서버 백업·복구
 node tests/browser/keys.cjs    # 주입 포인트
 node tests/browser/checks.cjs  # 기록 확인·세이브 정렬
 node tests/browser/v028.cjs    # 제한 시간·늦은 응답·조건 원문·판단 보류
-node tests/browser/v029.cjs    # 원래 오류·실패 종류·근거 누락 판단 보류·결과 복사
+node tests/browser/v029.cjs    # 원래 오류·실패 종류·인용 확인·근거 번호 판단 보류·결과 복사
 node tests/browser/autofail.cjs # 체크포인트 실패 기록·알림·지우는 기준·검토 실패 구분
+node tests/browser/loot-bar.cjs # 채팅창 💎·드래그 루팅·번역문 구절·루팅 창 탭과 테마
 ```

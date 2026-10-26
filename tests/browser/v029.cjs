@@ -61,7 +61,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(/^첫 요청: .*JSON 해석 실패$/.test(r[0]) && /^재요청: .*JSON 해석 실패$/.test(r[1]), `2. 실패 종류를 그대로 표시 (${r.slice(0, 2).join(' | ')})`);
     await ev(() => { M.badJson = false; });
 
-    // 3. findings are held back when the evidence of what they name was cut or not sent
+    // 3. findings are held back when the model cites evidence it was not given; each case is matched by its own problem text
     await ev(() => {
         M.settings.savePoint.check = true;
         const base = M.chat.length;
@@ -70,26 +70,27 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
             const ids = [...prompt.split('[JOURNAL]')[1].matchAll(/^(g\d+\.\d+): (.*)$/gm)];
             const first = ids.find(m => m[2].includes(`at ${base}.`))?.[1];
             return { issues: [
-                { about: first, kind: 'misread', basis: 'unsupported', problem: 'The stakes were not stated in the shown messages.', conflict: ['x', 'no stakes before play'], msgs: [base + 2] },
-                { about: first, kind: 'misread', basis: 'contradicted', problem: 'A fake quote.', conflict: ['x', 'Loser buys everyone dinner forever'], msgs: [base + 2] },
-                { about: first, kind: 'misread', basis: 'contradicted', problem: 'The scoreboard says otherwise.', conflict: ['x', 'Ari: "the board lit up 5-2 for the home side"'], msgs: [base + 2] },
+                { about: first, kind: 'misread', basis: 'unsupported', problem: 'CASE-A cites a message not in this request.', conflict: ['x', 'no stakes before play'], msgs: [base + 400] },
+                { about: first, kind: 'misread', basis: 'contradicted', problem: 'CASE-B fake quote.', conflict: ['x', 'Loser buys everyone dinner forever'], msgs: [base] },
+                { about: first, kind: 'misread', basis: 'contradicted', problem: 'CASE-C real quote with the speaker name.', conflict: ['x', 'Ari: "the board lit up 5-2 for the home side"'], msgs: [base] },
             ] };
         };
     });
     await ev(() => __savePoint.handle('run'));
     await page.waitForTimeout(900);
-    r = await ev(() => ({ issues: __savePoint.state().check.issues, hud: $('.sp-checks').text(), cov: __savePoint.state().check.coverage }));
-    const [a, b, c] = r.issues;
-    ok(a.kind === 'partial' && a.was === 'misread' && a.gaps.some(g => g.how === '일부만 보냄'), '3. "원문에 없음" 지적인데 대상의 근거가 잘렸으면 판단 보류');
-    ok(b.kind === 'partial', '3. 반대 문장이라며 든 인용이 보낸 원문에 없으면 판단 보류');
-    ok(c.kind === 'misread' && !c.gaps, '3. 보낸 원문에 실제로 있는 반대 문장이면 경고 유지');
-    ok(r.hud.includes('판단 보류 이유: #') && r.hud.includes('일부만 보냄') && r.hud.includes('AI 원래 판단: 원문과 다름'), '3. 판단 보류 이유를 화면에 표시');
-    ok(r.cov && r.cov.cut.length >= 1 && r.cov.sent >= 1, `3. 보낸 원문 범위 기록 (보냄 ${r.cov?.sent}, 잘림 ${r.cov?.cut.join(',')})`);
+    r = await ev(() => ({ issues: __savePoint.state().check?.issues || [], hud: $('.sp-checks').text(), cov: __savePoint.state().check?.coverage }));
+    const byCase = k => r.issues.find(x => String(x.problem || '').startsWith(k));
+    const a = byCase('CASE-A'), b = byCase('CASE-B'), c = byCase('CASE-C');
+    ok(a && a.kind === 'partial' && a.was === undefined && a.gaps?.some(g => g.how === '이 검토 요청에 없는 근거 번호'), '3. 이 요청에 보내지 않은 근거 번호를 들면 판단 보류');
+    ok(b && b.kind === 'partial' && b.was === 'misread' && b.gaps?.some(g => g.label === '인용 확인 실패'), '3. 반대 문장이라며 든 인용이 보낸 원문에 없으면 판단 보류');
+    ok(c && c.kind === 'misread' && !c.gaps, '3. 보낸 원문에 실제로 있는 반대 문장이면 (말한 사람 이름이 붙어도) 경고 유지');
+    ok(r.hud.includes('판단 보류 이유:') && r.hud.includes('인용 확인 실패') && r.hud.includes('AI 원래 판단: 원문과 다름'), '3. 판단 보류 이유를 화면에 표시');
+    ok(r.cov && r.cov.sent >= 1, `3. 보낸 원문 범위 기록 (보냄 ${r.cov?.sent})`);
     await ev(() => { M.checkReply = null; });
 
     // 4. one button copies everything as text
     r = await ev(() => __savePoint.reportText(__savePoint.state()));
-    ok(/SavePoint v\d+\.\d+\.\d+/.test(r) && r.includes('[기록 확인]') && r.includes('보낸 원문') && r.includes('대상: ') && r.includes('판단 보류 이유: #') && r.includes('인용: "') && r.includes('근거 번호: #'), '4. 복사 내용: 버전·확인 결과·대상 문장·보류 이유·인용·근거 번호');
+    ok(/SavePoint v\d+\.\d+\.\d+/.test(r) && r.includes('[기록 확인]') && r.includes('보낸 원문') && r.includes('대상: ') && r.includes('판단 보류 이유: ') && r.includes('인용: "') && r.includes('근거 번호: #'), '4. 복사 내용: 버전·확인 결과·대상 문장·보류 이유·인용·근거 번호');
     await ev(() => { __savePoint.ui.lastError = { at: Date.now(), range: '#0–#5', detail: ['첫 요청: 21초 · 요청 오류: API request failed ← boom (상태 502)'] }; __savePoint.render(true); });
     ok((await ev(() => __savePoint.reportText(__savePoint.state()))).includes('[마지막 실패] #0–#5') , '4. 마지막 실패도 함께 복사');
     await page.click('[data-act="copy-report"]');

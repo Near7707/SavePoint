@@ -51,30 +51,30 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.hid.slice(0, 30).every(Boolean) && r.hid.slice(30).every(x => !x), '최근 10개만 남기고 하이드');
     ok(r.inj.startsWith('[SavePoint memory') && r.inj.includes('## Journal'), '영어 머리말로 주입');
     ok(r.autos === 1 && r.serverAuto, '오토세이브 1개 (서버 파일)');
-    ok(r.calls === 1, `요약 호출 1번 (${r.calls})`);
+    ok(r.calls === 2, `요약 호출 2번 (한 요청에 메시지 20개까지, ${r.calls})`);
     await sleep(700);
     ok(await ev(() => M.chatSaves) >= 1, '하이드 후 채팅 저장 요청');
 
     // 2. no new messages: run does nothing
     await ev(() => __savePoint.handle('run'));
-    ok(await ev(() => M.calls.length) === 1 && (await ev(() => toastr.log.at(-1)[1])).includes('새 메시지가 없어요'), '새 메시지가 없으면 호출 안 함');
+    ok(await ev(() => M.calls.length) === 2 && (await ev(() => toastr.log.at(-1)[1])).includes('새 메시지가 없어요'), '새 메시지가 없으면 호출 안 함');
 
-    // 3. swipe of the last message rolls back the whole batch and unhides
+    // 3. swipe of the last message rolls back only the batch that holds it (#20–#39)
     await ev(async () => { M.chat[39].mes = 'Rerolled'; M.chat[39].swipe_id = 1; await M.eventSource.emit('message_swiped', 39); });
     await sleep(300);
-    r = await ev(() => { const st = __savePoint.state(); return { last: st.lastIndex, scenes: st.mem.scenes.length, hid: M.chat.some(m => m.is_system), inj: M.prompts.savepoint?.v || '', calls: M.calls.length }; });
-    ok(r.last === -1 && r.scenes === 0 && !r.hid && r.inj === '', '스와이프로 정리된 원문이 바뀌면 그 구간 되감기 + 하이드 해제');
-    ok(r.calls === 1, '스와이프는 자동 정리를 일으키지 않음');
+    r = await ev(() => { const st = __savePoint.state(); return { last: st.lastIndex, scenes: st.mem.scenes.length, hid: M.chat.map(m => !!m.is_system), inj: M.prompts.savepoint?.v || '', calls: M.calls.length }; });
+    ok(r.last === 19 && r.scenes === 1 && r.hid.slice(0, 20).every(Boolean) && r.hid.slice(20).every(x => !x) && r.inj !== '', `스와이프로 바뀐 #39가 든 구간(#20–#39)만 되감기 + 그 구간 하이드 해제 (#${r.last})`);
+    ok(r.calls === 2, '스와이프는 자동 정리를 일으키지 않음');
 
     // 4. manual run again, then add more; multi-chunk with a failing middle chunk
     await ev(() => __savePoint.handle('run'));
-    await ev(() => { M.add(60, i => (i === 50 ? 'SCENEBREAK at the market. PROMISE to meet. ' : '') + `Message ${i} ${'words '.repeat(60)}`); M.settings.savePoint.inputChars = 9000; M.failAt = 75; });
+    await ev(() => { M.add(60, i => (i === 50 ? 'SCENEBREAK at the market. PROMISE to meet. ' : '') + `Message ${i} ${'words '.repeat(60)}`); M.settings.savePoint.inputChars = 20000; M.failAt = 75; });
     const before = await ev(() => M.calls.length);
     await ev(() => __savePoint.handle('run'));
     r = await ev((b0) => { const st = __savePoint.state(); return { last: st.lastIndex, scenes: st.mem.scenes.map(s => [s.title, s.status, s.segs.length]), hid: M.chat.map(m => m.is_system),
-        err: toastr.log.filter(x => x[0] === 'error').at(-1)?.[1] || '', calls: M.calls.length, maxPrompt: Math.max(...M.calls.slice(-6).map(p => p.length)), overShare: M.calls.slice(b0).filter(p => !p.includes('REJECTED')).map(p => { const m = p.split(/\[NEW MESSAGES\][^\n]*\n/)[1].split('\n\nReturn ONLY')[0]; return m.length - Math.max(4000, 9000 - (p.length - m.length)); }), quests: st.mem.records.filter(x => x.type === 'quest').length }; }, before);
+        err: toastr.log.filter(x => x[0] === 'error').at(-1)?.[1] || '', calls: M.calls.length, maxPrompt: Math.max(...M.calls.slice(-6).map(p => p.length)), overShare: M.calls.slice(b0).filter(p => !p.includes('REJECTED')).map(p => { const m = p.split(/\[NEW MESSAGES\][^\n]*\n/)[1].split('\n\nReturn ONLY')[0]; return m.length - Math.max(4000, 20000 - (p.length - m.length)); }), quests: st.mem.records.filter(x => x.type === 'quest').length }; }, before);
     ok(r.last > 39 && r.last < 75, `실패 구간 전까지만 저장 (#${r.last})`);
-    ok(r.err.includes('구간 중') && r.err.includes('그대로 남겨'), '실패 안내에 저장된 구간 수 표시');
+    ok(/\d+개 구간\(\d+개 메시지\)은 저장했고/.test(r.err) && r.err.includes('그대로 남겨'), `실패 안내에 저장된 구간 수 표시 (${r.err.slice(-80)})`);
     const visibleFrom = r.hid.findIndex(x => !x);
     ok(visibleFrom === Math.min(r.last, 99 - 10) + 1 && r.hid.slice(visibleFrom).every(x => !x), `하이드는 저장된 범위 안에서만 (보이기 시작 #${visibleFrom})`);
     ok(r.calls - before >= 4, `실패 구간은 한 번 다시 요청 (호출 ${r.calls - before})`);

@@ -1099,13 +1099,11 @@ async function runCheck(st, scope, { auto = false } = {}) {
                     // Old numbers are never fetched. An absent old source is not
                     // proof of an error. Keep only contradictions quoting a line
                     // actually present in this request's current-room originals.
-                    const quote = x.conflict[1];
-                    if (x.kind !== 'misread' || x.basis !== 'contradicted' || !quote || !Object.values(input.sent).some(t => findQuote(t, quote))) continue;
+                    if (x.kind !== 'misread' || x.basis !== 'contradicted' || !quoteWasSent(x.conflict[1], input.sent)) continue;
                 }
                 // A "the original says otherwise" warning must quote a line that was actually sent.
                 if (x.basis === 'contradicted' && x.kind !== 'partial') {
-                    const quote = String(x.conflict?.[1] || '').trim();
-                    if (!quote || !Object.values(input.sent).some(t => t.includes(quote) || findQuote(t, quote))) {
+                    if (!quoteWasSent(x.conflict?.[1], input.sent)) {
                         x.was = x.kind; x.kind = 'partial';
                         x.gaps = [{ label: '인용 확인 실패', how: 'AI가 든 원문 인용을 보낸 원문에서 찾지 못함' }];
                     }
@@ -1151,6 +1149,14 @@ async function runCheck(st, scope, { auto = false } = {}) {
     }
 }
 
+// A quoted message line counts only if it appears in the originals actually sent. Models often copy
+// the "Name: " that precedes each message in the request, so that prefix is ignored.
+function quoteWasSent(raw, sent) {
+    const quote = String(raw || '').trim();
+    if (!quote) return false;
+    const bare = quote.replace(/^[^:\n"“]{1,40}:\s*/, '');
+    return Object.values(sent).some(t => [quote, bare].some(q => q && (t.includes(q) || findQuote(t, q))));
+}
 const gapText = gaps => gaps.map(g => `${g.label || '#' + g.n} ${g.how}`).join(', ');
 const CHECK_KIND = { misread: '원문과 다름', unclear: '충돌 · 판단 보류', partial: '근거 일부 누락 · 판단 보류', contradiction: '모순' };
 const ABOUT_LABEL = (mem, about) => {

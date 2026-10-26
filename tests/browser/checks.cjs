@@ -168,16 +168,23 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         const base = M.chat.length;
         M.add(90, i => (i === base + 80 ? 'PROMISE: picnic on Sunday. ' : `Note ${i}: `) + 'the band plays on and the crowd claps along. '.repeat(14));
     });
+    const c10 = await ev(() => M.calls.length);
     await ev(() => __savePoint.handle('run'));
     await page.waitForTimeout(900);
-    r = await ev(() => {
-        const p = M.lastCheck, orig = p.split('[ORIGINAL MESSAGES]')[1];
+    r = await ev(c0 => {
+        // The review is split into batches; each statement travels with ALL of its cited messages, whole.
+        const checks = M.calls.slice(c0).filter(p => p.startsWith('You are checking'));
+        const shownIn = p => { const o = p.split('[ORIGINAL MESSAGES]')[1].split('\n\nReturn ONLY')[0]; return [...o.matchAll(/(?:^|\n)#(\d+) [^:\n]*: ([\s\S]*?)(?=\n\n#\d+ |$)/g)].map(m => [Number(m[1]), m[2].trim()]); };
         const pt = __savePoint.state().mem.scenes.flatMap(sc => sc.segs.flatMap(g => g.points)).filter(x => x.text.startsWith('The game leading')).pop();
         const rec = __savePoint.state().mem.records.filter(x => x.type === 'quest').pop();
-        return { range: pt.msgs.join(','), rec: rec.msgs.join(','), has: pt.msgs.length > 1 && pt.msgs.every(k => orig.includes(`\n#${k} `)), shown: [...orig.matchAll(/\n#(\d+) /g)].map(m => m[1]).join(','), notShown: /not shown for length: #\d+/.test(orig), rule: p.includes('If the message that would support it is simply not shown') };
-    });
-    ok(r.has, `10. 바뀐 기록(#${r.rec})이 걸린 사건 전체(#${r.range})를 먼저 넣음 [보낸 원문 ${r.shown}]`);
-    ok(r.notShown && r.rule, '10. 길이 때문에 뺀 원문 번호를 알려 주고, 안 보인 원문은 문제로 삼지 않게 함');
+        const sets = checks.map(p => shownIn(p));
+        return { range: pt.msgs.join(','), rec: rec.msgs.join(','), batches: checks.length,
+            has: pt.msgs.length > 1 && sets.some(set => pt.msgs.every(k => set.some(([n]) => n === k))),
+            whole: sets.every(set => set.every(([n, t]) => t === M.chat[n].mes.trim())),
+            rule: checks.length > 0 && checks.every(p => p.includes('If supporting evidence is unavailable, do not report a misread')) };
+    }, c10);
+    ok(r.has, `10. 바뀐 기록(#${r.rec})이 걸린 사건 전체(#${r.range})를 한 검토 요청에 함께 넣음 (검토 요청 ${r.batches}개)`);
+    ok(r.whole && r.rule, '10. 원문은 자르지 않고 통째로 보내고, 근거가 없으면 문제로 삼지 않게 함');
     await ev(() => { M.manyPoints = false; });
 
     await page.close();
