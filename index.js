@@ -1677,28 +1677,34 @@ function openLootDialog(index) {
     document.body.append(dialog); dialog.showModal();
 }
 // Where the 💎 goes: right after the last thing shown on the same line as the character's name
-// (icons other extensions add there), whatever the theme's layout. Found by position on screen,
+// (icons other extensions or themes add there), whatever the layout. Found by position on screen,
 // so it works whether those icons sit inside the name's box or next to it. Timestamps, timers
-// and the tool row never count. Falls back to right after the name, then to the tool row.
+// and the tool row never count. Returns where to put it: inside the name's box at its end, or
+// right after another element.
 const LOOT_SKIP = '.sp-loot-button, .timestamp, .mes_timer, .tokenCounterDisplay, .mesIDDisplay, .mes_buttons, .mes_edit_buttons';
 function lootAnchor(element) {
     const name = element.querySelector('.name_text');
     if (!name) return null;
     const box = element.querySelector('.ch_name') || name.parentElement;
     const nr = typeof name.getBoundingClientRect === 'function' ? name.getBoundingClientRect() : null;
-    let best = name;
+    let best = null, right = -Infinity;
     if (box && nr && nr.height) {
-        const mid = nr.top + nr.height / 2;
-        let right = nr.right;
+        // The name's own line: measured on its text, since the box itself may span the whole row.
+        const range = document.createRange?.();
+        let line = nr;
+        try { if (range) { range.selectNodeContents(name); const rects = range.getClientRects(); if (rects.length) line = rects[0]; } } catch { /* use the box */ }
+        const mid = line.top + line.height / 2;
+        right = line.right;
         for (const el of box.querySelectorAll('*')) {
-            if (el.children.length || name.contains(el) || el.closest(LOOT_SKIP)) continue;
+            if (el.children.length || el === name || el.closest(LOOT_SKIP)) continue;
             const r = el.getBoundingClientRect();
             if (r.width && r.height && r.top <= mid && r.bottom >= mid && r.right > right) { right = r.right; best = el; }
         }
-        // Step out of another extension's own wrapper so its redraws cannot remove the button.
-        while (best !== name && best.parentElement && best.parentElement !== box && !best.parentElement.contains(name)) best = best.parentElement;
     }
-    return best;
+    if (!best || name.contains(best)) return { inside: name };
+    // Step out of another extension's own wrapper so its redraws cannot remove the button.
+    while (best.parentElement && best.parentElement !== box && !best.parentElement.contains(name)) best = best.parentElement;
+    return { after: best };
 }
 function lootButton(element) {
     const button = document.createElement('div');
@@ -1719,9 +1725,14 @@ function installLootButtons() {
         const old = element.querySelector('.sp-loot-button');
         if (!eligible(m) || m.is_user || !settings().enabled) { old?.remove(); continue; }
         const anchor = lootAnchor(element);
-        if (anchor) {
-            if (old && old.previousElementSibling === anchor) continue;
-            anchor.insertAdjacentElement('afterend', old || lootButton(element));
+        if (anchor?.inside) {
+            if (old && old.parentElement === anchor.inside && !old.nextElementSibling) continue;
+            anchor.inside.append(old || lootButton(element));
+            continue;
+        }
+        if (anchor?.after) {
+            if (old && old.previousElementSibling === anchor.after) continue;
+            anchor.after.insertAdjacentElement('afterend', old || lootButton(element));
             continue;
         }
         if (old) continue;

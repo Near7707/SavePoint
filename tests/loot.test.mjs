@@ -286,7 +286,7 @@ test('message tool buttons appear once on RP replies, open the looting form, and
     const elements = h.context.chat.map((_, index) => {
         const element = { children: [], getAttribute: () => String(index) };
         const row = { querySelector: () => null, append(node) { element.children.push(node); node.remove = () => { element.children = element.children.filter(x => x !== node); }; } };
-        const nameText = { parentElement: row, insertAdjacentElement(where, node) { node.previousElementSibling = nameText; if (!element.children.includes(node)) row.append(node); } };
+        const nameText = { parentElement: row, contains: () => false, append(node) { node.parentElement = nameText; if (!element.children.includes(node)) row.append(node); } };
         element.querySelector = q => q === '.sp-loot-button' ? element.children[0] : q === '.name_text' ? nameText : null;
         return element;
     });
