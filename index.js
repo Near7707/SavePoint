@@ -16,7 +16,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.3.5';
+const VERSION = '0.3.6';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -132,20 +132,40 @@ async function persist() { if (hasChat()) await ctx().saveMetadata(); }
 // saved" and returns normally). That case cannot be detected here: the change stays in the page and
 // is written together with the next successful chat save.
 // The automatic save file lives in the settings file and is only a convenience copy.
-async function transact(change, { undoable = true, autosave: doAutosave = true } = {}) {
+async function transact(change, { undoable = true, autosave: doAutosave = true, rehide = false } = {}) {
     const meta = ctx().chatMetadata, key = roomKey(), epoch = roomEpoch;
     const prev = meta[MODULE] ? clone(meta[MODULE]) : undefined;
+    // A save-time rescan may retire a previous manual visibility exception.
+    // Keep those flags as well as visibility so a failed disk write restores
+    // the exact pre-save state, including messages the user had opened.
+    const visibility = rehide ? chat().map(m => ({ m, system: m.is_system,
+        hadSystem: Object.hasOwn(m, 'is_system'), hadExtra: Object.hasOwn(m, 'extra'), extra: m.extra,
+        hadHidden: !!m.extra && Object.hasOwn(m.extra, HIDE_KEY), hidden: m.extra?.[HIDE_KEY],
+        hadVisible: !!m.extra && Object.hasOwn(m.extra, VISIBLE_KEY), visible: m.extra?.[VISIBLE_KEY] })) : null;
     if (change() === false) return false;
     const st = state();
     if (st) {
         if (undoable && prev) { const { undo: _u, ...rest } = prev; st.undo = clone(rest); }
         st.rev = (prev?.rev || 0) + 1;
     }
-    syncHide(); refreshInjection();
+    syncHide({ rehide }); refreshInjection();
     try { await persist(); }
     catch (e) {
         if (prev === undefined) delete meta[MODULE]; else meta[MODULE] = prev;
-        if (roomKey() === key && roomEpoch === epoch) { syncHide(); refreshInjection(); render(); }
+        const here = roomKey() === key && roomEpoch === epoch;
+        if (visibility) visibility.forEach((v, i) => {
+            if (here) setHidden(v.m, i, !!v.system);
+            if (v.hadSystem) v.m.is_system = v.system; else delete v.m.is_system;
+            if (v.hadExtra) v.m.extra = v.extra; else delete v.m.extra;
+            if (v.m.extra) {
+                if (v.hadHidden) v.m.extra[HIDE_KEY] = v.hidden; else delete v.m.extra[HIDE_KEY];
+                if (v.hadVisible) v.m.extra[VISIBLE_KEY] = v.visible; else delete v.m.extra[VISIBLE_KEY];
+            }
+        });
+        if (here) {
+            if (!visibility) syncHide(); else ctx().swipe?.refresh?.();
+            refreshInjection(); render();
+        }
         throw new Error(`채팅 파일에 저장하지 못해서 이번 변경을 취소했어요. (${e?.message || e})`);
     }
     if (roomKey() === key && roomEpoch === epoch) { if (doAutosave) autosave(state()); render(); }
@@ -240,15 +260,27 @@ function setHidden(m, i, hidden) {
     m.is_system = hidden;
     $(`#chat .mes[mesid="${i}"]`).attr('is_system', String(hidden));
 }
-function syncHide() {
+function syncHide({ rehide = false } = {}) {
     const st = state(), s = settings(), list = chat();
     const can = s.enabled && s.hide && st && !st.review && hasMemory(st.mem);
     const cutoff = can ? Math.min(st.lastIndex, list.length - 1 - num('keepRecent', 0, 200)) : -1;
     let changed = false;
     list.forEach((m, i) => {
         const mark = m.extra?.[HIDE_KEY];
+        if (rehide && i <= cutoff) {
+            // Recheck from #0 on every saved batch. A manually opened message
+            // stays open during ordinary redraws, but joins the next save's hide.
+            if (m.extra && Object.hasOwn(m.extra, VISIBLE_KEY)) { delete m.extra[VISIBLE_KEY]; changed = true; }
+            if (!m.is_system) {
+                m.extra ||= {}; m.extra[HIDE_KEY] = 1; changed = true;
+            }
+            // Also repair a stale rendered hide attribute when the saved flag
+            // already says hidden. Do not take ownership of user-hidden messages.
+            setHidden(m, i, true);
+            return;
+        }
         if (mark && !m.is_system) {
-            // The user unhid it on purpose; leave it visible from now on.
+            // The user unhid it on purpose; leave it visible until the next save.
             delete m.extra[HIDE_KEY]; m.extra[VISIBLE_KEY] = true; changed = true; return;
         }
         if (mark && i > cutoff) { setHidden(m, i, false); delete m.extra[HIDE_KEY]; changed = true; }
@@ -541,8 +573,13 @@ async function summarize({ close = false } = {}) {
                 await transact(() => {
                     const cur = state(), before = cur.mem;
                     cur.mem = closeOpenScene(before); pushHistory(cur, before, cur.mem, { kind: 'edit' });
-                });
+                }, { rehide: true });
                 toastr.success('진행 중이던 장면을 닫았어요.');
+            } catch (e) { reportError(e); }
+        } else if (settings().enabled && settings().hide && hasMemory(st.mem)) {
+            try {
+                await transact(() => {}, { undoable: false, autosave: false, rehide: true });
+                toastr.info('기록할 새 메시지가 없어요. 하이드 상태를 다시 확인했어요.');
             } catch (e) { reportError(e); }
         } else toastr.info('기록할 새 메시지가 없어요.');
         return;
@@ -571,7 +608,7 @@ async function summarize({ close = false } = {}) {
                 st.lastIndex = coverTo; st.hashes = run.hashes.slice(0, coverTo + 1);
                 st.undo = undoPoint;
                 settleAutoFail(st);
-            }, { undoable: false, autosave: false });
+            }, { undoable: false, autosave: false, rehide: true });
             done++; cursor += chunk.indices.length;
         }
         ui.lastError = null;
@@ -679,7 +716,7 @@ async function autoCollect() {
                     const before = st.mem;
                     st.mem = closeOpenScene(before); pushHistory(st, before, st.mem, { kind: 'edit' });
                     st.autoMark = end; st.autoLast = { at: Date.now(), result: `열린 장면 "${open.title}" 닫음 · 새 장면은 진행 중` };
-                });
+                }, { rehide: true });
             } else noteAuto(st, '끝난 장면 없음', { end });
             return;
         }
@@ -704,7 +741,7 @@ async function autoCollect() {
             st.autoMark = end;
             st.autoLast = { at: Date.now(), result: `장면 ${count}개 기록 (#${chunk.from}–#${plan.boundary})` };
             settleAutoFail(st);
-        });
+        }, { rehide: true });
         ui.lastError = null;
         checkAfter = before0;
     } catch (e) {
@@ -1960,5 +1997,6 @@ jQuery(() => {
 
 // Exposed for regression checks only.
 globalThis.__savePoint = { state, settings, summarize, listSaves, vault, migrateLocal, autoCollect, autoBlocked, autoCount, scheduleAuto, undo, loadSave, reconcile, syncHide, refreshInjection, handle, ui, render, estTokens, recordLine, reportText };
+
 
 
