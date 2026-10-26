@@ -1676,28 +1676,63 @@ function openLootDialog(index) {
     };
     document.body.append(dialog); dialog.showModal();
 }
+// Where the 💎 goes: right after the last thing shown on the same line as the character's name
+// (icons other extensions add there), whatever the theme's layout. Found by position on screen,
+// so it works whether those icons sit inside the name's box or next to it. Timestamps, timers
+// and the tool row never count. Falls back to right after the name, then to the tool row.
+const LOOT_SKIP = '.sp-loot-button, .timestamp, .mes_timer, .tokenCounterDisplay, .mesIDDisplay, .mes_buttons, .mes_edit_buttons';
+function lootAnchor(element) {
+    const name = element.querySelector('.name_text');
+    if (!name) return null;
+    const box = element.querySelector('.ch_name') || name.parentElement;
+    const nr = typeof name.getBoundingClientRect === 'function' ? name.getBoundingClientRect() : null;
+    let best = name;
+    if (box && nr && nr.height) {
+        const mid = nr.top + nr.height / 2;
+        let right = nr.right;
+        for (const el of box.querySelectorAll('*')) {
+            if (el.children.length || name.contains(el) || el.closest(LOOT_SKIP)) continue;
+            const r = el.getBoundingClientRect();
+            if (r.width && r.height && r.top <= mid && r.bottom >= mid && r.right > right) { right = r.right; best = el; }
+        }
+        // Step out of another extension's own wrapper so its redraws cannot remove the button.
+        while (best !== name && best.parentElement && best.parentElement !== box && !best.parentElement.contains(name)) best = best.parentElement;
+    }
+    return best;
+}
+function lootButton(element) {
+    const button = document.createElement('div');
+    button.className = 'sp-loot-button interactable';
+    button.textContent = '💎';
+    button.title = '💎 루팅'; button.setAttribute('aria-label', '💎 루팅');
+    button.setAttribute('role', 'button'); button.tabIndex = 0;
+    const open = e => { e.preventDefault(); e.stopPropagation(); openLootDialog(Number(element.getAttribute('mesid'))); };
+    button.onclick = open;
+    button.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') open(e); };
+    return button;
+}
+let lootTimer = null;
 function installLootButtons() {
     if (typeof document === 'undefined' || !document.querySelectorAll) return;
     for (const element of document.querySelectorAll('#chat .mes[mesid]')) {
         const index = Number(element.getAttribute('mesid')), m = chat()[index];
         const old = element.querySelector('.sp-loot-button');
         if (!eligible(m) || m.is_user || !settings().enabled) { old?.remove(); continue; }
-        // Sits on the name line, after whatever icons other extensions put next to the name,
-        // and takes that line's font size so it matches them. Falls back to the tool row.
-        const name = element.querySelector('.name_text');
-        const row = name?.parentElement || element.querySelector('.mes_buttons');
-        if (!row || old) continue;
-        const button = document.createElement('div');
-        button.className = 'sp-loot-button interactable';
-        button.textContent = '💎';
-        button.title = '💎 루팅'; button.setAttribute('aria-label', '💎 루팅');
-        button.setAttribute('role', 'button'); button.tabIndex = 0;
-        const open = e => { e.preventDefault(); e.stopPropagation(); openLootDialog(Number(element.getAttribute('mesid'))); };
-        button.onclick = open;
-        button.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') open(e); };
-        const stamp = row.querySelector?.(':scope > .timestamp');
-        if (stamp) row.insertBefore(button, stamp); else row.append(button);
+        const anchor = lootAnchor(element);
+        if (anchor) {
+            if (old && old.previousElementSibling === anchor) continue;
+            anchor.insertAdjacentElement('afterend', old || lootButton(element));
+            continue;
+        }
+        if (old) continue;
+        element.querySelector('.mes_buttons')?.append(lootButton(element));
     }
+}
+// Other extensions may add their icons a moment after a message is drawn; place once more after them.
+function installLootButtonsSoon() {
+    installLootButtons();
+    clearTimeout(lootTimer);
+    lootTimer = setTimeout(installLootButtons, 800);
 }
 function queueHtml(st) {
     const items = st.lootQueue || [];
@@ -2271,7 +2306,7 @@ function onChatChanged() {
         reconcile();
         syncHide();
     }
-    refreshInjection(); render(true); installLootButtons();
+    refreshInjection(); render(true); installLootButtonsSoon();
 }
 function onSourceChanged() {
     clearTimeout(sourceTimer);
@@ -2312,7 +2347,7 @@ jQuery(() => {
     const on = (t, f) => { if (ev[t]) eventSource.on(ev[t], f); };
     on('CHAT_CHANGED', onChatChanged);
     for (const t of ['MESSAGE_SENT', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_UPDATED', 'MESSAGE_SWIPE_DELETED']) on(t, onSourceChanged);
-    for (const t of ['CHARACTER_MESSAGE_RENDERED', 'USER_MESSAGE_RENDERED', 'MORE_MESSAGES_LOADED']) on(t, installLootButtons);
+    for (const t of ['CHARACTER_MESSAGE_RENDERED', 'USER_MESSAGE_RENDERED', 'MORE_MESSAGES_LOADED']) on(t, installLootButtonsSoon);
     on('GENERATION_STARTED', onGenerationStarted);
     for (const t of ['GENERATION_ENDED', 'GENERATION_STOPPED']) on(t, onGenerationEnded);
     for (const t of ['CONNECTION_PROFILE_UPDATED', 'CONNECTION_PROFILE_DELETED', 'CONNECTION_PROFILE_CREATED']) on(t, fillProfiles);
