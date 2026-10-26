@@ -1,3 +1,4 @@
+import { cleanLootSources } from './loot.js';
 import { upgradeEvidence, detachEvidence, cleanPrior, cleanSource } from './provenance.js';
 // SavePoint core: pure data logic (no SillyTavern, no DOM).
 // Memory = scenes (journal) + entities (who/what) + records (current state).
@@ -115,7 +116,7 @@ export const pointId = (g, j) => `${g.id}.${j}`;
 export const sceneOutlineParts = s => [...(s.legacyOutline ? [s.legacyOutline] : []), ...s.segs.map(g => g.outline).filter(Boolean)];
 export const sceneOutlineText = s => sceneOutlineParts(s).join(' ') || s.title;
 export const pointInjected = p => p.pin === true || (p.keyUser ?? p.key ?? true);
-export const pointSymbol = p => p.pin === true ? '📌' : pointInjected(p) ? (typeof p.keyUser === 'boolean' ? '◎' : '●') : '○';
+export const pointSymbol = p => p.pin === true ? '📌' : pointInjected(p) ? '●' : '○';
 // The open scene's points shown to the AI (newest first within limits); the AI re-judges these.
 export function openPoints(open, { maxCount = 60, maxChars = 8000 } = {}) {
     if (!open) return { shown: [], hidden: 0 };
@@ -594,7 +595,7 @@ export function applyResult(mem, data, chunk, { close = false } = {}) {
         const seg = {
             id: takeId(next, 'g'), from, to,
             outline: str(s.outline),
-            points: s.points.map(p => ({ text: str(p.text), kind: p.kind, key: p.key === true, msgs: numEvidence(p.msgs) })),
+            points: s.points.map(p => ({ text: str(p.text), kind: p.kind, key: p.key === true, msgs: numEvidence(p.msgs), ...(cleanLootSources(p.loot).length ? { loot: cleanLootSources(p.loot), keyUser: true } : {}) })),
             notes: str(s.notes),
         };
         segIds.push(seg.id); segRanges.push(seg);
@@ -1034,6 +1035,7 @@ export function cleanMem(raw) {
                         ...(cleanPrior(p.oldEvidence).length ? { oldEvidence: cleanPrior(p.oldEvidence) } : {}),
                         msgs: (Array.isArray(p.msgs) ? p.msgs : []).filter(m => Number.isInteger(m) || isSegRef(m)),
                         ...(typeof p.keyUser === 'boolean' ? { keyUser: p.keyUser } : {}),
+                        ...(cleanLootSources(p.loot).length ? { loot: cleanLootSources(p.loot) } : {}),
                         ...(p.pin === true ? { pin: true } : {}),
                         ...(str(p.ko) ? { ko: p.ko } : {}) })),
                     notes: str(g.notes), ...(str(g.koNotes) ? { koNotes: g.koNotes } : {}), ...(str(g.koOutline) ? { koOutline: g.koOutline } : {}) };
@@ -1128,8 +1130,8 @@ export function validateCheck(data, knownIds) {
 export function checkScope(before, after) {
     const old = new Map(before.records.map(r => [r.id, JSON.stringify(r)]));
     const records = after.records.filter(r => old.get(r.id) !== JSON.stringify(r)).map(r => r.id);
-    const oldSegs = new Set(before.scenes.flatMap(sc => sc.segs.map(g => g.id)));
-    const segs = after.scenes.flatMap(sc => sc.segs.filter(g => !oldSegs.has(g.id)).map(g => g.id));
+    const oldSegs = new Map(before.scenes.flatMap(sc => sc.segs.map(g => [g.id, JSON.stringify(g)])));
+    const segs = after.scenes.flatMap(sc => sc.segs.filter(g => oldSegs.get(g.id) !== JSON.stringify(g)).map(g => g.id));
     return { records, segs };
 }
 

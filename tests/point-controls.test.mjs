@@ -30,14 +30,14 @@ function controls() {
         html: () => app.journalHtml(context.chatMetadata.savePoint) };
 }
 
-test('point controls distinguish AI and manual choices, persist them, and restore the choice after unpinning', async () => {
+test('point controls share a selected symbol, preserve manual choices, and restore the choice after unpinning', async () => {
     const c = controls();
     assert.match(c.html(), /data-act="key-toggle"[^>]*>●<\/button>/);
     await c.app.handle('key-toggle', 's1|g1|0');
     assert.equal(c.point().keyUser, false);
     await c.app.handle('key-toggle', 's1|g1|0');
     assert.equal(c.point().keyUser, true, 'matching the AI does not erase the explicit user choice');
-    assert.match(c.html(), /data-act="key-toggle"[^>]*>◎<\/button>/);
+    assert.match(c.html(), /data-act="key-toggle"[^>]*>●<\/button>/);
     await c.app.handle('pin-point', 's1|g1|0');
     assert.equal(c.point().pin, true);
     assert.match(c.html(), /data-act="key-toggle"[^>]*>📌<\/button>/);
@@ -45,7 +45,7 @@ test('point controls distinguish AI and manual choices, persist them, and restor
     await c.app.handle('key-toggle', 's1|g1|0');
     assert.equal(c.point().pin, false);
     assert.equal(c.point().keyUser, true);
-    assert.match(c.html(), /data-act="key-toggle"[^>]*>◎<\/button>/);
+    assert.match(c.html(), /data-act="key-toggle"[^>]*>●<\/button>/);
     assert.equal(c.writes(), 4);
 });
 
@@ -59,3 +59,4 @@ test('pinning a stored-only point restores stored-only on release and does not c
     assert.equal(c.point().ko, '푸른 리본을 보관했다.');
     assert.match(c.html(), /data-act="key-toggle"[^>]*>○<\/button>/);
 });
+

@@ -290,7 +290,7 @@ async function loadFixture(exact, mode = 'continue') {
     const digest = xs => JSON.stringify(xs);
     const save = { id: 'slot', auto: false, room: 'room-A', pos: { lastIndex: 49, digest: digest(originalChat.map(m => m.mes)) } };
     const meta = {};
-    const box = { ...core, save, ui: {}, findSave: () => save, hasChat: () => true, readSave: async () => ({ mem: original() }),
+    const box = { clone: structuredClone, ...core, save, ui: {}, findSave: () => save, hasChat: () => true, readSave: async () => ({ mem: original() }),
         state: () => meta.savePoint || null, hasMemory: () => true, confirmBox: async () => true,
         freshState: extra => ({ v: 1, mem: core.emptyMem(), lastIndex: -1, hashes: [], floor: -1, ...extra }),
         chat: () => currentChat, hashesTo: n => currentChat.slice(0, n + 1).map(m => m.mes), digest,

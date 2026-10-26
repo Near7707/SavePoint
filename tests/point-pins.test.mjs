@@ -74,10 +74,11 @@ test('fixed points can use the total budget rather than lose to the reserved rec
     assert.ok(result.tokens <= 400);
 });
 
-test('AI selection, manual selection, stored-only and pinned points have distinct symbols', () => {
+test('selected points share one symbol while stored-only and pinned points stay distinct', () => {
     assert.equal(pointSymbol({ key: true }), '●');
-    assert.equal(pointSymbol({ key: true, keyUser: true }), '◎');
-    assert.equal(pointSymbol({ key: false, keyUser: true }), '◎');
+    assert.equal(pointSymbol({ key: true, keyUser: true }), '●');
+    assert.equal(pointSymbol({ key: false, keyUser: true }), '●');
     assert.equal(pointSymbol({ key: true, keyUser: false }), '○');
     assert.equal(pointSymbol({ key: false, pin: true }), '📌');
 });
+
