@@ -54,13 +54,14 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
                         sc.points[0].key = true;
                         sc.time = {mode:'present',start:{relation:'explicit',date:'2026-10-24',period:'night',msg:n,quote},end:{relation:'same'}};
                     } else if (M.timeCase === 'advance') {
-                        sc.title = 'A real scene title'; sc.time = {mode:'present',start:{relation:'same'},end:{relation:'advance',days:1,period:'morning',msg:n,quote:'다음 날'}};
+                        sc.title = 'A real scene title'; sc.time = {mode:'present',start:{relation:'same'},end:{relation:'advance',days:1,period:'morning',msg:n,quote:'그다음 날'}};
                     } else if (M.timeCase === 'bad') sc.time = {mode:'present',end:{relation:'explicit',date:'2035-04-10',msg:n,quote:'a fabricated quote'}};
                     else if (M.timeCase === 'night') sc.time = {mode:'present',end:{relation:'explicit',period:'night',msg:n,quote:'밤이'}};
                     else if (M.timeCase === 'backward') sc.time = {mode:'present',end:{relation:'explicit',date:'2026-10-20',msg:n,quote:'2026-10-20'}};
                     else if (M.timeCase === 'four-days') sc.time = {mode:'present',end:{relation:'advance',days:4,msg:n,quote:'나흘 뒤'}};
                     else if (M.timeCase === 'new-same') { sc.scene='new';sc.time={mode:'present',start:{relation:'same'},end:{relation:'same'}}; }
                     else if (M.timeCase === 'bad-count') sc.time = {mode:'present',end:{relation:'advance',days:3,msg:n,quote:'다음'}};
+                    else if (M.timeCase === 'week') sc.time = {mode:'present',end:{relation:'advance',days:7,period:'morning',msg:n,quote:'일주일 뒤'}};
                 }
                 return JSON.stringify(data);
             }};
@@ -84,7 +85,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(()=>__savePoint.handle('edit-scene','s1'));
     await page.fill('[data-edit=where]','Gate');await page.click('[data-act=edit-save]');
     ok(await ev(()=>__savePoint.state().mem.scenes[0].titlePending === true), '1. 장소만 고쳐도 임시 제목 교체 가능 상태는 유지');
-    await ev(() => { M.timeCase='advance';M.add(2,()=> '다음 날 아침, 다시 만났다.'); });
+    await ev(() => { M.timeCase='advance';M.add(2,()=> '그다음 날 아침, 다시 만났다.'); });
     await ev(() => __savePoint.handle('run'));
     r=await ev(()=>({s:__savePoint.state().mem.scenes[0],injection:M.prompts.savepoint.v,calls:M.calls.length}));
     ok(r.s.title === 'A real scene title' && !r.s.titlePending && r.s.segs.length === 2, '2. 이어 기록에서 임시 제목만 정상 제목으로 교체');
@@ -97,12 +98,12 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.calls === beforeEditCalls && r.mem.scenes[0].segs[0].time.end.certainty === 'manual' && r.injection.includes('Last recorded story time: 2026-10-27'), '3. 직접 지정은 호출 없이 보호되고 이후 연결 시간만 재계산');
     await ev(()=>__savePoint.handle('edit-scene','s1'));
     await page.fill('[data-edit=title]','User chosen title');await page.click('[data-act=edit-save]');
-    await ev(()=>{M.add(2,()=> '다음 날 아침, 길을 나섰다.');});await ev(()=>__savePoint.handle('run'));
+    await ev(()=>{M.add(2,()=> '그다음 날 아침, 길을 나섰다.');});await ev(()=>__savePoint.handle('run'));
     r=await ev(()=>({mem:__savePoint.state().mem,injection:M.prompts.savepoint.v}));
     ok(r.mem.scenes[0].title === 'User chosen title' && r.mem.scenes[0].segs[0].time.end.certainty === 'manual' && r.injection.includes('2026-10-28'), '4. 다음 세이브가 직접 지정 제목·날짜를 덮지 않음');
     await ev(()=>__savePoint.handle('save-new'));
     const slot=await ev(()=>__savePoint.state().linkedSave);
-    await ev(async()=>{await M.switchChat('room-B',[],{});M.add(2,()=> '다음 날 아침, 새 방에서 이어 간다.');});
+    await ev(async()=>{await M.switchChat('room-B',[],{});M.add(2,()=> '그다음 날 아침, 새 방에서 이어 간다.');});
     await ev(id=>__savePoint.handle('load',id),slot);
     const beforeBranch=await ev(()=>JSON.stringify(__savePoint.state().mem));
     await ev(()=>__savePoint.handle('run'));
@@ -159,6 +160,12 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(await ev(json=>JSON.stringify(__savePoint.state().mem)===json,remaining),'13. 시간 수정 리와인드가 남은 장면과 기준을 복원');
     await ev(()=>{M.timeCase='bad-count';M.add(2,()=> '그날 밤 우리는 다음에 만나자고 했다.');});await ev(()=>__savePoint.handle('run'));
     ok(await ev(()=>__savePoint.state().mem.scenes.at(-1).segs.at(-1).time.end.certainty==='unconfirmed'),'14. 다음이라는 조각만으로 +3일을 확정하지 않음');
+    await ev(()=>{const s=__savePoint.state().mem.scenes.at(-1);return __savePoint.handle('edit-segtime',s.id+'|'+s.segs.at(-1).id);});
+    await page.fill('[data-edit=date]','2026-10-28');await page.click('[data-act=edit-save]');
+    const beforeWeekCalls=await ev(()=>M.calls.length);
+    await ev(()=>{M.timeCase='week';M.add(2,()=> '일주일 뒤, 다시 길을 나섰다.');});await ev(()=>__savePoint.handle('run'));
+    r=await ev(()=>({t:__savePoint.state().mem.scenes.at(-1).segs.at(-1).time.end,calls:M.calls.length,injection:M.prompts.savepoint.v}));
+    ok(r.t.certainty==='linked'&&r.t.day===7&&r.calls===beforeWeekCalls+1&&r.injection.includes('Last recorded story time: 2026-11-04'),'15. 일주일 뒤를 요청 한 번으로 +7일 연결하고 화면 주입에 반영');
     if(SHOTS)await page.screenshot({path:path.join(OUT,'story-time.png')});
     await browser.close();srv.close();console.log(failures ? `${failures} FAILED` : 'ALL PASS');process.exit(failures?1:0);
 })();

@@ -77,17 +77,23 @@ function timeQuoteMatches(source, quote, quoteMatches) {
 function advanceQuoteMatches(quote, days) {
     if (!integer(days) || days < 0) return false;
     const q = quote.toLowerCase().replace(/[*_`]/g, '');
-    if (/(?:대략|약\s*\d|며칠|몇\s*(?:일|날)|\b(?:about|roughly|approximately|several|few)\b)|\d+\s*[-–~]\s*\d+\s*(?:일|days?)/i.test(q)) return false;
-    const counts = [], ko = { '다음날': 1, '이튿날': 1, '익일': 1, '하루': 1, '이틀': 2, '사흘': 3, '나흘': 4, '닷새': 5, '엿새': 6, '이레': 7, '여드레': 8, '아흐레': 9, '열흘': 10 };
+    if (/(?:대략|약\s*(?:\d|한|일주일|보름)|며칠|몇\s*(?:일|날|주)|\b(?:about|roughly|approximately|several|few|half|quarter)\b|(?:일|주)\s*반)|\d+\s*[-–~]\s*\d+\s*(?:일|주|days?|weeks?|fortnights?)/i.test(q)) return false;
+    const number = '(?:a|one|two|three|four|five|six|seven|eight|nine|ten|\\d+)';
+    if (new RegExp('\\b' + number + '\\s*(?:to|[-–~])\\s*' + number + '\\s*(?:days?|weeks?|fortnights?)\\b').test(q)) return false;
+    // These extended expressions do not mean one day; leave them for an explicit date.
+    if (/\bday\s+after\s+(?:tomorrow|next)\b/.test(q)) return false;
+    const counts = [], ko = { '다음날': 1, '그다음날': 1, '바로다음날': 1, '이튿날': 1, '익일': 1, '하루': 1, '이틀': 2, '사흘': 3, '나흘': 4, '닷새': 5, '엿새': 6, '이레': 7, '여드레': 8, '아흐레': 9, '열흘': 10, '일주일': 7, '한주': 7, '보름': 15 };
     const en = { a: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
-    const re = /다음\s*날|이튿날|익일|하루|이틀|사흘|나흘|닷새|엿새|이레|여드레|아흐레|열흘|(?<!\d)\d+\s*일|\b(?:next|following)\s+day\b|\b(a|one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+(?:(?:full|whole)\s+)?days?\b/g;
+    const re = /(?:그|바로)?다음\s*날|이튿날|익일|하루|이틀|사흘|나흘|닷새|엿새|이레|여드레|아흐레|열흘|일주일|한\s*주|보름|(?<!\d)(\d+)\s*(일|주)|\b(?:next|following)\s+(?:day|morning|evening|night)\b|\bday\s+after\b|\b(a|one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+(?:(?:full|whole)\s+)?(days?|weeks?|fortnights?)\b/g;
     for (const m of q.matchAll(re)) {
         const before = q.slice(0, m.index), after = q.slice(m.index + m[0].length);
         // Do not read the tail of a compound number or a past-time expression.
-        if (/[\p{L}\p{N}-]$/u.test(before) || /\b(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand)\s+$/.test(before)) continue;
+        const numeric = m[1] !== undefined || /^\d+$/.test(m[3] || '');
+        if (/[\p{L}\p{N}-]$/u.test(before) || (numeric && /[.,]$/.test(before)) || /\b(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand)\s+$/.test(before)) continue;
         if (/^\s*(?:전|이전|ago\b|earlier\b|before\b)/.test(after)) continue;
         const token = m[0].replace(/\s/g, '');
-        const count = ko[token] ?? (m[1] ? en[m[1]] ?? Number(m[1]) : /^\d/.test(token) ? Number(token.replace(/일$/, '')) : 1);
+        const count = ko[token] ?? (m[1] ? Number(m[1]) * (m[2] === '주' ? 7 : 1)
+            : m[3] ? (en[m[3]] ?? Number(m[3])) * (m[4].startsWith('week') ? 7 : m[4].startsWith('fortnight') ? 14 : 1) : 1);
         counts.push(count);
     }
     return counts.length > 0 && counts.every(n => n === days);

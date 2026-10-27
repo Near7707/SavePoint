@@ -232,3 +232,22 @@ test('editing a later part does not promote an earlier unconfirmed claim after d
  assert.equal(old.start.certainty,'unconfirmed');assert.equal(now(m).day,null);
  const {recomputeStoryTimes}=await import('../temporal.js');recomputeStoryTimes(m);assert.equal(m.scenes[0].segs[0].time.start.certainty,'unconfirmed');
 });
+test('common joined Korean days, weeks, fortnights and English next-time expressions have exact counts',()=>{
+ const cases=[['그다음 날 아침',1],['그다음날',1],['바로다음 날',1],['바로다음날 밤',1],['일주일 뒤',7],['한 주 뒤',7],['한주 후',7],['보름 뒤',15],['the next morning',1],['the following morning',1],['the next evening',1],['the following night',1],['the day after',1],['a week later',7],['one week later',7],['two weeks later',14],['a fortnight later',14],['3 weeks later',21],['2주 뒤',14]];
+ for(const [quote,days] of cases){
+  const m=save(start(),{end:raw('advance',{days,quote})},quote);
+  assert.equal(now(m).certainty,'linked',quote);assert.equal(now(m).day,days,quote);
+  const wrong=save(start(),{end:raw('advance',{days:days+1,quote})},quote);assert.equal(now(wrong).certainty,'unconfirmed',quote);
+ }
+});
+test('added time expressions do not turn past, approximate or compound durations into exact counts',()=>{
+ for(const [quote,days] of [['일주일 전',7],['한 주 이전',7],['보름 전',15],['a week ago',7],['a fortnight before',14],['about a week later',7],['약 한 주 뒤',7],['몇 주 뒤',7],['2~3 weeks later',21],['two to three weeks later',21],['1.5 weeks later',35],['a week and a half later',7],['the day after tomorrow',1],['the day after next',1],['someothernext morning',1]]){
+  assert.equal(now(save(start(),{end:raw('advance',{days,quote})},quote)).certainty,'unconfirmed',quote);
+ }
+});
+test('new common expressions preserve the reference through saves and imports',()=>{
+ let m=start();m=save(m,{end:raw('advance',{days:1,quote:'그다음 날'})},'그다음 날 아침이 밝았다.');
+ m=save(m,{end:raw('advance',{days:7,quote:'일주일 뒤'})},'일주일 뒤, 다시 만났다.');
+ m=cleanMem(JSON.parse(JSON.stringify(m)));assert.equal(date(m),'2026-11-01');
+ m=save(m,{end:raw('advance',{days:1,quote:'the following morning'})},'The following morning.');assert.equal(date(m),'2026-11-02');
+});
