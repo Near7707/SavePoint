@@ -287,23 +287,14 @@ export function normalizeResult(data, { mem, chunk } = {}) {
     }
     // A later scene marked "continue" can only mean "the scene just before goes on": merge it into
     // that scene (points and notes appended, outlines joined). No boundary is invented and nothing is lost.
-    const mergeInto = (prev, cur) => {
-        const join = (a, b) => [str(a), str(b)].filter(Boolean).join(' ');
-        if (Array.isArray(prev.points) && Array.isArray(cur.points)) prev.points = [...prev.points, ...cur.points];
-        else if (Array.isArray(cur.points)) prev.points = cur.points;
-        prev.outline = join(prev.outline, cur.outline);
-        if (typeof prev.notes === 'string' || typeof cur.notes === 'string') prev.notes = join(prev.notes, cur.notes);
-        if (Array.isArray(cur.who)) prev.who = [...new Set([...(Array.isArray(prev.who) ? prev.who : []), ...cur.who])];
-        if (!str(prev.where) && str(cur.where)) prev.where = cur.where;
-        if (typeof cur.ended === 'boolean') prev.ended = cur.ended;
-        if (cur.star === true) prev.star = true;
-    };
+    // Only well-formed scenes are ever merged or repaired; anything else is left for validation to
+    // reject, so the model is asked again instead of fields being dropped silently.
+    const wellFormed = x => plain(x) && ['new', 'continue'].includes(x.scene) && Array.isArray(x.points);
     for (let i = 1; i < scenes.length; i++) {
         const cur = scenes[i], prev = scenes[i - 1];
-        if (!plain(cur) || cur.scene !== 'continue' || !plain(prev)) continue;
+        if (!plain(cur) || cur.scene !== 'continue' || !wellFormed(cur) || !wellFormed(prev)) continue;
         const join = (a, b) => [str(a), str(b)].filter(Boolean).join(' ');
-        if (Array.isArray(prev.points) && Array.isArray(cur.points)) prev.points = [...prev.points, ...cur.points];
-        else if (Array.isArray(cur.points)) prev.points = cur.points;
+        prev.points = [...prev.points, ...cur.points];
         prev.outline = join(prev.outline, cur.outline);
         if (typeof prev.notes === 'string' || typeof cur.notes === 'string') prev.notes = join(prev.notes, cur.notes);
         if (Array.isArray(cur.who)) prev.who = [...new Set([...(Array.isArray(prev.who) ? prev.who : []), ...cur.who])];
@@ -314,29 +305,29 @@ export function normalizeResult(data, { mem, chunk } = {}) {
         notes.push(`merged:${i + 1}>${i}`);
         i--;
     }
-    // A later scene whose "start" is missing, is not a message of this batch, or is not after the
-    // previous scene's start: move it forward to the next real message, or else to the first message
-    // its own points cite. If neither places it after the previous scene, it is part of that scene.
+    // A later scene's "start" is repaired only when the scenes' own evidence settles it: a start on a
+    // message that is not in this batch (one the user hid, say) moves to the next real message, and a
+    // missing start becomes the first message the scene cites. Either way every point of the scene
+    // before must cite only earlier messages and every point of this scene only this one or later,
+    // so no evidence is cut. Two different scenes are never merged here; anything else goes back to
+    // the model through validation.
     if (chunk && Array.isArray(chunk.indices)) {
         const inChunk = chunk.indices;
         const num = v => typeof v === 'string' ? Number(v.replace('#', '').trim()) : v;
+        const cited = sc => sc.points.flatMap(p => plain(p) && Array.isArray(p.msgs) ? p.msgs : []).map(num).filter(n => Number.isInteger(n) && inChunk.includes(n));
         let prevStart = chunk.from;
         for (let i = 1; i < scenes.length; i++) {
             const cur = scenes[i], prev = scenes[i - 1];
-            if (!plain(cur) || !plain(prev)) continue;
+            if (!wellFormed(cur) || !wellFormed(prev)) break;
             const st = num(cur.start);
             if (Number.isInteger(st) && inChunk.includes(st) && st > prevStart) { prevStart = st; continue; }
-            let to = Number.isInteger(st) && st > prevStart ? inChunk.find(n => n >= st) ?? null : null;
-            if (to === null) {
-                const cited = (Array.isArray(cur.points) ? cur.points : []).flatMap(p => plain(p) && Array.isArray(p.msgs) ? p.msgs : [])
-                    .map(num).filter(n => Number.isInteger(n) && inChunk.includes(n) && n > prevStart);
-                if (cited.length) to = Math.min(...cited);
-            }
-            if (to !== null) { notes.push(`start:${i + 1}:${String(cur.start ?? '')}>${to}`); cur.start = to; prevStart = to; continue; }
-            mergeInto(prev, cur);
-            scenes.splice(i, 1);
-            notes.push(`merged:${i + 1}>${i}`);
-            i--;
+            let to = null;
+            if (Number.isInteger(st) && st > prevStart && !inChunk.includes(st)) to = inChunk.find(n => n > st) ?? null;
+            else if (cur.start === undefined || cur.start === null || cur.start === '') { const c = cited(cur).filter(n => n > prevStart); to = c.length ? Math.min(...c) : null; }
+            const fits = to !== null && cited(prev).every(n => n < to) && cited(cur).every(n => n >= to);
+            if (!fits) break;
+            notes.push(`start:${i + 1}:${String(cur.start ?? '')}>${to}`);
+            cur.start = to; prevStart = to;
         }
     }
     // Names -> ids

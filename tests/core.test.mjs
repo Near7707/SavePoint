@@ -661,28 +661,47 @@ test('an early scene-wide outline is folded into the first part so it stays in t
     assert.equal(foldLegacyOutline(live), false, 'folds once');
 });
 
-test('an unusable later scene start is repaired from the batch instead of failing the save', () => {
-    const scene = (start, msgs, title) => ({ scene: 'new', title, where: '', who: [], outline: `${title} happened.`, notes: '', ended: false, ...(start === undefined ? {} : { start }),
-        points: [{ text: `${title} point.`, kind: 'moment', key: false, msgs }] });
-    // a batch with a gap (#64 was hidden by the user, so it is not part of the batch)
+test('a later scene start is repaired only when the scenes\' own evidence settles it; otherwise the model is asked again', () => {
+    const scene = (start, msgs, title, where = '', extra = {}) => ({ scene: 'new', title, where, who: [], outline: `${title} happened.`, notes: '', ended: false, ...(start === undefined ? {} : { start }),
+        points: [{ text: `${title} point.`, kind: 'moment', key: false, msgs }], ...extra });
+    const bad = (data, chunk) => validateResult(data, { mem: emptyMem(), chunk }).some(e => e.includes('scenes[1].start'));
+    // a batch with a gap: #64 was hidden by the user, so it is not part of the batch
     const chunk = { from: 60, to: 69, indices: [60, 61, 62, 63, 65, 66, 67, 68, 69], text: '' };
-    // missing start: taken from the first message the scene's own points cite
+    // missing start: taken from the first message the scene cites
     let data = { scenes: [scene(undefined, [60], 'A'), scene(undefined, [66, 67], 'B')], entities: [], changes: [] };
     let notes = normalizeResult(data, { mem: emptyMem(), chunk });
     assert.equal(data.scenes[1].start, 66); assert(notes.some(n => n.startsWith('start:2:')));
     assert.deepEqual(validateResult(data, { mem: emptyMem(), chunk }), []);
-    // a start on the hidden gap moves forward to the next real message
+    // a start on the hidden gap moves to the next real message
     data = { scenes: [scene(undefined, [60], 'A'), scene('#64', [65], 'B')], entities: [], changes: [] };
     normalizeResult(data, { mem: emptyMem(), chunk });
     assert.equal(data.scenes[1].start, 65);
-    assert.deepEqual(validateResult(data, { mem: emptyMem(), chunk }), []);
-    // a start that is not after the previous scene, and nothing later cited: it is part of that scene
-    data = { scenes: [scene(undefined, [60, 61], 'A'), scene(60, [60], 'B')], entities: [], changes: [] };
-    notes = normalizeResult(data, { mem: emptyMem(), chunk });
-    assert.equal(data.scenes.length, 1); assert.equal(data.scenes[0].points.length, 2); assert(notes.some(n => n.startsWith('merged:')));
     assert.deepEqual(validateResult(data, { mem: emptyMem(), chunk }), []);
     // a good start is left alone
     data = { scenes: [scene(undefined, [60], 'A'), scene(63, [63], 'B')], entities: [], changes: [] };
     notes = normalizeResult(data, { mem: emptyMem(), chunk });
     assert.equal(data.scenes[1].start, 63); assert(!notes.some(n => n.startsWith('start:') || n.startsWith('merged:')));
+    // two different new scenes are never merged: the station and the harbour both survive to the retry
+    data = { scenes: [scene(undefined, [60, 61], 'Station', 'station'), scene(60, [60], 'Harbour', 'harbour')], entities: [], changes: [] };
+    notes = normalizeResult(data, { mem: emptyMem(), chunk });
+    assert.equal(data.scenes.length, 2); assert.equal(data.scenes[1].where, 'harbour'); assert(!notes.some(n => n.startsWith('merged:')));
+    assert(bad(data, chunk), 'the bad start is still reported, so the model is asked again');
+    // malformed scenes are not repaired or merged into a passing result
+    data = { scenes: [scene(undefined, [60], 'A'), { scene: 'later', title: 'B', outline: 'B.', points: 'none', start: 'x' }], entities: [], changes: [] };
+    normalizeResult(data, { mem: emptyMem(), chunk });
+    assert.equal(data.scenes.length, 2);
+    assert(validateResult(data, { mem: emptyMem(), chunk }).length > 0);
+    data = { scenes: [scene(undefined, [60], 'A'), { scene: 'continue', title: 'B', outline: 'B.', points: 'none' }], entities: [], changes: [] };
+    normalizeResult(data, { mem: emptyMem(), chunk });
+    assert.equal(data.scenes.length, 2, 'a malformed "continue" scene is not merged');
+    assert(validateResult(data, { mem: emptyMem(), chunk }).length > 0);
+    // a guessed start that would cut the scene before off from its own evidence is not used
+    data = { scenes: [scene(undefined, [60, 67], 'A'), scene(undefined, [65], 'B')], entities: [], changes: [] };
+    notes = normalizeResult(data, { mem: emptyMem(), chunk });
+    assert.equal(data.scenes[1].start, undefined); assert(!notes.some(n => n.startsWith('start:')));
+    assert.deepEqual(data.scenes[0].points[0].msgs, [60, 67]);
+    assert(bad(data, chunk));
+    data = { scenes: [scene(undefined, [60, 66], 'A'), scene('#64', [65], 'B')], entities: [], changes: [] };
+    normalizeResult(data, { mem: emptyMem(), chunk });
+    assert.equal(data.scenes[1].start, '#64', 'moving past the gap would cut #66 from the scene before');
 });
