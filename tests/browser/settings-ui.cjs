@@ -50,14 +50,19 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         return { n: document.querySelectorAll('#sp_loot_bar').length, good: rect('options_button').right <= rect('extensionsMenuButton').left && rect('extensionsMenuButton').right <= rect('sp_loot_bar').left, aligned: Math.abs((rect('sp_loot_bar').top + rect('sp_loot_bar').bottom) - (rect('extensionsMenuButton').top + rect('extensionsMenuButton').bottom)) <= 2, pill: getComputedStyle(document.getElementById('sp_loot_bar')).borderRadius === '999px' && getComputedStyle(document.getElementById('sp_loot_bar')).backgroundColor !== 'rgba(0, 0, 0, 0)' };
     });
     ok(r.n === 1 && r.good && r.aligned && r.pill, 'flex order가 있는 채팅창에서도 ☰ → 🪄 → 💎 정렬, 💎는 옅은 바탕의 버튼형');
-    // Retired themes move to their closest replacement.
-    {
+    // Retired themes migrate before the setting menu, window and looting dialog read them.
+    for (const [previous, replacement] of [['parchment', 'cream'], ['joycon', 'dualwhite']]) {
         const p2 = await browser.newPage({ viewport: { width: 390, height: 844 } });
-        await p2.addInitScript(() => { window.__presetSettings = { savePoint: { theme: 'parchment' } }; });
+        await p2.addInitScript(theme => { window.__presetSettings = { savePoint: { theme } }; }, previous);
         await p2.goto(`http://localhost:${srv.address().port}/`);
         await p2.waitForFunction(() => !!globalThis.__savePoint);
-        const t = await p2.evaluate(() => ({ theme: __savePoint.settings().theme, options: [...document.querySelectorAll('[data-set=theme] option')].map(o => o.value) }));
-        ok(t.theme === 'cream' && !t.options.includes('parchment') && !t.options.includes('colorpocket') && t.options.includes('vanilla'), '없앤 테마(양피지)를 쓰던 설정은 크림 라테로 옮김, 목록에서 제거');
+        const t = await p2.evaluate(() => {
+            $('#sp_wand').trigger('click');
+            return { theme: __savePoint.settings().theme, windowTheme: document.querySelector('#sp_overlay .sp-window').dataset.theme,
+                field: document.querySelector('[data-set=theme]').value,
+                options: [...document.querySelectorAll('[data-set=theme] option')].map(o => o.value) };
+        });
+        ok(t.theme === replacement && t.windowTheme === replacement && t.field === replacement && !t.options.includes('joycon') && !t.options.includes('parchment') && !t.options.includes('colorpocket') && t.options.includes('vanilla'), `없앤 테마(${previous}) 설정은 ${replacement}로 전환, 목록과 창에 반영`);
         await p2.close();
     }
     r = await ev(() => [...document.querySelectorAll('[data-settings-group]')].map(d => [d.dataset.settingsGroup, d.open]));

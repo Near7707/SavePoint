@@ -425,25 +425,6 @@ label.sp-has-reset { position: relative; padding-right: 30px; }
 
 /* v0.5.5: bright handheld themes and ink on hanji */
 
-/* 조이 콘솔: 하얀 화면 + 빨강·파랑 손잡이 */
-.sp-window[data-theme="joycon"] {
-    --sp-bg: #f7f8fa; --sp-panel: #ffffff; --sp-panel2: #eef0f4;
-    --sp-fg: #23262d; --sp-dim: #7a8090; --sp-accent: #ff4554; --sp-accent-fg: #fff;
-    --sp-border: #2c2f36; --sp-line: #e1e4ea; --sp-chip: #eef0f4;
-    --sp-danger: #ff4554; --sp-ok: #20b26b; --sp-live: #0ab9e6; --sp-radius: 16px;
-    --sp-head: 'Avenir Next', 'Segoe UI', 'Pretendard', sans-serif;
-    border: 12px solid #2c2f36; border-left: 14px solid #0ab9e6; border-right: 14px solid #ff4554;
-    box-shadow: 0 18px 50px rgba(30, 40, 60, .25);
-}
-.sp-window[data-theme="joycon"] .sp-logo { color: #23262d; letter-spacing: .08em; font-weight: 800; }
-.sp-window[data-theme="joycon"] .sp-card, .sp-window[data-theme="joycon"] .sp-quest { border: none; border-radius: 14px; box-shadow: 0 2px 10px rgba(30, 40, 60, .08); }
-.sp-window[data-theme="joycon"] .sp-bar { border: none; border-radius: 999px; background: #e1e4ea; height: 14px; }
-.sp-window[data-theme="joycon"] .sp-bar-fill { background: linear-gradient(90deg, #0ab9e6, #ff4554); border-radius: 999px; }
-.sp-window[data-theme="joycon"] .sp-bar span { color: #fff; font-size: 10px; text-shadow: 0 0 3px rgba(0, 0, 0, .35); }
-.sp-window[data-theme="joycon"] .sp-btn:not(.sp-primary) { border: none; border-radius: 999px; background: #eef0f4; }
-.sp-window[data-theme="joycon"] .sp-tab.sp-active { background: #fff; border-color: #e1e4ea; }
-.sp-window[data-theme="joycon"] .sp-tab.sp-active::before { color: #0ab9e6; }
-
 /* 듀얼 화이트: 반짝이는 흰 본체 + 하늘색 화면 */
 .sp-window[data-theme="dualwhite"] {
     --sp-bg: linear-gradient(180deg, #ffffff 0%, #eef3f8 100%); --sp-panel: #ffffff; --sp-panel2: #e6f4fd;
@@ -464,7 +445,6 @@ label.sp-has-reset { position: relative; padding-right: 30px; }
 .sp-window[data-theme="dualwhite"] .sp-bar-fill { background: linear-gradient(90deg, #2b9bea, #7fd0ff); border-radius: 999px; }
 .sp-window[data-theme="dualwhite"] .sp-bar span { color: #fff; text-shadow: 0 0 3px rgba(0, 60, 120, .5); }
 .sp-window[data-theme="dualwhite"] .sp-btn:not(.sp-primary) { border-radius: 999px; border-width: 1px; background: #fff; }
-.sp-window[data-theme="joycon"] .sp-btn.sp-primary { background: #ff4554; border-color: #ff4554; box-shadow: 0 3px 0 #d02a38; }
 .sp-window[data-theme="dualwhite"] .sp-btn.sp-primary { background: #2b9bea; border-color: #2b9bea; box-shadow: 0 3px 0 #1c79bd; }
 
 /* 먹과 한지: 한지 바탕, 먹 글씨, 붉은 낙관 */
