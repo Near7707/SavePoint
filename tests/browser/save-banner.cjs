@@ -110,10 +110,13 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const before6 = await ev(() => ({ last: __savePoint.state().lastIndex, calls: M.calls.length }));
     await ev(() => __savePoint.autoCollect());
     await sleep(100);
-    r = await ev(() => ({ b: (() => { const x = document.getElementById('sp_save_banner'); return { shown: !x.hidden, text: x.textContent }; })(), last: __savePoint.state().lastIndex, calls: M.calls.length, auto: __savePoint.state().autoLast?.result || '' }));
+    r = await ev(() => ({ b: (() => { const x = document.getElementById('sp_save_banner'); return { shown: !x.hidden, text: x.textContent }; })(), last: __savePoint.state().lastIndex, calls: M.calls.length, fail: __savePoint.state().autoFail, tone: document.getElementById('sp_save_banner').dataset.tone, auto: __savePoint.state().autoLast?.result || '' }));
     const t6 = await ev(() => toastr.log.slice(-3).map(x => x[1]).join(' | '));
-    ok(r.calls - before6.calls >= 2 && r.auto.includes('실패 (채팅 파일 저장)') && t6.includes('체크포인트 실패'), `6. 저장 단계에서 실패한 체크포인트를 알리고 기록함 (${r.auto.slice(0, 40)})`);
+    ok(r.calls - before6.calls >= 1 && r.fail?.stage === 'save' && r.auto.includes('실패') && t6.includes('체크포인트 실패'), `6. 저장 단계에서 실패한 체크포인트를 알리고 기록함 (${r.auto.slice(0, 40)})`);
     ok(!(r.b.shown && r.b.text.includes('완료')) && r.last === before6.last, `6. 채팅 파일 저장이 실패한 체크포인트는 완료로 표시하지 않음 (${r.b.text.trim().slice(0, 24)} / #${r.last})`);
+    ok(r.b.shown && r.tone === 'warning', '6. 실패 결과는 경고 배너로 표시');
+    await sleep(3700);
+    ok((await banner()).shown && (await banner()).text.includes('실패'), '6. 실패 배너는 성공 표시의 3.5초보다 오래 유지');
     await ev(() => { M.failMeta = false; M.settings.savePoint.auto = false; });
 
     await browser.close(); srv.close();

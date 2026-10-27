@@ -14,7 +14,7 @@ const HIDE_KEY = 'savepointHidden', VISIBLE_KEY = 'savepointVisible';
 
 function harness({ count = 10, lastIndex = 9, keepRecent = 2 } = {}) {
     const chat = Array.from({ length: count }, (_, n) => ({ mes: `Message ${n}`, name: 'Speaker', is_system: false, extra: {} }));
-    const settings = { enabled: true, hide: true, keepRecent, profileId: 'mock', inputChars: 60000 };
+    const settings = { enabled: true, hide: true, keepRecent, profileId: 'mock', inputChars: 60000, autoReserve: 2 };
     const meta = { savePoint: { mem: { scenes: [{ id: 's1', status: 'closed', segs: [] }], records: [], entities: [] }, lastIndex, rev: 0, hashes: [] } };
     const dom = new Map(chat.map((m, n) => [n, String(m.is_system)]));
     const writes = [], notifications = [];
@@ -41,7 +41,7 @@ function harness({ count = 10, lastIndex = 9, keepRecent = 2 } = {}) {
         autoBlocked: () => false, names: () => ({}), buildBoundaryPrompt: () => 'boundary',
         validateBoundary: () => ({ errors: [], plan: { boundary: count - 3, closeOpen: false, continuesOpen: false } }),
         llm: async () => '{}', parseJson: JSON.parse, batchNote: () => '', chunkMessages, fmtSec: () => '0초',
-        recordAutoFail() {}, noteAuto() {}, replyKind() { return null; }, isTry: () => false,
+        recordAutoFail() {}, noteAuto() {}, flashSaveBanner() {}, replyKind() { return null; }, isTry: () => false,
     };
     const api = vm.runInNewContext(transaction + hiding + summarizeCode + automaticCode + ';({syncHide,transact,summarize,autoCollect})', box);
     return { ...api, box, chat, settings, meta, dom, writes, notifications, calls: () => calls };
@@ -162,7 +162,7 @@ test('quick save with new messages rescans the whole saved prefix, including pri
     assert(h.chat.slice(8).every(m => !m.is_system));
 });
 
-test('checkpoint saves also rescan from the start without hiding the unfinished scene', async () => {
+test('checkpoint saves rescan from the start without hiding the retained two messages', async () => {
     const h = harness({ lastIndex: 3 });
     h.chat[0].extra[VISIBLE_KEY] = true;
     await h.autoCollect();

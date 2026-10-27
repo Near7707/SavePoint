@@ -1,9 +1,9 @@
 import { dueStatus, formatDue, setManualDue, PERIODS, editStoryTime, dateAt, formatSegmentTime, sceneTimeRange, storyTimeContext } from './temporal.js';
 // SavePoint: scene journal + current state memory for SillyTavern, kept per chat room,
-// with game-style save files. Summaries run only when the user presses a button.
+// with game-style save files. Summaries run on demand and at periodic checkpoints.
 import { foldLegacyOutline,
     emptyMem, cleanMem, detachMem, chunkMessages, promptContext, validateResult, resultLanguageIssues,
-    applyResult, closeOpenScene, pushHistory, rollbackFrom, buildInjection, openScene, memStats, validateBoundary,
+    applyResult, closeOpenScene, pushHistory, rollbackFrom, buildInjection, openScene, memStats,
     pointInjected, pointSymbol, rekeyItems, validateRekey, applyRekey, sceneOutlineText, sceneOutlineParts,
     refreshProvisionalOutlines, normalizeResult, validateCheck, checkScope, dupState, pointId,
     recordLine, entityName, estTokens, QUEST_KINDS, WORLD_KINDS, ENTITY_TYPES,
@@ -13,19 +13,19 @@ import { lootStatus, lootWarning, lootInChunk, lootBlock, attachLoot, settleLoot
 import { Vault, roomHash } from './vault.js';
 import { upgradeEvidence, segmentPrior, evidenceNumbers } from './provenance.js';
 import { assertPromptFits, nextMessageChunk, planReviewBatches } from './request-batches.js';
-import { DEFAULT_GUIDE, guideHash, OLD_GUIDE_HASHES, buildCheckPrompt, buildRekeyPrompt, buildExtractPrompt, buildBoundaryPrompt, batchNote, retryNote, extractionRepairNote, TRANSLATE_PROMPT } from './prompts.js';
+import { DEFAULT_GUIDE, guideHash, OLD_GUIDE_HASHES, buildCheckPrompt, buildRekeyPrompt, buildExtractPrompt, retryNote, extractionRepairNote, TRANSLATE_PROMPT } from './prompts.js';
 
 const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.6';
+const VERSION = '0.6.7';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
 
 const DEFAULTS = {
-    enabled: true, check: true, auto: true, autoEvery: 20, profileId: '', responseLength: 8000, inputChars: 60000, timeoutSec: 300,
+    enabled: true, check: true, auto: true, autoEvery: 20, autoReserve: 2, profileId: '', responseLength: 8000, inputChars: 60000, timeoutSec: 300,
     requestStream: true, reasoningEffort: '',
     budget: 6000, titleCap: 600, recentScenes: 3, recall: true, rawRecall: false,
     hide: true, keepRecent: 10, position: 1, depth: 4, role: 0,
@@ -33,7 +33,7 @@ const DEFAULTS = {
 };
 const SETTING_GROUPS = {
     connection: { title: '연결·AI 요청', keys: ['profileId', 'requestStream', 'reasoningEffort', 'responseLength', 'inputChars', 'timeoutSec'] },
-    recording: { title: '체크포인트·기록 확인', keys: ['check', 'auto', 'autoEvery', 'guide'] },
+    recording: { title: '체크포인트·기록 확인', keys: ['check', 'auto', 'autoEvery', 'autoReserve', 'guide'] },
     injection: { title: '기억 주입', keys: ['budget', 'titleCap', 'recentScenes', 'recall', 'rawRecall', 'position', 'depth', 'role'] },
     storage: { title: '하이드·보관', keys: ['hide', 'keepRecent', 'autoKeep'] },
     appearance: { title: '화면', keys: ['theme', 'showKo'] },
@@ -575,7 +575,10 @@ function assertValid(run, upTo) {
 function endRun(run) {
     if (ui.run === run) { ui.run = null; ui.progress = ''; ui.req = null; }
     render();
-    if (run.doneText && run.key === roomKey()) flashSaveBanner(run.doneText);
+    if ((run.notice || run.doneText) && run.key === roomKey()) {
+        if (run.notice) flashSaveBanner(run.notice.text, { tone: run.notice.tone });
+        else flashSaveBanner(run.doneText);
+    }
     else updateSaveBanner();
 }
 function checkpoint(st) {
@@ -739,6 +742,7 @@ async function supplementLoot(run, items, undoPoint = checkpoint(run.st)) {
                 st.mem = next; pushHistory(st, before, next, { kind: 'edit' });
                 failed += settleLoot(st, group, next);
                 st.undo = undoPoint;
+                st.lastRecord = { at: Date.now(), from: Math.min(...group.map(x => x.msg)), to: Math.max(...group.map(x => x.msg)), kind: 'supplement' };
             }, { undoable: false, autosave: false, rehide: true });
             saved++;
         } catch (e) {
@@ -751,17 +755,32 @@ async function supplementLoot(run, items, undoPoint = checkpoint(run.st)) {
     return { saved, failed };
 }
 
-async function summarize({ close = false } = {}) {
+async function summarize({ close = false, auto = false } = {}) {
     if (ui.run) { toastr.info('이미 기록 중이에요.'); return; }
     if (!hasChat()) { toastr.warning('채팅방을 먼저 열어 주세요.'); return; }
     if (ui.edit) { toastr.warning('편집 중인 항목을 먼저 저장하거나 취소해 주세요.'); return; }
     if (!settings().profileId && mainBusy()) { toastr.info('본편 생성이 끝난 뒤 눌러 주세요. (연결 프로필을 고르면 생성 중에도 세이브할 수 있어요.)'); return; }
     const st = ensureState();
     if (!reconcile()) { render(); toastr.warning('예전 원문이 바뀌었어요. 창 위쪽 안내에서 먼저 처리해 주세요.'); return; }
-    const end = chat().length - 1;
+    const latest = chat().length - 1;
     const start = st.lastIndex + 1;
-    const msgs = collect(start, end);
-    const queued = (st.lootQueue || []).slice();
+    const pending = collect(start, latest);
+    const reserve = auto ? Math.trunc(num('autoReserve', 0, 20)) : 0;
+    const held = Math.min(reserve, pending.length);
+    const msgs = auto ? pending.slice(0, pending.length - held) : pending;
+    const end = auto ? (msgs.at(-1)?.index ?? st.lastIndex) : latest;
+    // Retained tail messages and their loot never enter an automatic request.
+    const queued = (st.lootQueue || []).filter(x => !auto || x.msg <= end);
+    if (auto) {
+        st.autoMark = latest; st.autoHold = null; st.autoAttemptAt = Date.now();
+        persistSoon();
+        if (!msgs.length && !queued.length) {
+            const result = `체크포인트 · 기록할 메시지 없음 · 최근 ${held}개 여유분`;
+            noteAuto(st, result, { end: latest, status: 'empty' });
+            flashSaveBanner(result, { tone: 'info' });
+            return;
+        }
+    }
     if (!msgs.length && !queued.length) {
         if (close && openScene(st.mem)) {
             try {
@@ -779,20 +798,23 @@ async function summarize({ close = false } = {}) {
         } else toastr.info('기록할 새 메시지가 없어요.');
         return;
     }
-    st.autoMark = end; st.autoHold = null; persistSoon();
-    const run = newRun(st, end, 'save');
+    if (!auto) { st.autoMark = latest; st.autoHold = null; persistSoon(); }
+    const run = newRun(st, end, auto ? 'auto' : 'save');
+    run.auto = auto;
     const undoPoint = checkpoint(st);
     const memBefore = st.mem;
     let done = 0, cursor = 0;
+    let stage = 'collect';
     const oldLoot = queued.filter(x => x.msg <= st.lastIndex);
     const attemptedLoot = new Set();
     let lootFailed = 0;
     try {
         while (cursor < msgs.length) {
             assertValid(run, end);
+            stage = 'collect';
             const chunk = nextMessageChunk(msgs.slice(cursor), c => extractPrompt(st.mem, c), num('inputChars', 5000, 1000000));
             const last = cursor + chunk.indices.length === msgs.length;
-            ui.progress = `${close ? '장면 클리어' : '퀵세이브'} ${done + 1}구간 #${chunk.from}–#${chunk.to} · ${cursor}/${msgs.length}메시지 완료`;
+            ui.progress = `${auto ? '체크포인트' : close ? '장면 클리어' : '퀵세이브'} ${done + 1}구간 #${chunk.from}–#${chunk.to} · ${cursor}/${msgs.length}메시지 완료`;
             render();
             const marked = lootForChunk(chunk);
             marked.forEach(x => attemptedLoot.add(x.id));
@@ -801,11 +823,13 @@ async function summarize({ close = false } = {}) {
             assertValid(run, coverTo);
             const { mem: next } = applyResult(st.mem, data, chunk, { room: run.key, close: close && last });
             // Memory, position and hiding change together; a failed save puts all of it back.
+            stage = 'save';
             await transact(() => {
                 const before = st.mem;
                 st.mem = next;
                 pushHistory(st, before, next, { kind: 'summary', from: st.lastIndex + 1, to: coverTo });
                 st.lastIndex = coverTo; st.hashes = run.hashes.slice(0, coverTo + 1);
+                st.lastRecord = { at: Date.now(), from: start, to: coverTo, kind: auto ? 'checkpoint' : 'quicksave' };
                 st.undo = undoPoint;
                 settleAutoFail(st);
                 lootFailed += settleLoot(st, marked, next);
@@ -823,8 +847,15 @@ async function summarize({ close = false } = {}) {
         }
         await markStaleLoot(run, queued.filter(x => !attemptedLoot.has(x.id) && !oldLoot.includes(x)));
         ui.lastError = null;
-        if (msgs.length || close) toastr.success(close ? '장면 클리어! 진행 중이던 장면까지 기록하고 닫았어요.' : '퀵세이브 완료. 마지막 메시지까지 기록했어요.', 'SavePoint');
+        if (!auto && (msgs.length || close)) toastr.success(close ? '장면 클리어! 진행 중이던 장면까지 기록하고 닫았어요.' : '퀵세이브 완료. 마지막 메시지까지 기록했어요.', 'SavePoint');
         if (done) run.doneText = `${close ? '장면 클리어 완료' : '저장 완료'}${st.lastIndex >= run.from ? ` · #${run.from}–#${st.lastIndex}` : ''}`;
+        if (auto) {
+            const extra = lootFailed ? ` · 루팅 ${lootFailed}개 반영 실패` : '';
+            const result = msgs.length ? `체크포인트 완료 · #${start}–#${st.lastIndex} 기록 · 최근 ${held}개 여유분${extra}`
+                : `체크포인트 · 루팅 ${supplement.saved}구간 보충 · 최근 ${held}개 여유분${extra}`;
+            noteAuto(st, result, { end: latest, status: lootFailed ? 'partial' : done ? 'saved' : 'empty' });
+            run.notice = { text: result, tone: lootFailed ? 'warning' : done ? 'success' : 'info' };
+        }
         clearInterrupted(run.key);
     } catch (e) {
         if (queued.length && !(e instanceof Cancelled) && state() === st) {
@@ -834,26 +865,32 @@ async function summarize({ close = false } = {}) {
         const where = done ? ` ${done}개 구간(${cursor}개 메시지)은 저장했고, 남은 ${msgs.length - cursor}개 메시지의 원문은 그대로 남겨 뒀어요.` : ' 기억과 원문은 바뀌지 않았어요.';
         // Leaving the room has its own notice (onChatChanged); don't repeat it in the new room.
         if (e instanceof Cancelled) { if (run.key === roomKey()) toastr.info(e.message + where, 'SavePoint'); }
-        else { console.error('[SavePoint]', e, e.detail || ''); toastr.error(e.message + where, 'SavePoint', { timeOut: 12000 }); }
+        else { console.error('[SavePoint]', e, e.detail || ''); if (!auto) toastr.error(e.message + where, 'SavePoint', { timeOut: 12000 }); }
+        if (auto && run.key === roomKey() && run.epoch === roomEpoch) {
+            const cur = state();
+            if (cur) {
+                const cancelled = e instanceof Cancelled;
+                const detail = Array.isArray(e.detail) ? e.detail : [];
+                if (!cancelled) recordAutoFail(cur, { stage, from: msgs[cursor]?.index ?? start, to: end, error: e,
+                    tries: detail.filter(isTry), detail: detail.filter(x => !isTry(x)) });
+                const result = cursor ? `체크포인트 일부 저장 · #${start}–#${cur.lastIndex} 완료 · #${cur.lastIndex + 1}부터 다음에 다시`
+                    : cancelled ? '체크포인트 취소 · 원문 유지 · 다음 간격에 다시'
+                    : '체크포인트 실패 · 원문 유지';
+                noteAuto(cur, result, { end: latest, status: cursor ? 'partial' : cancelled ? 'cancelled' : 'failed' });
+                run.notice = { text: result, tone: 'warning' };
+            }
+        }
     } finally {
         if (lootFailed && state() === st) toastr.warning(`⚠ 루팅한 내용 ${lootFailed}개가 반영되지 않았어요`, 'SavePoint');
         endRun(run);
-        if (done) { autosave(state()); if (state() === st) queueCheck(st, memBefore); }
+        if (done && run.key === roomKey()) { autosave(state()); if (state() === st) queueCheck(st, memBefore, { auto }); }
     }
 }
 
-// ───────── automatic collection (finished scenes only) ─────────
+// ───────── automatic collection (periodic quicksave) ─────────
 //
-// Counts complete user/character messages since the last automatic attempt. Every `autoEvery`
-// messages, after a character reply has finished:
-//   1. one short call marks scene boundaries in the uncollected messages (checked in code);
-//   2. only the messages up to the end of the last confirmed-finished scene are summarized,
-//      so the scene still in progress cannot leak into the journal or the state lists.
-// If the open scene simply ended before the new messages, it is closed with no extraction.
-// The scene in progress stays as original text. Nothing is cut or force-closed: when the
-// uncollected text is over the input limit, automatic collection holds until a manual run.
-
-const HOLD_TEXT = '미기록 내용이 입력 한도를 넘어 체크포인트를 멈췄어요. `퀵세이브`를 눌러 주세요.';
+// Count new eligible messages since the last attempt, not the pending backlog.
+// Failures and partial saves wait for the next interval; manual quicksave is immediate.
 let autoTimer = null;
 function autoCount(st) {
     const mark = Math.max(st?.autoMark ?? -1, st?.lastIndex ?? -1);
@@ -863,7 +900,7 @@ function autoBlocked() {
     const s = settings(), st = state();
     if (!s.enabled || !s.auto || !hasChat()) return 'off';
     if (ui.run || ui.edit || mainBusy()) return 'busy';
-    if (st?.review || st?.autoHold) return 'hold';
+    if (st?.review) return 'hold';
     const last = chat()[chat().length - 1];
     if (!last || last.is_user) return 'waiting';
     return autoCount(st) >= num('autoEvery', 5, 500) ? null : 'count';
@@ -877,126 +914,14 @@ function scheduleAuto(delay = 1200) {
         if (!autoBlocked()) autoCollect().catch(reportError);
     }, delay);
 }
-function noteAuto(st, result, { moveMark = true, end = chat().length - 1 } = {}) {
-    st.autoLast = { at: Date.now(), result };
+function noteAuto(st, result, { moveMark = true, end = chat().length - 1, status = '' } = {}) {
+    st.autoLast = { at: Date.now(), result, status };
     if (moveMark) st.autoMark = end;
     persistSoon(); render();
 }
 async function autoCollect() {
     if (autoBlocked()) return;
-    const st = ensureState();
-    if (!reconcile()) return;
-    const end = chat().length - 1;
-    const msgs = collect(st.lastIndex + 1, end);
-    if (!msgs.length) return;
-    const indices = msgs.map(m => m.index);
-    const text = msgs.map(m => `#${m.index} ${m.name}: ${m.text}`).join('\n\n');
-    const open = openScene(st.mem);
-    const limit = num('inputChars', 5000, 1000000);
-    const bPrompt = buildBoundaryPrompt({ names: names(), open: open && { ...open, outlineText: sceneOutlineText(open) }, from: indices[0], to: indices[indices.length - 1], text });
-    if (bPrompt.length > limit) { st.autoHold = { at: Date.now() }; noteAuto(st, '정지: 입력 한도 초과', { end }); return; }
-    const run = newRun(st, end, 'auto');
-    run.auto = true;
-    const before0 = st.mem, before0LastIndex = st.lastIndex, undoPoint = checkpoint(st);
-    let checkAfter = null;
-    const at = { stage: 'boundary', from: indices[0], to: indices[indices.length - 1] }, bTries = [];
-    try {
-        // Step 1: where do scenes start, and which are confirmed over?
-        ui.progress = '체크포인트 · 장면 경계 확인'; render();
-        let plan = null, errors = [], bKind = '';
-        for (let attempt = 0; attempt < 2 && !plan; attempt++) {
-            const t0 = Date.now(), label = attempt ? '재요청' : '첫 요청';
-            let raw;
-            try { raw = await llm(attempt ? bPrompt + retryNote(errors, []) : bPrompt, run, { attempt, why: attempt ? bKind : '' }); }
-            catch (e) {
-                if (!(e instanceof Cancelled) && !run.cancelled) bTries.push(`${label}: ${fmtSec(Date.now() - t0)} · ${e instanceof RequestTimeout ? '응답 없음 → 제한 시간 초과로 취소' : `요청 오류: ${errorText(e)}`}`);
-                throw e;
-            }
-            if (run.cancelled) throw new Cancelled('중지했어요.');
-            let parsed = null;
-            try { parsed = parseJson(raw); } catch { /* below */ }
-            if (parsed) ({ errors, plan } = validateBoundary(parsed, { indices, hasOpen: !!open }));
-            else { errors = ['The reply was not valid JSON.']; plan = null; }
-            bKind = replyKind(raw) || (!parsed ? 'JSON 해석 실패' : `검사 실패 ${errors.length}건`);
-            bTries.push(`${label}: ${fmtSec(Date.now() - t0)} · 응답 ${String(raw ?? '').length.toLocaleString()}자 · ${plan ? '통과' : bKind}`);
-        }
-        if (!plan) {
-            ui.lastError = { at: Date.now(), range: `자동 · 경계 #${indices[0]}–#${indices[indices.length - 1]}`, detail: [...bTries, ...errors] };
-            const err = new Error('장면 경계 응답이 검사를 통과하지 못했어요.');
-            err.detail = errors;
-            throw err;
-        }
-        assertValid(run, end);
-        if (plan.boundary === null) {
-            if (plan.closeOpen) {
-                // The recorded open scene ended before these messages; the new scene stays uncollected.
-                await transact(() => {
-                    const before = st.mem;
-                    st.mem = closeOpenScene(before); pushHistory(st, before, st.mem, { kind: 'edit' });
-                    st.autoMark = end; st.autoLast = { at: Date.now(), result: `열린 장면 "${open.title}" 닫음 · 새 장면은 진행 중` };
-                }, { rehide: true });
-            } else noteAuto(st, '끝난 장면 없음', { end });
-            const supplement = await supplementLoot(run, (st.lootQueue || []).filter(x => x.msg <= st.lastIndex), undoPoint);
-            if (supplement.saved) checkAfter = before0;
-            if (supplement.failed) toastr.warning(`⚠ 루팅한 내용 ${supplement.failed}개가 반영되지 않았어요`, 'SavePoint');
-            return;
-        }
-        // Step 2: summarize only the finished part.
-        const base = plan.closeOpen ? closeOpenScene(st.mem) : st.mem;
-        const part = collect(st.lastIndex + 1, plan.boundary);
-        const chunk = chunkMessages(part, Infinity)[0];
-        const note = batchNote({ boundary: plan.boundary, continuesOpen: plan.continuesOpen });
-        if (extractPrompt(base, chunk, note).length > limit) { st.autoHold = { at: Date.now() }; noteAuto(st, '정지: 입력 한도 초과', { end }); return; }
-        ui.progress = `체크포인트 #${chunk.from}–#${plan.boundary}`; render();
-        Object.assign(at, { stage: 'collect', from: chunk.from, to: plan.boundary });
-        const marked = lootForChunk(chunk);
-        const data = await extractChunk(base, chunk, run, { note, expectContinue: plan.continuesOpen });
-        assertValid(run, end);
-        const { mem: next } = applyResult(base, data, chunk, { close: true, room: run.key });
-        const count = data.scenes.length;
-        at.stage = 'save';
-        let lootFailed = 0;
-        await transact(() => {
-            const before = st.mem;
-            st.mem = next;
-            pushHistory(st, before, next, { kind: 'summary', from: st.lastIndex + 1, to: plan.boundary });
-            st.lastIndex = plan.boundary; st.hashes = run.hashes.slice(0, plan.boundary + 1);
-            st.autoMark = end;
-            st.autoLast = { at: Date.now(), result: `장면 ${count}개 기록 (#${chunk.from}–#${plan.boundary})` };
-            settleAutoFail(st);
-            lootFailed = settleLoot(st, marked, next);
-        }, { rehide: true });
-        // Only after the chat file was written: a failed write puts the memory back and throws above.
-        run.doneText = `자동 저장 완료 · 장면 ${count}개 (#${chunk.from}–#${plan.boundary})`;
-        clearInterrupted(run.key);
-        const oldLoot = (st.lootQueue || []).filter(x => x.msg <= before0LastIndex);
-        const supplement = await supplementLoot(run, oldLoot, undoPoint);
-        lootFailed += supplement.failed;
-        if (lootFailed) toastr.warning(`⚠ 루팅한 내용 ${lootFailed}개가 반영되지 않았어요`, 'SavePoint');
-        ui.lastError = null;
-        checkAfter = before0;
-    } catch (e) {
-        if (e instanceof Cancelled) { if (state() === st) { st.autoLast = { at: Date.now(), result: '취소됨 (다음 응답 뒤 다시 시도)' }; render(); } }
-        else {
-            console.error('[SavePoint] auto', e, e.detail || '');
-            // A failed chat-file write puts back a copy of the room's state, so look the room up again
-            // rather than requiring the same object: the failure must still be recorded and shown.
-            const cur = run.key === roomKey() && run.epoch === roomEpoch ? state() : null;
-            if (cur) {
-                if (cur === st) try {
-                    const failed = await failPendingLoot(run, (st.lootQueue || []).filter(x => x.msg <= at.to), e);
-                    if (failed) toastr.warning(`⚠ 루팅한 내용 ${failed}개가 반영되지 않았어요`, 'SavePoint');
-                } catch { /* leave pending items intact when persistence fails */ }
-                const lines = Array.isArray(e.detail) ? e.detail : [];
-                const tries = at.stage === 'boundary' ? bTries : lines.filter(isTry);
-                recordAutoFail(cur, { stage: at.stage, from: at.from, to: at.to, error: e, tries, detail: at.stage === 'boundary' ? lines : lines.filter(l => !isTry(l)) });
-                noteAuto(cur, `실패 (${FAIL_STAGE[at.stage]}): ${errorText(e)}`, { end });
-            }
-        }
-    } finally {
-        endRun(run);
-        if (checkAfter && state() === st) { autosave(st); queueCheck(st, checkAfter, { auto: true }); }
-    }
+    return summarize({ auto: true });
 }
 
 // ───────── record check (AI, warnings only) ─────────
@@ -2155,16 +2080,17 @@ function hudHtml(st) {
         <div class="sp-row">${btn('review-accept', '', '지금 원문 기준으로 인정')}${btn('clear-room', '', '리셋', '이 방의 기억을 모두 지워요 (세이브 슬롯은 남아요)', 'sp-danger')}</div></div>` : '';
     const every = num('autoEvery', 5, 500);
     const autoLine = !settings().auto ? '<span class="sp-dim">체크포인트 꺼짐</span>'
-        : st?.autoHold ? `<span class="sp-warn">${esc(HOLD_TEXT)}</span>`
         : `<span>다음 체크포인트까지 <b>${Math.max(0, every - autoCount(st))}</b>개</span>`;
-    const autoLast = st?.autoLast ? `<span class="${st.autoFail ? 'sp-warn' : 'sp-dim'}">마지막 체크포인트 ${new Date(st.autoLast.at).toLocaleTimeString()} · ${esc(st.autoLast.result)}</span>` : '';
+    const attemptAt = st?.autoAttemptAt || st?.autoLast?.at;
+    const autoLast = attemptAt ? `<span class="${st.autoFail ? 'sp-warn' : 'sp-dim'}">마지막 자동 저장 시도 ${new Date(attemptAt).toLocaleTimeString()} · ${esc(ui.run?.auto ? '체크포인트 저장 중…' : st.autoAttemptAt && (!st.autoLast || st.autoLast.at < st.autoAttemptAt) ? '이번 시도 결과 없음 또는 중단됨 · 다음 간격에 다시' : st.autoLast?.result || '결과 대기')}</span>` : '';
+    const lastRecord = st?.lastRecord ? `<span class="sp-dim">마지막 실제 기록 ${new Date(st.lastRecord.at).toLocaleTimeString()} · #${st.lastRecord.from}–#${st.lastRecord.to}</span>` : st?.lastIndex >= 0 ? `<span class="sp-dim">마지막 실제 기록 · 시각 정보 없음 · #0–#${st.lastIndex}</span>` : '<span class="sp-dim">마지막 실제 기록 없음</span>';
     const err = ui.lastError ? `<details class="sp-err" data-group="hud-err" ${ui.savesOpen.get('hud-err') ? 'open' : ''}><summary>마지막 실패 ${esc(ui.lastError.range)} — 자세히</summary><ul class="sp-scroll">${groupErrors(ui.lastError.detail).map(d => `<li>${esc(d)}</li>`).join('')}</ul></details>` : '';
     return `<div class="sp-hud">
         <div class="sp-scene-now">${open ? `<span class="sp-cursor">▶</span> <b>${esc(T(open.title, open.koTitle))}</b>${open.where ? ` <span class="sp-dim">@ ${esc(open.where)}</span>` : ''}` : '<span class="sp-dim">▷ 진행 중인 장면 없음</span>'}</div>
         ${storyTimeContext(st?.mem || {}, 'ko') ? `<div class="sp-hud-time">마지막 기록 기준 · ${esc(storyTimeContext(st.mem, 'ko'))}</div>` : ''}
         <div class="sp-bar" title="기록된 메시지 비율"><div class="sp-bar-fill" style="width:${pct}%"></div><span>기록 ${covered} / ${total}</span></div>
         <div class="sp-hud-meta"><span>미기록 <b>${pending}</b></span>${btn('tab', 'queue', `⏳ 대기열 ${st?.lootQueue?.length || 0}개`)}<span>주입 ${ui.inj ? ui.inj.tokens.toLocaleString() : 0} / ${num('budget', 300, 100000).toLocaleString()} 토큰</span><span>요약 AI: ${esc(profileLabel())}</span>${ui.inj?.pinOverflow ? `<span class="sp-warn">📌 ${ui.inj.pinMissing}개 주입 못 함</span>` : ''}</div>
-        <div class="sp-hud-meta sp-auto-line">${autoLine}${autoLast}</div>
+        <div class="sp-hud-meta sp-auto-line">${autoLine}${autoLast}${lastRecord}</div>
         ${(() => { const it = interruptedNote(st); return it && !busy ? `<div class="sp-hud-meta"><span class="sp-warn">⚠ 지난 저장이 방을 옮기면서 중간에 멈췄어요 (#${it.from}부터 미기록)</span>${btn('run', '', '퀵세이브로 이어서')}</div>` : ''; })()}
         ${autoFailHtml(st)}
         ${checkHtml(st)}
@@ -2449,8 +2375,11 @@ function settingsHtml() {
             `)}
             ${settingSection('recording', `
                 <label class="checkbox_label"><input type="checkbox" data-set="check"> 기록 후 확인 (모순·원문과 다른 해석을 찾아 경고 · 분량에 따라 추가 요청)</label>
-                <label class="checkbox_label"><input type="checkbox" data-set="auto"> 체크포인트 (끝난 장면을 자동 기록)</label>
+                <label class="checkbox_label"><input type="checkbox" data-set="auto"> 체크포인트 (새 메시지 N개마다 자동 퀵세이브)</label>
                 <label>체크포인트 간격 (새 메시지 수, 유저+캐릭터) <input type="number" data-set="autoEvery" min="5" max="500"></label>
+                <div class="sp-set-note">마지막 시도 뒤 새 메시지가 간격만큼 쌓이면 실행해요. 일부 실패도 다음 간격에 이어서 처리하며, 퀵세이브로 바로 저장할 수 있어요.</div>
+                <label>체크포인트 여유분 <input type="number" data-set="autoReserve" min="0" max="20"></label>
+                <div class="sp-set-note">체크포인트가 기록하지 않고 남겨 둘 최근 메시지 수예요. 스와이프·수정에 대비해요. 퀵세이브는 마지막 메시지까지 기록해요.</div>
                 <label data-reset-host="guide">기록 지침 (영어 권장, {{char}} {{user}} 사용 가능)</label>
                 <textarea data-set="guide" rows="10" class="text_pole"></textarea>
                 <div class="sp-set-note">데이터 목록과 응답 형식은 지침 뒤에 자동으로 붙어요.</div>
@@ -2468,6 +2397,7 @@ function settingsHtml() {
             ${settingSection('storage', `
                 <label class="checkbox_label"><input type="checkbox" data-set="hide"> 세이브한 메시지 하이드</label>
                 <label>하이드하지 않을 최근 메시지 <input type="number" data-set="keepRecent" min="0" max="200"></label>
+                <div class="sp-set-note">전체 대화에서 숨기지 않을 최근 메시지 수예요. 미기록 메시지는 이 설정과 관계없이 숨기지 않아요.</div>
                 <label>오토세이브를 보관할 방 수 (방마다 최근 3개) <input type="number" data-set="autoKeep" min="1" max="500"></label>
             `)}
             ${settingSection('appearance', `
@@ -2480,7 +2410,7 @@ function updateSettingsSummaries() {
     const s = settings();
     const summaries = {
         connection: `${profileLabel()} · 제한 ${s.timeoutSec}초`,
-        recording: `${s.auto ? s.autoEvery + '개마다' : '체크포인트 꺼짐'} · 확인 ${s.check ? '켜짐' : '꺼짐'}`,
+        recording: `${s.auto ? s.autoEvery + '개마다 · 여유분 ' + s.autoReserve + '개' : '체크포인트 꺼짐'} · 확인 ${s.check ? '켜짐' : '꺼짐'}`,
         injection: `${Number(s.budget).toLocaleString()}토큰 · 최근 ${s.recentScenes}장면`,
         storage: `${s.hide ? '최근 ' + s.keepRecent + '개 남김' : '하이드 꺼짐'} · 보관 ${s.autoKeep}개 방`,
         appearance: `${THEMES[s.theme] || THEMES.jrpg} · ${s.showKo ? '한국어' : 'EN'}`,
@@ -2513,7 +2443,7 @@ function updateChangeMarks() {
 function settingsChanged(keys) {
     saveSettings();
     if (keys.some(k => ['hide', 'keepRecent', 'enabled'].includes(k))) syncHide();
-    if (keys.some(k => ['auto', 'autoEvery', 'enabled'].includes(k))) scheduleAuto();
+    if (keys.some(k => ['auto', 'autoEvery', 'autoReserve', 'enabled'].includes(k))) scheduleAuto();
     if (keys.includes('enabled')) installLootBar();
     updateSettingsSummaries(); refreshInjection(); render(true);
 }
@@ -2581,7 +2511,7 @@ function addSettingsUI() {
 // SavePoint when pressed, and is hidden while the SavePoint window itself is open.
 const BANNER = {
     save: ['저장 중입니다…', '다른 채팅방으로 이동하면 저장이 취소돼요'],
-    auto: ['자동 저장 중입니다…', '다른 채팅방으로 이동하면 저장이 취소돼요'],
+    auto: ['체크포인트 저장 중…', '다른 채팅방으로 이동하면 저장이 취소돼요'],
     check: ['기록 확인 중입니다…', '다른 채팅방으로 이동하면 확인이 취소돼요 (기억은 이미 저장됐어요)'],
     other: ['기억 정리 중입니다…', '다른 채팅방으로 이동하면 이 작업이 취소돼요'],
 };
@@ -2617,17 +2547,19 @@ function updateSaveBanner() {
     const run = ui.run, text = run && BANNER[run.kind];
     if (!text || ui.open || !settings().enabled || run.key !== roomKey()) { el.hidden = true; return; }
     const m = String(ui.progress || '').match(/(\d+)\/(\d+)메시지/);
+    el.dataset.tone = 'running';
     setBanner(el, { icon: 'sp-sb-spin', title: text[0], count: m && Number(m[1]) > 0 ? `${m[1]}/${m[2]}` : '', sub: text[1] });
 }
-function flashSaveBanner(text) {
+function flashSaveBanner(text, { tone = 'success' } = {}) {
     const el = saveBanner();
     if (!el) return;
     clearTimeout(bannerTimer);
     if (ui.open || !settings().enabled) { delete el.dataset.flash; el.hidden = true; return; }
     const [title, ...rest] = text.split(' · ');
     el.dataset.flash = '1'; el.dataset.flashRoom = String(roomKey());
-    setBanner(el, { icon: 'sp-sb-done', title, sub: rest.join(' · ') });
-    bannerTimer = setTimeout(() => { delete el.dataset.flash; delete el.dataset.flashRoom; updateSaveBanner(); }, 3500);
+    el.dataset.tone = tone;
+    setBanner(el, { icon: tone === 'warning' ? 'sp-sb-warn' : tone === 'info' ? 'sp-sb-info' : 'sp-sb-done', title, sub: rest.join(' · ') });
+    bannerTimer = setTimeout(() => { delete el.dataset.flash; delete el.dataset.flashRoom; updateSaveBanner(); }, tone === 'warning' ? 8000 : 3500);
 }
 // A save cut off by leaving the room is remembered per room until that room saves again.
 function clearInterrupted(room) {
@@ -2642,7 +2574,7 @@ function noteLeftDuringRun(run) {
         settings().interrupted[run.key] = { at: Date.now(), from: run.st.lastIndex + 1 }; saveSettings();
         toastr.warning(`${name} 저장을 멈췄어요. ${saved}나머지는 그 방에서 다시 세이브해 주세요.`, 'SavePoint · 저장이 취소됐어요', { timeOut: 12000 });
     } else if (run.kind === 'auto') {
-        toastr.warning(`${name} 자동 저장을 멈췄어요. 그 방에 돌아가면 다음 답변 뒤에 다시 시도해요.`, 'SavePoint · 자동 저장 취소', { timeOut: 10000 });
+        toastr.warning(`${name} 체크포인트를 멈췄어요. 저장된 구간은 유지하고, 다음 간격에 이어서 처리해요. 퀵세이브로 바로 저장할 수 있어요.`, 'SavePoint · 자동 저장 취소', { timeOut: 10000 });
     } else if (run.kind === 'check') {
         toastr.info(`${name} 기록 확인을 멈췄어요. 기억은 이미 저장돼 있어요.`, 'SavePoint', { timeOut: 8000 });
     } else {

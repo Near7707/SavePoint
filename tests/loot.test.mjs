@@ -210,7 +210,7 @@ test('oversized old source is retained intact and deferred before a model reques
     assert.equal(h.context.chat[0].mes, text);
 });
 
-test('checkpoint consumes only marks in confirmed-finished scenes and leaves the ongoing source queued', async () => {
+test('checkpoint consumes only marks outside its retained tail and leaves recent source queued', async () => {
     const h = harness({ messages: Array(5).fill('A participant kept a token.') });
     await h.app.addLoot(0, 'kept a token.'); await h.app.addLoot(4, 'kept a token.');
     await h.app.autoCollect();
@@ -367,7 +367,7 @@ test('an earlier exact-position save restores removed loot; undoing that load av
     assert.equal(h.app.state().lootQueue.length, 0);
 });
 
-test('a boundary failure never marks ongoing-scene selections as failed', async () => {
+test('a checkpoint request failure never marks retained-tail selections as failed', async () => {
     const h = harness({ messages: Array(5).fill('A participant kept a token.') });
     await h.app.addLoot(4, 'kept a token.');
     h.model = async () => { throw new h.app.RequestTimeout('Boundary timed out'); };
@@ -464,7 +464,7 @@ test('failed undo and earlier-slot writes preserve both existing queue edits and
     assert.equal(JSON.stringify(h.app.state()), before);
 });
 
-test('a failed checkpoint extraction marks only the selections actually sent in its finished range', async () => {
+test('a failed checkpoint extraction marks only selections actually sent outside the retained tail', async () => {
     const h = harness({ messages: Array(5).fill('A participant kept a token.') });
     await h.app.addLoot(0, 'kept a token.'); await h.app.addLoot(4, 'kept a token.');
     h.model = async prompt => {
