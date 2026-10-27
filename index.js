@@ -635,7 +635,9 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
         tries.push(`${took} · ${lastKind}`);
         if (!errors.length && !lang.length) {
             const merged = fixes.filter(f => f.startsWith('merged:')).length;
-            if (merged) ui.lastFix = { at: Date.now(), range: `#${chunk.from}–#${chunk.to}`, text: `AI가 "앞 장면에 이어짐"으로 표시한 장면 ${merged}개를 앞 장면에 합쳤어요` };
+            const moved = fixes.filter(f => f.startsWith('start:')).map(f => f.split(':')[2].split('>')[1]);
+            const said = [merged ? `앞 장면에 이어지는 장면 ${merged}개를 앞 장면에 합쳤어요` : '', moved.length ? `장면 시작 번호가 맞지 않아 ${moved.map(n => '#' + n).join(', ')}부터로 고쳤어요` : ''].filter(Boolean);
+            if (said.length) ui.lastFix = { at: Date.now(), range: `#${chunk.from}–#${chunk.to}`, text: said.join(' · ') };
             attachLoot(data, lootForChunk(chunk));
             return data;
         }
@@ -957,11 +959,12 @@ async function autoCollect() {
             st.lastIndex = plan.boundary; st.hashes = run.hashes.slice(0, plan.boundary + 1);
             st.autoMark = end;
             st.autoLast = { at: Date.now(), result: `장면 ${count}개 기록 (#${chunk.from}–#${plan.boundary})` };
-            run.doneText = `자동 저장 완료 · 장면 ${count}개 (#${chunk.from}–#${plan.boundary})`;
-            clearInterrupted(run.key);
             settleAutoFail(st);
             lootFailed = settleLoot(st, marked, next);
         }, { rehide: true });
+        // Only after the chat file was written: a failed write puts the memory back and throws above.
+        run.doneText = `자동 저장 완료 · 장면 ${count}개 (#${chunk.from}–#${plan.boundary})`;
+        clearInterrupted(run.key);
         const oldLoot = (st.lootQueue || []).filter(x => x.msg <= before0LastIndex);
         const supplement = await supplementLoot(run, oldLoot, undoPoint);
         lootFailed += supplement.failed;
@@ -972,15 +975,18 @@ async function autoCollect() {
         if (e instanceof Cancelled) { if (state() === st) { st.autoLast = { at: Date.now(), result: '취소됨 (다음 응답 뒤 다시 시도)' }; render(); } }
         else {
             console.error('[SavePoint] auto', e, e.detail || '');
-            if (state() === st) {
-                try {
+            // A failed chat-file write puts back a copy of the room's state, so look the room up again
+            // rather than requiring the same object: the failure must still be recorded and shown.
+            const cur = run.key === roomKey() && run.epoch === roomEpoch ? state() : null;
+            if (cur) {
+                if (cur === st) try {
                     const failed = await failPendingLoot(run, (st.lootQueue || []).filter(x => x.msg <= at.to), e);
                     if (failed) toastr.warning(`⚠ 루팅한 내용 ${failed}개가 반영되지 않았어요`, 'SavePoint');
                 } catch { /* leave pending items intact when persistence fails */ }
                 const lines = Array.isArray(e.detail) ? e.detail : [];
                 const tries = at.stage === 'boundary' ? bTries : lines.filter(isTry);
-                recordAutoFail(st, { stage: at.stage, from: at.from, to: at.to, error: e, tries, detail: at.stage === 'boundary' ? lines : lines.filter(l => !isTry(l)) });
-                noteAuto(st, `실패 (${FAIL_STAGE[at.stage]}): ${errorText(e)}`, { end });
+                recordAutoFail(cur, { stage: at.stage, from: at.from, to: at.to, error: e, tries, detail: at.stage === 'boundary' ? lines : lines.filter(l => !isTry(l)) });
+                noteAuto(cur, `실패 (${FAIL_STAGE[at.stage]}): ${errorText(e)}`, { end });
             }
         }
     } finally {
@@ -2557,7 +2563,12 @@ function setBanner(el, { icon, title, count = '', sub }) {
 }
 function updateSaveBanner() {
     const el = saveBanner();
-    if (!el || el.dataset.flash) return;
+    if (!el) return;
+    if (el.dataset.flash) {
+        // A finished-notice gives way at once to a new task or to another room.
+        if ((ui.run && BANNER[ui.run.kind]) || el.dataset.flashRoom !== String(roomKey())) { clearTimeout(bannerTimer); delete el.dataset.flash; delete el.dataset.flashRoom; }
+        else return;
+    }
     const run = ui.run, text = run && BANNER[run.kind];
     if (!text || ui.open || !settings().enabled || run.key !== roomKey()) { el.hidden = true; return; }
     const m = String(ui.progress || '').match(/(\d+)\/(\d+)메시지/);
@@ -2569,9 +2580,9 @@ function flashSaveBanner(text) {
     clearTimeout(bannerTimer);
     if (ui.open || !settings().enabled) { delete el.dataset.flash; el.hidden = true; return; }
     const [title, ...rest] = text.split(' · ');
-    el.dataset.flash = '1';
+    el.dataset.flash = '1'; el.dataset.flashRoom = String(roomKey());
     setBanner(el, { icon: 'sp-sb-done', title, sub: rest.join(' · ') });
-    bannerTimer = setTimeout(() => { delete el.dataset.flash; updateSaveBanner(); }, 3500);
+    bannerTimer = setTimeout(() => { delete el.dataset.flash; delete el.dataset.flashRoom; updateSaveBanner(); }, 3500);
 }
 // A save cut off by leaving the room is remembered per room until that room saves again.
 function clearInterrupted(room) {

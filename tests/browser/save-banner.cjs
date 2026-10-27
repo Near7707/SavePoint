@@ -87,6 +87,35 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r = await ev(() => ({ last: __savePoint.state().lastIndex, len: M.chat.length, interrupted: Object.keys(M.settings.savePoint.interrupted || {}).length, hud: $('.sp-hud').text() }));
     ok(r.last === r.len - 1 && r.interrupted === 0 && !r.hud.includes('중간에 멈췄어요'), '4. 이어서 저장하면 안내가 사라짐');
 
+    // 5. a finished-notice gives way at once to the next save, and to another room
+    await ev(() => { __savePoint.ui.open = false; $('#sp_overlay').hide(); M.add(4); M.delay = 0; });
+    await ev(() => __savePoint.handle('run'));
+    ok((await banner()).text.includes('저장 완료'), '5. 저장 완료 표시');
+    await ev(() => { M.add(4); M.delay = 800; });
+    const p5 = ev(() => __savePoint.handle('run'));
+    await sleep(150);
+    r = await banner();
+    ok(r.shown && r.text.includes('저장 중입니다') && !r.text.includes('완료'), `5. 바로 다음 저장을 시작하면 이전 완료 표시 대신 저장 중 (${r.text.trim().slice(0, 20)})`);
+    await p5; await sleep(50);
+    ok((await banner()).text.includes('저장 완료'), '5. 다음 저장도 완료 표시');
+    await ev(async () => { window.__roomA2 = { chat: M.chat, meta: M.meta }; await M.switchChat('chatC', [], {}); M.add(2); });
+    await sleep(100);
+    ok(!(await banner()).shown, '5. 방을 옮기면 이전 방의 완료 표시가 바로 사라짐');
+    await ev(async () => { await M.switchChat('chatA', window.__roomA2.chat, window.__roomA2.meta); });
+    await sleep(3700);
+
+    // 6. a checkpoint whose chat-file write fails shows no "완료"
+    await ev(() => { M.delay = 0; M.settings.savePoint.auto = true; M.settings.savePoint.autoEvery = 5; const b = M.chat.length; M.add(12, i => (i === b + 6 ? 'SCENEBREAK at the gate. ' : '') + `Message ${i}`); M.failMeta = true; });
+    await ev(() => { if (M.chat.at(-1).is_user) M.add(1); });
+    const before6 = await ev(() => ({ last: __savePoint.state().lastIndex, calls: M.calls.length }));
+    await ev(() => __savePoint.autoCollect());
+    await sleep(100);
+    r = await ev(() => ({ b: (() => { const x = document.getElementById('sp_save_banner'); return { shown: !x.hidden, text: x.textContent }; })(), last: __savePoint.state().lastIndex, calls: M.calls.length, auto: __savePoint.state().autoLast?.result || '' }));
+    const t6 = await ev(() => toastr.log.slice(-3).map(x => x[1]).join(' | '));
+    ok(r.calls - before6.calls >= 2 && r.auto.includes('실패 (채팅 파일 저장)') && t6.includes('체크포인트 실패'), `6. 저장 단계에서 실패한 체크포인트를 알리고 기록함 (${r.auto.slice(0, 40)})`);
+    ok(!(r.b.shown && r.b.text.includes('완료')) && r.last === before6.last, `6. 채팅 파일 저장이 실패한 체크포인트는 완료로 표시하지 않음 (${r.b.text.trim().slice(0, 24)} / #${r.last})`);
+    await ev(() => { M.failMeta = false; M.settings.savePoint.auto = false; });
+
     await browser.close(); srv.close();
     console.log(failures ? `${failures} FAILED` : 'ALL PASS');
     process.exit(failures ? 1 : 0);

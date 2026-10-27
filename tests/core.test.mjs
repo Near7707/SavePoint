@@ -660,3 +660,29 @@ test('an early scene-wide outline is folded into the first part so it stays in t
     assert.equal(live.scenes[0].segs[0].outline, 'Bare outline from the first release.');
     assert.equal(foldLegacyOutline(live), false, 'folds once');
 });
+
+test('an unusable later scene start is repaired from the batch instead of failing the save', () => {
+    const scene = (start, msgs, title) => ({ scene: 'new', title, where: '', who: [], outline: `${title} happened.`, notes: '', ended: false, ...(start === undefined ? {} : { start }),
+        points: [{ text: `${title} point.`, kind: 'moment', key: false, msgs }] });
+    // a batch with a gap (#64 was hidden by the user, so it is not part of the batch)
+    const chunk = { from: 60, to: 69, indices: [60, 61, 62, 63, 65, 66, 67, 68, 69], text: '' };
+    // missing start: taken from the first message the scene's own points cite
+    let data = { scenes: [scene(undefined, [60], 'A'), scene(undefined, [66, 67], 'B')], entities: [], changes: [] };
+    let notes = normalizeResult(data, { mem: emptyMem(), chunk });
+    assert.equal(data.scenes[1].start, 66); assert(notes.some(n => n.startsWith('start:2:')));
+    assert.deepEqual(validateResult(data, { mem: emptyMem(), chunk }), []);
+    // a start on the hidden gap moves forward to the next real message
+    data = { scenes: [scene(undefined, [60], 'A'), scene('#64', [65], 'B')], entities: [], changes: [] };
+    normalizeResult(data, { mem: emptyMem(), chunk });
+    assert.equal(data.scenes[1].start, 65);
+    assert.deepEqual(validateResult(data, { mem: emptyMem(), chunk }), []);
+    // a start that is not after the previous scene, and nothing later cited: it is part of that scene
+    data = { scenes: [scene(undefined, [60, 61], 'A'), scene(60, [60], 'B')], entities: [], changes: [] };
+    notes = normalizeResult(data, { mem: emptyMem(), chunk });
+    assert.equal(data.scenes.length, 1); assert.equal(data.scenes[0].points.length, 2); assert(notes.some(n => n.startsWith('merged:')));
+    assert.deepEqual(validateResult(data, { mem: emptyMem(), chunk }), []);
+    // a good start is left alone
+    data = { scenes: [scene(undefined, [60], 'A'), scene(63, [63], 'B')], entities: [], changes: [] };
+    notes = normalizeResult(data, { mem: emptyMem(), chunk });
+    assert.equal(data.scenes[1].start, 63); assert(!notes.some(n => n.startsWith('start:') || n.startsWith('merged:')));
+});
