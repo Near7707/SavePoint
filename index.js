@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.5';
+const VERSION = '0.6.6';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -2251,7 +2251,7 @@ function render(force = false) {
                 <button class="sp-btn sp-mini ${showKo() ? 'sp-on' : ''}" data-act="ko" title="한국어 보기">${showKo() ? '한' : 'EN'}</button>
                 <button class="sp-btn sp-mini" data-act="close" title="닫기">✕</button></div></div>
         ${hasChat() ? hudHtml(st) : ''}
-        <div class="sp-tab-nav"><button type="button" class="sp-tab-arrow" data-tab-scroll="prev" aria-label="이전 탭 보기" title="이전 탭 보기">◀</button><div class="sp-tabs">${tabs}</div><button type="button" class="sp-tab-arrow" data-tab-scroll="next" aria-label="다음 탭 보기" title="다음 탭 보기">▶</button></div>
+        <div class="sp-tab-nav"><button type="button" class="sp-tab-arrow" data-tab-scroll="prev" aria-label="이전 탭 보기" title="이전 탭 보기">‹</button><div class="sp-tabs">${tabs}</div><button type="button" class="sp-tab-arrow" data-tab-scroll="next" aria-label="다음 탭 보기" title="다음 탭 보기">›</button></div>
         <div class="sp-body">${body}</div>`);
     win.find('.sp-body').scrollTop(scroll);
     installTabNavigation(win.find('.sp-tab-nav .sp-tabs')[0], tabScroll);
