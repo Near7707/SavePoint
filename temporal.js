@@ -74,14 +74,18 @@ function timeQuoteMatches(source, quote, quoteMatches) {
 }
 // This checks an exact day COUNT, not whether the narration has actually reached it.
 // Future appointments, recollections and negations still require model interpretation.
-function advanceQuoteMatches(quote, days) {
-    if (!integer(days) || days < 0) return false;
-    const q = quote.toLowerCase().replace(/[*_`]/g, '');
-    if (/(?:대략|약\s*(?:\d|한|일주일|보름)|며칠|몇\s*(?:일|날|주)|\b(?:about|roughly|approximately|several|few|half|quarter)\b|(?:일|주)\s*반)|\d+\s*[-–~]\s*\d+\s*(?:일|주|days?|weeks?|fortnights?)/i.test(q)) return false;
+// Reads the elapsed-day counts stated in a quote, or null when the wording is approximate,
+// a range or otherwise not an exact count. Shared by advances and promise deadlines.
+function readElapsed(quote) {
+    const q = String(quote || '').toLowerCase().replace(/[*_`]/g, '');
+    if (/(?:대략|약\s*(?:\d|한|일주일|보름)|며칠|몇\s*(?:일|날|주)|\b(?:about|roughly|approximately|several|few|half|quarter)\b|(?:일|주)\s*반)|\d+\s*[-–~]\s*\d+\s*(?:일|주|days?|weeks?|fortnights?)/i.test(q)) return null;
+    // Approximate wording ("일주일쯤", "이틀 정도", "거의 사흘", "nearly two days") is not an exact count.
+    const unit = '(?:날|일|틀|흘|새|레|름|주|드레|흐레)';
+    if (new RegExp(`쯤|정도|가량|남짓|얼추|거의|안팎|${unit}\\s*(?:넘게|넘어|이상|이내|여(?=[\\s,.만후뒤]|$))|\\b(?:nearly|almost|around|more\\s+than|less\\s+than|or\\s+so|give\\s+or\\s+take|(?:just\\s+)?(?:over|under)\\s+(?:a|an|one|two|three|four|five|six|seven|eight|nine|ten|\\d))\\b`, 'i').test(q)) return null;
     const number = '(?:a|one|two|three|four|five|six|seven|eight|nine|ten|\\d+)';
-    if (new RegExp('\\b' + number + '\\s*(?:to|[-–~])\\s*' + number + '\\s*(?:days?|weeks?|fortnights?)\\b').test(q)) return false;
+    if (new RegExp('\\b' + number + '\\s*(?:to|[-–~])\\s*' + number + '\\s*(?:days?|weeks?|fortnights?)\\b').test(q)) return null;
     // These extended expressions do not mean one day; leave them for an explicit date.
-    if (/\bday\s+after\s+(?:tomorrow|next)\b/.test(q)) return false;
+    if (/\bday\s+after\s+(?:tomorrow|next)\b/.test(q)) return null;
     const counts = [], ko = { '다음날': 1, '그다음날': 1, '바로다음날': 1, '이튿날': 1, '익일': 1, '하루': 1, '이틀': 2, '사흘': 3, '나흘': 4, '닷새': 5, '엿새': 6, '이레': 7, '여드레': 8, '아흐레': 9, '열흘': 10, '일주일': 7, '한주': 7, '보름': 15 };
     const en = { a: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
     const re = /(?:그|바로)?다음\s*날|이튿날|익일|하루|이틀|사흘|나흘|닷새|엿새|이레|여드레|아흐레|열흘|일주일|한\s*주|보름|(?<!\d)(\d+)\s*(일|주)|\b(?:next|following)\s+(?:day|morning|evening|night)\b|\bday\s+after\b|\b(a|one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+(?:(?:full|whole)\s+)?(days?|weeks?|fortnights?)\b/g;
@@ -96,7 +100,32 @@ function advanceQuoteMatches(quote, days) {
             : m[3] ? (en[m[3]] ?? Number(m[3])) * (m[4].startsWith('week') ? 7 : m[4].startsWith('fortnight') ? 14 : 1) : 1);
         counts.push(count);
     }
-    return counts.length > 0 && counts.every(n => n === days);
+    return counts;
+}
+function advanceQuoteMatches(quote, days) {
+    if (!integer(days) || days < 0) return false;
+    const counts = readElapsed(quote);
+    // Exactly one elapsed-time expression: "다음 날 밤과 그다음 날" is two steps, not one.
+    return !!counts && counts.length === 1 && counts[0] === days;
+}
+// A deadline counted from the moment a promise was made: "내일", "모레", "사흘 뒤", "by tomorrow".
+// Only one exact count is accepted; "내일모레", "며칠 안에", "이번 주말" keep their words only.
+const DUE_WORDS = [[/내일\s*모레/, null], [/글피/, 3], [/모레/, 2], [/내일/, 1], [/오늘\s*(?:밤|저녁|안|중)?/, 0],
+    [/\bthe\s+day\s+after\s+tomorrow\b/, 2], [/\btomorrow\b/, 1], [/\b(?:today|tonight|this\s+(?:evening|night))\b/, 0]];
+export function dueDaysMatch(expr, days) {
+    if (!integer(days) || days < 0) return false;
+    let q = String(expr || '').toLowerCase().replace(/[*_`]/g, '');
+    const counts = [];
+    for (const [re, n] of DUE_WORDS) {
+        const g = new RegExp(re.source, 'g');
+        if (!g.test(q)) continue;
+        if (n === null) return false;
+        q = q.replace(new RegExp(re.source, 'g'), m => { counts.push(n); return ' '.repeat(m.length); });
+    }
+    const rest = readElapsed(q);
+    if (!rest) return false;
+    counts.push(...rest);
+    return counts.length === 1 && counts[0] === days;
 }
 function claimFromModel(raw, { chunk, seg, room, quoteMatches }) {
     if (raw === undefined || raw === null) return { op: 'same', date: '', period: '', clock: '', days: null, elapsed: '', evidence: null, verified: false, manual: false };
@@ -271,4 +300,111 @@ export function sceneTimeRange(scene, anchors = {}, lang = 'en') {
 }
 export function storyTimeContext(mem, lang = 'en') {
     const last = lastStoryTime(mem); return last ? formatStoryStamp(last.stamp, mem.timeAnchors, lang) : '';
+}
+
+// ───────── promise and debt deadlines ─────────
+// A deadline keeps the original words ("내일", "by Friday"). It is placed on the story timeline only
+// when the moment the promise was made is certain: the part that holds it sits on one known day of
+// one reference, and the words give one exact count of days from then. A deadline that has passed is
+// "past due as of the last record"; it never means the promise was broken.
+export function cleanDue(raw) {
+    if (!object(raw)) return undefined;
+    const expr = text(raw.expr, 200), date = text(raw.date);
+    const manual = object(raw.manual) ? { anchor: typeof raw.manual.anchor === 'string' && raw.manual.anchor.startsWith('t:') ? raw.manual.anchor : null,
+        day: integer(raw.manual.day) && raw.manual.day >= 0 ? raw.manual.day : null } : null;
+    if (!expr && !date && !(manual && manual.anchor && manual.day !== null)) return undefined;
+    return { expr, date, days: integer(raw.days) && raw.days >= 0 ? raw.days : null,
+        seg: typeof raw.seg === 'string' && /^g\d+$/.test(raw.seg) ? raw.seg : null,
+        room: text(raw.room, 1200) || null, msg: Number.isInteger(raw.msg) && raw.msg >= 0 ? raw.msg : null,
+        ...(manual && manual.anchor && manual.day !== null ? { manual } : {}) };
+}
+// From a model's {"expr","days","date","msg"}: the words must be in that message, and a day count
+// is kept only when the words state exactly that count. Anything else keeps the words alone.
+export function resolveDueClaim(raw, { chunk, room = null, segOf }) {
+    if (!object(raw)) return undefined;
+    const n = typeof raw.msg === 'string' && /^#?\d+$/.test(raw.msg) ? Number(raw.msg.replace('#', '')) : raw.msg;
+    const expr = text(raw.expr, 200), source = chunk.texts?.[n];
+    if (!expr || !Number.isInteger(n) || !chunk.indices.includes(n) || !timeQuoteMatches(source, expr)) return undefined;
+    const days = integer(raw.days) && raw.days >= 0 && dueDaysMatch(expr, raw.days) ? raw.days : null;
+    const date = text(raw.date) && timeQuoteMatches(expr, text(raw.date)) ? text(raw.date) : '';
+    return cleanDue({ expr, days, date, seg: segOf(n), room, msg: n });
+}
+// The moment a promise was made: only a part that stays on one known day of one reference.
+function madeAt(mem, segId) {
+    const g = parts(mem).find(x => x.id === segId);
+    const t = g?.time;
+    if (!t || t.mode === 'flashback') return null;
+    const stamps = [t.start, ...(t.via || []), t.end];
+    if (!stamps.every(x => known(x) && mem.timeAnchors?.[x.anchor])) return null;
+    // One day: the same day of one reference, or the same real calendar date (ISO) on any references.
+    const iso = isoOf(mem, stamps[0]);
+    const sameDay = x => (x.anchor === stamps[0].anchor && dayOn(mem, x) === dayOn(mem, stamps[0])) || (iso !== null && isoOf(mem, x) === iso);
+    if (!stamps.every(sameDay)) return null;
+    return { ...stamps[0], day: dayOn(mem, stamps[0]) };
+}
+const isoOf = (mem, x) => isoDay(dateAt(x, mem.timeAnchors || {}));
+// A confirmed stamp without its own day count sits on its reference's base day (a dated manual edit).
+const dayOn = (mem, x) => integer(x.day) ? x.day : mem.timeAnchors?.[x.anchor]?.baseDay ?? null;
+export function dueStamp(mem, r) {
+    const due = r?.due; if (!due) return null;
+    if (due.manual) {
+        if (!mem.timeAnchors?.[due.manual.anchor]) return null;
+        const at = { anchor: due.manual.anchor, day: due.manual.day, certainty: 'manual' }, iso = isoOf(mem, at);
+        return iso !== null ? { ...at, iso } : at;
+    }
+    const base = due.seg ? madeAt(mem, due.seg) : null;
+    if (!base) return null;
+    const from = isoOf(mem, base), to = isoDay(due.date);
+    if (due.days !== null) return { anchor: base.anchor, day: base.day + due.days, certainty: 'linked', ...(from !== null ? { iso: from + due.days } : {}) };
+    if (from !== null && to !== null) return { anchor: base.anchor, day: base.day + (to - from), certainty: 'linked', iso: to };
+    return null;
+}
+// 'left' | 'today' | 'past' (as of the last record) | 'check' (cannot be compared) | 'words' (no
+// day could be placed) | null (no deadline, or the promise is no longer open).
+export function dueStatus(mem, r) {
+    if (!r?.due || r.status !== 'open') return null;
+    const due = dueStamp(mem, r);
+    if (!due) return { kind: 'words' };
+    const now = lastStoryTime(mem)?.stamp;
+    let left = null;
+    if (known(now) && now.anchor === due.anchor && integer(dayOn(mem, now))) left = due.day - dayOn(mem, now);
+    // Real calendar dates can be compared across references; local day counts cannot.
+    else if (known(now) && due.iso !== undefined && isoOf(mem, now) !== null) left = due.iso - isoOf(mem, now);
+    if (left === null) return { kind: 'check', due };
+    return { kind: left > 0 ? 'left' : left === 0 ? 'today' : 'past', left, due };
+}
+export function formatDue(mem, r, lang = 'en') {
+    const ko = lang === 'ko', due = r?.due; if (!due) return '';
+    const words = due.expr ? `“${due.expr}”` : due.date;
+    const stamp = dueStamp(mem, r), at = stamp ? formatStoryStamp({ ...stamp, period: '', clock: '' }, mem.timeAnchors, lang) : '';
+    const st = dueStatus(mem, r);
+    const head = ko ? `기한 ${[words, at && `(${at})`].filter(Boolean).join(' ')}` : `due ${[words, at && `(${at})`].filter(Boolean).join(' ')}`;
+    if (!st) return head;
+    if (st.kind === 'words') return head + (ko ? ' · 날짜로 계산할 수 없어요' : ', not placed on the story timeline');
+    if (st.kind === 'check') return head + (ko ? ' · 확인 필요 (지금 시간과 비교할 수 없어요)' : ', cannot be compared with the current story time');
+    if (st.kind === 'left') return head + (ko ? ` · ${st.left}일 남음 (마지막 기록 기준)` : `, ${st.left} day${st.left === 1 ? '' : 's'} left as of the last record`);
+    if (st.kind === 'today') return head + (ko ? ' · 오늘이 기한 (마지막 기록 기준)' : ', due today as of the last record');
+    return head + (ko ? ` · 기한 지남 (마지막 기록 기준, 약속을 어겼다는 뜻은 아니에요)` : `, past due by ${-st.left} day${st.left === -1 ? '' : 's'} as of the last record (not necessarily broken)`);
+}
+// Manual deadline: a day on the reference of the last recorded story time, or cleared (null).
+export function setManualDue(mem, r, { day, expr } = {}) {
+    const now = lastStoryTime(mem)?.stamp;
+    if (day === null || day === undefined || day === '') {
+        if (r.due) { delete r.due.manual; if (!r.due.expr && !r.due.date) delete r.due; }
+        // New words written by the user replace the AI's reading of the old ones.
+        if (text(expr) && text(expr, 200) !== r.due?.expr) r.due = { ...(r.due || { seg: null, room: null, msg: null }), expr: text(expr, 200), days: null, date: '' };
+        return true;
+    }
+    if (!known(now) || !mem.timeAnchors?.[now.anchor]) throw new Error('지금 이야기 시간이 확인되지 않아서 기한 일 수를 지정할 수 없어요. 먼저 구간 시간을 직접 지정해 주세요.');
+    let n;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(String(day).trim())) {
+        // A real calendar date, placed on the current reference when that reference is dated.
+        const to = isoDay(String(day).trim()), from = isoOf(mem, now);
+        if (to === null) throw new Error('날짜가 유효하지 않아요.');
+        if (from === null) throw new Error('지금 이야기 시간에 실제 날짜가 없어서 날짜로는 지정할 수 없어요. N일째로 입력해 주세요.');
+        n = dayOn(mem, now) + (to - from);
+    } else n = Number(day) - 1;
+    if (!integer(n) || n < 0) throw new Error('기한은 1 이상의 일 수나 YYYY-MM-DD 날짜로 입력해 주세요.');
+    r.due = { ...(r.due || { date: '', days: null, seg: null, room: null, msg: null }), expr: text(expr, 200) || r.due?.expr || '', manual: { anchor: now.anchor, day: n } };
+    return true;
 }

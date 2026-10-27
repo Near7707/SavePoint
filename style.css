@@ -659,3 +659,9 @@ label.sp-has-reset { position: relative; padding-right: 30px; }
 .sp-seg-time { margin: 5px 0 8px; font-size: 12px; overflow-wrap: anywhere; }
 .sp-seg-time details { color: var(--sp-dim); }
 .sp-seg-time summary { cursor: pointer; }
+
+/* v0.6.4: promise and debt deadlines */
+.sp-due { margin-top: 4px; font-size: 12px; color: var(--sp-dim); }
+.sp-due-left, .sp-due-today { color: var(--sp-fg); }
+.sp-due-today { font-weight: 700; color: var(--sp-accent); }
+.sp-due-past { font-weight: 700; color: var(--sp-danger); }

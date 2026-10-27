@@ -251,3 +251,11 @@ test('new common expressions preserve the reference through saves and imports',(
  m=cleanMem(JSON.parse(JSON.stringify(m)));assert.equal(date(m),'2026-11-01');
  m=save(m,{end:raw('advance',{days:1,quote:'the following morning'})},'The following morning.');assert.equal(date(m),'2026-11-02');
 });
+
+test('approximate wording and more than one elapsed step never confirm an exact advance',()=>{
+ for(const [quote,days] of [['일주일쯤 뒤',7],['사흘쯤 뒤',3],['3일쯤 후',3],['보름쯤 지나',15],['이틀 정도 뒤',2],['거의 일주일 뒤',7],['열흘여 뒤',10],['사흘 넘게 지나',3],['일주일 이상',7],['nearly two days later',2],['almost a week later',7],['over two days later',2],['다음 날 밤과 그다음 날',1]])
+  assert.equal(now(save(start(),{end:raw('advance',{days,quote})},quote)).certainty,'unconfirmed',quote);
+ // ordinary words that merely contain the same letters are not approximations
+ for(const [quote,days] of [['이상한 꿈을 꾼 다음 날',1],['열흘 뒤',10],['여드레 뒤',8],['the day after it was over',1]])
+  assert.equal(now(save(start(),{end:raw('advance',{days,quote})},quote)).certainty,'linked',quote);
+});

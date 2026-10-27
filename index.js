@@ -1,4 +1,4 @@
-import { PERIODS, editStoryTime, dateAt, formatSegmentTime, sceneTimeRange, storyTimeContext } from './temporal.js';
+import { dueStatus, formatDue, setManualDue, PERIODS, editStoryTime, dateAt, formatSegmentTime, sceneTimeRange, storyTimeContext } from './temporal.js';
 // SavePoint: scene journal + current state memory for SillyTavern, kept per chat room,
 // with game-style save files. Summaries run only when the user presses a button.
 import { foldLegacyOutline,
@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.3';
+const VERSION = '0.6.4';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -1939,6 +1939,11 @@ function editForm() {
         if (t === 'party') body = select('entity', '인물', ents('person')) + select('aspect', '항목', [['relation', '관계'], ['condition', '상태']]);
         if (t === 'item') body = select('entity', '물건', ents('item')) + select('holder', '가진 사람', ents('person'));
         if (t === 'quest') body = select('kind', '종류', QUEST_KINDS.map(k => [k, KIND_KO[k]])) + select('status', '상태', [['open', '진행 중'], ['done', '완료'], ['failed', '실패']]);
+        if (t === 'quest' && ['promise', 'debt'].includes(v.kind)) {
+            const nowLabel = storyTimeContext(state()?.mem || {}, 'ko');
+            body += field('dueExpr', '기한 (원문 표현, 예: 내일·사흘 안에)') +
+                field('dueDay', nowLabel ? `기한 직접 지정 (지금: ${nowLabel} · 실제 날짜면 YYYY-MM-DD, 아니면 같은 기준의 N일째 · 비우면 원문으로 계산)` : '기한 직접 지정 (지금 이야기 시간이 확인되지 않아 지정할 수 없어요)');
+        }
         if (t === 'world') body = select('kind', '종류', WORLD_KINDS.map(k => [k, KIND_KO[k]]));
         body += field('text', '내용 (영어)', 3);
     }
@@ -2000,7 +2005,7 @@ function questsHtml(st) {
             if (isEditing('record', q.id)) return `<div class="sp-quest">${editForm()}</div>`;
             const flow = status === 'open' ? [btn('quest-done', q.id, '완료'), btn('quest-fail', q.id, '실패')] : [btn('quest-open', q.id, '다시 진행')];
             return `<div class="sp-quest sp-q-${status}"><span class="sp-qi">${QUEST_ICON[q.kind] || '•'}</span><div class="sp-qb"><div><span class="sp-kind">${KIND_KO[q.kind]}</span> ${esc(T(q.text, q.ko))}</div>
-                <div class="sp-sub">${whoChips(st.mem, q.who)}${evidenceChips(q.msgs, q.oldEvidence)}</div>${q.terms ? `<details class="sp-terms" data-group="terms:${esc(q.id)}" ${ui.savesOpen.get('terms:' + q.id) ? 'open' : ''}><summary>근거 원문 ${esc(priorTermsLabel(q.terms))}</summary><div class="sp-terms-q">“${esc(q.terms.quote)}”</div><div class="sp-excerpt">${esc(q.terms.context)}</div></details>` : ''}</div>${tools([...flow, btn('pin-rec', q.id, '📌', '항상 주입', q.pin ? 'sp-on' : ''), btn('edit-rec', q.id, '✎'), btn('del-rec', q.id, '🗑')])}</div>`;
+                <div class="sp-sub">${whoChips(st.mem, q.who)}${evidenceChips(q.msgs, q.oldEvidence)}</div>${(() => { if (!q.due) return ''; const d = dueStatus(st.mem, q); return `<div class="sp-due sp-due-${d?.kind || 'closed'}">⏰ ${esc(formatDue(st.mem, q, 'ko'))}${q.due.manual ? ' <small class="sp-dim">직접 지정</small>' : ''}</div>`; })()}${q.terms ? `<details class="sp-terms" data-group="terms:${esc(q.id)}" ${ui.savesOpen.get('terms:' + q.id) ? 'open' : ''}><summary>근거 원문 ${esc(priorTermsLabel(q.terms))}</summary><div class="sp-terms-q">“${esc(q.terms.quote)}”</div><div class="sp-excerpt">${esc(q.terms.context)}</div></details>` : ''}</div>${tools([...flow, btn('pin-rec', q.id, '📌', '항상 주입', q.pin ? 'sp-on' : ''), btn('edit-rec', q.id, '✎'), btn('del-rec', q.id, '🗑')])}</div>`;
         }).join('')}</div>`;
     };
     const body = group('open', '진행 중') + group('done', '완료') + group('failed', '실패');
@@ -2273,9 +2278,10 @@ function startEdit(kind, id) {
     if (kind === 'entity') { const e = mem.entities.find(x => x.id === id); values = { name: e.name, aliases: (e.aliases || []).join(', '), type: e.type }; }
     if (kind === 'record') {
         const r = mem.records.find(x => x.id === id);
-        values = { type: r.type, text: r.text, entity: r.entity || '', holder: r.holder || '', aspect: r.aspect || 'relation', kind: r.kind || '', status: r.status || 'open' };
+        values = { type: r.type, text: r.text, entity: r.entity || '', holder: r.holder || '', aspect: r.aspect || 'relation', kind: r.kind || '', status: r.status || 'open',
+            dueExpr: r.due?.expr || '', dueDay: r.due?.manual ? (dateAt({ anchor: r.due.manual.anchor, day: r.due.manual.day, certainty: 'manual' }, mem.timeAnchors) || String(r.due.manual.day + 1)) : '' };
     }
-    ui.edit = { kind, id, values };
+    ui.edit = { kind, id, values, orig: { ...values } };
     render(true);
 }
 async function saveEdit() {
@@ -2288,6 +2294,12 @@ async function saveEdit() {
         editStoryTime(clone(state().mem), e.id.split('|')[1], v, roomKey());
     }
     const trim = x => String(x ?? '').trim();
+    const dueChanged = e.kind === 'record' && e.orig && (trim(v.dueExpr) !== trim(e.orig.dueExpr) || trim(v.dueDay) !== trim(e.orig.dueDay));
+    if (dueChanged) {
+        // Same check on a copy first: a bad deadline keeps the form open and changes nothing.
+        const copy = clone(state().mem), r = copy.records.find(x => x.id === e.id);
+        if (r) setManualDue(copy, r, { day: trim(v.dueDay), expr: trim(v.dueExpr) });
+    }
     ui.edit = null;
     await commitEdit(mem => {
         if (e.kind === 'scene') {
@@ -2326,6 +2338,7 @@ async function saveEdit() {
             if (r.type === 'party') { r.entity = v.entity || null; r.aspect = v.aspect === 'condition' ? 'condition' : 'relation'; }
             if (r.type === 'item') { r.entity = v.entity || null; r.holder = v.holder || null; }
             if (r.type === 'quest') { r.kind = QUEST_KINDS.includes(v.kind) ? v.kind : 'goal'; r.status = ['open', 'done', 'failed'].includes(v.status) ? v.status : 'open'; r.who ||= []; }
+            if (r.type === 'quest' && dueChanged) setManualDue(mem, r, { day: trim(v.dueDay), expr: trim(v.dueExpr) });
             if (r.type === 'world') { r.kind = WORLD_KINDS.includes(v.kind) ? v.kind : 'rule'; r.knownBy ||= []; }
         }
     });

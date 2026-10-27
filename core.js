@@ -1,4 +1,4 @@
-import { cleanTimeAnchors, cleanStoryTime, resolveResultTime, formatSegmentTime, sceneTimeRange, storyTimeContext } from './temporal.js';
+import { cleanTimeAnchors, cleanStoryTime, resolveResultTime, formatSegmentTime, sceneTimeRange, storyTimeContext, cleanDue, resolveDueClaim, formatDue } from './temporal.js';
 import { cleanLootSources, restoreLostLoot } from './loot.js';
 import { upgradeEvidence, detachEvidence, cleanPrior, cleanSource } from './provenance.js';
 // SavePoint core: pure data logic (no SillyTavern, no DOM).
@@ -172,7 +172,7 @@ function recordLine(mem, r, withId = true) {
     const en = x => entityName(mem, x);
     if (r.type === 'party') return `${id}[${r.aspect}] ${en(r.entity)}: ${r.text}`;
     if (r.type === 'item') return `${id}[item] ${en(r.entity)}${r.holder ? ` (held by ${en(r.holder)})` : ''}: ${r.text}`;
-    if (r.type === 'quest') return `${id}[${r.kind}${r.status !== 'open' ? ', ' + r.status : ''}] ${r.text}${r.who?.length ? ` (${r.who.map(en).join(', ')})` : ''}`;
+    if (r.type === 'quest') return `${id}[${r.kind}${r.status !== 'open' ? ', ' + r.status : ''}] ${r.text}${r.who?.length ? ` (${r.who.map(en).join(', ')})` : ''}${r.due && TERMS_KINDS.includes(r.kind) ? ` [${formatDue(mem, r, 'en')}]` : ''}`;
     return `${id}[${r.kind}] ${r.text}${r.knownBy?.length ? ` (known by ${r.knownBy.map(en).join(', ')})` : ''}`;
 }
 export { recordLine };
@@ -569,7 +569,7 @@ export function validateResult(data, { mem, chunk, expectContinue }) {
                 else if (hasValue(c.holder)) ref(c.holder, `${w}.holder`, ['person', 'place'], HINT.holder);
                 if (c.knownBy !== undefined && rec.type !== 'world') errors.push(`${w}.knownBy is only for world records.`);
                 else refList(c.knownBy, `${w}.knownBy`, ['person'], HINT.people);
-                if (c.text === undefined && c.status === undefined && c.holder === undefined && c.knownBy === undefined && c.terms === undefined) errors.push(`${w} changes nothing.`);
+                if (c.text === undefined && c.status === undefined && c.holder === undefined && c.knownBy === undefined && c.terms === undefined && c.due === undefined) errors.push(`${w} changes nothing.`);
                 if (c.terms !== undefined && c.terms !== null) {
                     if (rec.type !== 'quest' || !TERMS_KINDS.includes(rec.kind)) errors.push(`${w}.terms is only for debts and promises.`);
                     else checkTerms(c, w, false);
@@ -712,6 +712,8 @@ export function applyResult(mem, data, chunk, { close = false, room = null } = {
                 r.kind = c.kind; r.status = QUEST_STATUS.includes(c.status) ? c.status : 'open'; r.who = uniq(strList(c.who).map(resolve).filter(Boolean));
                 const t = TERMS_KINDS.includes(c.kind) ? termsOf(c, chunk) : null;
                 if (t) r.terms = t;
+                const due = TERMS_KINDS.includes(c.kind) ? resolveDueClaim(c.due, { chunk, room, segOf: n => segFor([n]) }) : undefined;
+                if (due) r.due = due;
             }
             if (c.type === 'world') { r.kind = c.kind; r.knownBy = uniq(strList(c.knownBy).map(resolve).filter(Boolean)); if (c.entity) r.entity = resolve(c.entity); }
             next.records.push(r);
@@ -723,6 +725,8 @@ export function applyResult(mem, data, chunk, { close = false, room = null } = {
             if (Array.isArray(c.knownBy)) r.knownBy = uniq(c.knownBy.map(resolve).filter(Boolean));
             // New terms only when given; a status change keeps the original terms.
             if (r.type === 'quest' && TERMS_KINDS.includes(r.kind) && c.terms) { const t = termsOf(c, chunk); if (t) r.terms = t; }
+            // A new deadline replaces an AI-read one, never one the user set.
+            if (r.type === 'quest' && TERMS_KINDS.includes(r.kind) && c.due && !r.due?.manual) { const due = resolveDueClaim(c.due, { chunk, room, segOf: n => segFor([n]) }); if (due) r.due = due; }
             r.src = uniq([...(r.src || []), src]);
             r.msgs = uniq([...(r.msgs || []), ...msgs]).slice(-12);
         } else if (c.op === 'remove') {
@@ -1144,6 +1148,7 @@ export function cleanMem(raw) {
         if (r.type === 'item') { rec.entity = eref(r.entity); rec.holder = eref(r.holder); }
         if (r.type === 'quest') {
             rec.kind = QUEST_KINDS.includes(r.kind) ? r.kind : 'goal'; rec.status = QUEST_STATUS.includes(r.status) ? r.status : 'open'; rec.who = uniq((r.who || []).map(eref).filter(Boolean));
+            if (cleanDue(r.due)) rec.due = cleanDue(r.due);
             if (plain(r.terms) && (Number.isInteger(r.terms.msg) || cleanSource(r.terms.source)) && str(r.terms.quote)) rec.terms = { msg: Number.isInteger(r.terms.msg) ? r.terms.msg : null, quote: str(r.terms.quote), context: str(r.terms.context) || str(r.terms.quote), ...(cleanSource(r.terms.source) ? { source: cleanSource(r.terms.source) } : {}) };
         }
         if (r.type === 'world') { rec.kind = WORLD_KINDS.includes(r.kind) ? r.kind : 'rule'; rec.knownBy = uniq((r.knownBy || []).map(eref).filter(Boolean)); if (eref(r.entity)) rec.entity = r.entity; }
