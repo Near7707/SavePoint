@@ -112,3 +112,77 @@ test('the original wall clock and future appointments do not themselves change s
 test('long original calendar labels still respect a small memory injection budget',()=>{
  const label='긴이름'.repeat(55);const m=start(emptyMem(),label);assert(buildInjection(m,{budget:300}).tokens<=300);
 });
+
+test('short literal time quotes work without relaxing normalized terms quotes',async()=>{
+ const {findQuote}=await import('../core.js');
+ for(const quote of ['다음 날','이틀 뒤','새벽','3시']) {
+  const isDay=quote==='다음 날'||quote==='이틀 뒤';
+  const m=save(start(),{end:raw(isDay?'advance':'explicit',{quote,...(isDay?{days:quote==='다음 날'?1:2}:{period:'dawn'})})},`이야기는 ${quote}에 이어졌다.`);
+  assert.notEqual(now(m).certainty,'unconfirmed',quote);
+ }
+ assert.equal(findQuote('다음 날 아침','다음 날'),null,'promise quote minimum remains unchanged');
+ const absent=save(start(),{end:raw('advance',{days:1,quote:'다음날'})},'다음 날 아침');assert.equal(now(absent).certainty,'unconfirmed');
+ const normalized=save(start(),{end:raw('advance',{days:1,quote:'이튿날 아침이 밝았다'})},'**이튿날**\n아침이 밝았다.');assert.equal(date(normalized),'2026-10-25');
+});
+test('a flashback without any known time never invents a recording reference',()=>{
+ let m=start();m=save(m,{mode:'flashback'},'An undated past scene.');const t=m.scenes[0].segs.at(-1).time;
+ assert.equal(t.start.certainty,'unconfirmed');assert.equal(t.end.anchor,null);
+ assert(!sceneTimeRange({segs:[{time:t}]},m.timeAnchors,'ko').includes('기록 기준'));
+ assert.equal(date(m),'2026-10-24');
+});
+test('a period alone after an unknown interval is dated locally, never recording day one',()=>{
+ let m=advance(start(),4);m=save(m,{end:raw('unknown')});
+ m=save(m,{end:raw('explicit',{period:'night'})},'밤이 깊었다.');
+ assert.equal(storyTimeContext(m,'ko'),'날짜 미상 · 밤');
+ assert(!buildInjection(m).text.includes('Last recorded story time: recording day 1'));
+ m=advance(m);assert.match(storyTimeContext(m,'ko'),/날짜 미상 · 이튿날/);
+ const same=cleanMem(JSON.parse(JSON.stringify(m)));assert.equal(storyTimeContext(same,'ko'),storyTimeContext(m,'ko'));
+});
+test('only the initial present reference uses recording-day wording',()=>{
+ let m=save(emptyMem(),{start:raw('same')});assert.equal(storyTimeContext(m,'ko'),'기록 기준 1일째');
+ m=advance(m,4);assert.match(storyTimeContext(m,'ko'),/기록 기준 5일째/);
+ m=save(m,{end:raw('unknown')});m=save(m,{end:raw('explicit',{period:'night'})},'The night grew dark.');
+ const label=storyTimeContext(m,'ko');editStoryTime(m,'g1',{edge:'start',date:'',day:1,period:'morning'});
+ assert.equal(storyTimeContext(m,'ko'),label,'recomputation does not rename a later local reference');
+});
+test('backward present ISO dates are held unknown, while flashbacks and manual corrections remain valid',()=>{
+ let m=start();m=save(m,{end:raw('explicit',{date:'2026-10-20'})},'The letter was dated 2026-10-20.');
+ assert.equal(now(m).certainty,'unconfirmed');assert.equal(now(m).day,null);
+ m=advance(m);assert.equal(now(m).certainty,'unconfirmed');
+ let f=start();f=save(f,{mode:'flashback',start:raw('explicit',{date:'2026-10-22'}),end:raw('explicit',{date:'2026-10-20'})},'2026-10-22, then another past scene: 2026-10-20.');
+ assert.equal(dateAt(f.scenes[0].segs.at(-1).time.end,f.timeAnchors),'2026-10-20');assert.equal(date(f),'2026-10-24');
+ editStoryTime(f,'g1',{date:'2026-10-20',day:1,mode:'present'});assert.equal(date(f),'2026-10-20');
+ let custom=start();custom=start(custom,'왕국력 312년 봄 3일');assert.notEqual(now(custom).certainty,'unconfirmed');
+});
+test('a blank manual day remains unknown through persistence and recomputation',()=>{
+ let m=start();m=save(m,{end:raw('unknown')});const g=m.scenes[0].segs.at(-1);
+ editStoryTime(m,g.id,{date:'',day:'',period:'night',mode:'present'});
+ assert.equal(now(m).day,null);assert.equal(now(m).certainty,'manual');assert.equal(storyTimeContext(m,'ko'),'날짜 미상 · 밤');
+ m=cleanMem(JSON.parse(JSON.stringify(m)));editStoryTime(m,g.id,{date:'',day:'',period:'evening',mode:'present'});
+ assert.equal(now(m).day,null);assert.equal(storyTimeContext(m,'ko'),'날짜 미상 · 저녁');
+ m=advance(m);assert.match(storyTimeContext(m,'ko'),/날짜 미상 · 이튿날/);
+});
+test('a manual date with no day stays a usable calendar date without assigning a recording day',()=>{
+ let m=save(emptyMem(),{end:raw('unknown')});editStoryTime(m,'g1',{date:'2026-10-24',day:'',period:'night'});
+ assert.equal(now(m).day,null);assert.equal(date(m),'2026-10-24');m=advance(m);assert.equal(date(m),'2026-10-25');
+});
+test('an explicitly entered manual day is visible as its own reference',()=>{
+ const m=save(emptyMem(),{end:raw('unknown')});editStoryTime(m,'g1',{day:5,period:'night'});
+ assert.equal(storyTimeContext(m,'ko'),'직접 지정 기준 5일째 · 밤');
+});
+test('legacy multiple record anchors keep only the first reference numbered',()=>{
+ let m=save(emptyMem(),{start:raw('same')});m=save(m,{end:raw('unknown')});
+ m=save(m,{end:raw('explicit',{period:'night'})},'The night grew dark.');
+ for(const a of Object.values(m.timeAnchors)){delete a.numbered;delete a.counted;a.kind='record';}
+ m=cleanMem(m);const gs=m.scenes[0].segs;
+ assert.equal(formatStoryStamp(gs[0].time.end,m.timeAnchors,'ko'),'기록 기준 1일째');
+ assert.equal(storyTimeContext(m,'ko'),'날짜 미상 · 밤');
+});
+test('null manual days and local references survive room detachment and history replay',()=>{
+ const before=save(start(),{end:raw('unknown')});let after=structuredClone(before);
+ editStoryTime(after,'g2',{day:'',period:'night'});const diff=memDiff(before,after);
+ const restored=applyDiff(after,diff,true);assert.deepEqual(restored,before);
+ after=cleanMem(detachMem(applyDiff(restored,diff,false),'room-A'));
+ assert.equal(now(after).day,null);assert.equal(storyTimeContext(after,'ko'),'날짜 미상 · 밤');
+ after=advance(after);assert.match(storyTimeContext(after,'ko'),/날짜 미상 · 이튿날/);
+});

@@ -131,7 +131,7 @@ export function foldLegacyOutline(mem) {
 // Provisional outlines are derived text, never an independent claim after point edits.
 export function refreshProvisionalOutlines(mem) {
     for (const sc of mem.scenes || []) for (const g of sc.segs || []) if (g.outlinePending) {
-        const value = [...new Set((g.points || []).map(p => str(p.text)).filter(Boolean))].join(' ');
+        const value = [...new Set((g.points || []).filter(pointInjected).map(p => str(p.text)).filter(Boolean))].join(' ');
         if (g.outline !== value) { g.outline = value; delete g.koOutline; }
     }
     return mem;
@@ -1193,7 +1193,7 @@ export function applyRekey(mem, sceneId, keys) {
     const scene = next.scenes.find(s => s.id === sceneId);
     if (!scene) return next;
     for (const [id, v] of Object.entries(keys)) { const p = findPointById(scene, id); if (p && typeof v === 'boolean') p.key = v; }
-    return next;
+    return refreshProvisionalOutlines(next);
 }
 
 // ───────── record check (warnings only) ─────────

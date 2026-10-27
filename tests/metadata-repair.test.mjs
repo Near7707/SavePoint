@@ -45,3 +45,14 @@ test('editing or deleting a provisional outline source cannot leave an obsolete 
  const injection=buildInjection(m).text;assert(injection.includes('The token is still broken.'));assert(!injection.includes('returned the repaired token'));
  m.scenes[0].segs[0].points=[];refreshProvisionalOutlines(m);assert.equal(m.scenes[0].segs[0].outline,'');
 });
+test('provisional outlines respect selection, pins, reselection and rekeying',async()=>{
+ const {refreshProvisionalOutlines,applyRekey}=await import('../core.js');
+ const d=normalize(data({outline:'',points:[point(),{...point(),text:'An optional detail was mentioned.',key:false},{...point(),text:'A pinned detail remains.'}]}));
+ let m=applyResult(emptyMem(),d,chunk()).mem;let g=m.scenes[0].segs[0];
+ assert(!buildInjection(m).text.includes('optional detail'));
+ g.points[0].keyUser=false;g.points[2].pin=true;g.points[2].keyUser=false;refreshProvisionalOutlines(m);
+ let injection=buildInjection(m).text;assert(!injection.includes('returned the repaired token'));assert(injection.includes('pinned detail'));
+ g.points[1].keyUser=true;refreshProvisionalOutlines(m);assert(buildInjection(m).text.includes('optional detail'));
+ delete g.points[1].keyUser;m=applyRekey(m,'s1',{'g1.1':true});assert(m.scenes[0].segs[0].outline.includes('optional detail'));
+ m=applyRekey(m,'s1',{'g1.1':false});assert(!m.scenes[0].segs[0].outline.includes('optional detail'));
+});

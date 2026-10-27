@@ -8,7 +8,9 @@ const integer = v => Number.isInteger(v) && Math.abs(v) <= 1000000;
 const clock = v => typeof v === 'string' && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(v) ? v : '';
 const OPS = ['same', 'explicit', 'advance', 'jump', 'unknown', 'manual'];
 const CERTAINTY = ['explicit', 'linked', 'manual', 'unconfirmed'];
-const known = t => !!t && t.certainty !== 'unconfirmed' && typeof t.anchor === 'string' && integer(t.day);
+// A confirmed time band may have a local reference but no known day number.
+// Relative advances then establish offsets within that reference, never a global story day.
+const known = t => !!t && t.certainty !== 'unconfirmed' && typeof t.anchor === 'string' && (integer(t.day) || t.day === null);
 const idFor = (time, seg, edge) => 't:' + JSON.stringify([time.origin || null, seg.id, edge]);
 const stampUnknown = (claim = {}) => ({ ...claim, anchor: null, day: null, certainty: 'unconfirmed' });
 
@@ -18,6 +20,10 @@ export function cleanTimeAnchors(raw) {
     for (const [id, a] of Object.entries(raw)) {
         if (!id.startsWith('t:') || id.length > 1600 || !object(a)) continue;
         out[id] = { date: text(a.date), label: text(a.label), baseDay: integer(a.baseDay) ? a.baseDay : 0,
+            // v0.6.0 could create more than one unnamed "record" anchor. Only an
+            // initial one retains that wording; later references stay local.
+            numbered: a.numbered === true || (a.numbered === undefined && a.kind === 'record' && !Object.keys(out).length),
+            counted: a.counted === true,
             kind: ['record', 'explicit', 'jump', 'manual'].includes(a.kind) ? a.kind : 'record' };
     }
     return out;
@@ -31,8 +37,8 @@ function cleanStamp(raw) {
         verified: !!raw.verified && !!ev, manual: raw.manual === true && raw.op === 'manual',
         anchor: typeof raw.anchor === 'string' && raw.anchor.startsWith('t:') && raw.anchor.length <= 1600 ? raw.anchor : null,
         day: integer(raw.day) ? raw.day : null, certainty: CERTAINTY.includes(raw.certainty) ? raw.certainty : 'unconfirmed' };
-    if (s.manual) { s.manualDay = integer(raw.manualDay) ? raw.manualDay : 0;
-        if (object(raw.basis)) s.basis = { date: text(raw.basis.date), label: text(raw.basis.label), baseDay: integer(raw.basis.baseDay) ? raw.basis.baseDay : 0 };
+    if (s.manual) { s.manualDay = integer(raw.manualDay) ? raw.manualDay : null;
+        if (object(raw.basis)) s.basis = { date: text(raw.basis.date), label: text(raw.basis.label), baseDay: integer(raw.basis.baseDay) ? raw.basis.baseDay : 0, numbered: raw.basis.numbered === true };
     }
     if (!s.manual && s.op !== 'same' && !s.verified) return stampUnknown(s);
     return s;
@@ -51,7 +57,7 @@ function isoDay(s) {
 export function dateAt(stamp, anchors = {}) {
     if (!known(stamp)) return '';
     const a = anchors[stamp.anchor]; if (!a) return '';
-    const day = isoDay(a.date), delta = stamp.day - a.baseDay;
+    const day = isoDay(a.date), delta = (stamp.day ?? a.baseDay) - a.baseDay;
     if (day !== null) {
         const d = new Date((day + delta) * 86400000);
         const result = Number.isFinite(d.getTime()) ? d.toISOString().slice(0, 10) : '';
@@ -60,6 +66,11 @@ export function dateAt(stamp, anchors = {}) {
     // Custom calendars are never fed to JavaScript Date or advanced by invented month lengths.
     return delta === 0 ? a.date : '';
 }
+// Short time expressions are common. Accept literal matches at any nonempty length;
+// keep the shared minimum for fuzzy/format-normalized matching and promise checks.
+function timeQuoteMatches(source, quote, quoteMatches) {
+    return typeof source === 'string' && !!quote && (source.includes(quote) || (typeof quoteMatches === 'function' && !!quoteMatches(source, quote)));
+}
 function claimFromModel(raw, { chunk, seg, room, quoteMatches }) {
     if (raw === undefined || raw === null) return { op: 'same', date: '', period: '', clock: '', days: null, elapsed: '', evidence: null, verified: false, manual: false };
     if (!object(raw)) return { op: 'unknown' };
@@ -67,32 +78,32 @@ function claimFromModel(raw, { chunk, seg, room, quoteMatches }) {
     const n = typeof raw.msg === 'string' && /^#?\d+$/.test(raw.msg) ? Number(raw.msg.replace('#', '')) : raw.msg;
     const quote = text(raw.quote, 2000), source = chunk.texts?.[n];
     const verified = Number.isInteger(n) && n >= seg.from && n <= seg.to && chunk.indices.includes(n) &&
-        typeof source === 'string' && !!quote && typeof quoteMatches === 'function' && !!quoteMatches(source, quote);
+        timeQuoteMatches(source, quote, quoteMatches);
     const date = text(raw.date), period = PERIODS.includes(raw.period) ? raw.period : '', at = clock(raw.clock);
     const s = { op, date, period, clock: at, days: integer(raw.days) && raw.days >= 0 ? raw.days : null, elapsed: text(raw.elapsed),
         evidence: verified ? { room: room || null, msg: n, quote } : null, verified, manual: false };
     // An absent mention inherits; an unsupported claim cannot masquerade as inheritance.
     if (op === 'same' && (date || period || at) && !verified) s.op = 'unknown';
     if (date && /^\d{4}-\d{2}-\d{2}$/.test(date) && isoDay(date) === null) s.op = 'unknown';
-    if (date && (!verified || !(quote.includes(date) || quoteMatches(quote, date)))) s.op = 'unknown';
+    if (date && (!verified || !timeQuoteMatches(quote, date, quoteMatches))) s.op = 'unknown';
     if (op !== 'same' && op !== 'unknown' && !verified) s.op = 'unknown';
     return s;
 }
-function resolveStamp(claim, previous, anchors, key) {
+function resolveStamp(claim, previous, anchors, key, mode) {
     const s = { ...claim, anchor: null, day: null, certainty: 'unconfirmed' };
     const anchor = (kind, date = '', label = '', day = 0) => {
-        anchors[key] = { kind, date, label, baseDay: day }; s.anchor = key; s.day = day;
+        anchors[key] = { kind, date, label, baseDay: day ?? 0, numbered: kind === 'record', counted: kind === 'manual' && integer(day) }; s.anchor = key; s.day = day;
     };
     if (claim.manual && claim.op === 'manual') {
-        const day = integer(claim.manualDay) ? claim.manualDay : 0;
+        const day = integer(claim.manualDay) ? claim.manualDay : null;
         anchor('manual', claim.date, claim.elapsed, day);
-        if (!claim.date && claim.basis) anchors[key] = { ...claim.basis, kind: 'manual' };
+        if (!claim.date && claim.basis) anchors[key] = { ...claim.basis, kind: 'manual', counted: integer(day) };
         s.certainty = 'manual'; return s;
     }
     if (claim.op === 'unknown') return s;
     if (claim.op === 'same') {
         if (claim.date && known(previous) && dateAt(previous, anchors) && claim.date !== dateAt(previous, anchors)) return s;
-        if (!previous) { anchor('record'); s.certainty = 'linked'; }
+        if (!previous && mode === 'present') { anchor('record'); s.certainty = 'linked'; }
         else if (known(previous) && anchors[previous.anchor]) { s.anchor = previous.anchor; s.day = previous.day; s.certainty = 'linked'; }
         else return s;
         if (!claim.verified) { s.period = previous?.period || ''; s.clock = previous?.clock || ''; }
@@ -106,7 +117,7 @@ function resolveStamp(claim, previous, anchors, key) {
     }
     if (claim.op === 'advance') {
         if (!known(previous) || !anchors[previous.anchor] || !integer(claim.days) || claim.days < 0) return s;
-        s.anchor = previous.anchor; s.day = previous.day + claim.days; s.certainty = 'linked';
+        s.anchor = previous.anchor; s.day = (previous.day ?? anchors[previous.anchor].baseDay) + claim.days; s.certainty = 'linked';
         if (!integer(s.day)) return stampUnknown(claim);
         // A new day does not inherit yesterday's exact clock or time band.
         return s;
@@ -115,11 +126,14 @@ function resolveStamp(claim, previous, anchors, key) {
         if (!claim.date && !claim.period && !claim.clock) return s;
         if (claim.date) {
             const oldDate = dateAt(previous, anchors), oldDay = isoDay(oldDate), newDay = isoDay(claim.date);
+            // A quoted letter or recalled date cannot silently turn the present backward.
+            // Keep the claim for review; only acted flashbacks and manual edits may do that.
+            if (mode !== 'flashback' && known(previous) && oldDay !== null && newDay !== null && newDay < oldDay) return s;
             if (known(previous) && oldDate && claim.date === oldDate) { s.anchor = previous.anchor; s.day = previous.day; }
-            else if (known(previous) && oldDay !== null && newDay !== null) { s.anchor = previous.anchor; s.day = previous.day + newDay - oldDay; }
+            else if (known(previous) && oldDay !== null && newDay !== null) { s.anchor = previous.anchor; s.day = (previous.day ?? anchors[previous.anchor].baseDay) + newDay - oldDay; }
             else anchor('explicit', claim.date);
         } else if (known(previous) && anchors[previous.anchor]) { s.anchor = previous.anchor; s.day = previous.day; }
-        else anchor('record');
+        else anchor(!previous && mode === 'present' ? 'record' : 'explicit');
         s.certainty = 'explicit'; return s;
     }
     return s;
@@ -144,7 +158,7 @@ export function resolveResultTime(mem, raw, { chunk, seg, room = null, quoteMatc
         p === undefined ? [undefined, undefined] : object(p) ? [p.start, p.end] : [{ relation: 'unknown' }, { relation: 'unknown' }]) : [raw?.start, raw?.end];
     let prior = prev;
     const resolved = steps.map((step, i) => {
-        const stamp = resolveStamp(invalid ? { op: 'unknown' } : claimFromModel(step, options), prior, mem.timeAnchors, idFor(time, seg, i === 0 ? 'start' : i === steps.length - 1 ? 'end' : 'via' + i));
+        const stamp = resolveStamp(invalid ? { op: 'unknown' } : claimFromModel(step, options), prior, mem.timeAnchors, idFor(time, seg, i === 0 ? 'start' : i === steps.length - 1 ? 'end' : 'via' + i), mode);
         prior = stamp; return stamp;
     });
     time.start = resolved[0] || stampUnknown({ op: 'unknown' }); time.end = resolved[resolved.length - 1] || time.start;
@@ -160,10 +174,10 @@ export function recomputeStoryTimes(mem) {
         if (!g.time) continue;
         const t = cleanStoryTime(g.time); g.time = t;
         const previous = t.mode === 'flashback' ? wasFlashback ? flashback : null : present;
-        t.start = resolveStamp(t.start, previous, mem.timeAnchors, idFor(t, g, 'start'));
+        t.start = resolveStamp(t.start, previous, mem.timeAnchors, idFor(t, g, 'start'), t.mode);
         let mid = t.start;
-        if (t.via) t.via = t.via.map((claim, i) => { mid = resolveStamp(claim, mid, mem.timeAnchors, idFor(t, g, 'via' + (i + 1))); return mid; });
-        t.end = resolveStamp(t.end, mid, mem.timeAnchors, idFor(t, g, 'end'));
+        if (t.via) t.via = t.via.map((claim, i) => { mid = resolveStamp(claim, mid, mem.timeAnchors, idFor(t, g, 'via' + (i + 1)), t.mode); return mid; });
+        t.end = resolveStamp(t.end, mid, mem.timeAnchors, idFor(t, g, 'end'), t.mode);
         if (t.mode === 'present') present = t.end; else flashback = t.end;
         wasFlashback = t.mode === 'flashback';
     }
@@ -172,15 +186,15 @@ export function editStoryTime(mem, segmentId, values, room = null) {
     const g = parts(mem).find(x => x.id === segmentId); if (!g) return false;
     const existing = cleanStoryTime(g.time), origin = existing?.origin || g.source?.room || room;
     const edge = values.edge === 'start' ? 'start' : 'end';
-    const day = values.day === '' || values.day === undefined ? existing?.[edge]?.day ?? 0 : Number(values.day) - 1;
-    if (!integer(day) || day < 0) throw new Error('기준 일 수는 1 이상의 정수로 입력해 주세요.');
+    const day = values.day === '' || values.day === undefined ? existing?.[edge]?.day ?? null : Number(values.day) - 1;
+    if (day !== null && (!integer(day) || day < 0)) throw new Error('기준 일 수는 1 이상의 정수로 입력해 주세요.');
     const date = text(values.date), period = PERIODS.includes(values.period) ? values.period : '', at = clock(values.clock);
     if (/^\d{4}-\d{2}-\d{2}$/.test(date) && isoDay(date) === null) throw new Error('ISO 날짜가 유효하지 않아요. 작품 고유 달력은 이름을 포함해 적어 주세요.');
     if (values.clock && !at) throw new Error('시각은 00:00–23:59 형식으로 입력해 주세요.');
     if (typeof values.date === 'string' && values.date.trim().length > 180) throw new Error('날짜 표현은 180자 이내로 입력해 주세요.');
     const manual = { op: 'manual', manual: true, verified: false, manualDay: day, date, period, clock: at, days: null, elapsed: '', evidence: null };
     const basis = mem.timeAnchors?.[existing?.[edge]?.anchor];
-    if (!date && basis) manual.basis = { ...basis };
+    if (basis) manual.basis = { ...basis };
     g.time = { mode: values.mode === 'flashback' ? 'flashback' : 'present', origin,
         start: existing?.start || { op: 'same' }, ...(existing?.via ? { via: existing.via } : {}), end: existing?.end || { op: 'same' } };
     g.time[edge] = manual;
@@ -189,11 +203,15 @@ export function editStoryTime(mem, segmentId, values, room = null) {
 export function formatStoryStamp(stamp, anchors = {}, lang = 'en') {
     const ko = lang === 'ko';
     if (!stamp || !known(stamp) || !anchors[stamp.anchor]) return ko ? '시간 미확인' : 'unknown story time (unconfirmed)';
-    const a = anchors[stamp.anchor], date = dateAt(stamp, anchors), n = stamp.day + 1;
+    const a = anchors[stamp.anchor], date = dateAt(stamp, anchors), offset = integer(stamp.day) ? stamp.day - a.baseDay : null, n = stamp.day + 1;
     let label = date;
-    if (!label && a.date) label = `${a.date} ${stamp.day - a.baseDay >= 0 ? '+' : ''}${stamp.day - a.baseDay}${ko ? '일' : ' days'}`;
-    if (!label && a.label) label = `${a.label} · ${stamp.day === 1 && ko ? '이튿날' : ko ? `해당 기준 ${n}일째` : `day ${n} of this reference`}`;
-    if (!label) label = ko ? `기록 기준 ${n}일째` : `recording day ${n}`;
+    if (!label && a.date && offset !== null) label = `${a.date} ${offset >= 0 ? '+' : ''}${offset}${ko ? '일' : ' days'}`;
+    if (!label && a.numbered && integer(stamp.day)) label = ko ? `기록 기준 ${n}일째` : `recording day ${n}`;
+    if (!label && a.counted && integer(stamp.day)) label = ko ? `직접 지정 기준 ${n}일째` : `day ${n} of the manually set reference`;
+    if (!label) {
+        label = a.label || (ko ? '날짜 미상' : 'unknown date');
+        if (offset !== null && offset > 0) label += ` · ${offset === 1 ? ko ? '이튿날' : 'next day' : ko ? `해당 기준 ${offset + 1}일째` : `day ${offset + 1} of this reference`}`;
+    }
     return [label, stamp.period ? ko ? KO[stamp.period] : stamp.period : '', stamp.clock].filter(Boolean).join(' · ');
 }
 export function formatSegmentTime(time, anchors = {}, lang = 'en') {

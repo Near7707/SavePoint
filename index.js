@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.0';
+const VERSION = '0.6.1';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -1929,7 +1929,7 @@ function editForm() {
     const ents = type => [['', '(없음)'], ...st.mem.entities.filter(x => !type || x.type === type).map(x => [x.id, x.name])];
     let body = '';
     if (e.kind === 'scene') body = field('title', '제목') + field('where', '장소');
-    else if (e.kind === 'segtime') body = `<p class="sp-dim">${v.edge === 'start' ? '구간 시작' : '구간 끝'} 시간을 직접 지정해요.</p>` + field('date', '이야기 속 날짜 (작품 표현 그대로)') + field('day', '기록 기준 일 수 (1 이상)') + select('period', '시간대', [['', '미상'], ...PERIODS.map((p, i) => [p, ['새벽', '아침', '낮', '오후', '저녁', '밤'][i]])]) + field('clock', '정확한 시각 (HH:mm, 선택)') + select('mode', '구간 종류', [['present', '현재 진행'], ['flashback', '회상 장면']]) + '<p class="sp-dim">직접 지정한 값은 보존하고, 이후 연결된 시간만 다시 계산해요. 과거 구간의 원문은 이 방 번호로 다시 조회하지 않아요.</p>';
+    else if (e.kind === 'segtime') body = `<p class="sp-dim">${v.edge === 'start' ? '구간 시작' : '구간 끝'} 시간을 직접 지정해요.</p>` + field('date', '이야기 속 날짜 (작품 표현 그대로)') + field('day', '해당 기준 일 수 (1 이상, 미상은 빈칸)') + select('period', '시간대', [['', '미상'], ...PERIODS.map((p, i) => [p, ['새벽', '아침', '낮', '오후', '저녁', '밤'][i]])]) + field('clock', '정확한 시각 (HH:mm, 선택)') + select('mode', '구간 종류', [['present', '현재 진행'], ['flashback', '회상 장면']]) + '<p class="sp-dim">직접 지정한 값은 보존하고, 이후 연결된 시간만 다시 계산해요. 비어 있던 일 수는 1일째로 채우지 않아요. 과거 구간의 원문은 이 방 번호로 다시 조회하지 않아요.</p>';
     else if (e.kind === 'segoutline') body = field('outline', '이 구간 개요 (영어)', 3);
     else if (e.kind === 'point') body = field('text', '포인트 (영어)', 3);
     else if (e.kind === 'notes') body = field('notes', '상세 노트 (영어)', 7);

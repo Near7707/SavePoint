@@ -51,10 +51,13 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
                     const n = sc.points[0].msgs.find(Number.isInteger), quote = M.chat[n].mes;
                     if (M.timeCase === 'initial') {
                         sc.title = ''; sc.outline = '';
+                        sc.points[0].key = true;
                         sc.time = {mode:'present',start:{relation:'explicit',date:'2026-10-24',period:'night',msg:n,quote},end:{relation:'same'}};
                     } else if (M.timeCase === 'advance') {
-                        sc.title = 'A real scene title'; sc.time = {mode:'present',start:{relation:'same'},end:{relation:'advance',days:1,period:'morning',msg:n,quote}};
+                        sc.title = 'A real scene title'; sc.time = {mode:'present',start:{relation:'same'},end:{relation:'advance',days:1,period:'morning',msg:n,quote:'다음 날'}};
                     } else if (M.timeCase === 'bad') sc.time = {mode:'present',end:{relation:'explicit',date:'2035-04-10',msg:n,quote:'a fabricated quote'}};
+                    else if (M.timeCase === 'night') sc.time = {mode:'present',end:{relation:'explicit',period:'night',msg:n,quote:'밤'}};
+                    else if (M.timeCase === 'backward') sc.time = {mode:'present',end:{relation:'explicit',date:'2026-10-20',msg:n,quote:'2026-10-20'}};
                 }
                 return JSON.stringify(data);
             }};
@@ -66,6 +69,11 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     let r = await ev(() => ({mem:__savePoint.state().mem,calls:M.calls.length,text:$('.sp-window').text(),injection:M.prompts.savepoint.v}));
     ok(r.calls === 1 && r.mem.scenes[0].titlePending && r.mem.scenes[0].segs[0].outlinePending, '1. 날짜 추출은 기존 요청 1회, 임시 제목·개요로 정상 세이브');
     ok(r.text.includes('2026-10-24') && r.text.includes('임시 제목') && r.injection.includes('Last recorded story time: 2026-10-24'), '1. 화면과 주입에 마지막 기록의 날짜');
+    const firstPoint=r.mem.scenes[0].segs[0].points[0].text;
+    await ev(()=>__savePoint.handle('key-toggle','s1|g1|0'));
+    ok(await ev(text=>!M.prompts.savepoint.v.includes(text),firstPoint),'1. ○로 바꾼 포인트는 임시 개요에서도 주입되지 않음');
+    await ev(()=>__savePoint.handle('key-toggle','s1|g1|0'));
+    ok(await ev(text=>M.prompts.savepoint.v.includes(text),firstPoint),'1. ●로 다시 고르면 임시 개요도 즉시 반영');
     await ev(()=>__savePoint.handle('edit-scene','s1'));
     await page.fill('[data-edit=where]','Gate');await page.click('[data-act=edit-save]');
     ok(await ev(()=>__savePoint.state().mem.scenes[0].titlePending === true), '1. 장소만 고쳐도 임시 제목 교체 가능 상태는 유지');
@@ -111,6 +119,21 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await page.setViewportSize({width:320,height:667});await ev(()=>__savePoint.render(true));
     r=await ev(()=>({w:document.querySelector('#sp_overlay .sp-window').getBoundingClientRect().width,b:document.querySelector('.sp-body').clientHeight}));
     ok(r.w<=320 && r.b>50, '9. 작은 모바일 폭에서도 본문과 날짜 편집 영역 접근 가능');
+    const lastGid=await ev(()=>__savePoint.state().mem.scenes[0].segs.at(-1).id);
+    await ev(gid=>__savePoint.handle('edit-segtime','s1|'+gid),lastGid);
+    ok(await page.inputValue('[data-edit=day]')==='','10. 미확인 구간의 일 수 편집은 빈칸');
+    await page.selectOption('[data-edit=period]','night');await page.click('[data-act=edit-save]');
+    r=await ev(()=>({t:__savePoint.state().mem.scenes[0].segs.at(-1).time.end,injection:M.prompts.savepoint.v}));
+    ok(r.t.day===null&&r.t.certainty==='manual'&&r.injection.includes('Last recorded story time: unknown date · night'),'10. 밤만 직접 지정해도 1일째를 만들지 않음');
+    await ev(()=>{M.timeCase='bad';M.add(2,()=> 'No usable date.');});await ev(()=>__savePoint.handle('run'));
+    await ev(()=>{M.timeCase='night';M.add(2,()=> '밤이 깊었다.');});await ev(()=>__savePoint.handle('run'));
+    r=await ev(()=>({t:__savePoint.state().mem.scenes[0].segs.at(-1).time.end,injection:M.prompts.savepoint.v}));
+    ok(r.t.certainty==='explicit'&&r.injection.includes('Last recorded story time: unknown date · night'),'11. 미확인 뒤 시간대만 확인되면 별도 기준의 날짜 미상');
+    await ev(()=>__savePoint.handle('edit-segtime','s1|'+__savePoint.state().mem.scenes[0].segs.at(-1).id));
+    await page.fill('[data-edit=date]','2026-10-24');await page.click('[data-act=edit-save]');
+    await ev(()=>{M.timeCase='backward';M.add(2,()=> 'The letter was dated 2026-10-20.');});await ev(()=>__savePoint.handle('run'));
+    r=await ev(()=>({t:__savePoint.state().mem.scenes[0].segs.at(-1).time.end,injection:M.prompts.savepoint.v}));
+    ok(r.t.certainty==='unconfirmed'&&!r.injection.includes('Last recorded story time: 2026-10-20'),'12. 편지의 과거 날짜가 현재 시간으로 역행하지 않음');
     if(SHOTS)await page.screenshot({path:path.join(OUT,'story-time.png')});
     await browser.close();srv.close();console.log(failures ? `${failures} FAILED` : 'ALL PASS');process.exit(failures?1:0);
 })();
