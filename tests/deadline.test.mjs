@@ -127,3 +127,40 @@ test('a manual deadline may be a real calendar date on a dated timeline, or a da
     setManualDue(c, q(c), { day: '4' });
     assert.equal(dueStatus(c, q(c)).left, 3);
 });
+
+test('over/under before a number of any length is approximate, for story time and deadlines alike', async () => {
+    const { dueDaysMatch } = await import('../temporal.js');
+    for (const [words, days] of [['over 12 days later', 12], ['under 14 days', 14], ['over 12 weeks', 84], ['over 2 days', 2], ['under a week', 7]]) {
+        const m = save(begin(), { time: { start: { relation: 'advance', days, quote: words }, end: { relation: 'same' } }, words });
+        assert.equal(lastStoryTime(m).stamp.certainty, 'unconfirmed', words);
+        assert.equal(dueDaysMatch(words, days), false, words);
+    }
+    assert.equal(dueDaysMatch('12 days later', 12), true, 'an exact multi-digit count still reads');
+});
+
+test('a calendar deadline before the first recorded day is a real passed date and survives cleaning', () => {
+    const m = save(begin(), { time: same, words: '며칠 안에 갚겠다고 했다.', changes: [promise('며칠 안에 갚겠다고 했다', { expr: '며칠 안에', days: null })] });
+    setManualDue(m, q(m), { day: '2026-10-23' });
+    assert.deepEqual([dueStatus(m, q(m)).kind, dueStatus(m, q(m)).left], ['past', -1]);
+    const back = cleanMem(JSON.parse(JSON.stringify(m)));
+    assert.equal(dueStatus(back, q(back)).left, -1);
+    assert.throws(() => setManualDue(m, q(m), { day: '0' }), /1 이상의 일 수나/, 'day counts still start at 1');
+});
+
+test('erasing the deadline words removes the words and their reading; clearing only the day keeps them', () => {
+    const made = () => save(begin(), { time: same, words: '내일 성문에서 만나자고 약속했다.', changes: [promise('내일 성문에서 만나자고 약속했다', { expr: '내일', days: 1 })] });
+    let m = made();
+    setManualDue(m, q(m), { day: '', expr: '' });
+    assert.equal(q(m).due, undefined); assert.equal(formatDue(m, q(m), 'ko'), '');
+    m = made();
+    setManualDue(m, q(m), { day: '', expr: '내일' });
+    assert.equal(dueStatus(m, q(m)).left, 1, 'unchanged words keep the calculation');
+    m = made();
+    setManualDue(m, q(m), { day: '3', expr: '' });
+    assert.deepEqual([q(m).due.expr, q(m).due.days, dueStatus(m, q(m)).left], ['', null, 2]);
+    setManualDue(m, q(m), { day: '', expr: '' });
+    assert.equal(q(m).due, undefined, 'without words or a manual day nothing is left');
+    m = made();
+    setManualDue(m, q(m), { day: '', expr: '모레' });
+    assert.deepEqual([q(m).due.expr, q(m).due.days, dueStatus(m, q(m)).kind], ['모레', null, 'words'], 'new words are not read with the old count');
+});

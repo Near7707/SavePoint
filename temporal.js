@@ -81,7 +81,7 @@ function readElapsed(quote) {
     if (/(?:대략|약\s*(?:\d|한|일주일|보름)|며칠|몇\s*(?:일|날|주)|\b(?:about|roughly|approximately|several|few|half|quarter)\b|(?:일|주)\s*반)|\d+\s*[-–~]\s*\d+\s*(?:일|주|days?|weeks?|fortnights?)/i.test(q)) return null;
     // Approximate wording ("일주일쯤", "이틀 정도", "거의 사흘", "nearly two days") is not an exact count.
     const unit = '(?:날|일|틀|흘|새|레|름|주|드레|흐레)';
-    if (new RegExp(`쯤|정도|가량|남짓|얼추|거의|안팎|${unit}\\s*(?:넘게|넘어|이상|이내|여(?=[\\s,.만후뒤]|$))|\\b(?:nearly|almost|around|more\\s+than|less\\s+than|or\\s+so|give\\s+or\\s+take|(?:just\\s+)?(?:over|under)\\s+(?:a|an|one|two|three|four|five|six|seven|eight|nine|ten|\\d))\\b`, 'i').test(q)) return null;
+    if (new RegExp(`쯤|정도|가량|남짓|얼추|거의|안팎|${unit}\\s*(?:넘게|넘어|이상|이내|여(?=[\\s,.만후뒤]|$))|\\b(?:nearly|almost|around|more\\s+than|less\\s+than|or\\s+so|give\\s+or\\s+take|(?:just\\s+)?(?:over|under)\\s+(?:a|an|one|two|three|four|five|six|seven|eight|nine|ten|\\d+))\\b`, 'i').test(q)) return null;
     const number = '(?:a|one|two|three|four|five|six|seven|eight|nine|ten|\\d+)';
     if (new RegExp('\\b' + number + '\\s*(?:to|[-–~])\\s*' + number + '\\s*(?:days?|weeks?|fortnights?)\\b').test(q)) return null;
     // These extended expressions do not mean one day; leave them for an explicit date.
@@ -311,7 +311,7 @@ export function cleanDue(raw) {
     if (!object(raw)) return undefined;
     const expr = text(raw.expr, 200), date = text(raw.date);
     const manual = object(raw.manual) ? { anchor: typeof raw.manual.anchor === 'string' && raw.manual.anchor.startsWith('t:') ? raw.manual.anchor : null,
-        day: integer(raw.manual.day) && raw.manual.day >= 0 ? raw.manual.day : null } : null;
+        day: integer(raw.manual.day) ? raw.manual.day : null } : null;
     if (!expr && !date && !(manual && manual.anchor && manual.day !== null)) return undefined;
     return { expr, date, days: integer(raw.days) && raw.days >= 0 ? raw.days : null,
         seg: typeof raw.seg === 'string' && /^g\d+$/.test(raw.seg) ? raw.seg : null,
@@ -389,22 +389,33 @@ export function formatDue(mem, r, lang = 'en') {
 // Manual deadline: a day on the reference of the last recorded story time, or cleared (null).
 export function setManualDue(mem, r, { day, expr } = {}) {
     const now = lastStoryTime(mem)?.stamp;
+    // expr undefined = the words were not edited; '' = the user erased them.
+    const words = expr === undefined ? undefined : text(expr, 200);
+    const reword = due => {
+        // New or erased words replace the AI's reading of the old ones.
+        if (words === undefined || words === (due.expr || '')) return due;
+        return { ...due, expr: words, days: null, date: '' };
+    };
     if (day === null || day === undefined || day === '') {
-        if (r.due) { delete r.due.manual; if (!r.due.expr && !r.due.date) delete r.due; }
-        // New words written by the user replace the AI's reading of the old ones.
-        if (text(expr) && text(expr, 200) !== r.due?.expr) r.due = { ...(r.due || { seg: null, room: null, msg: null }), expr: text(expr, 200), days: null, date: '' };
+        if (!r.due && !words) return true;
+        const due = reword({ ...(r.due || { date: '', days: null, seg: null, room: null, msg: null, expr: '' }) });
+        delete due.manual;
+        if (!due.expr && !due.date) delete r.due; else r.due = due;
         return true;
     }
     if (!known(now) || !mem.timeAnchors?.[now.anchor]) throw new Error('지금 이야기 시간이 확인되지 않아서 기한 일 수를 지정할 수 없어요. 먼저 구간 시간을 직접 지정해 주세요.');
     let n;
     if (/^\d{4}-\d{2}-\d{2}$/.test(String(day).trim())) {
         // A real calendar date, placed on the current reference when that reference is dated.
+        // It may fall before the reference's first day: that is still a real (already passed) date.
         const to = isoDay(String(day).trim()), from = isoOf(mem, now);
         if (to === null) throw new Error('날짜가 유효하지 않아요.');
         if (from === null) throw new Error('지금 이야기 시간에 실제 날짜가 없어서 날짜로는 지정할 수 없어요. N일째로 입력해 주세요.');
         n = dayOn(mem, now) + (to - from);
-    } else n = Number(day) - 1;
-    if (!integer(n) || n < 0) throw new Error('기한은 1 이상의 일 수나 YYYY-MM-DD 날짜로 입력해 주세요.');
-    r.due = { ...(r.due || { date: '', days: null, seg: null, room: null, msg: null }), expr: text(expr, 200) || r.due?.expr || '', manual: { anchor: now.anchor, day: n } };
+    } else {
+        n = Number(day) - 1;
+        if (!integer(n) || n < 0) throw new Error('기한은 1 이상의 일 수나 YYYY-MM-DD 날짜로 입력해 주세요.');
+    }
+    r.due = { ...reword({ ...(r.due || { date: '', days: null, seg: null, room: null, msg: null, expr: '' }) }), manual: { anchor: now.anchor, day: n } };
     return true;
 }

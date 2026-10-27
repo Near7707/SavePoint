@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.4';
+const VERSION = '0.6.5';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -2294,11 +2294,15 @@ async function saveEdit() {
         editStoryTime(clone(state().mem), e.id.split('|')[1], v, roomKey());
     }
     const trim = x => String(x ?? '').trim();
-    const dueChanged = e.kind === 'record' && e.orig && (trim(v.dueExpr) !== trim(e.orig.dueExpr) || trim(v.dueDay) !== trim(e.orig.dueDay));
+    // A new record starts from empty deadline fields, so anything typed there is a change too.
+    const orig = e.orig || { dueExpr: '', dueDay: '' };
+    const dueChanged = e.kind === 'record' && v.type === 'quest' && ['promise', 'debt'].includes(v.kind)
+        && (trim(v.dueExpr) !== trim(orig.dueExpr) || trim(v.dueDay) !== trim(orig.dueDay));
     if (dueChanged) {
         // Same check on a copy first: a bad deadline keeps the form open and changes nothing.
-        const copy = clone(state().mem), r = copy.records.find(x => x.id === e.id);
-        if (r) setManualDue(copy, r, { day: trim(v.dueDay), expr: trim(v.dueExpr) });
+        // A new record is checked on a blank stand-in, since it does not exist yet.
+        const copy = clone(state().mem), r = copy.records.find(x => x.id === e.id) || { type: 'quest' };
+        setManualDue(copy, r, { day: trim(v.dueDay), expr: trim(v.dueExpr) });
     }
     ui.edit = null;
     await commitEdit(mem => {
@@ -2370,7 +2374,7 @@ async function handle(act, id) {
         case 'edit-ent': return startEdit('entity', id);
         case 'edit-rec': return startEdit('record', id);
         case 'add-rec':
-            ui.edit = { kind: 'record', id: 'new', values: { type: id, text: '', entity: '', holder: '', aspect: 'relation', kind: id === 'quest' ? 'promise' : id === 'world' ? 'rule' : '', status: 'open' } };
+            ui.edit = { kind: 'record', id: 'new', values: { type: id, text: '', entity: '', holder: '', aspect: 'relation', kind: id === 'quest' ? 'promise' : id === 'world' ? 'rule' : '', status: 'open', dueExpr: '', dueDay: '' } };
             return render(true);
         case 'star': return commitEdit(m => { const s = m.scenes.find(x => x.id === id); if (!s) return false; s.star = !s.star; }, { undoable: false });
         case 'pin': return commitEdit(m => { const s = m.scenes.find(x => x.id === id); if (!s) return false; s.pin = !s.pin; }, { undoable: false });

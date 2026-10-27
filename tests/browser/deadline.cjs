@@ -92,6 +92,18 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r = await ev(() => __savePoint.state().mem.records.find(x => x.type === 'quest').due);
     ok(!r.manual && r.days === 1, '3. 리와인드하면 직접 지정 전으로');
 
+    // 3b. a promise added by hand keeps the deadline typed into the form
+    await ev(() => __savePoint.handle('add-rec', 'quest'));
+    await page.fill('.sp-edit [data-edit=text]', 'Return the borrowed lantern.');
+    await page.fill('.sp-edit [data-edit=dueExpr]', '모레');
+    await page.fill('.sp-edit [data-edit=dueDay]', '2026-10-28');
+    await ev(() => __savePoint.handle('edit-save'));
+    r = await ev(() => { const x = __savePoint.state().mem.records.find(y => y.text === 'Return the borrowed lantern.'); return { expr: x?.due?.expr, manual: !!x?.due?.manual, html: $('.sp-due').text() }; });
+    ok(r.expr === '모레' && r.manual && r.html.includes('2026-10-28'), `3. 직접 추가한 약속도 기한 저장 (${r.expr}, ${r.manual})`);
+    await ev(() => __savePoint.handle('undo'));
+    r = await ev(() => __savePoint.state().mem.records.filter(x => x.type === 'quest').length);
+    ok(r === 1, '3. 되돌리기로 직접 추가한 약속 제거');
+
     // 4. after a vague time jump the deadline cannot be compared
     await ev(() => { M.step = 'jump'; M.add(2, () => '몇 주 뒤, 다시 성문 앞.'); });
     await ev(() => __savePoint.handle('run'));
