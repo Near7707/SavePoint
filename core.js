@@ -285,6 +285,25 @@ export function normalizeResult(data, { mem, chunk } = {}) {
         scenes[0].scene = 'new';
         notes.push('scenes[0]: "continue" with no open scene was read as "new".');
     }
+    // Only absent text is recoverable. Invalid point shapes/evidence still fail validation below.
+    for (const [i, sc] of scenes.entries()) {
+        if (!plain(sc) || !['new', 'continue'].includes(sc.scene)) continue;
+        delete sc.titlePending; delete sc.outlinePending;
+        const points = Array.isArray(sc.points) && sc.points.length && sc.points.every(p =>
+            plain(p) && str(p.text) && ['change', 'moment'].includes(p.kind) && typeof p.key === 'boolean' && Array.isArray(p.msgs) && p.msgs.length);
+        if (!points) continue;
+        if (sc.title === undefined || sc.title === null || (typeof sc.title === 'string' && !sc.title.trim())) {
+            const open = i === 0 && sc.scene === 'continue' ? openScene(mem) : null;
+            sc.title = open?.title || 'Untitled scene';
+            sc.titlePending = open ? !!open.titlePending : true;
+            notes.push(`title:${i + 1}`);
+        }
+        if (sc.outline === undefined || sc.outline === null || (typeof sc.outline === 'string' && !sc.outline.trim())) {
+            sc.outline = [...new Set(sc.points.map(p => p.text.trim()))].join(' ');
+            sc.outlinePending = true;
+            notes.push(`outline:${i + 1}`);
+        }
+    }
     // A later scene marked "continue" can only mean "the scene just before goes on": merge it into
     // that scene (points and notes appended, outlines joined). No boundary is invented and nothing is lost.
     // Only well-formed scenes are ever merged or repaired; anything else is left for validation to
@@ -296,6 +315,7 @@ export function normalizeResult(data, { mem, chunk } = {}) {
         const join = (a, b) => [str(a), str(b)].filter(Boolean).join(' ');
         prev.points = [...prev.points, ...cur.points];
         prev.outline = join(prev.outline, cur.outline);
+        if (cur.outlinePending) prev.outlinePending = true;
         if (typeof prev.notes === 'string' || typeof cur.notes === 'string') prev.notes = join(prev.notes, cur.notes);
         if (Array.isArray(cur.who)) prev.who = [...new Set([...(Array.isArray(prev.who) ? prev.who : []), ...cur.who])];
         if (!str(prev.where) && str(cur.where)) prev.where = cur.where;
@@ -636,7 +656,7 @@ export function applyResult(mem, data, chunk, { close = false } = {}) {
         const to = i + 1 < scenes.length ? chunk.indices.filter(n => n < starts[i + 1]).pop() ?? from : chunk.to;
         const seg = {
             id: takeId(next, 'g'), from, to,
-            outline: str(s.outline),
+            outline: str(s.outline), ...(s.outlinePending ? { outlinePending: true } : {}),
             points: s.points.map(p => ({ text: str(p.text), kind: p.kind, key: p.key === true, msgs: numEvidence(p.msgs), ...(cleanLootSources(p.loot).length ? { loot: cleanLootSources(p.loot), keyUser: true } : {}) })),
             notes: str(s.notes),
         };
@@ -644,6 +664,7 @@ export function applyResult(mem, data, chunk, { close = false } = {}) {
         const who = uniq(strList(s.who).map(resolve).filter(Boolean));
         if (s.scene === 'continue' && current && i === 0) {
             current.segs.push(seg);
+            if (current.titlePending && !current.titleUser && !s.titlePending && str(s.title)) { current.title = str(s.title); delete current.titlePending; delete current.koTitle; }
             delete current.external;
             // The scene keeps the title it started with; a later part does not rename it.
             if (str(s.where)) current.where = str(s.where);
@@ -652,7 +673,7 @@ export function applyResult(mem, data, chunk, { close = false } = {}) {
         } else {
             if (current) current.status = 'closed';
             current = { id: takeId(next, 's'), title: str(s.title), where: str(s.where), who, status: 'open',
-                star: s.star === true, pin: false, segs: [seg] };
+                star: s.star === true, pin: false, ...(s.titlePending ? { titlePending: true } : {}), segs: [seg] };
             next.scenes.push(current);
         }
         const last = i === scenes.length - 1;
@@ -776,12 +797,13 @@ const plainText = t => norm(t).replace(/[^a-z0-9ㄱ-힝\s]/g, ' ').replace(/\s+/
 // 'exact': the point is already contained, as written, in its scene's outline.
 // 'near': most of its content words are in the outline (shown as a candidate only).
 export function dupState(scene, p) {
-    const outline = plainText(sceneOutlineText(scene)), text = plainText(p.text);
+    const confirmed = { ...scene, segs: scene.segs.filter(g => !g.outlinePending) };
+    const outline = plainText(sceneOutlineText(confirmed)), text = plainText(p.text);
     if (!text) return null;
     if (outline.includes(text)) return 'exact';
     const pw = words(p.text);
     if (pw.length < 3) return null;
-    const ow = new Set(words(sceneOutlineText(scene)));
+    const ow = new Set(words(sceneOutlineText(confirmed)));
     return pw.filter(w => ow.has(w)).length / pw.length >= 0.75 ? 'near' : null;
 }
 // Points that go into the injection with their scene: key points, minus exact duplicates of the
@@ -856,7 +878,8 @@ const firstSentence = t => (String(t).match(/^.*?[.!?](\s|$)/)?.[0] || String(t)
 function sceneHead(s) { return `${s.title}${s.where ? ` (${s.where})` : ''}${s.star ? ' ★' : ''}`; }
 const progress = s => (s.status === 'open' ? ' [in progress]' : '');
 export function sceneFull(s) {
-    const pts = injectedPoints(s).map(p => `  • ${p.text}`);
+    const outline = plainText(sceneOutlineText(s));
+    const pts = injectedPoints(s).filter(p => !s.segs.some(g => g.outlinePending) || !outline.includes(plainText(p.text))).map(p => `  • ${p.text}`);
     return [`- ${sceneHead(s)}${progress(s)}: ${sceneOutlineText(s)}`, ...pts].join('\n');
 }
 export function sceneOutline(s) { return `- ${sceneHead(s)}${progress(s)}: ${sceneOutlineText(s)}`; }
@@ -1069,11 +1092,11 @@ export function cleanMem(raw) {
     for (const s of raw.scenes) {
         if (!plain(s) || !str(s.title) || !Array.isArray(s.segs) || !s.segs.length) throw new Error('장면 항목이 잘못됐어요.');
         const scene = { id: id(s.id, 's'), title: str(s.title), where: str(s.where), who: uniq((s.who || []).map(eref).filter(Boolean)),
-            status: s.status === 'open' ? 'open' : 'closed', star: !!s.star, pin: !!s.pin,
+            status: s.status === 'open' ? 'open' : 'closed', star: !!s.star, pin: !!s.pin, ...(s.titlePending ? { titlePending: true } : {}), ...(s.titleUser ? { titleUser: true } : {}),
             segs: s.segs.map(g => {
                 if (!plain(g)) throw new Error('장면 기록이 잘못됐어요.');
                 return { ...(g.external ? { external: true } : {}), ...(cleanSource(g.source) ? { source: cleanSource(g.source) } : {}), id: id(g.id, 'g'), from: Number.isInteger(g.from) ? g.from : null, to: Number.isInteger(g.to) ? g.to : null,
-                    ...(str(g.outline) ? { outline: str(g.outline) } : {}),
+                    ...(str(g.outline) ? { outline: str(g.outline) } : {}), ...(g.outlinePending ? { outlinePending: true } : {}),
                     points: (Array.isArray(g.points) ? g.points : []).filter(p => plain(p) && str(p.text)).map(p => ({
                         text: str(p.text), kind: p.kind === 'change' ? 'change' : 'moment',
                         ...(typeof p.key === 'boolean' ? { key: p.key } : {}),

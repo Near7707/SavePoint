@@ -135,6 +135,20 @@ export function retryNote(errors, languageIssues) {
     return lines.join('\n');
 }
 
+// Sent only with a rejected extraction; explicit gaps stop repeated guesses at hidden messages.
+export function extractionRepairNote(chunk, previous) {
+    const ids = [...new Set(chunk.indices || [])].sort((a, b) => a - b);
+    const ranges = [];
+    for (let i = 0; i < ids.length; i++) {
+        const first = ids[i]; let last = first;
+        while (i + 1 < ids.length && ids[i + 1] === last + 1) last = ids[++i];
+        ranges.push(first === last ? `#${first}` : `#${first}–#${last}`);
+    }
+    const starts = (Array.isArray(previous?.scenes) ? previous.scenes : []).slice(0, 20)
+        .map((sc, i) => `${i + 1}: ${i === 0 ? chunk.from : JSON.stringify(sc?.start ?? '(missing)')}`).join('; ');
+    return `\n[EXTRACTION REPAIR]\nAllowed message numbers in THIS request: ${ranges.join(', ')}. Numbers in the gaps are unavailable. First scene starts at #${chunk.from}. Previous reply's scene starts: ${starts || '(none)'}. Each later start must be in the allowed list, strictly after the preceding start. Keep each point with ALL its actual supporting messages; do not invent, merge different scenes, or discard evidence to pass validation. Return the complete scenes array with title, outline, points and any state changes. A scene still in progress is valid for a quick save; do not omit it merely because it has not ended. Omit unknown place information rather than inventing it. Correct the reported fields using the original messages.`;
+}
+
 export const TRANSLATE_PROMPT = `Translate each item's "text" into natural Korean for a reader following a roleplay story. Keep names as they are. Do not add or drop information.
 Return ONLY a JSON array: [{"id": "...", "ko": "..."}]
 

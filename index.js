@@ -12,13 +12,13 @@ import { lootStatus, lootWarning, lootInChunk, lootBlock, attachLoot, settleLoot
 import { Vault, roomHash } from './vault.js';
 import { upgradeEvidence, segmentPrior, evidenceNumbers } from './provenance.js';
 import { assertPromptFits, nextMessageChunk, planReviewBatches } from './request-batches.js';
-import { DEFAULT_GUIDE, guideHash, OLD_GUIDE_HASHES, buildCheckPrompt, buildRekeyPrompt, buildExtractPrompt, buildBoundaryPrompt, batchNote, retryNote, TRANSLATE_PROMPT } from './prompts.js';
+import { DEFAULT_GUIDE, guideHash, OLD_GUIDE_HASHES, buildCheckPrompt, buildRekeyPrompt, buildExtractPrompt, buildBoundaryPrompt, batchNote, retryNote, extractionRepairNote, TRANSLATE_PROMPT } from './prompts.js';
 
 const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.5.13';
+const VERSION = '0.5.17';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -607,7 +607,7 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
         let raw;
         const start = Date.now();
         const why = attempt ? lastKind : '';
-        const requestPrompt = attempt ? prompt + retryNote(groupErrors(errors), lang) : prompt;
+        const requestPrompt = attempt ? prompt + retryNote(groupErrors(errors), lang) + extractionRepairNote(chunk, data) : prompt;
         try {
             assertPromptFits(requestPrompt, num('inputChars', 5000, 1000000));
             run.lootAttempted = lootForChunk(chunk).map(x => x.id);
@@ -637,6 +637,9 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
             const merged = fixes.filter(f => f.startsWith('merged:')).length;
             const moved = fixes.filter(f => f.startsWith('start:')).map(f => f.split(':')[2].split('>')[1]);
             const said = [merged ? `앞 장면에 이어지는 장면 ${merged}개를 앞 장면에 합쳤어요` : '', moved.length ? `장면 시작 번호가 맞지 않아 ${moved.map(n => '#' + n).join(', ')}부터로 고쳤어요` : ''].filter(Boolean);
+            const titles = fixes.filter(f => f.startsWith('title:')).length, outlines = fixes.filter(f => f.startsWith('outline:')).length;
+            if (titles) said.push(`제목 ${titles}개를 임시로 보완했어요`);
+            if (outlines) said.push(`개요 ${outlines}개를 포인트로 임시 보완했어요`);
             if (said.length) ui.lastFix = { at: Date.now(), range: `#${chunk.from}–#${chunk.to}`, text: said.join(' · ') };
             attachLoot(data, lootForChunk(chunk));
             return data;
@@ -1959,14 +1962,14 @@ function journalHtml(st) {
         const segHtml = s.segs.map(g => {
             const list = g.points.map((p, j) => pointHtml({ g, p, j })).join('');
             const outline = isEditing('segoutline', `${s.id}|${g.id}`) ? editForm()
-                : g.outline ? `<div class="sp-seg-outline">${esc(T(g.outline, g.koOutline))} ${tools([btn('edit-segoutline', `${s.id}|${g.id}`, '✎', '이 구간 개요 편집')])}</div>` : '';
+                : g.outline ? `<div class="sp-seg-outline">${esc(T(g.outline, g.koOutline))}${g.outlinePending ? ' <small class="sp-dim">임시 개요</small>' : ''} ${tools([btn('edit-segoutline', `${s.id}|${g.id}`, '✎', '이 구간 개요 편집')])}</div>` : '';
             const notes = !g.notes ? '' : isEditing('notes', `${s.id}|${g.id}`) ? editForm()
                 : `<details class="sp-notes" data-group="notes:${esc(g.id)}" ${ui.savesOpen.get('notes:' + g.id) ? 'open' : ''}><summary>상세 노트 ${tools([btn('edit-notes', `${s.id}|${g.id}`, '✎')])}</summary><p>${esc(T(g.notes, g.koNotes))}</p></details>`;
             return `<div class="sp-seg"><div class="sp-seg-h">${esc(g.id)} ${g.source ? esc(priorRoomLabel(g.source.room)) + (Number.isInteger(g.source.from) ? ` #${g.source.from}–#${g.source.to}` : '') : Number.isInteger(g.from) ? `#${g.from}–#${g.to}` : ''}</div>${outline}<ul class="sp-pts">${list}</ul>${notes}</div>`;
         }).join('');
         const outlineText = sceneOutlineParts(s).length ? '' : '<p class="sp-dim">개요 없음</p>';
         return `<div class="sp-card sp-scene ${s.status === 'open' ? 'sp-open' : ''} ${s.star ? 'sp-star' : ''}">${head}
-            <div class="sp-title">${esc(T(s.title, s.koTitle))}${s.where ? ` <small>@ ${esc(s.where)}</small>` : ''}</div>
+            <div class="sp-title">${esc(T(s.title, s.koTitle))}${s.titlePending ? ' <small class="sp-dim">임시 제목</small>' : ''}${s.where ? ` <small>@ ${esc(s.where)}</small>` : ''}</div>
             ${s.who.length ? `<div class="sp-who">${whoChips(mem, s.who)}</div>` : ''}
             <div class="sp-outline">${s.segs.filter(g => g.outline).map(g => `<p>${esc(T(g.outline, g.koOutline))}</p>`).join('')}</div>${outlineText}
             <details class="sp-more" data-group="scene:${esc(s.id)}" ${(ui.edit && String(ui.edit.id).startsWith(s.id + '|')) || ui.savesOpen.get('scene:' + s.id) ? 'open' : ''}><summary>구간 ${s.segs.length} · 포인트 ${pts.length} (주입 ${pts.filter(x => pointInjected(x.p)).length})</summary>
@@ -2140,7 +2143,7 @@ function hudHtml(st) {
     const autoLine = !settings().auto ? '<span class="sp-dim">체크포인트 꺼짐</span>'
         : st?.autoHold ? `<span class="sp-warn">${esc(HOLD_TEXT)}</span>`
         : `<span>다음 체크포인트까지 <b>${Math.max(0, every - autoCount(st))}</b>개</span>`;
-    const autoLast = st?.autoLast ? `<span class="sp-dim">마지막 체크포인트 ${new Date(st.autoLast.at).toLocaleTimeString()} · ${esc(st.autoLast.result)}</span>` : '';
+    const autoLast = st?.autoLast ? `<span class="${st.autoFail ? 'sp-warn' : 'sp-dim'}">마지막 체크포인트 ${new Date(st.autoLast.at).toLocaleTimeString()} · ${esc(st.autoLast.result)}</span>` : '';
     const err = ui.lastError ? `<details class="sp-err" data-group="hud-err" ${ui.savesOpen.get('hud-err') ? 'open' : ''}><summary>마지막 실패 ${esc(ui.lastError.range)} — 자세히</summary><ul class="sp-scroll">${groupErrors(ui.lastError.detail).map(d => `<li>${esc(d)}</li>`).join('')}</ul></details>` : '';
     return `<div class="sp-hud">
         <div class="sp-scene-now">${open ? `<span class="sp-cursor">▶</span> <b>${esc(T(open.title, open.koTitle))}</b>${open.where ? ` <span class="sp-dim">@ ${esc(open.where)}</span>` : ''}` : '<span class="sp-dim">▷ 진행 중인 장면 없음</span>'}</div>
@@ -2272,11 +2275,12 @@ async function saveEdit() {
             const s = mem.scenes.find(x => x.id === e.id);
             if (!s || !trim(v.title)) return false;
             if (s.title !== trim(v.title)) { s.title = trim(v.title); delete s.koTitle; }
-            s.where = trim(v.where);
+            s.where = trim(v.where); s.titleUser = true; delete s.titlePending;
         } else if (e.kind === 'segoutline') {
             const [sid, gid] = e.id.split('|');
             const g = mem.scenes.find(x => x.id === sid)?.segs.find(x => x.id === gid);
             if (!g) return false;
+            delete g.outlinePending;
             if ((g.outline || '') !== trim(v.outline)) { g.outline = trim(v.outline); delete g.koOutline; if (!g.outline) delete g.outline; }
         } else if (e.kind === 'point') {
             const { p } = findPoint(mem, e.id);
