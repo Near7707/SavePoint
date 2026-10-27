@@ -646,3 +646,10 @@ label.sp-has-reset { position: relative; padding-right: 30px; }
     box-shadow: 0 2px 0 rgba(0, 0, 0, .14);
 }
 .sp-window[data-theme="consolenight"] .sp-actions .sp-btn::after { content: none; }
+
+/* v0.5.16: 스토리 콘솔's status screen is dark, so everything inside it (failure details, checks,
+   notices) uses light text instead of the theme's dark text */
+.sp-window[data-theme="consolenight"]:not(#sp_loot_dialog) .sp-hud {
+    --sp-fg: #eef1ff; --sp-dim: #b9c2ee; --sp-panel: rgba(255, 255, 255, .08); --sp-panel2: rgba(0, 0, 0, .22);
+    --sp-line: rgba(255, 255, 255, .22); --sp-chip: rgba(255, 255, 255, .14); --sp-danger: #ff9fb4; --sp-ok: #8ff0c4;
+}
