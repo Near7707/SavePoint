@@ -56,8 +56,11 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
                     } else if (M.timeCase === 'advance') {
                         sc.title = 'A real scene title'; sc.time = {mode:'present',start:{relation:'same'},end:{relation:'advance',days:1,period:'morning',msg:n,quote:'다음 날'}};
                     } else if (M.timeCase === 'bad') sc.time = {mode:'present',end:{relation:'explicit',date:'2035-04-10',msg:n,quote:'a fabricated quote'}};
-                    else if (M.timeCase === 'night') sc.time = {mode:'present',end:{relation:'explicit',period:'night',msg:n,quote:'밤'}};
+                    else if (M.timeCase === 'night') sc.time = {mode:'present',end:{relation:'explicit',period:'night',msg:n,quote:'밤이'}};
                     else if (M.timeCase === 'backward') sc.time = {mode:'present',end:{relation:'explicit',date:'2026-10-20',msg:n,quote:'2026-10-20'}};
+                    else if (M.timeCase === 'four-days') sc.time = {mode:'present',end:{relation:'advance',days:4,msg:n,quote:'나흘 뒤'}};
+                    else if (M.timeCase === 'new-same') { sc.scene='new';sc.time={mode:'present',start:{relation:'same'},end:{relation:'same'}}; }
+                    else if (M.timeCase === 'bad-count') sc.time = {mode:'present',end:{relation:'advance',days:3,msg:n,quote:'다음'}};
                 }
                 return JSON.stringify(data);
             }};
@@ -74,6 +77,10 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(await ev(text=>!M.prompts.savepoint.v.includes(text),firstPoint),'1. ○로 바꾼 포인트는 임시 개요에서도 주입되지 않음');
     await ev(()=>__savePoint.handle('key-toggle','s1|g1|0'));
     ok(await ev(text=>M.prompts.savepoint.v.includes(text),firstPoint),'1. ●로 다시 고르면 임시 개요도 즉시 반영');
+    await ev(()=>__savePoint.handle('pin-point','s1|g1|0'));
+    r=await ev(()=>({outline:__savePoint.state().mem.scenes[0].segs[0].outline,injection:M.prompts.savepoint.v}));
+    ok(!r.outline.includes(firstPoint)&&r.injection.includes('## Pinned points')&&r.injection.split(firstPoint).length===2,'1. 📌은 임시 개요에서 제외하고 고정 영역에 한 번만 주입');
+    await ev(()=>__savePoint.handle('pin-point','s1|g1|0'));
     await ev(()=>__savePoint.handle('edit-scene','s1'));
     await page.fill('[data-edit=where]','Gate');await page.click('[data-act=edit-save]');
     ok(await ev(()=>__savePoint.state().mem.scenes[0].titlePending === true), '1. 장소만 고쳐도 임시 제목 교체 가능 상태는 유지');
@@ -134,6 +141,24 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(()=>{M.timeCase='backward';M.add(2,()=> 'The letter was dated 2026-10-20.');});await ev(()=>__savePoint.handle('run'));
     r=await ev(()=>({t:__savePoint.state().mem.scenes[0].segs.at(-1).time.end,injection:M.prompts.savepoint.v}));
     ok(r.t.certainty==='unconfirmed'&&!r.injection.includes('Last recorded story time: 2026-10-20'),'12. 편지의 과거 날짜가 현재 시간으로 역행하지 않음');
+    await ev(async()=>{await M.switchChat('deleted-prefix',[],{});M.timeCase='initial';M.add(2,()=> '2026-10-24 night: a participant waited.');});
+    await ev(()=>__savePoint.handle('run'));
+    await ev(()=>{M.timeCase='four-days';M.add(2,()=> '나흘 뒤에 다시 만났다.');});await ev(()=>__savePoint.handle('run'));
+    for(let i=0;i<2;i++){
+        await ev(()=>{M.timeCase='new-same';M.add(2,()=> 'The same day, a new scene.');});await ev(()=>__savePoint.handle('run'));
+    }
+    r=await ev(()=>({scenes:__savePoint.state().mem.scenes}));
+    ok(r.scenes.length===3&&r.scenes.every(s=>s.segs.at(-1).time.end.day===4),'13. 세 장면은 같은 기준의 5일째');
+    await ev(id=>__savePoint.handle('del-scene',id),r.scenes[0].id);
+    const remaining=await ev(()=>JSON.stringify(__savePoint.state().mem));
+    const last=r.scenes.at(-1);await ev(id=>__savePoint.handle('edit-segtime',id),last.id+'|'+last.segs[0].id);
+    await page.selectOption('[data-edit=period]','night');await page.click('[data-act=edit-save]');
+    r=await ev(()=>({scenes:__savePoint.state().mem.scenes,injection:M.prompts.savepoint.v}));
+    ok(r.scenes.every(s=>s.segs[0].time.start.day===4&&s.segs.at(-1).time.end.day===4)&&r.injection.includes('Last recorded story time: 2026-10-28'),'13. 앞 장면 삭제 후 끝 시간만 고쳐도 남은 시작·끝 날짜와 일 수 유지');
+    await ev(()=>__savePoint.undo());
+    ok(await ev(json=>JSON.stringify(__savePoint.state().mem)===json,remaining),'13. 시간 수정 리와인드가 남은 장면과 기준을 복원');
+    await ev(()=>{M.timeCase='bad-count';M.add(2,()=> '그날 밤 우리는 다음에 만나자고 했다.');});await ev(()=>__savePoint.handle('run'));
+    ok(await ev(()=>__savePoint.state().mem.scenes.at(-1).segs.at(-1).time.end.certainty==='unconfirmed'),'14. 다음이라는 조각만으로 +3일을 확정하지 않음');
     if(SHOTS)await page.screenshot({path:path.join(OUT,'story-time.png')});
     await browser.close();srv.close();console.log(failures ? `${failures} FAILED` : 'ALL PASS');process.exit(failures?1:0);
 })();

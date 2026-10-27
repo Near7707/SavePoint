@@ -186,3 +186,49 @@ test('null manual days and local references survive room detachment and history 
  assert.equal(now(after).day,null);assert.equal(storyTimeContext(after,'ko'),'날짜 미상 · 밤');
  after=advance(after);assert.match(storyTimeContext(after,'ko'),/날짜 미상 · 이튿날/);
 });
+test('deleting the first scene never renumbers retained dates during a later time edit',()=>{
+ for(const initialDate of ['', '2026-10-24']) {
+  let m=initialDate?start():save(emptyMem(),{start:raw('same')});m=advance(m,4);
+  // Split the saved parts into three scenes, then remove the first scene as the UI does.
+  m=save(m,{start:raw('same')});m=save(m,{start:raw('same')});
+  const original=m.scenes[0],gs=original.segs;
+  m.scenes=[{...original,id:'s1',segs:gs.slice(0,2)},{...original,id:'s2',segs:[gs[2]]},{...original,id:'s3',segs:[gs[3]]}];
+  m.scenes.shift();const anchor=m.scenes[0].segs[0].time.start.anchor;
+  m=cleanMem(JSON.parse(JSON.stringify(m)));
+  editStoryTime(m,'g4',{date:initialDate?'2026-10-28':'',day:5,period:'night'});
+  const s2=m.scenes[0].segs[0],s3=m.scenes[1].segs[0];
+  assert.equal(s2.time.start.anchor,anchor);assert.equal(s2.time.start.day,4);assert.equal(s2.time.end.day,4);
+  assert.equal(s3.time.start.day,4);assert.equal(s3.time.end.day,4);
+  if(initialDate)assert.equal(dateAt(s2.time.end,m.timeAnchors),'2026-10-28');
+ }
+});
+test('a retained first advance is not reapplied when its preceding scene is deleted',()=>{
+ let m=advance(start(),4);m=save(m,{start:raw('advance',{days:2})},'Two days later.');m=save(m,{start:raw('same')});
+ m.scenes[0].segs.splice(0,2);editStoryTime(m,'g4',{day:7,period:'night'});
+ assert.equal(m.scenes[0].segs[0].time.start.day,6);assert.equal(m.scenes[0].segs[0].time.end.day,6);
+});
+test('insufficient or mismatched day quotes never confirm an advance',()=>{
+ const words='그날 밤 우리는 다음에 만나자고 했다';
+ for(const quote of ['날','밤','다음','밤.', '다음 날', '3일 뒤']) {
+  const m=save(start(),{end:raw('advance',{days:3,quote})},quote==='다음 날'?'다음 날 아침':quote==='3일 뒤'?'3일 뒤에 만났다.':words);
+  assert.equal(now(m).certainty,quote==='3일 뒤'?'linked':'unconfirmed',quote);
+ }
+ const period=save(start(),{end:raw('explicit',{period:'night',quote:'밤'})},words);assert.equal(now(period).certainty,'unconfirmed');
+ for(const quote of ['약 3일 뒤','2–3 days later','three days ago','twenty-one days later','twenty one days later','a few days later']) {
+  assert.equal(now(save(start(),{end:raw('advance',{days:3,quote})},quote)).certainty,'unconfirmed',quote);
+ }
+ assert.equal(now(save(start(),{end:raw('advance',{days:23,quote:'2~3 days later'})},'2~3 days later')).certainty,'unconfirmed');
+});
+test('exact day-count expressions can be checked in Korean and English',()=>{
+ for(const [quote,days] of [['다음 날',1],['이튿날',1],['이틀 뒤',2],['사흘',3],['나흘 후',4],['3일 뒤',3],['12 days later',12],['the following day',1],['three days passed',3]]) {
+  const m=save(start(),{end:raw('advance',{days,quote})},quote);assert.equal(now(m).day,days,quote);assert.equal(now(m).certainty,'linked',quote);
+  const wrong=save(start(),{end:raw('advance',{days:days+1,quote})},quote);assert.equal(now(wrong).certainty,'unconfirmed',quote);
+ }
+});
+test('editing a later part does not promote an earlier unconfirmed claim after deleting its prefix',async()=>{
+ let m=start();m=save(m,{start:raw('explicit',{date:'2026-10-20'}),end:raw('same')},'The letter said 2026-10-20.');
+ m=save(m,{start:raw('same')});m.scenes[0].segs.shift();const old=structuredClone(m.scenes[0].segs[0].time);
+ editStoryTime(m,'g3',{date:'',day:'',period:'night'});assert.deepEqual(m.scenes[0].segs[0].time,old);
+ assert.equal(old.start.certainty,'unconfirmed');assert.equal(now(m).day,null);
+ const {recomputeStoryTimes}=await import('../temporal.js');recomputeStoryTimes(m);assert.equal(m.scenes[0].segs[0].time.start.certainty,'unconfirmed');
+});

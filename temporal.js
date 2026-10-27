@@ -66,10 +66,31 @@ export function dateAt(stamp, anchors = {}) {
     // Custom calendars are never fed to JavaScript Date or advanced by invented month lengths.
     return delta === 0 ? a.date : '';
 }
-// Short time expressions are common. Accept literal matches at any nonempty length;
+// Short time expressions are common. Literal quotes need at least two letters/numbers;
 // keep the shared minimum for fuzzy/format-normalized matching and promise checks.
 function timeQuoteMatches(source, quote, quoteMatches) {
-    return typeof source === 'string' && !!quote && (source.includes(quote) || (typeof quoteMatches === 'function' && !!quoteMatches(source, quote)));
+    return typeof source === 'string' && (quote.match(/[\p{L}\p{N}]/gu) || []).length >= 2 &&
+        (source.includes(quote) || (typeof quoteMatches === 'function' && !!quoteMatches(source, quote)));
+}
+// This checks an exact day COUNT, not whether the narration has actually reached it.
+// Future appointments, recollections and negations still require model interpretation.
+function advanceQuoteMatches(quote, days) {
+    if (!integer(days) || days < 0) return false;
+    const q = quote.toLowerCase().replace(/[*_`]/g, '');
+    if (/(?:대략|약\s*\d|며칠|몇\s*(?:일|날)|\b(?:about|roughly|approximately|several|few)\b)|\d+\s*[-–~]\s*\d+\s*(?:일|days?)/i.test(q)) return false;
+    const counts = [], ko = { '다음날': 1, '이튿날': 1, '익일': 1, '하루': 1, '이틀': 2, '사흘': 3, '나흘': 4, '닷새': 5, '엿새': 6, '이레': 7, '여드레': 8, '아흐레': 9, '열흘': 10 };
+    const en = { a: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+    const re = /다음\s*날|이튿날|익일|하루|이틀|사흘|나흘|닷새|엿새|이레|여드레|아흐레|열흘|(?<!\d)\d+\s*일|\b(?:next|following)\s+day\b|\b(a|one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+(?:(?:full|whole)\s+)?days?\b/g;
+    for (const m of q.matchAll(re)) {
+        const before = q.slice(0, m.index), after = q.slice(m.index + m[0].length);
+        // Do not read the tail of a compound number or a past-time expression.
+        if (/[\p{L}\p{N}-]$/u.test(before) || /\b(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand)\s+$/.test(before)) continue;
+        if (/^\s*(?:전|이전|ago\b|earlier\b|before\b)/.test(after)) continue;
+        const token = m[0].replace(/\s/g, '');
+        const count = ko[token] ?? (m[1] ? en[m[1]] ?? Number(m[1]) : /^\d/.test(token) ? Number(token.replace(/일$/, '')) : 1);
+        counts.push(count);
+    }
+    return counts.length > 0 && counts.every(n => n === days);
 }
 function claimFromModel(raw, { chunk, seg, room, quoteMatches }) {
     if (raw === undefined || raw === null) return { op: 'same', date: '', period: '', clock: '', days: null, elapsed: '', evidence: null, verified: false, manual: false };
@@ -87,6 +108,7 @@ function claimFromModel(raw, { chunk, seg, room, quoteMatches }) {
     if (date && /^\d{4}-\d{2}-\d{2}$/.test(date) && isoDay(date) === null) s.op = 'unknown';
     if (date && (!verified || !timeQuoteMatches(quote, date, quoteMatches))) s.op = 'unknown';
     if (op !== 'same' && op !== 'unknown' && !verified) s.op = 'unknown';
+    if (op === 'advance' && !advanceQuoteMatches(quote, s.days)) s.op = 'unknown';
     return s;
 }
 function resolveStamp(claim, previous, anchors, key, mode) {
@@ -167,19 +189,34 @@ export function resolveResultTime(mem, raw, { chunk, seg, room = null, quoteMatc
     return time;
 }
 // Re-resolve only recorded claims. No historical quote is looked up in this room's chat.
-export function recomputeStoryTimes(mem) {
+export function recomputeStoryTimes(mem, { fromSegment = null, edge = 'start' } = {}) {
     mem.timeAnchors = cleanTimeAnchors(mem.timeAnchors);
     let present = null, flashback = null, wasFlashback = false;
-    for (const g of parts(mem)) {
-        if (!g.time) continue;
-        const t = cleanStoryTime(g.time); g.time = t;
-        const previous = t.mode === 'flashback' ? wasFlashback ? flashback : null : present;
-        t.start = resolveStamp(t.start, previous, mem.timeAnchors, idFor(t, g, 'start'), t.mode);
-        let mid = t.start;
-        if (t.via) t.via = t.via.map((claim, i) => { mid = resolveStamp(claim, mid, mem.timeAnchors, idFor(t, g, 'via' + (i + 1)), t.mode); return mid; });
-        t.end = resolveStamp(t.end, mid, mem.timeAnchors, idFor(t, g, 'end'), t.mode);
+    let active = fromSegment === null;
+    const remember = t => {
         if (t.mode === 'present') present = t.end; else flashback = t.end;
         wasFlashback = t.mode === 'flashback';
+    };
+    for (const g of parts(mem)) {
+        if (!g.time) continue;
+        if (g.id === fromSegment) active = true;
+        // A manual edit cannot reinterpret an earlier saved boundary or revive an
+        // earlier unconfirmed claim just because its preceding scene was deleted.
+        if (!active) { remember(g.time); continue; }
+        const t = cleanStoryTime(g.time); g.time = t;
+        const previous = t.mode === 'flashback' ? wasFlashback ? flashback : null : present;
+        const keepStart = g.id === fromSegment && edge === 'end';
+        // A deleted prefix is not a new story beginning. Its anchor remains a valid
+        // boundary snapshot for the first retained part, including an already-applied
+        // advance. A newly edited start has no resolved anchor and is recalculated.
+        const keepBoundary = !previous && ((known(t.start) && mem.timeAnchors[t.start.anchor]) ||
+            (!t.start.manual && t.start.certainty === 'unconfirmed'));
+        if (!keepStart && !keepBoundary)
+            t.start = resolveStamp(t.start, previous, mem.timeAnchors, idFor(t, g, 'start'), t.mode);
+        let mid = t.start;
+        if (t.via) t.via = t.via.map((claim, i) => { mid = keepStart ? claim : resolveStamp(claim, mid, mem.timeAnchors, idFor(t, g, 'via' + (i + 1)), t.mode); return mid; });
+        t.end = resolveStamp(t.end, mid, mem.timeAnchors, idFor(t, g, 'end'), t.mode);
+        remember(t);
     }
 }
 export function editStoryTime(mem, segmentId, values, room = null) {
@@ -198,7 +235,7 @@ export function editStoryTime(mem, segmentId, values, room = null) {
     g.time = { mode: values.mode === 'flashback' ? 'flashback' : 'present', origin,
         start: existing?.start || { op: 'same' }, ...(existing?.via ? { via: existing.via } : {}), end: existing?.end || { op: 'same' } };
     g.time[edge] = manual;
-    recomputeStoryTimes(mem); return true;
+    recomputeStoryTimes(mem, { fromSegment: segmentId, edge }); return true;
 }
 export function formatStoryStamp(stamp, anchors = {}, lang = 'en') {
     const ko = lang === 'ko';

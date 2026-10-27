@@ -129,9 +129,10 @@ export function foldLegacyOutline(mem) {
     return changed;
 }
 // Provisional outlines are derived text, never an independent claim after point edits.
+// Pinned points have their own prioritized injection item instead of entering this outline.
 export function refreshProvisionalOutlines(mem) {
     for (const sc of mem.scenes || []) for (const g of sc.segs || []) if (g.outlinePending) {
-        const value = [...new Set((g.points || []).filter(pointInjected).map(p => str(p.text)).filter(Boolean))].join(' ');
+        const value = [...new Set((g.points || []).filter(p => p.pin !== true && pointInjected(p)).map(p => str(p.text)).filter(Boolean))].join(' ');
         if (g.outline !== value) { g.outline = value; delete g.koOutline; }
     }
     return mem;

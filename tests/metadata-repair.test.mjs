@@ -56,3 +56,14 @@ test('provisional outlines respect selection, pins, reselection and rekeying',as
  delete g.points[1].keyUser;m=applyRekey(m,'s1',{'g1.1':true});assert(m.scenes[0].segs[0].outline.includes('optional detail'));
  m=applyRekey(m,'s1',{'g1.1':false});assert(!m.scenes[0].segs[0].outline.includes('optional detail'));
 });
+test('pinned fallback points appear once and belong to the dedicated pinned section',async()=>{
+ const {refreshProvisionalOutlines}=await import('../core.js');
+ const m=applyResult(emptyMem(),normalize(data({outline:''})),chunk()).mem,g=m.scenes[0].segs[0],p=g.points[0];
+ p.pin=true;refreshProvisionalOutlines(m);let injection=buildInjection(m).text;
+ assert.equal(injection.split(p.text).length-1,1,'the existing final injection already avoids an exact duplicate');
+ assert.equal(g.outline,'','a pinned point no longer takes space in a provisional outline');
+ assert(injection.includes('## Pinned points'));
+ p.pin=false;refreshProvisionalOutlines(m);injection=buildInjection(m).text;
+ assert.equal(injection.split(p.text).length-1,1);assert(g.outline.includes(p.text));
+ p.keyUser=false;refreshProvisionalOutlines(m);assert(!buildInjection(m).text.includes(p.text));
+});
