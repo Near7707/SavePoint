@@ -37,7 +37,7 @@ const SETTING_GROUPS = {
     storage: { title: '하이드·보관', keys: ['hide', 'keepRecent', 'autoKeep'] },
     appearance: { title: '화면', keys: ['theme', 'showKo'] },
 };
-const THEMES = { jrpg: '클래식 JRPG', neon: '네온 아케이드', glass: '글래스 사이버', archive: '다크 아카이브', pastel: '파스텔 드림', terminal: '터미널', eggpet: '딸기우유', joycon: '조이 콘솔', dualwhite: '듀얼 화이트', ink: '먹과 한지', cream: '크림 라테', vanilla: '바닐라 버터', consolenight: '스토리 콘솔', st: '실리 테마 따라가기' };
+const THEMES = { jrpg: '클래식 JRPG', neon: '네온 아케이드', glass: '글래스 사이버', archive: '다크 아카이브', pastel: '파스텔 드림', terminal: '터미널', eggpet: '딸기우유', joycon: '조이 콘솔', dualwhite: '듀얼 화이트', ink: '먹과 한지', cream: '크림 라테', vanilla: '바닐라 버터', consolenight: '스토리 콘솔', cranelemon: '레몬 인형뽑기', st: '실리 테마 따라가기' };
 // Themes that were retired, and the closest one now.
 const RETIRED_THEMES = { parchment: 'cream', colorpocket: 'eggpet' };
 const TABS = [

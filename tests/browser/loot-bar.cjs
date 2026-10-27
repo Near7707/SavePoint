@@ -125,7 +125,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.msg === 4 && r.text.startsWith('The lantern flickered') && !r.view, '5b. 원문 전체 탭에서 담으면 전체 원문으로 담김');
 
     // 5c. the dialog wears the status window's theme
-    for (const t of ['jrpg', 'eggpet', 'consolenight', 'st']) {
+    for (const t of ['jrpg', 'eggpet', 'consolenight', 'cranelemon', 'st']) {
         await ev(t => { M.settings.savePoint.theme = t; }, t);
         await selectIn(2, '작은 놋쇠 열쇠를 건넸다');
         await page.click('#sp_loot_bar');
