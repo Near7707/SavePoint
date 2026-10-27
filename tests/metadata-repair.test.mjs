@@ -36,3 +36,12 @@ test('repair request lists real message ranges including holes and preceding sta
  const t=extractionRepairNote({from:60,indices:[60,61,62,63,65,66,79]}, {scenes:[{}, {start:64}]});
  assert(t.includes('#60–#63, #65–#66, #79'));assert(t.includes('1: 60; 2: 64'));assert(t.includes('strictly after'));
 });
+test('a valid outline with no extra points can still receive a temporary title',()=>{
+ const d=normalize(data({title:'',points:[]}));assert.deepEqual(validateResult(d,{mem:emptyMem(),chunk:chunk()}),[]);assert.equal(d.scenes[0].titlePending,true);assert.equal(d.scenes[0].outlinePending,undefined);
+});
+test('editing or deleting a provisional outline source cannot leave an obsolete claim in injection',async()=>{
+ const {refreshProvisionalOutlines}=await import('../core.js');const d=normalize(data({outline:''}));const m=applyResult(emptyMem(),d,chunk()).mem;
+ m.scenes[0].segs[0].points[0].text='The token is still broken.';refreshProvisionalOutlines(m);
+ const injection=buildInjection(m).text;assert(injection.includes('The token is still broken.'));assert(!injection.includes('returned the repaired token'));
+ m.scenes[0].segs[0].points=[];refreshProvisionalOutlines(m);assert.equal(m.scenes[0].segs[0].outline,'');
+});

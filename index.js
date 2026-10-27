@@ -1,10 +1,11 @@
+import { PERIODS, editStoryTime, dateAt, formatSegmentTime, sceneTimeRange, storyTimeContext } from './temporal.js';
 // SavePoint: scene journal + current state memory for SillyTavern, kept per chat room,
 // with game-style save files. Summaries run only when the user presses a button.
 import { foldLegacyOutline,
     emptyMem, cleanMem, detachMem, chunkMessages, promptContext, validateResult, resultLanguageIssues,
     applyResult, closeOpenScene, pushHistory, rollbackFrom, buildInjection, openScene, memStats, validateBoundary,
     pointInjected, pointSymbol, rekeyItems, validateRekey, applyRekey, sceneOutlineText, sceneOutlineParts,
-    normalizeResult, validateCheck, checkScope, dupState, pointId,
+    refreshProvisionalOutlines, normalizeResult, validateCheck, checkScope, dupState, pointId,
     recordLine, entityName, estTokens, QUEST_KINDS, WORLD_KINDS, ENTITY_TYPES,
     groupErrors, findQuote, mostlyNonEnglish,
 } from './core.js';
@@ -18,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.5.17';
+const VERSION = '0.6.0';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -585,7 +586,7 @@ function checkpoint(st) {
 // One chunk: ask, check, retry once with the problems listed, then give up without saving.
 function extractPrompt(mem, chunk, note = '') {
     const marked = lootForChunk(chunk);
-    return buildExtractPrompt({ guide: settings().guide || DEFAULT_GUIDE, names: names(), card: cardText(), context: promptContext(mem, chunk.text), chunk, note: [note, lootBlock(marked)].filter(Boolean).join('\n\n') });
+    return buildExtractPrompt({ guide: settings().guide || DEFAULT_GUIDE, names: names(), card: cardText(), context: { ...promptContext(mem, chunk.text), time: storyTimeContext(mem) }, chunk, note: [note, lootBlock(marked)].filter(Boolean).join('\n\n') });
 }
 function lootForChunk(chunk) {
     const items = state()?.lootQueue || [];
@@ -732,7 +733,7 @@ async function supplementLoot(run, items, undoPoint = checkpoint(run.st)) {
                 if (!errors.length) break;
             }
             if (errors.length) throw new Error('응답이 검사를 통과하지 못했어요');
-            const next = applyLootSupplement(st.mem, target.seg.id, data, group);
+            const next = refreshProvisionalOutlines(applyLootSupplement(st.mem, target.seg.id, data, group));
             await transact(() => {
                 const before = st.mem;
                 st.mem = next; pushHistory(st, before, next, { kind: 'edit' });
@@ -798,7 +799,7 @@ async function summarize({ close = false } = {}) {
             const data = await extractChunk(st.mem, chunk, run);
             const coverTo = last ? end : chunk.to;
             assertValid(run, coverTo);
-            const { mem: next } = applyResult(st.mem, data, chunk, { close: close && last });
+            const { mem: next } = applyResult(st.mem, data, chunk, { room: run.key, close: close && last });
             // Memory, position and hiding change together; a failed save puts all of it back.
             await transact(() => {
                 const before = st.mem;
@@ -951,7 +952,7 @@ async function autoCollect() {
         const marked = lootForChunk(chunk);
         const data = await extractChunk(base, chunk, run, { note, expectContinue: plan.continuesOpen });
         assertValid(run, end);
-        const { mem: next } = applyResult(base, data, chunk, { close: true });
+        const { mem: next } = applyResult(base, data, chunk, { close: true, room: run.key });
         const count = data.scenes.length;
         at.stage = 'save';
         let lootFailed = 0;
@@ -1408,6 +1409,7 @@ async function commitEdit(mutate, { undoable = true } = {}) {
         const st = ensureState();
         const before = st.mem, next = clone(st.mem);
         if (mutate(next) === false) return false;
+        refreshProvisionalOutlines(next);
         st.mem = next; pushHistory(st, before, next, { kind: 'edit' });
     }, { undoable });
 }
@@ -1927,6 +1929,7 @@ function editForm() {
     const ents = type => [['', '(없음)'], ...st.mem.entities.filter(x => !type || x.type === type).map(x => [x.id, x.name])];
     let body = '';
     if (e.kind === 'scene') body = field('title', '제목') + field('where', '장소');
+    else if (e.kind === 'segtime') body = `<p class="sp-dim">${v.edge === 'start' ? '구간 시작' : '구간 끝'} 시간을 직접 지정해요.</p>` + field('date', '이야기 속 날짜 (작품 표현 그대로)') + field('day', '기록 기준 일 수 (1 이상)') + select('period', '시간대', [['', '미상'], ...PERIODS.map((p, i) => [p, ['새벽', '아침', '낮', '오후', '저녁', '밤'][i]])]) + field('clock', '정확한 시각 (HH:mm, 선택)') + select('mode', '구간 종류', [['present', '현재 진행'], ['flashback', '회상 장면']]) + '<p class="sp-dim">직접 지정한 값은 보존하고, 이후 연결된 시간만 다시 계산해요. 과거 구간의 원문은 이 방 번호로 다시 조회하지 않아요.</p>';
     else if (e.kind === 'segoutline') body = field('outline', '이 구간 개요 (영어)', 3);
     else if (e.kind === 'point') body = field('text', '포인트 (영어)', 3);
     else if (e.kind === 'notes') body = field('notes', '상세 노트 (영어)', 7);
@@ -1965,11 +1968,17 @@ function journalHtml(st) {
                 : g.outline ? `<div class="sp-seg-outline">${esc(T(g.outline, g.koOutline))}${g.outlinePending ? ' <small class="sp-dim">임시 개요</small>' : ''} ${tools([btn('edit-segoutline', `${s.id}|${g.id}`, '✎', '이 구간 개요 편집')])}</div>` : '';
             const notes = !g.notes ? '' : isEditing('notes', `${s.id}|${g.id}`) ? editForm()
                 : `<details class="sp-notes" data-group="notes:${esc(g.id)}" ${ui.savesOpen.get('notes:' + g.id) ? 'open' : ''}><summary>상세 노트 ${tools([btn('edit-notes', `${s.id}|${g.id}`, '✎')])}</summary><p>${esc(T(g.notes, g.koNotes))}</p></details>`;
-            return `<div class="sp-seg"><div class="sp-seg-h">${esc(g.id)} ${g.source ? esc(priorRoomLabel(g.source.room)) + (Number.isInteger(g.source.from) ? ` #${g.source.from}–#${g.source.to}` : '') : Number.isInteger(g.from) ? `#${g.from}–#${g.to}` : ''}</div>${outline}<ul class="sp-pts">${list}</ul>${notes}</div>`;
+            const time = g.time ? formatSegmentTime(g.time, mem.timeAnchors, 'ko') : '시간 미상';
+            const levels = { explicit: '원문에 명시됨', linked: '기준에서 연결됨', manual: '직접 지정', unconfirmed: '미확인' };
+            const proof = g.time?.end?.evidence;
+            const startProof = g.time?.start?.evidence;
+            const timeHtml = (ui.edit?.kind === 'segtime' && ui.edit.id.split('|')[0] === s.id && ui.edit.id.split('|')[1] === g.id) ? editForm() : `<div class="sp-seg-time"><span>📅 ${esc(time)}</span> ${tools([btn('edit-segtime-start', `${s.id}|${g.id}`, '시작 ✎', '구간 시작 날짜·시간 편집', ui.run ? 'sp-disabled' : ''), btn('edit-segtime', `${s.id}|${g.id}`, '끝 ✎', '구간 끝 날짜·시간 편집', ui.run ? 'sp-disabled' : '')])}<details><summary>시작: ${levels[g.time?.start?.certainty] || '시간 미상'} · 끝: ${levels[g.time?.end?.certainty] || '시간 미상'}</summary>${startProof ? `<div class="sp-dim">시작 근거 · ${startProof.room === roomKey() ? '현재 방' : '이전 방'} #${startProof.msg} · ${esc(startProof.quote)}</div>` : ''}${proof ? `<div class="sp-dim">${proof.room === roomKey() ? '현재 방' : '이전 방'} #${proof.msg} · ${esc(proof.quote)}</div>` : '<div class="sp-dim">시간 근거 인용 없음</div>'}</details></div>`;
+            return `<div class="sp-seg"><div class="sp-seg-h">${esc(g.id)} ${g.source ? esc(priorRoomLabel(g.source.room)) + (Number.isInteger(g.source.from) ? ` #${g.source.from}–#${g.source.to}` : '') : Number.isInteger(g.from) ? `#${g.from}–#${g.to}` : ''}</div>${timeHtml}${outline}<ul class="sp-pts">${list}</ul>${notes}</div>`;
         }).join('');
         const outlineText = sceneOutlineParts(s).length ? '' : '<p class="sp-dim">개요 없음</p>';
         return `<div class="sp-card sp-scene ${s.status === 'open' ? 'sp-open' : ''} ${s.star ? 'sp-star' : ''}">${head}
             <div class="sp-title">${esc(T(s.title, s.koTitle))}${s.titlePending ? ' <small class="sp-dim">임시 제목</small>' : ''}${s.where ? ` <small>@ ${esc(s.where)}</small>` : ''}</div>
+            ${sceneTimeRange(s, mem.timeAnchors, 'ko') ? `<div class="sp-scene-time">📅 ${esc(sceneTimeRange(s, mem.timeAnchors, 'ko'))}</div>` : ''}
             ${s.who.length ? `<div class="sp-who">${whoChips(mem, s.who)}</div>` : ''}
             <div class="sp-outline">${s.segs.filter(g => g.outline).map(g => `<p>${esc(T(g.outline, g.koOutline))}</p>`).join('')}</div>${outlineText}
             <details class="sp-more" data-group="scene:${esc(s.id)}" ${(ui.edit && String(ui.edit.id).startsWith(s.id + '|')) || ui.savesOpen.get('scene:' + s.id) ? 'open' : ''}><summary>구간 ${s.segs.length} · 포인트 ${pts.length} (주입 ${pts.filter(x => pointInjected(x.p)).length})</summary>
@@ -2147,6 +2156,7 @@ function hudHtml(st) {
     const err = ui.lastError ? `<details class="sp-err" data-group="hud-err" ${ui.savesOpen.get('hud-err') ? 'open' : ''}><summary>마지막 실패 ${esc(ui.lastError.range)} — 자세히</summary><ul class="sp-scroll">${groupErrors(ui.lastError.detail).map(d => `<li>${esc(d)}</li>`).join('')}</ul></details>` : '';
     return `<div class="sp-hud">
         <div class="sp-scene-now">${open ? `<span class="sp-cursor">▶</span> <b>${esc(T(open.title, open.koTitle))}</b>${open.where ? ` <span class="sp-dim">@ ${esc(open.where)}</span>` : ''}` : '<span class="sp-dim">▷ 진행 중인 장면 없음</span>'}</div>
+        ${storyTimeContext(st?.mem || {}, 'ko') ? `<div class="sp-hud-time">마지막 기록 기준 · ${esc(storyTimeContext(st.mem, 'ko'))}</div>` : ''}
         <div class="sp-bar" title="기록된 메시지 비율"><div class="sp-bar-fill" style="width:${pct}%"></div><span>기록 ${covered} / ${total}</span></div>
         <div class="sp-hud-meta"><span>미기록 <b>${pending}</b></span>${btn('tab', 'queue', `⏳ 대기열 ${st?.lootQueue?.length || 0}개`)}<span>주입 ${ui.inj ? ui.inj.tokens.toLocaleString() : 0} / ${num('budget', 300, 100000).toLocaleString()} 토큰</span><span>요약 AI: ${esc(profileLabel())}</span>${ui.inj?.pinOverflow ? `<span class="sp-warn">📌 ${ui.inj.pinMissing}개 주입 못 함</span>` : ''}</div>
         <div class="sp-hud-meta sp-auto-line">${autoLine}${autoLast}</div>
@@ -2253,6 +2263,10 @@ function startEdit(kind, id) {
     const st = state(), mem = st.mem;
     let values = {};
     if (kind === 'scene') { const s = mem.scenes.find(x => x.id === id); values = { title: s.title, where: s.where }; }
+    if (kind === 'segtime') {
+        const [sid, gid, requested] = id.split('|'), edge = requested === 'start' ? 'start' : 'end', g = mem.scenes.find(x => x.id === sid)?.segs.find(g => g.id === gid), t = g?.time?.[edge];
+        values = { edge, date: dateAt(t, mem.timeAnchors), day: t?.day === null || t?.day === undefined ? '' : String(t.day + 1), period: t?.period || '', clock: t?.clock || '', mode: g?.time?.mode || 'present' };
+    }
     if (kind === 'segoutline') { const [sid, gid] = id.split('|'); values = { outline: mem.scenes.find(x => x.id === sid).segs.find(g => g.id === gid).outline || '' }; }
     if (kind === 'point') values = { text: findPoint(mem, id).p.text };
     if (kind === 'notes') { const [sid, gid] = id.split('|'); values = { notes: mem.scenes.find(x => x.id === sid).segs.find(g => g.id === gid).notes }; }
@@ -2268,14 +2282,22 @@ async function saveEdit() {
     const e = ui.edit;
     if (!e) return;
     const v = e.values;
+    if (e.kind === 'segtime') {
+        if (ui.run) { toastr.info('저장 작업이 끝난 뒤 시간을 수정해 주세요.'); return; }
+        // Validate on a copy so a bad field keeps the edit form and never touches the live memory.
+        editStoryTime(clone(state().mem), e.id.split('|')[1], v, roomKey());
+    }
     const trim = x => String(x ?? '').trim();
     ui.edit = null;
     await commitEdit(mem => {
         if (e.kind === 'scene') {
             const s = mem.scenes.find(x => x.id === e.id);
             if (!s || !trim(v.title)) return false;
-            if (s.title !== trim(v.title)) { s.title = trim(v.title); delete s.koTitle; }
-            s.where = trim(v.where); s.titleUser = true; delete s.titlePending;
+            if (s.title !== trim(v.title)) { s.title = trim(v.title); delete s.koTitle; s.titleUser = true; delete s.titlePending; }
+            s.where = trim(v.where);
+        } else if (e.kind === 'segtime') {
+            const [, gid] = e.id.split('|');
+            return editStoryTime(mem, gid, v, roomKey());
         } else if (e.kind === 'segoutline') {
             const [sid, gid] = e.id.split('|');
             const g = mem.scenes.find(x => x.id === sid)?.segs.find(x => x.id === gid);
@@ -2329,6 +2351,8 @@ async function handle(act, id) {
         case 'edit-scene': return startEdit('scene', id);
         case 'edit-point': return startEdit('point', id);
         case 'edit-notes': return startEdit('notes', id);
+        case 'edit-segtime-start': if (ui.run) return; return startEdit('segtime', id + '|start');
+        case 'edit-segtime': if (ui.run) return; return startEdit('segtime', id);
         case 'edit-segoutline': return startEdit('segoutline', id);
         case 'edit-ent': return startEdit('entity', id);
         case 'edit-rec': return startEdit('record', id);

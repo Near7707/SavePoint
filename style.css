@@ -653,3 +653,9 @@ label.sp-has-reset { position: relative; padding-right: 30px; }
     --sp-fg: #eef1ff; --sp-dim: #b9c2ee; --sp-panel: rgba(255, 255, 255, .08); --sp-panel2: rgba(0, 0, 0, .22);
     --sp-line: rgba(255, 255, 255, .22); --sp-chip: rgba(255, 255, 255, .14); --sp-danger: #ff9fb4; --sp-ok: #8ff0c4;
 }
+
+/* Story time belongs to recorded parts and uses the current skin. */
+.sp-scene-time, .sp-hud-time { font-size: 12px; color: var(--sp-dim); margin: 4px 0; overflow-wrap: anywhere; }
+.sp-seg-time { margin: 5px 0 8px; font-size: 12px; overflow-wrap: anywhere; }
+.sp-seg-time details { color: var(--sp-dim); }
+.sp-seg-time summary { cursor: pointer; }

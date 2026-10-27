@@ -1,3 +1,4 @@
+import { cleanTimeAnchors, cleanStoryTime, resolveResultTime, formatSegmentTime, sceneTimeRange, storyTimeContext } from './temporal.js';
 import { cleanLootSources, restoreLostLoot } from './loot.js';
 import { upgradeEvidence, detachEvidence, cleanPrior, cleanSource } from './provenance.js';
 // SavePoint core: pure data logic (no SillyTavern, no DOM).
@@ -126,6 +127,14 @@ export function foldLegacyOutline(mem) {
         if ('legacyOutline' in s || 'outline' in s || 'koOutline' in s) { delete s.legacyOutline; delete s.outline; delete s.koOutline; changed = true; }
     }
     return changed;
+}
+// Provisional outlines are derived text, never an independent claim after point edits.
+export function refreshProvisionalOutlines(mem) {
+    for (const sc of mem.scenes || []) for (const g of sc.segs || []) if (g.outlinePending) {
+        const value = [...new Set((g.points || []).map(p => str(p.text)).filter(Boolean))].join(' ');
+        if (g.outline !== value) { g.outline = value; delete g.koOutline; }
+    }
+    return mem;
 }
 // A scene's outline is the outlines of its parts in order; nothing written earlier is rewritten.
 export const sceneOutlineParts = s => s.segs.map(g => g.outline).filter(Boolean);
@@ -289,16 +298,16 @@ export function normalizeResult(data, { mem, chunk } = {}) {
     for (const [i, sc] of scenes.entries()) {
         if (!plain(sc) || !['new', 'continue'].includes(sc.scene)) continue;
         delete sc.titlePending; delete sc.outlinePending;
-        const points = Array.isArray(sc.points) && sc.points.length && sc.points.every(p =>
+        const points = Array.isArray(sc.points) && sc.points.every(p =>
             plain(p) && str(p.text) && ['change', 'moment'].includes(p.kind) && typeof p.key === 'boolean' && Array.isArray(p.msgs) && p.msgs.length);
         if (!points) continue;
-        if (sc.title === undefined || sc.title === null || (typeof sc.title === 'string' && !sc.title.trim())) {
+        if ((str(sc.outline) || sc.points.length) && (sc.title === undefined || sc.title === null || (typeof sc.title === 'string' && !sc.title.trim()))) {
             const open = i === 0 && sc.scene === 'continue' ? openScene(mem) : null;
             sc.title = open?.title || 'Untitled scene';
             sc.titlePending = open ? !!open.titlePending : true;
             notes.push(`title:${i + 1}`);
         }
-        if (sc.outline === undefined || sc.outline === null || (typeof sc.outline === 'string' && !sc.outline.trim())) {
+        if (sc.points.length && (sc.outline === undefined || sc.outline === null || (typeof sc.outline === 'string' && !sc.outline.trim()))) {
             sc.outline = [...new Set(sc.points.map(p => p.text.trim()))].join(' ');
             sc.outlinePending = true;
             notes.push(`outline:${i + 1}`);
@@ -312,6 +321,9 @@ export function normalizeResult(data, { mem, chunk } = {}) {
     for (let i = 1; i < scenes.length; i++) {
         const cur = scenes[i], prev = scenes[i - 1];
         if (!plain(cur) || cur.scene !== 'continue' || !wellFormed(cur) || !wellFormed(prev)) continue;
+        const mode = t => t?.mode === 'flashback' ? 'flashback' : 'present';
+        if (mode(prev.time) !== mode(cur.time) && (prev.time || cur.time)) continue;
+        prev._timeParts = [...(prev._timeParts || [prev.time]), ...(cur._timeParts || [cur.time])];
         const join = (a, b) => [str(a), str(b)].filter(Boolean).join(' ');
         prev.points = [...prev.points, ...cur.points];
         prev.outline = join(prev.outline, cur.outline);
@@ -623,7 +635,7 @@ export function resultLanguageIssues(data) {
 function numEvidence(msgs) {
     return (msgs || []).map(m => (typeof m === 'string' && /^#?\d+$/.test(m.trim()) ? Number(m.replace('#', '')) : m));
 }
-export function applyResult(mem, data, chunk, { close = false } = {}) {
+export function applyResult(mem, data, chunk, { close = false, room = null } = {}) {
     const next = clone(upgradeEvidence(mem));
     const refs = new Map();
     for (const e of data.entities || []) {
@@ -660,6 +672,8 @@ export function applyResult(mem, data, chunk, { close = false } = {}) {
             points: s.points.map(p => ({ text: str(p.text), kind: p.kind, key: p.key === true, msgs: numEvidence(p.msgs), ...(cleanLootSources(p.loot).length ? { loot: cleanLootSources(p.loot), keyUser: true } : {}) })),
             notes: str(s.notes),
         };
+        const time = resolveResultTime(next, s._timeParts ? { mode: s.time?.mode || 'present', parts: s._timeParts } : s.time, { chunk, seg, room, quoteMatches: findQuote });
+        if (time) seg.time = time;
         segIds.push(seg.id); segRanges.push(seg);
         const who = uniq(strList(s.who).map(resolve).filter(Boolean));
         if (s.scene === 'continue' && current && i === 0) {
@@ -714,6 +728,7 @@ export function applyResult(mem, data, chunk, { close = false } = {}) {
             next.records = next.records.filter(x => x.id !== c.id);
         }
     }
+    refreshProvisionalOutlines(next);
     return { mem: next, segIds };
 }
 
@@ -737,7 +752,8 @@ export function memDiff(before, after) {
             if (JSON.stringify(a.get(id)) !== JSON.stringify(b.get(id))) changes.push({ kind, id, before: a.has(id) ? clone(a.get(id)) : null, after: b.has(id) ? clone(b.get(id)) : null });
         }
     }
-    return { changes, orderBefore, orderAfter, nextBefore: clone(before.next), nextAfter: clone(after.next) };
+    return { changes, orderBefore, orderAfter, nextBefore: clone(before.next), nextAfter: clone(after.next),
+        ...((before.timeAnchors || after.timeAnchors) ? { timeAnchorsBefore: before.timeAnchors ? clone(before.timeAnchors) : null, timeAnchorsAfter: after.timeAnchors ? clone(after.timeAnchors) : null } : {}) };
 }
 export function applyDiff(mem, diff, backwards = false) {
     const out = clone(mem);
@@ -752,7 +768,9 @@ export function applyDiff(mem, diff, backwards = false) {
         out[kind] = [...order.filter(id => map.has(id)).map(id => map.get(id)), ...[...map.values()].filter(e => !order.includes(e.id))];
     }
     out.next = clone(backwards ? diff.nextBefore : diff.nextAfter);
+    if ('timeAnchorsBefore' in diff) { const anchors = backwards ? diff.timeAnchorsBefore : diff.timeAnchorsAfter; if (anchors) out.timeAnchors = clone(anchors); else delete out.timeAnchors; }
     out.evidenceVersion = 0;
+    refreshProvisionalOutlines(out);
     return upgradeEvidence(out);
 }
 // st: { mem, lastIndex, history, floor }
@@ -875,15 +893,16 @@ export function recallScenes(mem, query, formOf = () => 'none', max = 2, ignoreN
 // ───────── injection ─────────
 
 const firstSentence = t => (String(t).match(/^.*?[.!?](\s|$)/)?.[0] || String(t)).trim();
-function sceneHead(s) { return `${s.title}${s.where ? ` (${s.where})` : ''}${s.star ? ' ★' : ''}`; }
+function sceneHead(s, anchors = {}) { const time = sceneTimeRange(s, anchors); return `${s.title}${s.where ? ` (${s.where})` : ''}${s.star ? ' ★' : ''}${time ? ` [${time}]` : ''}`; }
 const progress = s => (s.status === 'open' ? ' [in progress]' : '');
-export function sceneFull(s) {
+const timedOutline = (s, anchors) => s.segs.some(g => g.time) ? s.segs.map(g => `${g.time ? '[' + formatSegmentTime(g.time, anchors) + '] ' : ''}${g.outline || ''}`).filter(Boolean).join(' ') : sceneOutlineText(s);
+export function sceneFull(s, anchors = {}) {
     const outline = plainText(sceneOutlineText(s));
     const pts = injectedPoints(s).filter(p => !s.segs.some(g => g.outlinePending) || !outline.includes(plainText(p.text))).map(p => `  • ${p.text}`);
-    return [`- ${sceneHead(s)}${progress(s)}: ${sceneOutlineText(s)}`, ...pts].join('\n');
+    return [`- ${sceneHead(s, anchors)}${progress(s)}: ${timedOutline(s, anchors)}`, ...pts].join('\n');
 }
-export function sceneOutline(s) { return `- ${sceneHead(s)}${progress(s)}: ${sceneOutlineText(s)}`; }
-export function sceneOneLiner(s) { return `- ${sceneHead(s)}: ${firstSentence(sceneOutlineText(s))}`; }
+export function sceneOutline(s, anchors = {}) { return `- ${sceneHead(s, anchors)}${progress(s)}: ${timedOutline(s, anchors)}`; }
+export function sceneOneLiner(s, anchors = {}) { return `- ${sceneHead(s, anchors)}: ${firstSentence(sceneOutlineText(s))}`; }
 
 export const INJECT_HEADER = '[SavePoint memory: past records of this story. Do not repeat completed actions; carry forward their results and any ongoing states. The latest messages always take priority.]';
 
@@ -915,21 +934,23 @@ export function buildInjection(mem, opts = {}) {
     const recentIds = new Set(recentScenes.map(sc => sc.id));
     mem.scenes.forEach((sc, idx) => {
         let pr, alts;
-        if (recentIds.has(sc.id)) { pr = 4; alts = [sceneFull(sc), sceneOutline(sc), sceneOneLiner(sc)]; }
-        else if (sc.pin) { pr = 2; alts = [sceneOutline(sc), sceneOneLiner(sc)]; }
-        else if (sc.star) { pr = 5; alts = [sceneOutline(sc), sceneOneLiner(sc)]; }
-        else { pr = 7; alts = [sceneOutline(sc)]; }
+        if (recentIds.has(sc.id)) { pr = 4; alts = [sceneFull(sc, mem.timeAnchors), sceneOutline(sc, mem.timeAnchors), sceneOneLiner(sc, mem.timeAnchors)]; }
+        else if (sc.pin) { pr = 2; alts = [sceneOutline(sc, mem.timeAnchors), sceneOneLiner(sc, mem.timeAnchors)]; }
+        else if (sc.star) { pr = 5; alts = [sceneOutline(sc, mem.timeAnchors), sceneOneLiner(sc, mem.timeAnchors)]; }
+        else { pr = 7; alts = [sceneOutline(sc, mem.timeAnchors)]; }
         if (sc.pin && pr !== 2) pr = Math.min(pr, 2);
         items.push({ tier: 'journal', pr, scene: sc, idx, pin: !!sc.pin, alts });
         for (const g of sc.segs) for (const p of g.points) {
             if (p.pin === true) items.push({ tier: 'journal', pr: 2, scene: sc, point: p, pin: true,
-                alts: [`- From "${sc.title}": ${p.text}`] });
+                alts: [`- From "${sc.title}": ${g.time ? `[${formatSegmentTime(g.time, mem.timeAnchors)}] ` : ''}${p.text}`] });
         }
     });
     const sorted = [...items].sort((a, b) => a.pr - b.pr);
     const used = { state: 0, journal: 0, recall: 0, titles: 0 };
     const caps = { state: budget * share.state, journal: budget * share.journal, recall: budget * share.recall };
-    const headerCost = estTokens(INJECT_HEADER) + 30 + (items.some(it => it.point) ? estTokens('## Pinned points') + 1 : 0);
+    const timeContext = storyTimeContext(mem);
+    const header = INJECT_HEADER + (timeContext ? `\nLast recorded story time: ${timeContext}. Later unrecorded messages take priority.` : '');
+    const headerCost = estTokens(header) + 30 + (items.some(it => it.point) ? estTokens('## Pinned points') + 1 : 0);
     let total = headerCost;
     const chosen = new Map();
     const costOf = alt => estTokens(alt) + 1;
@@ -1057,7 +1078,7 @@ export function buildInjection(mem, opts = {}) {
         ...(titleList.length ? [`Earlier scenes (titles only): ${titleList.join('; ')}.`] : []),
         ...journalItems.map(it => chosen.get(it)),
     ];
-    const parts = [INJECT_HEADER];
+    const parts = [header];
     if (stateBlock.length) parts.push('## Current state', ...stateBlock);
     if (pinnedPointItems.length) parts.push('## Pinned points', ...pinnedPointItems.map(it => chosen.get(it)));
     if (journalBlock.length) parts.push('## Journal (oldest to newest)', ...journalBlock);
@@ -1075,6 +1096,7 @@ export function buildInjection(mem, opts = {}) {
 export function cleanMem(raw) {
     if (!plain(raw) || !Array.isArray(raw.scenes) || !Array.isArray(raw.entities) || !Array.isArray(raw.records)) throw new Error('SavePoint 기억 형식이 아니에요.');
     const out = emptyMem();
+    if (raw.timeAnchors) out.timeAnchors = cleanTimeAnchors(raw.timeAnchors);
     out.evidenceVersion = raw.evidenceVersion === 1 ? 1 : 0;
     const ids = new Set();
     const id = (v, prefix) => {
@@ -1096,6 +1118,7 @@ export function cleanMem(raw) {
             segs: s.segs.map(g => {
                 if (!plain(g)) throw new Error('장면 기록이 잘못됐어요.');
                 return { ...(g.external ? { external: true } : {}), ...(cleanSource(g.source) ? { source: cleanSource(g.source) } : {}), id: id(g.id, 'g'), from: Number.isInteger(g.from) ? g.from : null, to: Number.isInteger(g.to) ? g.to : null,
+                    ...(cleanStoryTime(g.time) ? { time: cleanStoryTime(g.time) } : {}),
                     ...(str(g.outline) ? { outline: str(g.outline) } : {}), ...(g.outlinePending ? { outlinePending: true } : {}),
                     points: (Array.isArray(g.points) ? g.points : []).filter(p => plain(p) && str(p.text)).map(p => ({
                         text: str(p.text), kind: p.kind === 'change' ? 'change' : 'moment',
@@ -1130,6 +1153,7 @@ export function cleanMem(raw) {
     out.next = { s: max('s') + 1, g: max('g') + 1, e: max('e') + 1, r: max('r') + 1 };
     if (plain(raw.next)) for (const k of ['s', 'g', 'e', 'r']) if (Number.isInteger(raw.next[k]) && raw.next[k] > out.next[k]) out.next[k] = raw.next[k];
     for (let i = 0; i < out.scenes.length - 1; i++) out.scenes[i].status = 'closed';
+    refreshProvisionalOutlines(out);
     return upgradeEvidence(out);
 }
 // Preserve the narrative scene; detach only references to the original chat.

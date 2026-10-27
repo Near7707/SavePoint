@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import * as core from '../core.js';
+import * as temporal from '../temporal.js';
 import * as prompts from '../prompts.js';
 import * as batches from '../request-batches.js';
 import * as provenance from '../provenance.js';
@@ -24,7 +25,7 @@ function harness({ count = 40, chars = 1000, limit = 20000, failAt = Infinity, c
     const s = { guide: prompts.DEFAULT_GUIDE, inputChars: limit, profileId: 'fake', responseLength: 8000 };
     const calls = [], notifications = [];
     const ui = {};
-    const sandbox = { ...core, ...prompts, ...batches, ...provenance, ...loot, Cancelled, RequestTimeout, ui,
+    const sandbox = { ...core, ...temporal, ...prompts, ...batches, ...provenance, ...loot, Cancelled, RequestTimeout, ui,
         structuredClone, Set, Map, Date, console: { error() {} },
         settings: () => s, num: key => s[key], names: () => ({}), cardText: () => '',
         chat: () => chat, state: () => st, ensureState: () => st, hasChat: () => true, mainBusy: () => false, reconcile: () => true,

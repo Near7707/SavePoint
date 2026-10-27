@@ -60,6 +60,7 @@ export const OUTPUT_FORMAT = `Return ONLY one JSON object, with the fields in th
       "title": "short label",
       "where": "place",
       "who": ["entity ids or new refs involved"],
+      "time": { "mode": "present" | "flashback", "start": <time stamp>, "end": <time stamp> },
       "points": [ { "text": "one line, about 20 words", "kind": "change" | "moment", "key": true | false, "msgs": [<message numbers>] } ],
       "notes": "detailed English notes for later recall: specifics, paraphrased dialogue, small objects, how things happened",
       "outline": "1-2 sentences for THIS PART only (these new messages in this scene): main events and results, plus anything still unconfirmed",
@@ -94,7 +95,10 @@ Rules for the JSON:
 3. "entities": declare each new person, item or place with a ref you invent ("new1", "new2", ...). For anything already in KNOWN ENTITIES use its id (e.g. "e3"), never a new ref and never a bare name. Two different things may share an alias (two keys can both be called by the same word), but each needs its own entry and a distinguishing English name. Every "who", "entity", "holder" and "knownBy" value must be an existing id or a ref declared here.
 4. "changes": every state change in your points must appear here, and nothing may appear here that the messages do not show. Prefer "update" of an existing record over adding a near-duplicate. One record per fact: a person can have several records, and the same item can change hands several times through updates. A quest that is both made and finished inside these messages is added once with its final "status" ("done" or "failed") and the evidence for both; a quest that is still pending stays "open". An offer or suggestion is not a promise.
    Every debt or promise that you add needs "terms": the message number and the exact words from that message that set the terms, copied in the story's own language (not translated). Quote the whole condition with every side of it ("If it rains, Theo drives; otherwise Mara drives."), not only the part that seems to support your record. If no message states terms that create the debt or promise, do not record it. When a debt is paid or a promise kept or broken, update its "status" and cite the message that shows it; do not repeat "terms" unless the terms themselves changed.
-5. "msgs" is required on every point and change. Use message numbers from NEW MESSAGES only (#{FROM}-#{TO}). To refer to something already recorded in the open scene, you may cite its segment id (for example "g4").`;
+5. Optional story time is recorded per part, NEVER from the computer clock or message send timestamps. A <time stamp> is {"relation":"same"|"explicit"|"advance"|"jump"|"unknown", "date":"exact original calendar expression or empty", "period":"dawn"|"morning"|"day"|"afternoon"|"evening"|"night"|"", "clock":"HH:mm or empty", "days":<nonnegative integer or null>, "elapsed":"original vague jump phrase or empty", "msg":<source message number>, "quote":"exact supporting words from that message"}.
+   Use start/end for the time at the start/end of THIS part. With no time mention use {"relation":"same"}; unknown fields may be empty. "explicit" means the quoted ORIGINAL states the current date or time, with date copied verbatim. "advance" needs a quoted exact elapsed day count such as "the next day" (days:1); "jump" needs a quoted vague passage such as "weeks later", with elapsed preserved verbatim and days:null. "unknown" means a change occurred but its current time cannot be established. Never invent dates, calendar arithmetic or a day count for vague elapsed time. Never increment a day merely because night changed to dawn. Only claims supported by quoted originals are confirmed. Inherit unchanged time without inventing evidence.
+   "flashback" means the roleplay is ACTING a past scene; it records that part's time without advancing the present. Recalling or mentioning a past event in dialogue is not an acted flashback. "Meet tomorrow" is a future appointment, NOT the current time; record the promise in changes and do not advance the clock. Hypotheticals, quotations and imagined future events likewise do not advance current time. Date/quote/elapsed keep their original language; time metadata is exempt from English-only prose.
+6. "msgs" is required on every point and change. Use message numbers from NEW MESSAGES only (#{FROM}-#{TO}). To refer to something already recorded in the open scene, you may cite its segment id (for example "g4").`;
 
 export function fillNames(text, names) {
     return String(text).replace(/\{\{char\}\}/gi, names.char || 'the character').replace(/\{\{user\}\}/gi, names.user || 'the user');
@@ -113,6 +117,9 @@ export function buildExtractPrompt({ guide, names, card, context, chunk, note = 
         '',
         '[CURRENT STATE] (record ids for update/remove)',
         context.state,
+        '',
+        '[LAST RECORDED STORY TIME: later messages take priority]',
+        context.time || '(not recorded; do not infer a calendar date)',
         '',
         '[OPEN SCENE] (continue it if the new messages carry on the same scene)',
         context.open === '(none)' ? '(none: there is no open scene, so the first scene must be "new")' : context.open,

@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import * as core from '../core.js';
+import * as temporal from '../temporal.js';
 import * as prompts from '../prompts.js';
 import * as vault from '../vault.js';
 
@@ -16,7 +17,7 @@ function controls() {
     const context = { characterId: 0, characters: [{ name: 'Theo', avatar: 'theo.png' }], chatId: 'room', chat: [],
         chatMetadata: { savePoint: st }, extensionSettings: {}, setExtensionPrompt() {},
         async saveMetadata() { writes++; }, saveSettingsDebounced() {} };
-    const imported = { ...core, ...prompts, ...vault };
+    const imported = { ...core, ...temporal, ...prompts, ...vault };
     const original = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
     const names = [];
     const source = original.replace(/^import\s*\{([\s\S]*?)\}\s*from\s*['"][^'"]+['"];\n/gm, (_, list) => {

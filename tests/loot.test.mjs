@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import * as core from '../core.js';
+import * as temporal from '../temporal.js';
 import * as prompts from '../prompts.js';
 import * as vault from '../vault.js';
 import * as provenance from '../provenance.js';
@@ -9,7 +10,7 @@ import * as batches from '../request-batches.js';
 import * as loot from '../loot.js';
 
 function harness({ messages = ['A participant kept a token.'], recorded = false } = {}) {
-    const imported = { ...core, ...prompts, ...vault, ...provenance, ...batches, ...loot };
+    const imported = { ...core, ...temporal, ...prompts, ...vault, ...provenance, ...batches, ...loot };
     const names = [];
     const source = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8').replace(/^import\s*\{([\s\S]*?)\}\s*from\s*['"][^'"]+['"];\n/gm, (_, list) => {
         names.push(...list.split(',').map(x => x.trim()).filter(Boolean)); return '';
