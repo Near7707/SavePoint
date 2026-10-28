@@ -84,6 +84,7 @@ export const OUTPUT_FORMAT = `Return ONLY one JSON object, with the fields in th
 
 Field roles (ids/refs must have the right type):
 - party: "entity" is a person. Use it for relationships and a person's condition.
+- For party and item records, put only the description in "text", without a leading person/item name label ("Theo: ..."). The extension adds the owner name itself. Keep names inside sentences and names of other people when needed.
 - item: "entity" is the item (type "item"), never the person; the person or place that has it goes in "holder". "Theo now carries the key" -> entity = the key, holder = Theo. Anything that is about a person rather than an object belongs in a party record.
 - quest "who" and world "knownBy" list people only.
 

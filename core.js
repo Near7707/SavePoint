@@ -51,6 +51,33 @@ export function mostlyNonEnglish(value) {
 // ───────── entities ─────────
 
 const norm = s => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+// Only remove a leading label that uniquely identifies this record's owner.
+// Do not use fuzzy/head-noun entity matching: aliases can belong to several things.
+export function normalizeRecordNames(mem) {
+    const owners = new Map();
+    for (const e of mem.entities || []) for (const name of [e.name, ...(e.aliases || [])]) {
+        const key = norm(name);
+        if (!key) continue;
+        if (!owners.has(key)) owners.set(key, new Set());
+        owners.get(key).add(e.id);
+    }
+    let changed = false;
+    for (const r of mem.records || []) {
+        if (!['party', 'item'].includes(r.type) || !r.entity) continue;
+        for (const field of ['text', 'ko']) {
+            if (typeof r[field] !== 'string') continue;
+            let value = r[field];
+            while (true) {
+                const m = value.match(/^\s*([^:\n：]+?)\s*[:：]\s*([\s\S]+)$/);
+                const ids = m && owners.get(norm(m[1]));
+                if (!ids || ids.size !== 1 || !ids.has(r.entity) || !m[2].trim()) break;
+                value = m[2].trim();
+            }
+            if (value !== r[field]) { r[field] = value; changed = true; }
+        }
+    }
+    return changed;
+}
 export function entityTerms(e) {
     const terms = [e.name, ...(e.aliases || [])].map(norm);
     // Objects and places are often referred to by their head noun ("the compass" for "brass compass").
@@ -733,6 +760,7 @@ export function applyResult(mem, data, chunk, { close = false, room = null } = {
             next.records = next.records.filter(x => x.id !== c.id);
         }
     }
+    normalizeRecordNames(next);
     refreshProvisionalOutlines(next);
     return { mem: next, segIds };
 }
@@ -775,6 +803,7 @@ export function applyDiff(mem, diff, backwards = false) {
     out.next = clone(backwards ? diff.nextBefore : diff.nextAfter);
     if ('timeAnchorsBefore' in diff) { const anchors = backwards ? diff.timeAnchorsBefore : diff.timeAnchorsAfter; if (anchors) out.timeAnchors = clone(anchors); else delete out.timeAnchors; }
     out.evidenceVersion = 0;
+    normalizeRecordNames(out);
     refreshProvisionalOutlines(out);
     return upgradeEvidence(out);
 }
@@ -1159,6 +1188,7 @@ export function cleanMem(raw) {
     out.next = { s: max('s') + 1, g: max('g') + 1, e: max('e') + 1, r: max('r') + 1 };
     if (plain(raw.next)) for (const k of ['s', 'g', 'e', 'r']) if (Number.isInteger(raw.next[k]) && raw.next[k] > out.next[k]) out.next[k] = raw.next[k];
     for (let i = 0; i < out.scenes.length - 1; i++) out.scenes[i].status = 'closed';
+    normalizeRecordNames(out);
     refreshProvisionalOutlines(out);
     return upgradeEvidence(out);
 }

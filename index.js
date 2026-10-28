@@ -6,7 +6,7 @@ import { foldLegacyOutline,
     applyResult, closeOpenScene, pushHistory, rollbackFrom, buildInjection, openScene, memStats,
     pointInjected, pointSymbol, rekeyItems, validateRekey, applyRekey, sceneOutlineText, sceneOutlineParts,
     refreshProvisionalOutlines, normalizeResult, validateCheck, checkScope, dupState, pointId,
-    recordLine, entityName, estTokens, QUEST_KINDS, WORLD_KINDS, ENTITY_TYPES,
+    recordLine, normalizeRecordNames, entityName, estTokens, QUEST_KINDS, WORLD_KINDS, ENTITY_TYPES,
     groupErrors, findQuote, mostlyNonEnglish,
 } from './core.js';
 import { lootStatus, lootWarning, lootInChunk, lootBlock, attachLoot, settleLoot, lootTarget, applyLootSupplement, restoreLostLoot } from './loot.js';
@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.7';
+const VERSION = '0.6.8';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -119,6 +119,7 @@ function state() {
     if (!st || st.v !== 1) return null;
     if (st.mem.evidenceVersion !== 1) { st.mem = upgradeEvidence(st.mem); persistSoon(); }
     if (foldLegacyOutline(st.mem)) persistSoon();
+    if (normalizeRecordNames(st.mem)) persistSoon();
     return st;
 }
 function freshState(extra = {}) {
@@ -1235,7 +1236,7 @@ function translationTargets(mem) {
 }
 function applyTranslation(mem, id, ko) {
     const [a, b, c] = id.split('|');
-    if (b === 'rec') { const r = mem.records.find(x => x.id === a); if (r) r.ko = ko; return; }
+    if (b === 'rec') { const r = mem.records.find(x => x.id === a); if (r) { r.ko = ko; normalizeRecordNames(mem); } return; }
     const s = mem.scenes.find(x => x.id === a);
     if (!s) return;
     if (b === 'title') s.koTitle = ko;
@@ -1334,6 +1335,7 @@ async function commitEdit(mutate, { undoable = true } = {}) {
         const st = ensureState();
         const before = st.mem, next = clone(st.mem);
         if (mutate(next) === false) return false;
+        normalizeRecordNames(next);
         refreshProvisionalOutlines(next);
         st.mem = next; pushHistory(st, before, next, { kind: 'edit' });
     }, { undoable });

@@ -276,7 +276,7 @@ test('opening existing chat metadata migrates old evidence once and schedules pe
     const meta = { savePoint: { v: 1, mem: legacyMixed() } };
     let saves = 0;
     const state = vm.runInNewContext(section('function state() {', '\nfunction freshState') + ';state', {
-        MODULE: 'savePoint', ctx: () => ({ chatMetadata: meta }), upgradeEvidence: provenance.upgradeEvidence, foldLegacyOutline: core.foldLegacyOutline, persistSoon: () => saves++,
+        MODULE: 'savePoint', ctx: () => ({ chatMetadata: meta }), upgradeEvidence: provenance.upgradeEvidence, foldLegacyOutline: core.foldLegacyOutline, normalizeRecordNames: core.normalizeRecordNames, persistSoon: () => saves++,
     });
     assert.equal(state().mem.records[0].msgs.length, 0);
     assert.equal(state().mem.records[0].terms.source.room, null);
