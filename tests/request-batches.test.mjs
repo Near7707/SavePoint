@@ -122,3 +122,91 @@ test('splitting a group never copies truncated supporting messages into a batch'
     assert.equal(plan.deferred.length, 0);
     for (const batch of plan.batches) for (const [n, text] of Object.entries(batch.sent)) assert.equal(text, source[n].text);
 });
+
+const collectChunks = (source, makePrompt = c => c.text, limit = 60000, options = {}) => {
+    const chunks = [];
+    for (let offset = 0; offset < source.length;) {
+        const chunk = nextMessageChunk(source.slice(offset), makePrompt, limit, options);
+        chunks.push(chunk); offset += chunk.indices.length;
+    }
+    return chunks;
+};
+
+test('short 30/25 message saves are balanced instead of leaving a small tail', () => {
+    for (const [n, expected] of [[30, [15, 15]], [25, [13, 12]], [40, [20, 20]], [60, [20, 20, 20]]]) {
+        const source = messages(n, 100), snapshot = JSON.stringify(source);
+        const chunks = collectChunks(source);
+        assert.deepEqual(chunks.map(c => c.indices.length), expected);
+        assert.deepEqual(chunks.flatMap(c => c.indices), source.map(m => m.index));
+        assert.equal(JSON.stringify(source), snapshot);
+    }
+});
+
+test('source volume, rather than equal message counts, balances uneven RP replies', () => {
+    const source = [4000, 4000, ...Array(8).fill(1000)].map((chars, index) => ({ index, name: 'Speaker', text: 'x'.repeat(chars) }));
+    const greedy = collectChunks(source, c => c.text, 60000, { balance: false });
+    const balanced = collectChunks(source);
+    assert.deepEqual(balanced.map(c => c.indices.length), [2, 8]);
+    assert.equal(balanced.length, greedy.length);
+    const spread = chunks => Math.max(...chunks.map(c => c.text.length)) - Math.min(...chunks.map(c => c.text.length));
+    assert(spread(balanced) < spread(greedy));
+    assert(balanced.every(c => c.text.length <= 12000));
+});
+
+test('a more even split cannot add a forecast request: retain the fill-first prefix', () => {
+    const source = [2000, 2000, 2000, 1, 1, 1, 1, 1].map((chars, index) => ({ index, name: 'S', text: 'x'.repeat(chars) }));
+    const options = { maxMessages: 4 };
+    const first = nextMessageChunk(source, c => c.text, 60000, options);
+    assert.equal(first.indices.length, 4, 'three or fewer would leave over four messages and require a third call');
+    assert.equal(collectChunks(source, c => c.text, 60000, options).length, 2);
+});
+
+test('a long single message stays whole; a later oversized message cannot block the good prefix', () => {
+    const source = [16000, 100, 100].map((chars, index) => ({ index, name: 'S', text: 'x'.repeat(chars) }));
+    const first = nextMessageChunk(source, c => c.text, 60000);
+    assert.deepEqual(first.indices, [0]); assert.equal(first.texts[0], source[0].text);
+    const laterBad = [100, 100, 30000].map((chars, index) => ({ index, name: 'S', text: 'x'.repeat(chars) }));
+    assert.deepEqual(nextMessageChunk(laterBad, c => c.text, 20000).indices, [0, 1]);
+    assert.throws(() => nextMessageChunk(laterBad.slice(2), c => c.text, 20000), InputLimitError);
+});
+
+test('planning is recalculated against increased fixed context before the next request', () => {
+    const source = messages(40, 200);
+    let overhead = 500;
+    const prompt = c => 'X'.repeat(overhead) + c.text;
+    const first = nextMessageChunk(source, prompt, 8000);
+    const tail = source.slice(first.indices.length);
+    const before = nextMessageChunk(tail, prompt, 8000);
+    overhead = 4500;
+    const after = nextMessageChunk(tail, prompt, 8000);
+    assert(after.indices.length < before.indices.length);
+    assert(prompt(after).length <= 6000, 'preserve the existing 2000-character retry margin');
+    assert.deepEqual(after.indices, tail.slice(0, after.indices.length).map(m => m.index));
+});
+
+test('seeded mixed-length inputs preserve limits, coverage and the static forecast request count', () => {
+    let seed = 7707;
+    const rand = n => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed % n; };
+    for (let trial = 0; trial < 180; trial++) {
+        const source = Array.from({ length: 1 + rand(80) }, (_, i) => ({ index: i * 3, name: 'S', text: 'x'.repeat(1 + rand(4000)) }));
+        const limit = 7000 + rand(15000), reserve = rand(1500), overhead = rand(1200);
+        const prompt = c => 'X'.repeat(overhead) + c.text;
+        const greedy = collectChunks(source, prompt, limit, { reserve, balance: false });
+        const balanced = collectChunks(source, prompt, limit, { reserve });
+        assert(balanced.length <= greedy.length, `trial ${trial}`);
+        assert.deepEqual(balanced.flatMap(c => c.indices), source.map(m => m.index));
+        for (const c of balanced) {
+            assert(c.indices.length <= 20 && c.text.length <= 12000);
+            assert(prompt(c).length <= limit);
+            if (c.indices.length > 1) assert(prompt(c).length <= limit - reserve);
+            for (const n of c.indices) assert.equal(c.texts[n], source.find(m => m.index === n).text);
+        }
+    }
+});
+
+test('lookahead does not repeatedly build the same suffix or send model calls', () => {
+    const source = messages(2000, 30); let builds = 0;
+    const chunk = nextMessageChunk(source, c => { builds++; return c.text; }, 60000);
+    assert.equal(chunk.indices.length, 20);
+    assert(builds <= source.length * 20, `${builds} prompt builds`);
+});

@@ -14,10 +14,9 @@ export function assertPromptFits(prompt, limit) {
         `요청 입력이 ${prompt.length.toLocaleString()}자로 설정 한도 ${limit.toLocaleString()}자를 넘어요. 원문을 자르지 않고 요청을 멈췄어요.`, prompt.length, limit);
 }
 
-// Re-run this after each saved chunk: memory supplied by makePrompt has changed.
-// The source cap keeps ordinary manual batches small even with a generous input
-// setting. A single longer message is allowed when its COMPLETE prompt fits.
-export function nextMessageChunk(messages, makePrompt, limit, { sourceLimit = 12000, maxMessages = 20, reserve = 2000 } = {}) {
+// The original fill-first planner remains the safety baseline. A single longer
+// message is allowed when its COMPLETE prompt fits; its text is never cropped.
+function greedyMessageChunk(messages, makePrompt, limit, { sourceLimit = 12000, maxMessages = 20, reserve = 2000 } = {}) {
     if (!messages.length) return null;
     const target = Math.max(0, limit - reserve);
     let best = null;
@@ -35,6 +34,58 @@ export function nextMessageChunk(messages, makePrompt, limit, { sourceLimit = 12
         if (chars > target || chunk.text.length >= sourceLimit) break;
     }
     return best;
+}
+
+// Re-run immediately before EACH request, after saving the previous result.
+// Counts below are estimates using the current memory, not a promise about future
+// calls: memory, relevant entities and loot in makePrompt can change after a save.
+export function nextMessageChunk(messages, makePrompt, limit, options = {}) {
+    const first = greedyMessageChunk(messages, makePrompt, limit, options);
+    if (!first || first.indices.length === messages.length || options.balance === false) return first;
+
+    // Memoize counts/steps rather than full source strings. Different candidate
+    // prefixes often lead to the same suffix; plan each suffix at most once.
+    const steps = new Map([[0, first.indices.length]]);
+    const counts = new Map([[messages.length, 0]]);
+    const countFrom = start => {
+        const path = [];
+        let offset = start;
+        while (!counts.has(offset)) {
+            path.push(offset);
+            if (!steps.has(offset)) {
+                try { steps.set(offset, greedyMessageChunk(messages.slice(offset), makePrompt, limit, options).indices.length); }
+                catch (e) {
+                    if (!(e instanceof InputLimitError)) throw e;
+                    // A later oversized message must not prevent saving the valid
+                    // prefix now. Let its own turn report the original error.
+                    counts.set(offset, Infinity); break;
+                }
+            }
+            offset += steps.get(offset);
+        }
+        let count = counts.get(offset);
+        for (let i = path.length - 1; i >= 0; i--) counts.set(path[i], ++count);
+        return counts.get(start);
+    };
+    const baseline = countFrom(0);
+    if (!Number.isFinite(baseline)) return first;
+
+    // Include message headers and separators, just as chunkMessages does. Balance
+    // original source volume, not only message count (RP replies vary in length).
+    const weights = messages.map(m => `#${m.index} ${m.name}: ${m.text}`.length + 2);
+    const goal = weights.reduce((a, b) => a + b, 0) / baseline;
+    let chosen = first.indices.length, best = Math.abs(first.text.length + 2 - goal), size = 0;
+    for (let n = 1; n <= first.indices.length; n++) {
+        size += weights[n - 1];
+        const distance = Math.abs(size - goal);
+        // Every candidate is a prefix already admitted by the baseline's checks.
+        // Keep the fuller prefix on a tie, and never add a forecast request just
+        // to make this request look more even. Otherwise retain the old chunk.
+        if (distance > best || (distance === best && n <= chosen)) continue;
+        if (1 + countFrom(n) > baseline) continue;
+        chosen = n; best = distance;
+    }
+    return chosen === first.indices.length ? first : chunkMessages(messages.slice(0, chosen), Infinity)[0];
 }
 
 // Each statement carries ALL of its evidence, including intervening messages

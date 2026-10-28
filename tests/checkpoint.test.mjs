@@ -80,6 +80,22 @@ test('manual quicksave includes the tail and clears the interval counter', async
     assert.equal(h.app.state().lastRecord.kind, 'quicksave');
 });
 
+test('checkpoint balances the eligible prefix; retained messages and their loot never enter any request', async () => {
+    const h = harness({ count: 32 });
+    h.app.settings().autoEvery = 30;
+    const result = await h.app.addLoot(31, h.context.chat[31].mes, 'Remember this later');
+    assert(result);
+    await h.app.autoCollect();
+    const st = h.app.state(), segs = st.mem.scenes[0].segs;
+    assert.deepEqual(segs.map(g => g.to - g.from + 1), [15, 15]);
+    assert.equal(st.lastIndex, 29); assert.equal(h.calls.length, 2);
+    assert(!h.calls.some(p => p.includes('END30') || p.includes('END31')));
+    assert.equal(st.lootQueue.length, 1);
+    assert(h.context.chat.slice(30).every(m => !m.is_system));
+    await h.app.summarize();
+    assert.equal(h.app.state().lastIndex, 31, 'manual save still includes the retained tail');
+});
+
 test('reserve zero records all; a reserve covering the pending range is a visible no-op without model calls', async () => {
     const a = harness({ reserve: 0 }); await a.app.autoCollect(); assert.equal(a.app.state().lastIndex, 19);
     const b = harness({ reserve: 20 }); await b.app.autoCollect();
