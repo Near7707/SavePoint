@@ -185,6 +185,11 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.pending.includes('퀵세이브로 반영') && !r.pending.includes('다시 반영'), '10. 미기록 메시지는 퀵세이브로 반영 안내');
     ok(r.changed.includes('다시 담은 뒤') && !r.changed.includes('다시 시도해요'), '10. 원문이 바뀐 항목은 다시 담기 안내, 자동 재시도 약속 없음');
     ok(r.room.includes('다른 방에서 담은 항목') && !r.room.includes('다시 시도해요'), '10. 다른 방 항목은 반영하지 않는다고 안내');
+    // 11. when the chat file itself cannot be written, the item keeps its reason on screen
+    await ev(async () => { M.failMeta = true; try { await __savePoint.summarize(); } catch {} });
+    await sleep(300);
+    r = await ev(() => { M.failMeta = false; const q = __savePoint.state().lootQueue || []; const x = q.find(i => i.text === 'The ferry horn sounded'); return { err: x?.error || '', fails: x?.fails || 0 }; });
+    ok(r.err.includes('disk full') && r.fails === 1, `11. 파일 저장 실패에도 항목별 이유와 횟수가 남음 (${r.err} · ${r.fails})`);
 
     await browser.close(); srv.close();
     console.log(failures ? `${failures} FAILED` : 'ALL PASS');

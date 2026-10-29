@@ -127,3 +127,29 @@ test('the upgrade runs once, revives a quoted first boundary, and never loses a 
     upgradeStoryTimes(b);
     assert.equal(JSON.stringify(b.scenes[0].segs.at(-1).time.end), manualBefore, 'manual time kept');
 });
+
+test('review: "same" quoting an earlier date after a gap is blocked and the deadline stays put', () => {
+    let m = save(emptyMem(), box('2026-10-25 (Sun)', '14:00') + '\n내일 성문에서 만나자고 약속했다.', { start: { relation: 'explicit', date: '2026-10-25 (Sun)', clock: '14:00', quote: line('2026-10-25 (Sun)', '14:00') }, end: { relation: 'same' } },
+        [{ op: 'add', type: 'quest', kind: 'promise', status: 'open', who: [], text: 'Promised to meet at the gate.', terms: '내일 성문에서 만나자고 약속했다', due: { expr: '내일', days: 1 } }]);
+    m = save(m, 'The courier waited.', { start: { relation: 'same' }, end: { relation: 'unknown' } });
+    m = save(m, box('2026-10-20 (Tue)', '10:00'), { start: { relation: 'same', date: '2026-10-20 (Tue)', clock: '10:00', quote: line('2026-10-20 (Tue)', '10:00') }, end: { relation: 'same' } });
+    assert.equal(last(m), '시간 미확인');
+    assert.notEqual(dueStatus(m, m.records[0]).left, 6, 'no jump to "6 days left"');
+});
+
+test('review: an old first part kept as "recording day 1" despite a quoted date is upgraded once, without adding elapsed days twice', () => {
+    const ev = { room: 'room-A', msg: 0, quote: line('2026-10-25 (Sun)', '14:38') };
+    const key = 't:' + JSON.stringify(['room-A', 'g1', 'start']);
+    const old = { ...emptyMem(), timeAnchors: { [key]: { kind: 'record', date: '', label: '', baseDay: 0, numbered: true, counted: false } }, scenes: [{ id: 's1', title: 'x', where: '', who: [], status: 'open', segs: [
+        { id: 'g1', from: 0, to: 0, outline: 'x', points: [], time: { mode: 'present', origin: 'room-A',
+            start: { op: 'same', date: '2026-10-25', clock: '14:38', evidence: ev, verified: true, anchor: key, day: 0, certainty: 'linked' },
+            end: { op: 'same', anchor: key, day: 0, certainty: 'linked', clock: '14:38' } } },
+        { id: 'g2', from: 1, to: 1, outline: 'x', points: [], time: { mode: 'present', origin: 'room-A',
+            start: { op: 'same', anchor: key, day: 0, certainty: 'linked' },
+            end: { op: 'advance', days: 1, evidence: { room: 'room-A', msg: 1, quote: '다음 날 아침' }, verified: true, anchor: key, day: 1, certainty: 'linked' } } }] }] };
+    const m = cleanMem(JSON.parse(JSON.stringify(old)));
+    assert.equal(upgradeStoryTimes(m), true);
+    assert.deepEqual(m.scenes[0].segs.map(g => formatSegmentTime(g.time, m.timeAnchors, 'ko')), ['2026-10-25 · 14:38', '2026-10-25 · 14:38 → 2026-10-26']);
+    assert.equal(upgradeStoryTimes(m), false);
+    assert.equal(formatSegmentTime(m.scenes[0].segs[1].time, m.timeAnchors, 'ko'), '2026-10-25 · 14:38 → 2026-10-26', 'a second pass does not add the day again');
+});

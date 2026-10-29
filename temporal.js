@@ -284,7 +284,10 @@ export function recomputeStoryTimes(mem, { fromSegment = null, edge = 'start', r
         // A deleted prefix is not a new story beginning. Its anchor remains a valid
         // boundary snapshot for the first retained part, including an already-applied
         // advance. A newly edited start has no resolved anchor and is recalculated.
-        const keepBoundary = !previous && ((known(t.start) && mem.timeAnchors[t.start.anchor]) ||
+        // Upgrade only: a first boundary that quotes a calendar date but was kept as "recording day 1"
+        // (older versions ignored the date of a first "same") is read as that date instead.
+        const datedRecord = standsAlone(t.start) && !!t.start.date && known(t.start) && mem.timeAnchors[t.start.anchor]?.kind === 'record';
+        const keepBoundary = !previous && !datedRecord && ((known(t.start) && mem.timeAnchors[t.start.anchor]) ||
             (!t.start.manual && t.start.certainty === 'unconfirmed' && !standsAlone(t.start)));
         const at = t.mode === 'present' ? floor : null;
         if (!keepStart && !keepBoundary)

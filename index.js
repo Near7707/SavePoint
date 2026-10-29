@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.11';
+const VERSION = '0.6.12';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -689,14 +689,21 @@ async function markStaleLoot(run, items) {
             item.error = lootStatus(item, roomKey(), chat(), fingerprint, viewHash);
     }, { undoable: false, autosave: false });
 }
+// A failed chat-file write puts back a copy of the room's state, so the items are looked up in the
+// current state of the same room. If even this note cannot be written, it stays on screen and is
+// saved with the next successful write rather than being lost.
 async function failPendingLoot(run, items, error) {
-    if (state() !== run.st || run.cancelled || error instanceof Cancelled) return 0;
+    if (run.cancelled || error instanceof Cancelled || run.key !== roomKey() || run.epoch !== roomEpoch || !state()) return 0;
     const sent = new Set(run.lootAttempted || []);
     const ids = new Set(items.filter(x => sent.has(x.id)).map(x => x.id));
-    const pending = (run.st.lootQueue || []).filter(x => ids.has(x.id) && !lootStatus(x, roomKey(), chat(), fingerprint, viewHash));
-    if (!pending.length) return 0;
-    await transact(() => { for (const item of pending) failLoot(item, errorText(error).slice(0, 300), run.lootCounted); }, { undoable: false, autosave: false });
-    return pending.length;
+    const pending = () => (state()?.lootQueue || []).filter(x => ids.has(x.id) && !lootStatus(x, roomKey(), chat(), fingerprint, viewHash));
+    const count = pending().length;
+    if (!count) return 0;
+    const base = new Set(run.lootCounted);
+    const mark = () => { const counted = new Set(base); for (const item of pending()) failLoot(item, errorText(error).slice(0, 300), counted); return counted; };
+    try { let counted; await transact(() => { counted = mark(); }, { undoable: false, autosave: false }); run.lootCounted = counted; }
+    catch { run.lootCounted = mark(); persistSoon(); render(); }
+    return count;
 }
 function supplementPrompt(seg, items) {
     const originals = [...new Set(items.map(x => x.msg))].map(n => `#${n} ${speaker(chat()[n])}: ${cleanText(chat()[n].mes)}`).join('\n\n');
@@ -744,15 +751,16 @@ async function supplementLoot(run, items, undoPoint = checkpoint(run.st)) {
                 if (!errors.length) break;
             }
             if (errors.length) throw new Error('응답이 검사를 통과하지 못했어요');
-            const linked = {};
+            const linked = {}, counted = new Set(run.lootCounted);
             const next = refreshProvisionalOutlines(applyLootSupplement(st.mem, target.seg.id, data, group, linked));
             await transact(() => {
                 const before = st.mem;
                 st.mem = next; pushHistory(st, before, next, { kind: 'edit' });
-                failed += settleLoot(st, group, next, linked.why, run.lootCounted);
+                failed += settleLoot(st, group, next, linked.why, counted);
                 st.undo = undoPoint;
                 st.lastRecord = { at: Date.now(), from: Math.min(...group.map(x => x.msg)), to: Math.max(...group.map(x => x.msg)), kind: 'supplement' };
             }, { undoable: false, autosave: false, rehide: true });
+            run.lootCounted = counted;
             saved++;
         } catch (e) {
             if (e instanceof Cancelled || run.cancelled || state() !== st) throw e;
@@ -833,6 +841,8 @@ async function summarize({ close = false, auto = false } = {}) {
             const { mem: next } = applyResult(st.mem, data, chunk, { room: run.key, close: close && last });
             // Memory, position and hiding change together; a failed save puts all of it back.
             stage = 'save';
+            // Failure counts made inside a write that is rolled back must not stick.
+            const counted = new Set(run.lootCounted);
             await transact(() => {
                 const before = st.mem;
                 st.mem = next;
@@ -841,8 +851,9 @@ async function summarize({ close = false, auto = false } = {}) {
                 st.lastRecord = { at: Date.now(), from: start, to: coverTo, kind: auto ? 'checkpoint' : 'quicksave' };
                 st.undo = undoPoint;
                 settleAutoFail(st);
-                lootFailed += settleLoot(st, marked, next, data.lootWhy, run.lootCounted);
+                lootFailed += settleLoot(st, marked, next, data.lootWhy, counted);
             }, { undoable: false, autosave: false, rehide: true });
+            run.lootCounted = counted;
             done++; cursor += chunk.indices.length;
         }
         const supplement = await supplementLoot(run, oldLoot, undoPoint);
@@ -867,7 +878,7 @@ async function summarize({ close = false, auto = false } = {}) {
         }
         clearInterrupted(run.key);
     } catch (e) {
-        if (queued.length && !(e instanceof Cancelled) && state() === st) {
+        if (queued.length && !(e instanceof Cancelled) && run.key === roomKey()) {
             try { lootFailed += await failPendingLoot(run, queued, e); } catch { /* a failed disk write leaves the queue intact */ }
         }
         if (!(e instanceof Cancelled) && !e.detail) ui.lastError = { at: Date.now(), range: `#${msgs[cursor]?.index ?? start}–#${end}`, detail: [errorText(e)] };
@@ -890,7 +901,7 @@ async function summarize({ close = false, auto = false } = {}) {
             }
         }
     } finally {
-        if (lootFailed && state() === st) toastr.warning(`⚠ 루팅한 내용 ${lootFailed}개가 반영되지 않았어요.${lootFailNote(st)} 다음 세이브 때 다시 시도해요. 자세한 이유는 ⏳ 대기열에서 볼 수 있어요.`, 'SavePoint', { timeOut: 10000 });
+        if (lootFailed && run.key === roomKey() && state()) toastr.warning(`⚠ 루팅한 내용 ${lootFailed}개가 반영되지 않았어요.${lootFailNote(state())} 다음 세이브 때 다시 시도해요. 자세한 이유는 ⏳ 대기열에서 볼 수 있어요.`, 'SavePoint', { timeOut: 10000 });
         endRun(run);
         if (done && run.key === roomKey()) { autosave(state()); if (state() === st) queueCheck(st, memBefore, { auto }); }
     }
