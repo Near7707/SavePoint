@@ -84,6 +84,21 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     // journal shows the counts
     await ev(() => __savePoint.handle('tab', 'journal'));
     ok(/포인트 \d+ \(주입 \d+\)/.test(await ev(() => $('.sp-more summary').first().text())), '7. 저널에 포인트 수와 주입 수 표시');
+    // Injection tab: how each scene is written, why scenes are left out, and the limit that fits all outlines
+    {
+        const r2 = await page.evaluate(() => {
+            const st = __savePoint.state(); const extra = [];
+            for (let i = 0; i < 30; i++) extra.push({ id: 'sx' + i, title: 'Errand ' + i, where: 'Harbor', who: [], status: 'closed', segs: [{ id: 'gx' + i, from: 0, to: 0, outline: 'They walked the long harbor road and talked about the tides and the lantern routes in detail. They agreed to meet again.', points: [] }] });
+            st.mem.scenes = [...extra, ...st.mem.scenes];
+            if (!__savePoint.ui.open) document.querySelector('#sp_open').click();
+            M.settings.savePoint.budget = 900; __savePoint.refreshInjection(); __savePoint.handle('tab', 'inject');
+            const t = document.querySelector('#sp_overlay .sp-window')?.textContent || '';
+            st.mem.scenes = st.mem.scenes.filter(x => !x.id.startsWith('sx')); M.settings.savePoint.budget = 6000; __savePoint.refreshInjection();
+            return t;
+        });
+        ok(/장면 \d+개 · .*짧은 개요 \d+/.test(r2) && r2.includes('모든 장면의 개요를 포함하려면 주입 상한 약') && r2.includes('회상 후보'), '주입 탭: 장면별 단계, 필요한 상한, 회상 안내');
+        ok(/주입 상한\(900토큰\)이 차서 제목도 넣지 못한 장면|짧은 개요/.test(r2), '주입 탭: 빠진 이유 표시');
+    }
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();

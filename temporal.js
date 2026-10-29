@@ -344,6 +344,11 @@ export function editStoryTime(mem, segmentId, values, room = null) {
 export function formatStoryStamp(stamp, anchors = {}, lang = 'en') {
     const ko = lang === 'ko';
     if (!stamp || !known(stamp) || !anchors[stamp.anchor]) return ko ? '시간 미확인' : 'unknown story time (unconfirmed)';
+    return [stampLabel(stamp, anchors, lang), stamp.period ? ko ? KO[stamp.period] : stamp.period : '', stamp.clock].filter(Boolean).join(' · ');
+}
+// The date part of a confirmed stamp: a calendar date, a day of a reference, or the reference's own words.
+function stampLabel(stamp, anchors, lang) {
+    const ko = lang === 'ko';
     const a = anchors[stamp.anchor], date = dateAt(stamp, anchors), offset = integer(stamp.day) ? stamp.day - a.baseDay : null, n = stamp.day + 1;
     let label = date;
     if (!label && a.date && offset !== null) label = `${a.date} ${offset >= 0 ? '+' : ''}${offset}${ko ? '일' : ' days'}`;
@@ -353,7 +358,45 @@ export function formatStoryStamp(stamp, anchors = {}, lang = 'en') {
         label = a.label || (ko ? '날짜 미상' : 'unknown date');
         if (offset !== null && offset > 0) label += ` · ${offset === 1 ? ko ? '이튿날' : 'next day' : ko ? `해당 기준 ${offset + 1}일째` : `day ${offset + 1} of this reference`}`;
     }
-    return [label, stamp.period ? ko ? KO[stamp.period] : stamp.period : '', stamp.clock].filter(Boolean).join(' · ');
+    return label;
+}
+// The date part and the time-of-day part of one stamp, plus what identifies "the same day of the
+// same reference". Used to write a scene's times without repeating its date in every part.
+function stampParts(stamp, anchors) {
+    if (!stamp || !known(stamp) || !anchors[stamp.anchor]) return { known: false, date: 'time unconfirmed', time: '', key: null };
+    return { known: true, date: stampLabel(stamp, anchors, 'en'), time: [stamp.period, stamp.clock].filter(Boolean).join(' '), key: `${stamp.anchor}|${stamp.day}` };
+}
+// For the injection: a scene's time once in its head, and each part only with what changed.
+// The date is written again whenever it changes, after an unconfirmed time, at a flashback, and
+// when the reference changes (a different anchor), since the earlier date must not be assumed there.
+export function compactSceneTimes(scene, anchors = {}) {
+    const timed = (scene.segs || []).filter(g => g.time), labels = new Map();
+    if (!timed.length) return { head: '', labels };
+    let ctx = null;
+    // One stamp: its time of day only when it continues the same day of the same reference.
+    const one = (stamp, mode) => {
+        const p = stampParts(stamp, anchors), same = !!(p.known && ctx && ctx.key === p.key && ctx.mode === mode);
+        ctx = p.known ? { key: p.key, mode } : null;
+        return { ...p, same, text: same ? p.time : [p.date, p.time].filter(Boolean).join(' ') };
+    };
+    const range = g => {
+        const flash = g.time.mode === 'flashback';
+        if (flash) ctx = null;
+        const a = one(g.time.start, g.time.mode), b = one(g.time.end, g.time.mode);
+        if (flash) ctx = null;
+        let text;
+        if (!b.text || (b.same && b.time === a.time)) text = a.text;            // ends where it started
+        else if (b.same) text = a.text ? `${a.text}–${b.text}` : b.text;          // same day: 10:00–11:30
+        else text = a.text ? `${a.text} → ${b.text}` : `→ ${b.text}`;              // another day or reference
+        return text ? (flash ? 'flashback ' : '') + text : '';
+    };
+    if (timed.length === 1) return { head: range(timed[0]), labels };
+    // Head: the date span only. The first part then continues from the head's first date.
+    const first = stampParts(timed[0].time.start, anchors), lastPart = timed[timed.length - 1], last = stampParts(lastPart.time.end, anchors);
+    const head = first.date === last.date && first.key === last.key ? first.date : `${first.date} → ${last.date}`;
+    ctx = first.known && timed[0].time.mode === 'present' ? { key: first.key, mode: 'present' } : null;
+    for (const g of timed) { const t = range(g); if (t) labels.set(g.id, t); }
+    return { head, labels };
 }
 export function formatSegmentTime(time, anchors = {}, lang = 'en') {
     if (!time) return '';

@@ -3,7 +3,7 @@ import { dueStatus, formatDue, setManualDue, upgradeStoryTimes, PERIODS, editSto
 // with game-style save files. Summaries run on demand and at periodic checkpoints.
 import { foldLegacyOutline,
     emptyMem, cleanMem, detachMem, chunkMessages, promptContext, validateResult, resultLanguageIssues,
-    applyResult, closeOpenScene, pushHistory, rollbackFrom, buildInjection, openScene, memStats,
+    applyResult, closeOpenScene, pushHistory, rollbackFrom, buildInjection, neededBudget, openScene, memStats,
     pointInjected, pointSymbol, rekeyItems, validateRekey, applyRekey, sceneOutlineText, sceneOutlineParts,
     refreshProvisionalOutlines, normalizeResult, validateCheck, checkScope, dupState, pointId,
     recordLine, normalizeRecordNames, entityName, estTokens, QUEST_KINDS, WORLD_KINDS, ENTITY_TYPES,
@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.13';
+const VERSION = '0.6.14';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -382,11 +382,13 @@ function refreshInjection() {
     let text = '';
     ui.inj = null;
     if (s.enabled && st && hasChat() && !st.review && hasMemory(st.mem)) {
-        ui.inj = buildInjection(st.mem, {
+        const opts = {
             budget: num('budget', 300, 100000), titleCap: num('titleCap', 0, 20000), recentScenes: num('recentScenes', 0, 20),
             query: recentQuery(), recall: !!s.recall, rawRecall: s.rawRecall ? rawExcerpt : null,
             ignoreNames: [names().char, names().user, charInfo()?.name].filter(Boolean),
-        });
+        };
+        ui.inj = buildInjection(st.mem, opts);
+        ui.injOpts = opts; ui.injNeed = undefined;   // the needed limit is computed when the tab shows it
         text = ui.inj.text;
     }
     ctx().setExtensionPrompt(PROMPT_KEY, text, Number(s.position), num('depth', 0, 999), false, Number(s.role));
@@ -2123,6 +2125,23 @@ function savesHtml(st) {
         + (sameChar.length ? groupBox('char', `${esc(charInfo()?.name || '이 캐릭터')}의 다른 방`, sameChar.length, roomBoxes, false) : '')
         + (others.length ? groupBox('others', '다른 캐릭터', others.length, otherCharsHtml(others, st, order), false) : '');
 }
+const LEVEL_KO = { full: '자세히', outline: '개요', short: '짧은 개요', title: '제목만', omitted: '빠짐', recalled: '회상만' };
+function injectLevelsHtml(st, inj) {
+    const levels = Object.values(inj.levels || {});
+    if (!levels.length) return '';
+    const count = k => levels.filter(l => l === k).length;
+    const line = Object.keys(LEVEL_KO).filter(k => count(k)).map(k => `${LEVEL_KO[k]} ${count(k)}`).join(' · ');
+    const reduced = levels.some(l => l !== 'full' && l !== 'outline');
+    if (reduced && ui.injNeed === undefined && ui.injOpts) ui.injNeed = neededBudget(st.mem, ui.injOpts);
+    const budget = num('budget', 300, 100000), titleCap = num('titleCap', 0, 20000);
+    const why = !inj.omittedScenes ? '' : inj.omittedBy === 'titleCap'
+        ? `<div class="sp-warn">‘오래된 장면 제목 목록 상한’(${titleCap.toLocaleString()}토큰) 때문에 제목도 넣지 못한 장면이 ${inj.omittedScenes}개 있어요. 그 상한을 늘리면 제목이 들어가요.</div>`
+        : `<div class="sp-warn">주입 상한(${budget.toLocaleString()}토큰)이 차서 제목도 넣지 못한 장면이 ${inj.omittedScenes}개 있어요.</div>`;
+    const need = !reduced ? '' : ui.injNeed
+        ? `<div class="sp-dim">모든 장면의 개요를 포함하려면 주입 상한 약 <b>${ui.injNeed.toLocaleString()}</b>토큰이 필요해요. 선택 포인트·상세 노트까지 모두 포함하는 수치는 아니에요.</div>`
+        : '<div class="sp-dim">주입 상한을 최대로 늘려도 모든 장면의 개요를 넣을 수는 없어요.</div>';
+    return `<div class="sp-dim">장면 ${levels.length}개 · ${line}</div>${why}${need}${reduced ? '<div class="sp-dim">줄어든 장면도 저장된 기록·포인트는 그대로예요. 자세한 내용은 최근 대화와 관련될 때 회상 후보가 되지만, 회상은 검색 결과와 회상 몫 안에서 골라요.</div>' : ''}`;
+}
 function injectHtml(st) {
     const inj = ui.inj;
     if (!inj || !inj.text) return '<div class="sp-empty">지금 주입되는 기억이 없어요.</div>';
@@ -2132,7 +2151,7 @@ function injectHtml(st) {
     return `<div class="sp-card"><div class="sp-meters">
         <span>전체 <b>${inj.tokens.toLocaleString()}</b> / ${num('budget', 300, 100000).toLocaleString()}</span>
         <span>상태 ${Math.round(u.state)}</span><span>저널 ${Math.round(u.journal)}</span><span>회상 ${Math.round(u.recall)}</span><span>제목 목록 ${Math.round(u.titles)}</span></div>
-        ${inj.omittedScenes ? `<div class="sp-warn">예산 때문에 제목도 넣지 못한 장면이 ${inj.omittedScenes}개 있어요.</div>` : ''}
+        ${injectLevelsHtml(st, inj)}
         ${inj.pinOverflow ? `<div class="sp-warn">📌 고정 항목 ${inj.pinMissing}개가 주입 상한 안에 들어가지 못해 빠졌어요. 고정을 줄이거나 상한을 늘려 주세요.</div>` : ''}
         <div class="sp-aspect">회상한 장면과 이유</div>${rec}
         </div>

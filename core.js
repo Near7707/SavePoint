@@ -1,4 +1,4 @@
-import { cleanTimeAnchors, cleanStoryTime, resolveResultTime, formatSegmentTime, sceneTimeRange, storyTimeContext, cleanDue, resolveDueClaim, formatDue } from './temporal.js';
+import { cleanTimeAnchors, cleanStoryTime, resolveResultTime, formatSegmentTime, compactSceneTimes, storyTimeContext, cleanDue, resolveDueClaim, formatDue } from './temporal.js';
 import { cleanLootSources, restoreLostLoot } from './loot.js';
 import { upgradeEvidence, detachEvidence, cleanPrior, cleanSource } from './provenance.js';
 // SavePoint core: pure data logic (no SillyTavern, no DOM).
@@ -927,16 +927,29 @@ export function recallScenes(mem, query, formOf = () => 'none', max = 2, ignoreN
 // ───────── injection ─────────
 
 const firstSentence = t => (String(t).match(/^.*?[.!?](\s|$)/)?.[0] || String(t)).trim();
-function sceneHead(s, anchors = {}) { const time = sceneTimeRange(s, anchors); return `${s.title}${s.where ? ` (${s.where})` : ''}${s.star ? ' ★' : ''}${time ? ` [${time}]` : ''}`; }
+// Scene times are written once in the head; parts carry only what changed (see compactSceneTimes).
+function sceneHead(s, anchors = {}) { const time = compactSceneTimes(s, anchors).head; return `${s.title}${s.where ? ` (${s.where})` : ''}${s.star ? ' ★' : ''}${time ? ` [${time}]` : ''}`; }
 const progress = s => (s.status === 'open' ? ' [in progress]' : '');
-const timedOutline = (s, anchors) => s.segs.some(g => g.time) ? s.segs.map(g => `${g.time ? '[' + formatSegmentTime(g.time, anchors) + '] ' : ''}${g.outline || ''}`).filter(Boolean).join(' ') : sceneOutlineText(s);
+const timedOutline = (s, anchors) => {
+    if (!s.segs.some(g => g.time)) return sceneOutlineText(s);
+    const { labels } = compactSceneTimes(s, anchors);
+    return s.segs.map(g => `${labels.has(g.id) ? '[' + labels.get(g.id) + '] ' : ''}${g.outline || ''}`).map(x => x.trim()).filter(Boolean).join(' ');
+};
+// The short outline: first sentence of the first part, plus that of the last part when it differs.
+// Not a new summary; the last part may still be in progress, which the head says.
+export function shortOutline(s) {
+    const parts = s.segs.filter(g => String(g.outline || '').trim());
+    if (!parts.length) return firstSentence(sceneOutlineText(s));
+    const a = firstSentence(parts[0].outline), b = parts.length > 1 ? firstSentence(parts[parts.length - 1].outline) : '';
+    return b && plainText(b) !== plainText(a) ? `${a} … ${b}` : a;
+}
 export function sceneFull(s, anchors = {}) {
     const outline = plainText(sceneOutlineText(s));
     const pts = injectedPoints(s).filter(p => !s.segs.some(g => g.outlinePending) || !outline.includes(plainText(p.text))).map(p => `  • ${p.text}`);
     return [`- ${sceneHead(s, anchors)}${progress(s)}: ${timedOutline(s, anchors)}`, ...pts].join('\n');
 }
 export function sceneOutline(s, anchors = {}) { return `- ${sceneHead(s, anchors)}${progress(s)}: ${timedOutline(s, anchors)}`; }
-export function sceneOneLiner(s, anchors = {}) { return `- ${sceneHead(s, anchors)}: ${firstSentence(sceneOutlineText(s))}`; }
+export function sceneOneLiner(s, anchors = {}) { return `- ${sceneHead(s, anchors)}${progress(s)}: ${shortOutline(s)}`; }
 
 export const INJECT_HEADER = '[SavePoint memory: past records of this story. Do not repeat completed actions; carry forward their results and any ongoing states. The latest messages always take priority.]';
 
@@ -968,18 +981,28 @@ export function buildInjection(mem, opts = {}) {
     const recentIds = new Set(recentScenes.map(sc => sc.id));
     mem.scenes.forEach((sc, idx) => {
         let pr, alts;
-        if (recentIds.has(sc.id)) { pr = 4; alts = [sceneFull(sc, mem.timeAnchors), sceneOutline(sc, mem.timeAnchors), sceneOneLiner(sc, mem.timeAnchors)]; }
-        else if (sc.pin) { pr = 2; alts = [sceneOutline(sc, mem.timeAnchors), sceneOneLiner(sc, mem.timeAnchors)]; }
-        else if (sc.star) { pr = 5; alts = [sceneOutline(sc, mem.timeAnchors), sceneOneLiner(sc, mem.timeAnchors)]; }
-        else { pr = 7; alts = [sceneOutline(sc, mem.timeAnchors)]; }
+        let forms;
+        // Every scene steps down outline → short outline → title (→ left out) before anything is dropped.
+        if (recentIds.has(sc.id)) { pr = 4; forms = ['full', 'outline', 'short']; }
+        else if (sc.pin) { pr = 2; forms = ['outline', 'short']; }
+        else if (sc.star) { pr = 5; forms = ['outline', 'short']; }
+        else { pr = 7; forms = ['outline', 'short']; }
+        const make = { full: () => sceneFull(sc, mem.timeAnchors), outline: () => sceneOutline(sc, mem.timeAnchors), short: () => sceneOneLiner(sc, mem.timeAnchors) };
+        alts = forms.map(f => make[f]());
+        // Identical texts (a one-part scene whose outline is one sentence) are tried once.
+        forms = forms.filter((f, i) => alts.indexOf(alts[i]) === i); alts = [...new Set(alts)];
         if (sc.pin && pr !== 2) pr = Math.min(pr, 2);
-        items.push({ tier: 'journal', pr, scene: sc, idx, pin: !!sc.pin, alts });
+        items.push({ tier: 'journal', pr, scene: sc, idx, pin: !!sc.pin, alts, forms });
         for (const g of sc.segs) for (const p of g.points) {
             if (p.pin === true) items.push({ tier: 'journal', pr: 2, scene: sc, point: p, pin: true,
                 alts: [`- From "${sc.title}": ${g.time ? `[${formatSegmentTime(g.time, mem.timeAnchors)}] ` : ''}${p.text}`] });
         }
     });
-    const sorted = [...items].sort((a, b) => a.pr - b.pr);
+    // Ordinary and starred scenes (pr >= 5) are "stepped": each first takes its shortest form, newest
+    // first, so as many scenes as possible stay in; then the newest are upgraded with what is left.
+    // Older scenes are therefore the ones reduced first.
+    const stepped = it => it.tier === 'journal' && !it.point && it.pr >= 5;
+    const sorted = [...items].sort((a, b) => a.pr - b.pr || (stepped(a) && stepped(b) ? b.idx - a.idx : 0));
     const used = { state: 0, journal: 0, recall: 0, titles: 0 };
     const caps = { state: budget * share.state, journal: budget * share.journal, recall: budget * share.recall };
     const timeContext = storyTimeContext(mem);
@@ -990,7 +1013,7 @@ export function buildInjection(mem, opts = {}) {
     const costOf = alt => estTokens(alt) + 1;
     const tryAdd = (it, respectTier, limit) => {
         if (chosen.has(it)) return;
-        for (const alt of it.alts) {
+        for (const alt of stepped(it) ? [it.alts.at(-1)] : it.alts) {
             const cost = costOf(alt);
             if (total + cost > limit) continue;
             if (respectTier && used[it.tier] + cost > caps[it.tier]) continue;
@@ -1018,19 +1041,32 @@ export function buildInjection(mem, opts = {}) {
         if (total + cost > budget) continue;
         chosen.set(it, alt); used[it.tier] += cost; total += cost;
     }
+    // Raise stepped scenes to a fuller form, newest first, within the limit (and the tier share).
+    const upgradeStepped = (limit, respectTier) => {
+        for (const it of sorted.filter(x => stepped(x) && chosen.has(x))) {
+            const cur = chosen.get(it), curCost = costOf(cur);
+            for (const alt of it.alts) {
+                if (alt === cur) break;
+                const extra = costOf(alt) - curCost;
+                if (total + extra > limit || (respectTier && used[it.tier] + extra > caps[it.tier])) continue;
+                chosen.set(it, alt); used[it.tier] += extra; total += extra; break;
+            }
+        }
+    };
     for (const it of sorted) tryAdd(it, true, limit1);
     for (const it of sorted) tryAdd(it, false, limit1);
+    upgradeStepped(limit1, true);
+    upgradeStepped(limit1, false);
     upgradePinned(pinned, limit1);
 
     // Phase 2: recall what the journal did not actually carry (including recent scenes), unit by unit,
     // best match first, never repeating text already in the injection, within the recall share.
     const formOf = sc => {
-        const it = items.find(x => x.scene === sc);
+        const it = items.find(x => x.scene === sc && !x.point);
         const alt = it && chosen.get(it);
         if (!alt) return 'none';
-        if (alt === sceneFull(sc)) return 'full';
-        if (alt === sceneOutline(sc)) return 'outline';
-        return 'oneliner';
+        const f = it.forms[it.alts.indexOf(alt)];
+        return f === 'short' ? 'oneliner' : f;
     };
     const recalled = opts.recall === false ? [] : recallScenes(mem, query, formOf, opts.recallMax ?? 2, opts.ignoreNames || []);
     const injectedSoFar = plainText([...chosen.values()].join(' '));
@@ -1067,6 +1103,7 @@ export function buildInjection(mem, opts = {}) {
     // (a scene that was just recalled is not added again).
     const recalledScenes = new Set(recallItems.map(it => it.recall.scene));
     for (const it of sorted) if (!recalledScenes.has(it.scene)) tryAdd(it, false, budget);
+    upgradeStepped(budget, false);
     upgradePinned(pinned, budget);
     // A pinned point is its own item even when its scene is old or reduced to a title.
     // If the selected outline of the same scene already contains it verbatim, show it once.
@@ -1086,11 +1123,11 @@ export function buildInjection(mem, opts = {}) {
     const recalledIds = new Set(recallItems.map(it => it.recall.scene.id));
     const left = items.filter(it => it.tier === 'journal' && !it.point && !chosen.has(it) && !recalledIds.has(it.scene.id)).map(it => it.scene);
     const titleList = [];
-    let titleCost = 0;
+    let titleCost = 0, omittedBy = '';
     for (const sc of [...left].reverse()) {
         const t = sc.title + (sc.star ? ' ★' : '');
         const c = estTokens(t) + 1;
-        if (titleCost + c > titleCap || total + c > budget) break;
+        if (titleCost + c > titleCap || total + c > budget) { omittedBy = total + c > budget ? 'budget' : 'titleCap'; break; }
         titleList.unshift(t); titleCost += c; total += c;
     }
     used.titles = titleCost;
@@ -1120,9 +1157,26 @@ export function buildInjection(mem, opts = {}) {
     const text = parts.join('\n');
     return {
         text, tokens: estTokens(text), used, pinOverflow, pinMissing,
-        omittedScenes: left.length - titleList.length,
+        omittedScenes: left.length - titleList.length, omittedBy,
+        // How each scene was written: full / outline / short / title / omitted / recalled (only).
+        levels: Object.fromEntries(mem.scenes.map(sc => {
+            const it = items.find(x => x.scene === sc && x.tier === 'journal' && !x.point), alt = it && chosen.get(it);
+            return [sc.id, alt ? it.forms[it.alts.indexOf(alt)] : recalledIds.has(sc.id) ? 'recalled' : left.includes(sc) ? (titleList.length && left.indexOf(sc) >= left.length - titleList.length ? 'title' : 'omitted') : 'omitted'];
+        })),
         recalled: recallItems.map(it => ({ id: it.recall.scene.id, title: it.recall.scene.title, reasons: it.recall.reasons, form: it.recall.form })),
     };
+}
+
+// The smallest injection limit at which every scene is written at least as its outline, found by
+// running the real injection again (state, pins, header and recall included). null when even the
+// largest allowed limit is not enough. It does not promise that every point and note fits.
+export function neededBudget(mem, opts = {}, max = 100000) {
+    const fits = b => Object.values(buildInjection(mem, { ...opts, budget: b }).levels || {}).every(l => l === 'full' || l === 'outline');
+    let lo = Math.max(300, opts.budget ?? 6000), hi = lo;
+    if (fits(lo)) return lo;
+    while (!fits(hi)) { if (hi >= max) return null; lo = hi; hi = Math.min(max, hi * 2); }
+    while (hi - lo > 100) { const mid = Math.floor((lo + hi) / 2); if (fits(mid)) hi = mid; else lo = mid; }
+    return Math.ceil(hi / 500) * 500;
 }
 
 // ───────── validation of stored memory (imports, save files) ─────────
