@@ -112,3 +112,24 @@ test('timeline rows keep record order, separate references, mark flashbacks and 
     assert.equal(rows[2].flashback, true);
     assert.notEqual(rows[3].ref?.key, 'dated', 'a vague jump is its own reference');
 });
+
+test('review v0.6.16: a recalled scene is not raised to its outline as well', () => {
+    const parts = [];
+    for (let i = 0; i < 12; i++) parts.push({ newScene: true, ended: true, title: `Lantern errand ${i}`, outline: `The courier and the keeper discussed lantern ${i} at the harbor. They agreed on the north pier route.` });
+    const mem = build(parts);
+    for (const budget of [480, 500, 520, 560, 600, 700]) {
+        const t = buildInjection(mem, { budget, query: 'lantern 3 cracked harbor north pier route keeper courier' }).text;
+        for (const s of mem.scenes) assert(t.split(s.segs[0].outline).length <= 2, `outline of ${s.title} appears twice at ${budget}`);
+    }
+});
+
+test('review v0.6.16: a flashback never widens the present date range, and stays marked when shortened', () => {
+    const mixed = build([{ newScene: true, s: ex('2026-10-25', '21:00'), e: { relation: 'same' }, q: [line('2026-10-25', '21:00')], outline: 'Night watch. Quiet.' },
+        { s: ex('2026-09-01', '18:00'), e: { relation: 'same' }, q: [line('2026-09-01', '18:00')], mode: 'flashback', outline: 'A memory. More.' }]);
+    assert.equal(compactSceneTimes(mixed.scenes[0], mixed.timeAnchors).head, '2026-10-25 · includes flashback');
+    const only = build([{ newScene: true, s: ex('2026-09-01', '18:00'), e: { relation: 'same' }, q: [line('2026-09-01', '18:00')], mode: 'flashback', outline: 'A memory. More.' },
+        { s: ex('2026-09-01', '19:00'), e: { relation: 'same' }, q: [line('2026-09-01', '19:00')], mode: 'flashback', outline: 'Still the memory. More.' }]);
+    assert.equal(compactSceneTimes(only.scenes[0], only.timeAnchors).head, 'flashback 2026-09-01');
+    const short = buildInjection(only, { budget: 6000, recentScenes: 0 }).text;
+    assert.match(short, /\[flashback 2026-09-01\]/, 'the head keeps the flashback mark at every level');
+});

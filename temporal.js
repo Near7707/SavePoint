@@ -187,8 +187,15 @@ function resolveStamp(claim, previous, anchors, key, mode, floor = null) {
     };
     if (claim.manual && claim.op === 'manual') {
         const day = integer(claim.manualDay) ? claim.manualDay : null;
+        const current = anchors[key];
         anchor('manual', claim.date, claim.elapsed, day);
-        if (!claim.date && claim.basis) anchors[key] = { ...claim.basis, kind: 'manual', counted: integer(day) };
+        if (!claim.date && claim.basis) {
+            // The basis is a copy taken when the time was edited. A date linked (or unlinked) to this
+            // reference afterwards is newer, so the reference's current state wins over the copy.
+            const { link: copied, ...basis } = claim.basis;
+            const link = current ? current.link : copied;
+            anchors[key] = { ...basis, kind: 'manual', counted: integer(day), ...(link ? { link } : {}) };
+        }
         s.certainty = 'manual'; return s;
     }
     if (claim.op === 'unknown') return s;
@@ -407,10 +414,13 @@ export function compactSceneTimes(scene, anchors = {}) {
         return text ? (flash ? 'flashback ' : '') + text : '';
     };
     if (timed.length === 1) return { head: range(timed[0]), labels };
-    // Head: the date span only. The first part then continues from the head's first date.
-    const first = stampParts(timed[0].time.start, anchors), lastPart = timed[timed.length - 1], last = stampParts(lastPart.time.end, anchors);
-    const head = first.date === last.date && first.key === last.key ? first.date : `${first.date} → ${last.date}`;
-    ctx = first.known && timed[0].time.mode === 'present' ? { key: first.key, mode: 'present' } : null;
+    // Head: the date span of the PRESENT parts only, so a flashback never looks like time running
+    // backwards; a scene that has flashbacks says so. The first part continues from the head's date.
+    const present = timed.filter(g => g.time.mode !== 'flashback'), span = present.length ? present : timed;
+    const first = stampParts(span[0].time.start, anchors), last = stampParts(span[span.length - 1].time.end, anchors);
+    const dates = first.date === last.date && first.key === last.key ? first.date : `${first.date} → ${last.date}`;
+    const head = !present.length ? `flashback ${dates}` : present.length < timed.length ? `${dates} · includes flashback` : dates;
+    ctx = first.known && timed[0].time.mode !== 'flashback' ? { key: first.key, mode: 'present' } : null;
     for (const g of timed) { const t = range(g); if (t) labels.set(g.id, t); }
     return { head, labels };
 }

@@ -1042,8 +1042,8 @@ export function buildInjection(mem, opts = {}) {
         chosen.set(it, alt); used[it.tier] += cost; total += cost;
     }
     // Raise stepped scenes to a fuller form, newest first, within the limit (and the tier share).
-    const upgradeStepped = (limit, respectTier) => {
-        for (const it of sorted.filter(x => stepped(x) && chosen.has(x))) {
+    const upgradeStepped = (limit, respectTier, skip = new Set()) => {
+        for (const it of sorted.filter(x => stepped(x) && chosen.has(x) && !skip.has(x.scene))) {
             const cur = chosen.get(it), curCost = costOf(cur);
             for (const alt of it.alts) {
                 if (alt === cur) break;
@@ -1103,7 +1103,9 @@ export function buildInjection(mem, opts = {}) {
     // (a scene that was just recalled is not added again).
     const recalledScenes = new Set(recallItems.map(it => it.recall.scene));
     for (const it of sorted) if (!recalledScenes.has(it.scene)) tryAdd(it, false, budget);
-    upgradeStepped(budget, false);
+    // A recalled scene keeps the form it had when recall chose what to add; raising it now would
+    // put the same outline in the journal and in the recall.
+    upgradeStepped(budget, false, recalledScenes);
     upgradePinned(pinned, budget);
     // A pinned point is its own item even when its scene is old or reduced to a title.
     // If the selected outline of the same scene already contains it verbatim, show it once.

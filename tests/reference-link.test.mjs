@@ -89,3 +89,15 @@ test('a manual time edit inside a linked reference keeps showing linked dates', 
     assert.equal(show(m)[1], '2026-10-26 → 2026-10-26 · 밤');
     assert.match(storyTimeContext(m, 'ko'), /몇 주 뒤/);
 });
+
+test('review v0.6.16: a link (or its removal) made after a manual edit survives editing an earlier part', () => {
+    let m = build([{ newScene: true, s: same, e: same }, { s: same, e: same }]);
+    editStoryTime(m, m.scenes[0].segs[0].id, { edge: 'end', day: '1', date: '', period: 'night', clock: '' }, 'room-A');
+    const row = timelineRows(m).at(-1), key = row.ref.anchor;
+    linkReference(m, key, '2026-10-25', row.day.index);
+    editStoryTime(m, m.scenes[0].segs[0].id, { edge: 'start', day: '', date: '', period: 'evening', clock: '' }, 'room-A');
+    assert.equal(show(m)[1], '2026-10-25 · 밤', 'the link is kept');
+    linkReference(m, key, '', row.day.index);
+    editStoryTime(m, m.scenes[0].segs[0].id, { edge: 'start', day: '', date: '', period: 'morning', clock: '' }, 'room-A');
+    assert.equal(show(m)[1], '기록 기준 1일째 · 밤', 'a removed link does not come back from the older copy');
+});
