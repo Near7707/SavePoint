@@ -162,10 +162,29 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         const card = document.querySelector('.sp-queued')?.textContent || '';
         return { card, toast: (toastr.log || []).map(x => x[1]).filter(t => String(t).includes('반영되지 않았어요')).pop() || '', report: __savePoint.reportText(__savePoint.state()) };
     });
-    ok(r.card.includes('어느 포인트에도 연결하지 않았어요') && r.card.includes('다음 퀵세이브·체크포인트 때 다시 시도해요'), '8. 대기열 카드에 반영 실패 이유와 다시 시도 안내');
-    ok(r.toast.includes('어느 포인트에도 연결하지 않았어요') && r.toast.includes('다음 세이브 때 다시 시도해요'), `8. 알림에 첫 번째 이유 (${r.toast.slice(0, 40)})`);
-    ok(r.report.includes('[루팅 반영 실패') && r.report.includes('어느 포인트에도 연결하지 않았어요'), '8. 결과 복사에 항목별 이유');
+    ok(r.card.includes('반영 연결을 찾지 못했어요') && r.card.includes('다음 세이브 때 저널 보충으로 다시 시도해요'), '8. 대기열 카드에 반영 실패 이유와 다시 시도 안내');
+    ok(r.toast.includes('반영 연결을 찾지 못했어요') && r.toast.includes('다음 세이브 때 다시 시도해요'), `8. 알림에 첫 번째 이유 (${r.toast.slice(0, 40)})`);
+    ok(r.report.includes('[루팅 반영 실패') && r.report.includes('반영 연결을 찾지 못했어요'), '8. 결과 복사에 항목별 이유');
     if (SHOTS) await page.screenshot({ path: path.join(OUT, 'loot-fail-reason.png') });
+    // 9. ↻ retries only that item as a journal supplement, and removes it only after saving
+    r = await ev(() => ({ n: (__savePoint.state().lootQueue || []).length, btn: !!document.querySelector('.sp-queued [data-act=loot-retry]'), calls: M.calls.length, records: JSON.stringify(__savePoint.state().mem.records) }));
+    ok(r.btn, '9. 기록된 메시지의 실패 항목에 ↻ 다시 반영 버튼');
+    await ev(() => { M.supplementLinks = true; });
+    await page.click('.sp-queued [data-act=loot-retry]');
+    await sleep(600);
+    const after = await ev(() => ({ n: (__savePoint.state().lootQueue || []).length, calls: M.calls.length, records: JSON.stringify(__savePoint.state().mem.records), linked: __savePoint.state().mem.scenes.flatMap(s => s.segs.flatMap(g => g.points)).some(p => p.loot?.length) }));
+    ok(after.n === r.n - 1 && after.calls === r.calls + 1 && after.linked && after.records === r.records, `9. 그 항목만 한 번 요청해 저널에 보충하고 대기열에서 제거, 현재 상태는 그대로 (${r.n}→${after.n})`);
+    await ev(() => { M.supplementLinks = false; });
+    // 10. other states never promise an automatic retry they will not do
+    await ev(async () => { M.add(1, () => 'The ferry horn sounded across the water.'); const n = M.chat.length - 1; M.chat[n].is_user = false; await __savePoint.addLoot(n, 'The ferry horn sounded'); });
+    r = await ev(() => {
+        const st = __savePoint.state(), base = st.lootQueue[0], fresh = st.lootQueue.at(-1);
+        const view = q => { const div = document.createElement('div'); div.innerHTML = __savePoint.queueHtml({ ...st, lootQueue: [q] }); return div.textContent; };
+        return { pending: view({ ...fresh, error: '반영 실패 · AI 응답에서 이 구절의 반영 연결을 찾지 못했어요' }), changed: view({ ...base, id: 'Lc', hash: 'no-longer-matches' }), room: view({ ...base, id: 'Lr', room: 'another-room' }) };
+    });
+    ok(r.pending.includes('퀵세이브로 반영') && !r.pending.includes('다시 반영'), '10. 미기록 메시지는 퀵세이브로 반영 안내');
+    ok(r.changed.includes('다시 담은 뒤') && !r.changed.includes('다시 시도해요'), '10. 원문이 바뀐 항목은 다시 담기 안내, 자동 재시도 약속 없음');
+    ok(r.room.includes('다른 방에서 담은 항목') && !r.room.includes('다시 시도해요'), '10. 다른 방 항목은 반영하지 않는다고 안내');
 
     await browser.close(); srv.close();
     console.log(failures ? `${failures} FAILED` : 'ALL PASS');

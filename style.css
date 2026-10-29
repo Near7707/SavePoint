@@ -674,3 +674,6 @@ label.sp-has-reset { position: relative; padding-right: 30px; }
 #sp_save_banner[data-tone="warning"] { border-color: var(--sp-danger); }
 #sp_save_banner .sp-sb-warn::before { content: '⚠'; display: block; text-align: center; line-height: 18px; font-weight: 900; color: var(--sp-danger); }
 #sp_save_banner .sp-sb-info::before { content: '◇'; display: block; text-align: center; line-height: 18px; color: var(--sp-accent); }
+
+/* Several unconfirmed parts: pick which edge to fix from the scene card. */
+.sp-gap-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 2px 0 6px; font-size: 12px; }

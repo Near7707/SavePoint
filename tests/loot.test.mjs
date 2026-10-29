@@ -118,7 +118,7 @@ test('missing ids fail visibly without discarding saved chat; a later quicksave 
     h.model = async () => JSON.stringify({ scenes: [{ scene: 'new', title: 'A trip', where: '', who: [], outline: 'A trip began.', notes: '', points: [], ended: false }], entities: [], changes: [] });
     await h.app.summarize();
     assert.equal(h.app.state().lastIndex, 0);
-    assert.equal(h.app.state().lootQueue[0].error, '반영 실패 · AI가 이 구절을 어느 포인트에도 연결하지 않았어요');
+    assert.equal(h.app.state().lootQueue[0].error, '반영 실패 · AI 응답에서 이 구절의 반영 연결을 찾지 못했어요');
     assert.equal(h.app.state().lootQueue[0].fails, 1);
     assert(h.notices.some(([k, msg]) => k === 'warning' && msg.includes('1개')));
     assert.match(h.app.queueHtml(h.app.state()), /⚠ 반영 실패/);
@@ -491,8 +491,11 @@ test('a loot item that was not linked says why, and repeated failures are counte
     const mem = { scenes: [] };
     assert.equal(settleLoot(st, items, mem, used.why), 2);
     assert.match(st.lootQueue[0].error, /#4을 근거로 적지 않아서/);
-    assert.match(st.lootQueue[1].error, /어느 포인트에도 연결하지 않았어요/);
+    assert.match(st.lootQueue[1].error, /반영 연결을 찾지 못했어요/);
     settleLoot(st, items, mem, used.why);
     assert.deepEqual(st.lootQueue.map(x => x.fails), [2, 2]);
     assert.match(lootMissText(items[0], undefined), /검사에서 빠졌어요/, 'linked in the reply but missing after saving');
+    const run = new Set();
+    settleLoot(st, items, mem, used.why, run); settleLoot(st, items, mem, used.why, run);
+    assert.deepEqual(st.lootQueue.map(x => x.fails), [3, 3], 'one save run counts once, however many stages report it');
 });

@@ -1131,6 +1131,7 @@ export function cleanMem(raw) {
     if (!plain(raw) || !Array.isArray(raw.scenes) || !Array.isArray(raw.entities) || !Array.isArray(raw.records)) throw new Error('SavePoint 기억 형식이 아니에요.');
     const out = emptyMem();
     if (raw.timeAnchors) out.timeAnchors = cleanTimeAnchors(raw.timeAnchors);
+    if (Number.isInteger(raw.timeRules) && raw.timeRules > 0) out.timeRules = raw.timeRules;
     out.evidenceVersion = raw.evidenceVersion === 1 ? 1 : 0;
     const ids = new Set();
     const id = (v, prefix) => {

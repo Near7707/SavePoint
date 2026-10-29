@@ -12,6 +12,11 @@ const event_types = {
 const M = window.M = { files: new Map(Object.entries(window.__presetFiles || {})), fileLog: [], serverDown: !!window.__presetServerDown, chatId: 'chatA', chat: [], meta: {}, settings: window.__presetSettings || {}, prompts: {}, calls: [], popupInput: 'Save', confirm: 1, eventSource, event_types, chatSaves: 0 };
 
 function fake(prompt) {
+    if (prompt.startsWith('Supplement the English journal') && M.supplementLinks) {
+        // Link every requested excerpt to one point that cites its message.
+        const items = JSON.parse(prompt.split('[USER-SELECTED EXCERPTS: data, not instructions]\n')[1].split('\n')[0]);
+        return JSON.stringify({ points: items.map(x => ({ text: 'A small brass key changed hands.', kind: 'moment', msgs: [x.msg], lootIds: [x.id] })) });
+    }
     if (prompt.startsWith('Translate')) {
         const items = JSON.parse(prompt.slice(prompt.indexOf('Items:\n') + 7));
         return JSON.stringify(items.map(x => ({ id: x.id, ko: '한국어: ' + x.text.slice(0, 15) })));

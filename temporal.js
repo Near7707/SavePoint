@@ -57,6 +57,12 @@ export function normalizeStoryDate(date) {
     const s = String(date ?? '').trim(), m = s.match(WEEKDAY_DATE);
     return m && isoDay(m[1]) !== null ? m[1] : s;
 }
+// "2026-02-30" or "2026-02-30 (Mon)": shaped like a real date but not one. Never stored as a custom calendar.
+function impossibleDate(date) {
+    const s = String(date ?? '').trim(), m = s.match(WEEKDAY_DATE);
+    return (/^\d{4}-\d{2}-\d{2}$/.test(s) && isoDay(s) === null) || (!!m && isoDay(m[1]) === null);
+}
+const stampIso = (stamp, anchors) => known(stamp) ? isoDay(dateAt(stamp, anchors)) : null;
 function isoDay(s) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(s || '')) return null;
     const ms = Date.parse(s + 'T00:00:00Z');
@@ -148,15 +154,18 @@ function claimFromModel(raw, { chunk, seg, room, quoteMatches }) {
         evidence: verified ? { room: room || null, msg: n, quote } : null, verified, manual: false };
     // An absent mention inherits; an unsupported claim cannot masquerade as inheritance.
     if (op === 'same' && (date || period || at) && !verified) s.op = 'unknown';
-    if (date && /^\d{4}-\d{2}-\d{2}$/.test(date) && isoDay(date) === null) s.op = 'unknown';
+    if (date && impossibleDate(date)) s.op = 'unknown';
     if (date && (!verified || !timeQuoteMatches(quote, date, quoteMatches))) s.op = 'unknown';
     if (op !== 'same' && op !== 'unknown' && !verified) s.op = 'unknown';
     if (op === 'advance' && !advanceQuoteMatches(quote, s.days)) s.op = 'unknown';
     return s;
 }
-function resolveStamp(claim, previous, anchors, key, mode) {
+// `floor` is the ISO day of the last confirmed present time, which an unconfirmed gap in between
+// does not erase: the present still cannot move to an earlier calendar date.
+function resolveStamp(claim, previous, anchors, key, mode, floor = null) {
     if (claim.date) claim = { ...claim, date: normalizeStoryDate(claim.date) };
     const s = { ...claim, anchor: null, day: null, certainty: 'unconfirmed' };
+    if (!claim.manual && claim.date && impossibleDate(claim.date)) return s;
     const anchor = (kind, date = '', label = '', day = 0) => {
         anchors[key] = { kind, date, label, baseDay: day ?? 0, numbered: kind === 'record', counted: kind === 'manual' && integer(day) }; s.anchor = key; s.day = day;
     };
@@ -171,10 +180,14 @@ function resolveStamp(claim, previous, anchors, key, mode) {
         // "Same" that quotes its own date or time (an info box on every reply) does not need the
         // previous part: an unconfirmed gap before it must not spread, and a different quoted
         // date is read as that date. The explicit rules (no backward date) still apply.
-        const stated = claim.verified && claim.evidence && (claim.date || claim.period || claim.clock);
+        // Only what the quote itself shows is revived: a date quoted verbatim, a clock whose digits
+        // appear in the quote. A time band alone or a clock without a date never creates a date.
+        const quote = claim.evidence?.quote || '';
+        const clockShown = !!claim.clock && quote.replace(/\s/g, '').includes(claim.clock.replace(/\s/g, ''));
+        const stated = claim.verified && claim.evidence && (claim.date || clockShown);
         const before = known(previous) && anchors[previous.anchor] ? dateAt(previous, anchors) : null;
         if (stated && (before === null || (claim.date && claim.date !== before)))
-            return resolveStamp({ ...claim, op: 'explicit' }, previous, anchors, key, mode);
+            return resolveStamp({ ...claim, op: 'explicit', clock: clockShown ? claim.clock : '', period: claim.date || clockShown ? claim.period : '' }, previous, anchors, key, mode, floor);
         if (!previous && mode === 'present') { anchor('record'); s.certainty = 'linked'; }
         else if (known(previous) && anchors[previous.anchor]) { s.anchor = previous.anchor; s.day = previous.day; s.certainty = 'linked'; }
         else return s;
@@ -200,7 +213,8 @@ function resolveStamp(claim, previous, anchors, key, mode) {
             const oldDate = dateAt(previous, anchors), oldDay = isoDay(oldDate), newDay = isoDay(claim.date);
             // A quoted letter or recalled date cannot silently turn the present backward.
             // Keep the claim for review; only acted flashbacks and manual edits may do that.
-            if (mode !== 'flashback' && known(previous) && oldDay !== null && newDay !== null && newDay < oldDay) return s;
+            const limit = oldDay ?? (known(previous) ? null : floor);
+            if (mode !== 'flashback' && limit !== null && newDay !== null && newDay < limit) return s;
             if (known(previous) && oldDate && claim.date === oldDate) { s.anchor = previous.anchor; s.day = previous.day; }
             else if (known(previous) && oldDay !== null && newDay !== null) { s.anchor = previous.anchor; s.day = (previous.day ?? anchors[previous.anchor].baseDay) + newDay - oldDay; }
             else anchor('explicit', claim.date);
@@ -211,6 +225,12 @@ function resolveStamp(claim, previous, anchors, key, mode) {
     return s;
 }
 const parts = mem => (mem.scenes || []).flatMap(s => s.segs || []);
+const edges = t => [t.start, ...(t.via || []), t.end].filter(Boolean);
+function presentFloor(mem) {
+    let floor = null;
+    for (const g of parts(mem)) if (g.time?.mode === 'present') for (const x of edges(g.time)) floor = stampIso(x, mem.timeAnchors || {}) ?? floor;
+    return floor;
+}
 export function lastStoryTime(mem) {
     let last = null;
     for (const g of parts(mem)) if (g.time?.mode === 'present' && g.time.end) last = { stamp: g.time.end, segment: g.id };
@@ -228,9 +248,10 @@ export function resolveResultTime(mem, raw, { chunk, seg, room = null, quoteMatc
     const options = { chunk, seg, room, quoteMatches };
     const steps = object(raw) && Array.isArray(raw.parts) && raw.parts.length <= 100 ? raw.parts.flatMap(p =>
         p === undefined ? [undefined, undefined] : object(p) ? [p.start, p.end] : [{ relation: 'unknown' }, { relation: 'unknown' }]) : [raw?.start, raw?.end];
-    let prior = prev;
+    let prior = prev, floor = mode === 'present' ? presentFloor(mem) : null;
     const resolved = steps.map((step, i) => {
-        const stamp = resolveStamp(invalid ? { op: 'unknown' } : claimFromModel(step, options), prior, mem.timeAnchors, idFor(time, seg, i === 0 ? 'start' : i === steps.length - 1 ? 'end' : 'via' + i), mode);
+        const stamp = resolveStamp(invalid ? { op: 'unknown' } : claimFromModel(step, options), prior, mem.timeAnchors, idFor(time, seg, i === 0 ? 'start' : i === steps.length - 1 ? 'end' : 'via' + i), mode, floor);
+        if (mode === 'present') floor = stampIso(stamp, mem.timeAnchors) ?? floor;
         prior = stamp; return stamp;
     });
     time.start = resolved[0] || stampUnknown({ op: 'unknown' }); time.end = resolved[resolved.length - 1] || time.start;
@@ -239,14 +260,18 @@ export function resolveResultTime(mem, raw, { chunk, seg, room = null, quoteMatc
     return time;
 }
 // Re-resolve only recorded claims. No historical quote is looked up in this room's chat.
-export function recomputeStoryTimes(mem, { fromSegment = null, edge = 'start' } = {}) {
+export function recomputeStoryTimes(mem, { fromSegment = null, edge = 'start', revive = false } = {}) {
     mem.timeAnchors = cleanTimeAnchors(mem.timeAnchors);
-    let present = null, flashback = null, wasFlashback = false;
+    let present = null, flashback = null, wasFlashback = false, floor = null;
     let active = fromSegment === null;
     const remember = t => {
-        if (t.mode === 'present') present = t.end; else flashback = t.end;
+        if (t.mode === 'present') { present = t.end; for (const x of edges(t)) floor = stampIso(x, mem.timeAnchors) ?? floor; }
+        else flashback = t.end;
         wasFlashback = t.mode === 'flashback';
     };
+    // revive (one-time upgrade only): an unconfirmed boundary whose own claim quotes a date or a
+    // clock may be read again; plain inherited gaps stay as they were.
+    const standsAlone = c => revive && !c.manual && c.verified && c.evidence && (c.op === 'explicit' || (c.op === 'same' && (c.date || c.clock)));
     for (const g of parts(mem)) {
         if (!g.time) continue;
         if (g.id === fromSegment) active = true;
@@ -260,23 +285,31 @@ export function recomputeStoryTimes(mem, { fromSegment = null, edge = 'start' } 
         // boundary snapshot for the first retained part, including an already-applied
         // advance. A newly edited start has no resolved anchor and is recalculated.
         const keepBoundary = !previous && ((known(t.start) && mem.timeAnchors[t.start.anchor]) ||
-            (!t.start.manual && t.start.certainty === 'unconfirmed'));
+            (!t.start.manual && t.start.certainty === 'unconfirmed' && !standsAlone(t.start)));
+        const at = t.mode === 'present' ? floor : null;
         if (!keepStart && !keepBoundary)
-            t.start = resolveStamp(t.start, previous, mem.timeAnchors, idFor(t, g, 'start'), t.mode);
-        let mid = t.start;
-        if (t.via) t.via = t.via.map((claim, i) => { mid = keepStart ? claim : resolveStamp(claim, mid, mem.timeAnchors, idFor(t, g, 'via' + (i + 1)), t.mode); return mid; });
-        t.end = resolveStamp(t.end, mid, mem.timeAnchors, idFor(t, g, 'end'), t.mode);
+            t.start = resolveStamp(t.start, previous, mem.timeAnchors, idFor(t, g, 'start'), t.mode, at);
+        let mid = t.start, low = t.mode === 'present' ? stampIso(t.start, mem.timeAnchors) ?? at : null;
+        if (t.via) t.via = t.via.map((claim, i) => { mid = keepStart ? claim : resolveStamp(claim, mid, mem.timeAnchors, idFor(t, g, 'via' + (i + 1)), t.mode, low); if (t.mode === 'present') low = stampIso(mid, mem.timeAnchors) ?? low; return mid; });
+        t.end = resolveStamp(t.end, mid, mem.timeAnchors, idFor(t, g, 'end'), t.mode, low);
         remember(t);
     }
 }
-// Saved claims re-read with the current rules (weekday dates, quoted "same"). Manual edits and
-// the retained boundary of a deleted prefix are kept by recomputeStoryTimes. Returns whether
-// anything visible changed, so a caller saves only then.
+// One-time upgrade of records saved before these rules (weekday dates, quoted "same"). Runs once per
+// memory (marked by timeRules) so a later scene deletion keeps its own boundary rules. It only adds
+// confirmation: if re-reading would lose a confirmed time or change a manual one, nothing is changed.
+export const TIME_RULES = 2;
 export function upgradeStoryTimes(mem) {
+    if (mem.timeRules >= TIME_RULES) return false;
+    mem.timeRules = TIME_RULES;
     if (!parts(mem).some(g => g.time)) return false;
-    const before = JSON.stringify([parts(mem).map(g => g.time || null), mem.timeAnchors || {}]);
-    recomputeStoryTimes(mem);
-    return JSON.stringify([parts(mem).map(g => g.time || null), mem.timeAnchors || {}]) !== before;
+    const trial = structuredClone({ scenes: mem.scenes, timeAnchors: mem.timeAnchors || {} });
+    recomputeStoryTimes(trial, { revive: true });
+    const before = parts(mem).flatMap(g => g.time ? edges(g.time) : []), after = parts(trial).flatMap(g => g.time ? edges(g.time) : []);
+    const safe = before.length === after.length && before.every((x, i) =>
+        (!known(x) || known(after[i])) && (!x.manual || JSON.stringify(x) === JSON.stringify(after[i])));
+    if (safe) { mem.scenes = trial.scenes; mem.timeAnchors = trial.timeAnchors; }
+    return true;
 }
 export function editStoryTime(mem, segmentId, values, room = null) {
     const g = parts(mem).find(x => x.id === segmentId); if (!g) return false;
@@ -285,7 +318,7 @@ export function editStoryTime(mem, segmentId, values, room = null) {
     const day = values.day === '' || values.day === undefined ? existing?.[edge]?.day ?? null : Number(values.day) - 1;
     if (day !== null && (!integer(day) || day < 0)) throw new Error('기준 일 수는 1 이상의 정수로 입력해 주세요.');
     const date = normalizeStoryDate(text(values.date)), period = PERIODS.includes(values.period) ? values.period : '', at = clock(values.clock);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(date) && isoDay(date) === null) throw new Error('ISO 날짜가 유효하지 않아요. 작품 고유 달력은 이름을 포함해 적어 주세요.');
+    if (impossibleDate(date)) throw new Error('ISO 날짜가 유효하지 않아요. 작품 고유 달력은 이름을 포함해 적어 주세요.');
     if (values.clock && !at) throw new Error('시각은 00:00–23:59 형식으로 입력해 주세요.');
     if (typeof values.date === 'string' && values.date.trim().length > 180) throw new Error('날짜 표현은 180자 이내로 입력해 주세요.');
     const manual = { op: 'manual', manual: true, verified: false, manualDay: day, date, period, clock: at, days: null, elapsed: '', evidence: null };

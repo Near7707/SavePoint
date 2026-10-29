@@ -83,3 +83,47 @@ test('deadlines placed on a weekday date now count days', () => {
     m = save(m, box('2026-10-26 (Mon)', '09:00'), { start: { relation: 'explicit', date: '2026-10-26 (Mon)', clock: '09:00', quote: line('2026-10-26 (Mon)', '09:00') }, end: { relation: 'same' } });
     assert.equal(dueStatus(m, m.records.find(r => r.type === 'quest')).kind, 'today');
 });
+
+test('a date shaped like ISO but impossible is never kept as a custom calendar', () => {
+    const m = save(emptyMem(), box('2026-02-30 (Mon)', '10:00'), { start: { relation: 'explicit', date: '2026-02-30 (Mon)', quote: line('2026-02-30 (Mon)', '10:00') }, end: { relation: 'same' } });
+    assert.equal(last(m), '시간 미확인');
+});
+
+test('after an unconfirmed gap the present still cannot move before the last confirmed date', () => {
+    let m = save(first(), 'The courier waited.', { start: { relation: 'same' }, end: { relation: 'unknown' } });
+    m = save(m, box('2026-10-20 (Tue)', '10:00'), { start: { relation: 'explicit', date: '2026-10-20 (Tue)', clock: '10:00', quote: line('2026-10-20 (Tue)', '10:00') }, end: { relation: 'same' } });
+    assert.equal(last(m), '시간 미확인');
+    m = save(m, box('2026-10-27 (Tue)', '08:00'), { start: { relation: 'same', date: '2026-10-27 (Tue)', clock: '08:00', quote: line('2026-10-27 (Tue)', '08:00') }, end: { relation: 'same' } });
+    assert.equal(last(m), '2026-10-27 · 08:00', 'a later date is fine');
+});
+
+test('a quoted clock alone revives the time of day without inventing a date', () => {
+    let m = save(first(), 'The courier waited.', { start: { relation: 'same' }, end: { relation: 'unknown' } });
+    m = save(m, '🕒 Time: 16:30\nThe courier waited.', { start: { relation: 'same', clock: '16:30', quote: '🕒 Time: 16:30' }, end: { relation: 'same' } });
+    assert.equal(last(m), '날짜 미상 · 16:30');
+    let g = save(first(), 'The courier waited.', { start: { relation: 'same' }, end: { relation: 'unknown' } });
+    g = save(g, 'The courier waited.', { start: { relation: 'same', clock: '17:00', quote: 'The courier waited' }, end: { relation: 'same' } });
+    assert.equal(last(g), '시간 미확인', 'after a gap, a clock that is not in the quote does not revive anything');
+});
+
+test('the upgrade runs once, revives a quoted first boundary, and never loses a confirmed or manual time', () => {
+    const ev = clock => ({ room: 'room-A', msg: 0, quote: line('2026-10-25 (Sun)', clock) });
+    const seg = (id, n, start, end) => ({ id, from: n, to: n, outline: 'x', points: [], time: { mode: 'present', origin: 'room-A', start, end } });
+    const unknownSame = { op: 'same', anchor: null, day: null, certainty: 'unconfirmed' };
+    // First part: its start quotes a date but was left unconfirmed as a kept boundary.
+    const a = cleanMem({ ...emptyMem(), timeAnchors: {}, scenes: [{ id: 's1', title: 'x', where: '', who: [], status: 'open', segs: [
+        seg('g1', 0, { op: 'same', date: '2026-10-25', clock: '14:38', evidence: ev('14:38'), verified: true, anchor: null, day: null, certainty: 'unconfirmed' }, unknownSame)] }] });
+    assert.equal(upgradeStoryTimes(a), true);
+    assert.equal(formatSegmentTime(a.scenes[0].segs[0].time, a.timeAnchors, 'ko'), '2026-10-25 · 14:38');
+    assert.equal(a.timeRules, 2); assert.equal(cleanMem(JSON.parse(JSON.stringify(a))).timeRules, 2, 'the marker survives export');
+    assert.equal(upgradeStoryTimes(a), false);
+    // An old record confirmed a backward date after a gap. Re-reading would lose it, so nothing changes.
+    let b = save(first(), 'The courier waited.', { start: { relation: 'same' }, end: { relation: 'unknown' } });
+    b = save(b, box('2026-10-27 (Tue)', '10:00'), { start: { relation: 'explicit', date: '2026-10-27', clock: '10:00', quote: line('2026-10-27 (Tue)', '10:00') }, end: { relation: 'same' } });
+    const g = b.scenes[0].segs.at(-1);
+    g.time.end = { op: 'manual', manual: true, verified: false, manualDay: 3, date: '', period: 'night', clock: '', days: null, elapsed: '', evidence: null, anchor: g.time.start.anchor, day: 3, certainty: 'manual' };
+    const manualBefore = JSON.stringify(g.time.end);
+    delete b.timeRules;
+    upgradeStoryTimes(b);
+    assert.equal(JSON.stringify(b.scenes[0].segs.at(-1).time.end), manualBefore, 'manual time kept');
+});

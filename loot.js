@@ -62,7 +62,7 @@ export function attachLoot(data, items) {
 // Why an item that was sent did not end up in the saved memory, in words the queue can show.
 export function lootMissText(item, why) {
     if (why === 'evidence') return `AI가 이 구절을 붙인 포인트가 #${item.msg}을 근거로 적지 않아서 반영하지 않았어요`;
-    if (why === 'unlinked') return 'AI가 이 구절을 어느 포인트에도 연결하지 않았어요';
+    if (why === 'unlinked') return 'AI 응답에서 이 구절의 반영 연결을 찾지 못했어요';
     return '연결한 포인트가 저장 전 검사에서 빠졌어요';
 }
 export function recordedLoot(mem) {
@@ -96,20 +96,23 @@ export function restoreLostLoot(queue, before, after, { room, hashes = [], fallb
     }
     return out;
 }
-export function settleLoot(st, attempted, mem, why = new Map()) {
+export function settleLoot(st, attempted, mem, why = new Map(), counted = null) {
     const accepted = recordedLoot(mem), ids = new Set(attempted.map(x => x.id));
     let failed = 0;
     st.lootQueue = (st.lootQueue || []).filter(item => {
         if (!ids.has(item.id)) return true;
         if (accepted.has(item.id)) return false;
-        failLoot(item, lootMissText(item, why.get(item.id))); failed++; return true;
+        failLoot(item, lootMissText(item, why.get(item.id)), counted); failed++; return true;
     });
     return failed;
 }
 // Every failure keeps its reason and counts how often it happened, so a user can tell a
 // passing hiccup from an excerpt or note that never works.
-export function failLoot(item, reason) {
+// `counted` (one Set per save run) keeps a run's retries and later stages from counting twice.
+export function failLoot(item, reason, counted = null) {
     item.error = `반영 실패 · ${reason}`;
+    if (counted?.has(item.id)) return;
+    counted?.add(item.id);
     item.fails = (Number.isInteger(item.fails) && item.fails > 0 ? item.fails : 0) + 1;
 }
 export function lootTarget(mem, msg) {

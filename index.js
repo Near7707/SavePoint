@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.10';
+const VERSION = '0.6.11';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -568,7 +568,7 @@ function parseJson(text, open = '{', close = '}') {
 function newRun(st, end, kind = '') {
     // kind: 'save' (quick save / scene clear), 'auto' (checkpoint), 'check', 'other' (memory edits by AI),
     // '' (no banner). The saving banner and the leaving-the-room notice depend on it.
-    const run = { st, key: roomKey(), epoch: roomEpoch, cancelled: false, hashes: hashesTo(end),
+    const run = { st, key: roomKey(), epoch: roomEpoch, cancelled: false, hashes: hashesTo(end), lootCounted: new Set(),
         viaMain: !settings().profileId, ctrl: typeof AbortController === 'function' ? new AbortController() : null,
         kind, from: (st?.lastIndex ?? -1) + 1, roomName: `${charInfo()?.name ? charInfo().name + ' · ' : ''}${roomLabel(roomKey())}` };
     ui.run = run;
@@ -695,7 +695,7 @@ async function failPendingLoot(run, items, error) {
     const ids = new Set(items.filter(x => sent.has(x.id)).map(x => x.id));
     const pending = (run.st.lootQueue || []).filter(x => ids.has(x.id) && !lootStatus(x, roomKey(), chat(), fingerprint, viewHash));
     if (!pending.length) return 0;
-    await transact(() => { for (const item of pending) failLoot(item, errorText(error).slice(0, 300)); }, { undoable: false, autosave: false });
+    await transact(() => { for (const item of pending) failLoot(item, errorText(error).slice(0, 300), run.lootCounted); }, { undoable: false, autosave: false });
     return pending.length;
 }
 function supplementPrompt(seg, items) {
@@ -713,7 +713,7 @@ async function supplementLoot(run, items, undoPoint = checkpoint(run.st)) {
         const first = left.shift(), target = lootTarget(st.mem, first.msg);
         const markFailed = async (group, error) => {
             await transact(() => {
-                for (const item of st.lootQueue || []) if (group.some(x => x.id === item.id)) failLoot(item, error);
+                for (const item of st.lootQueue || []) if (group.some(x => x.id === item.id)) failLoot(item, error, run.lootCounted);
             }, { undoable: false, autosave: false });
             failed += group.length;
         };
@@ -749,7 +749,7 @@ async function supplementLoot(run, items, undoPoint = checkpoint(run.st)) {
             await transact(() => {
                 const before = st.mem;
                 st.mem = next; pushHistory(st, before, next, { kind: 'edit' });
-                failed += settleLoot(st, group, next, linked.why);
+                failed += settleLoot(st, group, next, linked.why, run.lootCounted);
                 st.undo = undoPoint;
                 st.lastRecord = { at: Date.now(), from: Math.min(...group.map(x => x.msg)), to: Math.max(...group.map(x => x.msg)), kind: 'supplement' };
             }, { undoable: false, autosave: false, rehide: true });
@@ -841,7 +841,7 @@ async function summarize({ close = false, auto = false } = {}) {
                 st.lastRecord = { at: Date.now(), from: start, to: coverTo, kind: auto ? 'checkpoint' : 'quicksave' };
                 st.undo = undoPoint;
                 settleAutoFail(st);
-                lootFailed += settleLoot(st, marked, next, data.lootWhy);
+                lootFailed += settleLoot(st, marked, next, data.lootWhy, run.lootCounted);
             }, { undoable: false, autosave: false, rehide: true });
             done++; cursor += chunk.indices.length;
         }
@@ -1805,9 +1805,45 @@ function installLootBar() {
         if (wand.nextElementSibling !== button) wand.insertAdjacentElement('afterend', button);
     } else if (button.parentElement !== host) host.append(button);
 }
+// What happens to a queued item next, by its state. Automatic retry is promised only where it happens.
+function lootNextStep(st, item, changed) {
+    if (!item.error && !changed) return '';
+    if (item.room !== roomKey()) return '<div class="sp-dim">다른 방에서 담은 항목이라 이 방에서는 반영하지 않아요. 필요 없으면 삭제해 주세요.</div>';
+    if (changed) return '<div class="sp-dim">원문이 담을 때와 달라져서 자동으로 반영하지 않아요. 바뀐 원문을 확인하고 💎로 다시 담은 뒤 이 항목을 삭제해 주세요.</div>';
+    if (item.msg > st.lastIndex) return `<div class="sp-dim">아직 기록되지 않은 메시지예요. 다음 퀵세이브·체크포인트 때 함께 보내요. ${btn('run', '', '⏺ 퀵세이브로 반영', '', ui.run ? 'sp-disabled' : '')}</div>`;
+    if (!lootTarget(st.mem, item.msg)) return '<div class="sp-dim">이 메시지가 들어간 장면이 없어서 반영할 수 없어요. 삭제해 주세요.</div>';
+    return `<div class="sp-dim">다음 세이브 때 저널 보충으로 다시 시도해요. 지금 바로 하려면 ${btn('loot-retry', item.id, '↻ 다시 반영', '이 항목만 해당 장면 저널에 보충해요 (현재 상태는 바꾸지 않아요)', ui.run ? 'sp-disabled' : '')}</div>`;
+}
+// One failed item, on demand: journal supplement only, never the current state. Removed from the
+// queue only after the memory is saved; the run blocks a second click.
+async function retryLoot(id) {
+    if (ui.run) { toastr.info('이미 기록 중이에요.'); return; }
+    const st = state(); if (!st) return;
+    const item = (st.lootQueue || []).find(x => x.id === id); if (!item) return;
+    if (!reconcile()) { render(); toastr.warning('예전 원문이 바뀌었어요. 창 위쪽 안내에서 먼저 처리해 주세요.'); return; }
+    if (lootStatus(item, roomKey(), chat(), fingerprint, viewHash) || item.msg > st.lastIndex || !lootTarget(st.mem, item.msg)) { render(true); return; }
+    if (!settings().profileId && mainBusy()) { toastr.info('본편 생성이 끝난 뒤 눌러 주세요.'); return; }
+    const run = newRun(st, chat().length - 1, 'other');
+    let result = { saved: 0, failed: 0 };
+    try {
+        ui.progress = '루팅한 기억 다시 반영'; render();
+        result = await supplementLoot(run, [item], checkpoint(st));
+        if (result.saved && !result.failed) toastr.success('루팅한 구절을 저널에 반영했어요.', 'SavePoint');
+        else toastr.warning(`⚠ 다시 반영하지 못했어요.${lootFailNote(st)}`, 'SavePoint', { timeOut: 10000 });
+    } catch (e) {
+        if (!(e instanceof Cancelled)) { console.error('[SavePoint]', e); toastr.error(errorText(e), 'SavePoint'); }
+    } finally {
+        endRun(run);
+        if (result.saved && run.key === roomKey()) autosave(state());
+    }
+}
 function lootFailNote(st) {
     const first = (st.lootQueue || []).find(x => x.error?.startsWith('반영 실패'));
     return first ? ` (${first.error.replace(/^반영 실패 · /, '')})` : '';
+}
+function sceneTimeGaps(s) {
+    return s.segs.filter(g => g.time).flatMap(g => [...(g.time.start?.certainty === 'unconfirmed' ? [{ g, edge: 'start' }] : []),
+        ...(g.time.end?.certainty === 'unconfirmed' && g.time.start?.certainty !== 'unconfirmed' ? [{ g, edge: 'end' }] : [])]);
 }
 function queueHtml(st) {
     const items = st.lootQueue || [];
@@ -1815,7 +1851,7 @@ function queueHtml(st) {
     return `<p class="sp-dim">다음 퀵세이브·체크포인트 때 반영해요. 선택한 내용은 기억 주입에 우선 반영해요.</p>` + items.map(item => {
         const changed = lootStatus(item, roomKey(), chat(), fingerprint, viewHash) || lootWarning(item, chat(), viewHash);
         return `<div class="sp-card sp-queued"><div class="sp-row"><b>${item.room === roomKey() ? '' : '이전 방 '}#${item.msg}</b>${tools([btn('loot-delete', item.id, '🗑', '대기열에서 삭제', ui.run ? 'sp-disabled' : '')])}</div>
-            ${changed ? `<div class="sp-warn">${esc(changed)}</div>` : ''}${item.error && item.error !== changed ? `<div class="sp-warn">⚠ ${esc(item.error)}${item.fails > 1 ? ` · ${item.fails}번째 실패` : ''}</div>${changed ? '' : '<div class="sp-dim">다음 퀵세이브·체크포인트 때 다시 시도해요. 계속 실패하면 메모를 붙여 다시 담거나 삭제해 주세요.</div>'}` : ''}
+            ${changed ? `<div class="sp-warn">${esc(changed)}</div>` : ''}${item.error && item.error !== changed ? `<div class="sp-warn">⚠ ${esc(item.error)}${item.fails > 1 ? ` · ${item.fails}번째 실패` : ''}</div>` : ''}${lootNextStep(st, item, changed)}
             <blockquote>${esc(item.text)}</blockquote>${item.note ? `<p class="sp-dim">메모: ${esc(item.note)}</p>` : ''}</div>`;
     }).join('');
 }
@@ -1928,6 +1964,7 @@ function journalHtml(st) {
         return `<div class="sp-card sp-scene ${s.status === 'open' ? 'sp-open' : ''} ${s.star ? 'sp-star' : ''}">${head}
             <div class="sp-title">${esc(T(s.title, s.koTitle))}${s.titlePending ? ' <small class="sp-dim">임시 제목</small>' : ''}${s.where ? ` <small>@ ${esc(s.where)}</small>` : ''}</div>
             ${sceneTimeRange(s, mem.timeAnchors, 'ko') ? `<div class="sp-scene-time">📅 ${esc(sceneTimeRange(s, mem.timeAnchors, 'ko'))} ${tools([btn('edit-scenetime', s.id, '✎', '시간 편집 (미확인 구간부터 열어요)', ui.run ? 'sp-disabled' : '')])}</div>` : ''}
+            ${ui.timeGaps === s.id && !ui.edit ? `<div class="sp-gap-pick"><span class="sp-dim">시간 미확인 구간 ${sceneTimeGaps(s).length}곳 · 고칠 곳을 골라 주세요</span> ${sceneTimeGaps(s).map(x => btn(x.edge === 'start' ? 'edit-segtime-start' : 'edit-segtime', `${s.id}|${x.g.id}`, `${esc(x.g.id)} ${x.edge === 'start' ? '시작' : '끝'} ✎`)).join('')}</div>` : ''}
             ${s.who.length ? `<div class="sp-who">${whoChips(mem, s.who)}</div>` : ''}
             <div class="sp-outline">${s.segs.filter(g => g.outline).map(g => `<p>${esc(T(g.outline, g.koOutline))}</p>`).join('')}</div>${outlineText}
             <details class="sp-more" data-group="scene:${esc(s.id)}" ${(ui.edit && String(ui.edit.id).startsWith(s.id + '|')) || ui.savesOpen.get('scene:' + s.id) ? 'open' : ''}><summary>구간 ${s.segs.length} · 포인트 ${pts.length} (주입 ${pts.filter(x => pointInjected(x.p)).length})</summary>
@@ -2122,7 +2159,7 @@ function hudHtml(st) {
             ${busy ? btn('stop', '', '중지', '', 'sp-danger') : ''}
         </div>
         ${ui.lastFix ? `<div class="sp-hud-meta"><span class="sp-dim">자동 보정 ${esc(ui.lastFix.range)}: ${esc(ui.lastFix.text)} · ${new Date(ui.lastFix.at).toLocaleTimeString()}</span></div>` : ''}
-        ${(ui.lastError || st?.autoFail || st?.lootQueue?.some(x => x.error?.startsWith('반영 실패')) || (st?.check && st.check.status !== 'running')) && !busy ? `<div class="sp-row sp-copyrow">${btn('copy-report', '', '📋 결과 복사', '마지막 실패와 기록 확인 결과를 글로 복사해요 (캡처 대신)')}</div>` : ''}
+        ${(ui.lastError || st?.autoFail || st?.lootQueue?.some(x => x.error) || (st?.check && st.check.status !== 'running')) && !busy ? `<div class="sp-row sp-copyrow">${btn('copy-report', '', '📋 결과 복사', '마지막 실패와 기록 확인 결과를 글로 복사해요 (캡처 대신)')}</div>` : ''}
         ${ui.copyText ? `<div class="sp-copybox"><textarea readonly rows="8">${esc(ui.copyText)}</textarea>${btn('copy-close', '', '닫기')}</div>` : ''}
         ${busy ? `<div class="sp-progress"><span class="sp-spin">◐</span> ${esc(ui.progress)}${ui.req ? ` · <span class="sp-req">${esc(reqText())}</span>` : ''}</div>` : ''}${err}
     </div>`;
@@ -2297,6 +2334,7 @@ async function handle(act, id) {
     switch (act) {
         case 'close': return closeWindow();
         case 'tab': ui.tab = id; ui.edit = null; if (id === 'inject') refreshInjection(); return render(true);
+        case 'loot-retry': return retryLoot(id);
         case 'loot-delete':
             if (ui.run) return;
             return transact(() => { const st = state(); if (st) st.lootQueue = (st.lootQueue || []).filter(x => x.id !== id); }, { undoable: false, autosave: false });
@@ -2313,17 +2351,18 @@ async function handle(act, id) {
         case 'edit-scene': return startEdit('scene', id);
         case 'edit-point': return startEdit('point', id);
         case 'edit-notes': return startEdit('notes', id);
-        case 'edit-segtime-start': if (ui.run) return; return startEdit('segtime', id + '|start');
-        case 'edit-segtime': if (ui.run) return; return startEdit('segtime', id);
+        case 'edit-segtime-start': if (ui.run) return; ui.timeGaps = null; return startEdit('segtime', id + '|start');
+        case 'edit-segtime': if (ui.run) return; ui.timeGaps = null; return startEdit('segtime', id);
         case 'edit-scenetime': {
-            // The scene line has no edge of its own: open the first unconfirmed edge, else the last end.
+            // The scene line has no edge of its own. One unconfirmed edge opens directly; several are
+            // listed on the card to choose from; none opens the last part's end.
             if (ui.run) return;
             const s = st?.mem.scenes.find(x => x.id === id); if (!s) return;
-            const timed = s.segs.filter(g => g.time);
-            const gap = timed.find(g => g.time.start?.certainty === 'unconfirmed' || g.time.end?.certainty === 'unconfirmed');
-            const g = gap || timed[timed.length - 1]; if (!g) return;
+            const gaps = sceneTimeGaps(s);
             ui.savesOpen.set('scene:' + s.id, true);
-            return startEdit('segtime', `${s.id}|${g.id}${gap && gap.time.start?.certainty === 'unconfirmed' ? '|start' : ''}`);
+            if (gaps.length > 1) { ui.timeGaps = s.id; return render(true); }
+            const timed = s.segs.filter(g => g.time), g = gaps[0]?.g || timed[timed.length - 1]; if (!g) return;
+            return startEdit('segtime', `${s.id}|${g.id}${gaps[0]?.edge === 'start' ? '|start' : ''}`);
         }
         case 'edit-segoutline': return startEdit('segoutline', id);
         case 'edit-ent': return startEdit('entity', id);

@@ -173,6 +173,12 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const opened=await ev(()=>({edit:__savePoint.ui.edit,form:!!document.querySelector('.sp-edit [data-edit=date]')}));
     ok(r.has&&r.gid&&opened.edit?.kind==='segtime'&&opened.edit.id===`${r.sid}|${r.gid}${r.edge==='start'?'|start':''}`&&opened.form,`16. 장면 시간 줄의 ✎가 미확인 구간 편집을 바로 엶 (${opened.edit?.id})`);
     await page.click('[data-act=edit-cancel]');
+    await ev(()=>{M.timeCase='bad-count';M.add(2,()=> '그날 밤 우리는 다음에 만나자고 했다.');});await ev(()=>__savePoint.handle('run'));
+    r=await ev(id=>{__savePoint.handle('edit-scenetime',id);return {pick:[...document.querySelectorAll('.sp-gap-pick button')].map(b=>b.textContent),edit:__savePoint.ui.edit};},r.sid);
+    ok(r.pick.length>=2&&!r.edit,`16. 미확인 구간이 여러 곳이면 장면 ✎가 고를 목록을 보여 줌 (${r.pick.join(', ')})`);
+    await page.click('.sp-gap-pick button');
+    ok(await ev(()=>__savePoint.ui.edit?.kind==='segtime'&&!document.querySelector('.sp-gap-pick')),'16. 목록에서 고르면 그 구간 편집 창');
+    await page.click('[data-act=edit-cancel]');
     if(SHOTS)await page.screenshot({path:path.join(OUT,'story-time.png')});
     await browser.close();srv.close();console.log(failures ? `${failures} FAILED` : 'ALL PASS');process.exit(failures?1:0);
 })();
