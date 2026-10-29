@@ -96,3 +96,19 @@ test('the needed limit comes from running the real injection again', () => {
     assert.equal(neededBudget(mem, { budget: 100000 }), 100000, 'already enough');
     assert.equal(neededBudget(longStory(3), { budget: 300 }, 300), null, 'null when the largest limit is not enough');
 });
+
+test('timeline rows keep record order, separate references, mark flashbacks and unknown times', async () => {
+    const { timelineRows } = await import('../temporal.js');
+    const mem = build([
+        { newScene: true, s: ex('2026-10-25', '10:00'), e: ex('2026-10-25', '11:30'), q: [line('2026-10-25', '10:00'), line('2026-10-25', '11:30')], outline: 'Morning.' },
+        { s: { relation: 'same' }, e: { relation: 'unknown' }, outline: 'Fog.' },
+        { s: ex('2026-09-01', '18:00'), e: { relation: 'same' }, q: [line('2026-09-01', '18:00')], mode: 'flashback', outline: 'A memory.' },
+        { s: { relation: 'jump', elapsed: 'weeks later', quote: 'weeks later' }, e: { relation: 'same' }, outline: 'Later.' },
+    ]);
+    const rows = timelineRows(mem);
+    assert.deepEqual(rows.map(r => r.segId), mem.scenes[0].segs.map(g => g.id));
+    assert.equal(rows[0].time, '10:00–11:30'); assert.equal(rows[0].ref.key, 'dated');
+    assert.equal(rows[1].unknown, true);
+    assert.equal(rows[2].flashback, true);
+    assert.notEqual(rows[3].ref?.key, 'dated', 'a vague jump is its own reference');
+});

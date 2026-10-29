@@ -677,3 +677,16 @@ label.sp-has-reset { position: relative; padding-right: 30px; }
 
 /* Several unconfirmed parts: pick which edge to fix from the scene card. */
 .sp-gap-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 2px 0 6px; font-size: 12px; }
+
+/* 📅 Timeline */
+.sp-tl-ref { margin: 14px 0 4px; padding: 3px 8px; border-radius: 6px; background: var(--sp-panel2); font-weight: 800; font-size: 13px; }
+.sp-tl-day { margin: 10px 0 2px; font-weight: 700; color: var(--sp-accent); font-size: 13px; }
+.sp-tl-scene { margin: 6px 0 2px 2px; font-weight: 700; font-size: 13px; }
+.sp-tl-row { margin: 2px 0 4px 10px; padding: 4px 8px; border-left: 2px solid var(--sp-line); font-size: 12.5px; }
+.sp-tl-row .sp-row { gap: 6px; align-items: center; }
+.sp-tl-time { font-weight: 700; }
+.sp-tl-text { color: var(--sp-dim); margin-top: 2px; overflow-wrap: anywhere; }
+.sp-tl-flash { margin-left: 24px; border-left-style: dashed; opacity: .9; }
+.sp-tl-unknown .sp-tl-time { color: var(--sp-danger); }
+.sp-tl-due { margin: 3px 0; font-size: 12.5px; }
+.sp-focus { outline: 2px solid var(--sp-accent); outline-offset: 2px; border-radius: 6px; transition: outline-color .3s; }

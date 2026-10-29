@@ -362,9 +362,10 @@ function stampLabel(stamp, anchors, lang) {
 }
 // The date part and the time-of-day part of one stamp, plus what identifies "the same day of the
 // same reference". Used to write a scene's times without repeating its date in every part.
-function stampParts(stamp, anchors) {
-    if (!stamp || !known(stamp) || !anchors[stamp.anchor]) return { known: false, date: 'time unconfirmed', time: '', key: null };
-    return { known: true, date: stampLabel(stamp, anchors, 'en'), time: [stamp.period, stamp.clock].filter(Boolean).join(' '), key: `${stamp.anchor}|${stamp.day}` };
+function stampParts(stamp, anchors, lang = 'en') {
+    const ko = lang === 'ko';
+    if (!stamp || !known(stamp) || !anchors[stamp.anchor]) return { known: false, date: ko ? '시간 미확인' : 'time unconfirmed', time: '', key: null };
+    return { known: true, date: stampLabel(stamp, anchors, lang), time: [stamp.period ? ko ? KO[stamp.period] : stamp.period : '', stamp.clock].filter(Boolean).join(' '), key: `${stamp.anchor}|${stamp.day}` };
 }
 // For the injection: a scene's time once in its head, and each part only with what changed.
 // The date is written again whenever it changes, after an unconfirmed time, at a flashback, and
@@ -397,6 +398,35 @@ export function compactSceneTimes(scene, anchors = {}) {
     ctx = first.known && timed[0].time.mode === 'present' ? { key: first.key, mode: 'present' } : null;
     for (const g of timed) { const t = range(g); if (t) labels.set(g.id, t); }
     return { head, labels };
+}
+// ───────── timeline (screen only; nothing here is injected) ─────────
+// Which time reference a confirmed stamp belongs to. Real calendar dates form one line; a recording
+// day count, a vague jump, a manual count and a custom calendar each stay separate, never merged.
+function referenceOf(stamp, anchors) {
+    const a = anchors[stamp.anchor];
+    if (isoDay(dateAt(stamp, anchors)) !== null) return { key: 'dated', label: '실제 날짜' };
+    if (a.kind === 'record' && a.numbered) return { key: 'ref:' + stamp.anchor, label: '기록 기준 (날짜 없음)' };
+    if (a.kind === 'jump') return { key: 'ref:' + stamp.anchor, label: `“${a.label}” 이후` };
+    if (a.counted) return { key: 'ref:' + stamp.anchor, label: '직접 지정한 기준' };
+    return { key: 'ref:' + stamp.anchor, label: a.date ? `${a.date} 기준` : '날짜 미상 기준' };
+}
+// Every part in record order. Unknown times stay in place (no reference of their own); a flashback
+// is marked and does not change the present reference.
+export function timelineRows(mem) {
+    const anchors = mem.timeAnchors || {}, rows = [];
+    for (const scene of mem.scenes || []) for (const g of scene.segs || []) {
+        const row = { sceneId: scene.id, segId: g.id, from: g.from ?? null, to: g.to ?? null, flashback: g.time?.mode === 'flashback', timed: !!g.time,
+            unknown: !g.time || g.time.start?.certainty === 'unconfirmed' || g.time.end?.certainty === 'unconfirmed', day: null, ref: null, time: '' };
+        if (!g.time) { row.time = '시간 정보 없음'; rows.push(row); continue; }
+        const a = stampParts(g.time.start, anchors, 'ko'), b = stampParts(g.time.end, anchors, 'ko');
+        const lead = a.known ? g.time.start : b.known ? g.time.end : null;
+        if (lead) { row.day = { key: (a.known ? a : b).key, label: (a.known ? a : b).date }; row.ref = referenceOf(lead, anchors); }
+        row.time = row.flashback || !(a.known && b.known && a.key === b.key)
+            ? formatSegmentTime(g.time, anchors, 'ko')
+            : a.time && b.time && a.time !== b.time ? `${a.time}–${b.time}` : a.time || b.time || '';
+        rows.push(row);
+    }
+    return rows;
 }
 export function formatSegmentTime(time, anchors = {}, lang = 'en') {
     if (!time) return '';

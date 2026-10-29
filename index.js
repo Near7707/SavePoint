@@ -1,4 +1,4 @@
-import { dueStatus, formatDue, setManualDue, upgradeStoryTimes, PERIODS, editStoryTime, dateAt, formatSegmentTime, sceneTimeRange, storyTimeContext } from './temporal.js';
+import { dueStatus, formatDue, setManualDue, upgradeStoryTimes, timelineRows, PERIODS, editStoryTime, dateAt, formatSegmentTime, sceneTimeRange, storyTimeContext } from './temporal.js';
 // SavePoint: scene journal + current state memory for SillyTavern, kept per chat room,
 // with game-style save files. Summaries run on demand and at periodic checkpoints.
 import { foldLegacyOutline,
@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.14';
+const VERSION = '0.6.15';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -42,7 +42,7 @@ const THEMES = { jrpg: '클래식 JRPG', neon: '네온 아케이드', glass: '�
 // Themes that were retired, and the closest one now.
 const RETIRED_THEMES = { parchment: 'cream', colorpocket: 'eggpet', joycon: 'dualwhite' };
 const TABS = [
-    ['journal', '📜', '저널'], ['queue', '⏳', '대기열'], ['quests', '❗', '퀘스트'], ['party', '👥', '파티'],
+    ['journal', '📜', '저널'], ['timeline', '📅', '연표'], ['queue', '⏳', '대기열'], ['quests', '❗', '퀘스트'], ['party', '👥', '파티'],
     ['items', '🎒', '인벤토리'], ['world', '🗺', '월드'], ['saves', '💾', '세이브'], ['inject', '👁', '주입'],
 ];
 const KIND_KO = {
@@ -1974,7 +1974,7 @@ function journalHtml(st) {
             const proof = g.time?.end?.evidence;
             const startProof = g.time?.start?.evidence;
             const timeHtml = (ui.edit?.kind === 'segtime' && ui.edit.id.split('|')[0] === s.id && ui.edit.id.split('|')[1] === g.id) ? editForm() : `<div class="sp-seg-time"><span>📅 ${esc(time)}</span> ${tools([btn('edit-segtime-start', `${s.id}|${g.id}`, '시작 ✎', '구간 시작 날짜·시간 편집', ui.run ? 'sp-disabled' : ''), btn('edit-segtime', `${s.id}|${g.id}`, '끝 ✎', '구간 끝 날짜·시간 편집', ui.run ? 'sp-disabled' : '')])}<details><summary>시작: ${levels[g.time?.start?.certainty] || '시간 미상'} · 끝: ${levels[g.time?.end?.certainty] || '시간 미상'}</summary>${startProof ? `<div class="sp-dim">시작 근거 · ${startProof.room === roomKey() ? '현재 방' : '이전 방'} #${startProof.msg} · ${esc(startProof.quote)}</div>` : ''}${proof ? `<div class="sp-dim">${proof.room === roomKey() ? '현재 방' : '이전 방'} #${proof.msg} · ${esc(proof.quote)}</div>` : '<div class="sp-dim">시간 근거 인용 없음</div>'}</details></div>`;
-            return `<div class="sp-seg"><div class="sp-seg-h">${esc(g.id)} ${g.source ? esc(priorRoomLabel(g.source.room)) + (Number.isInteger(g.source.from) ? ` #${g.source.from}–#${g.source.to}` : '') : Number.isInteger(g.from) ? `#${g.from}–#${g.to}` : ''}</div>${timeHtml}${outline}<ul class="sp-pts">${list}</ul>${notes}</div>`;
+            return `<div class="sp-seg" id="sp-seg-${esc(g.id)}"><div class="sp-seg-h">${esc(g.id)} ${g.source ? esc(priorRoomLabel(g.source.room)) + (Number.isInteger(g.source.from) ? ` #${g.source.from}–#${g.source.to}` : '') : Number.isInteger(g.from) ? `#${g.from}–#${g.to}` : ''}</div>${timeHtml}${outline}<ul class="sp-pts">${list}</ul>${notes}</div>`;
         }).join('');
         const outlineText = sceneOutlineParts(s).length ? '' : '<p class="sp-dim">개요 없음</p>';
         return `<div class="sp-card sp-scene ${s.status === 'open' ? 'sp-open' : ''} ${s.star ? 'sp-star' : ''}">${head}
@@ -1993,6 +1993,31 @@ function recordRow(st, r, extraTools = []) {
     return `<div class="sp-rec ${r.pin ? 'sp-pinned' : ''}"><span class="sp-rec-t">${esc(T(r.text, r.ko))}</span>${evidenceChips(r.msgs, r.oldEvidence)}
         ${tools([...extraTools, btn('pin-rec', r.id, '📌', '항상 주입', r.pin ? 'sp-on' : ''), btn('edit-rec', r.id, '✎'), btn('del-rec', r.id, '🗑')])}</div>`;
 }
+// 📅 Timeline: the recorded parts in order, grouped by time reference, with days, flashbacks,
+// unknown times and the promises made in each part. Screen only: nothing extra is injected.
+function timelineHtml(st) {
+    const mem = st.mem, rows = timelineRows(mem);
+    if (!rows.length) return '<div class="sp-empty">기록된 구간이 생기면 여기에 시간 순서로 보여요.</div>';
+    const quests = mem.records.filter(r => r.type === 'quest' && r.due && ['promise', 'debt'].includes(r.kind));
+    const open = quests.filter(r => r.status === 'open');
+    const dueLine = r => `<div class="sp-tl-due sp-due-${dueStatus(mem, r)?.kind || 'closed'}">⏰ <span class="sp-kind">${KIND_KO[r.kind]}</span> ${esc(T(r.text, r.ko))} · ${esc(formatDue(mem, r, 'ko'))} ${btn('tl-quest', r.id, '퀘스트 보기')}</div>`;
+    let html = `<p class="sp-dim">기록된 구간을 기록 순서대로 보여 줘요. 서로 다른 시간 기준은 합치지 않아요. 연표는 화면용이라 AI에게 따로 주입하지 않아요.</p>`;
+    if (open.length) html += `<div class="sp-card"><div class="sp-aspect">진행 중인 약속·빚의 기한</div>${open.map(dueLine).join('')}</div>`;
+    let ref = null, day = null, scene = null;
+    for (const row of rows) {
+        const sc = mem.scenes.find(x => x.id === row.sceneId), g = sc.segs.find(x => x.id === row.segId);
+        if (!row.flashback && row.ref && row.ref.key !== ref) { html += `<div class="sp-tl-ref">${esc(row.ref.label)}</div>`; ref = row.ref.key; day = null; }
+        if (!row.flashback && row.day && row.day.key !== day) { html += `<div class="sp-tl-day">${esc(row.day.label)}</div>`; day = row.day.key; scene = null; }
+        if (row.sceneId !== scene) { html += `<div class="sp-tl-scene">${esc(T(sc.title, sc.koTitle))}${sc.status === 'open' ? ' <small class="sp-dim">진행 중</small>' : ''}</div>`; scene = row.sceneId; }
+        const made = quests.filter(r => r.due?.seg === row.segId);
+        html += `<div class="sp-tl-row ${row.flashback ? 'sp-tl-flash' : ''} ${row.unknown ? 'sp-tl-unknown' : ''}">
+            <div class="sp-row"><span class="sp-tl-time">${row.flashback ? '↩ ' : ''}${esc(row.time || '시간 표시 없음')}</span>
+            <span class="sp-dim">${esc(row.segId)}${Number.isInteger(row.from) ? ` #${row.from}–#${row.to}` : ''}</span>
+            ${tools([btn('tl-goto', `${row.sceneId}|${row.segId}`, '저널에서 보기'), ...(row.timed ? [btn('tl-edit', `${row.sceneId}|${row.segId}`, '✎ 시간', '이 구간의 시간을 편집해요', ui.run ? 'sp-disabled' : '')] : [])])}</div>
+            ${g.outline ? `<div class="sp-tl-text">${esc(T(g.outline, g.koOutline))}</div>` : ''}${made.map(dueLine).join('')}</div>`;
+    }
+    return html;
+}
 function questsHtml(st) {
     const qs = st.mem.records.filter(r => r.type === 'quest');
     const group = (status, label) => {
@@ -2001,7 +2026,7 @@ function questsHtml(st) {
         return `<div class="sp-group"><div class="sp-group-h">${label} <span>${list.length}</span></div>${list.map(q => {
             if (isEditing('record', q.id)) return `<div class="sp-quest">${editForm()}</div>`;
             const flow = status === 'open' ? [btn('quest-done', q.id, '완료'), btn('quest-fail', q.id, '실패')] : [btn('quest-open', q.id, '다시 진행')];
-            return `<div class="sp-quest sp-q-${status}"><span class="sp-qi">${QUEST_ICON[q.kind] || '•'}</span><div class="sp-qb"><div><span class="sp-kind">${KIND_KO[q.kind]}</span> ${esc(T(q.text, q.ko))}</div>
+            return `<div class="sp-quest sp-q-${status}" id="sp-quest-${esc(q.id)}"><span class="sp-qi">${QUEST_ICON[q.kind] || '•'}</span><div class="sp-qb"><div><span class="sp-kind">${KIND_KO[q.kind]}</span> ${esc(T(q.text, q.ko))}</div>
                 <div class="sp-sub">${whoChips(st.mem, q.who)}${evidenceChips(q.msgs, q.oldEvidence)}</div>${(() => { if (!q.due) return ''; const d = dueStatus(st.mem, q); return `<div class="sp-due sp-due-${d?.kind || 'closed'}">⏰ ${esc(formatDue(st.mem, q, 'ko'))}${q.due.manual ? ' <small class="sp-dim">직접 지정</small>' : ''}</div>`; })()}${q.terms ? `<details class="sp-terms" data-group="terms:${esc(q.id)}" ${ui.savesOpen.get('terms:' + q.id) ? 'open' : ''}><summary>근거 원문 ${esc(priorTermsLabel(q.terms))}</summary><div class="sp-terms-q">“${esc(q.terms.quote)}”</div><div class="sp-excerpt">${esc(q.terms.context)}</div></details>` : ''}</div>${tools([...flow, btn('pin-rec', q.id, '📌', '항상 주입', q.pin ? 'sp-on' : ''), btn('edit-rec', q.id, '✎'), btn('del-rec', q.id, '🗑')])}</div>`;
         }).join('')}</div>`;
     };
@@ -2258,7 +2283,7 @@ function render(force = false) {
     if (!hasChat()) body = '<div class="sp-empty">채팅방을 열면 그 방의 기억이 여기에 보여요.</div>';
     else {
         const view = st || { mem: emptyMem() };
-        body = { queue: queueHtml, journal: journalHtml, quests: questsHtml, party: partyHtml, items: itemsHtml, world: worldHtml, saves: savesHtml, inject: injectHtml }[ui.tab](view);
+        body = { queue: queueHtml, journal: journalHtml, timeline: timelineHtml, quests: questsHtml, party: partyHtml, items: itemsHtml, world: worldHtml, saves: savesHtml, inject: injectHtml }[ui.tab](view);
     }
     win.html(`<div class="sp-top">
             <div class="sp-logo"><span class="sp-logo-icon">◆</span> SAVE POINT <span class="sp-ver">v${VERSION}</span></div>
@@ -2270,6 +2295,12 @@ function render(force = false) {
         <div class="sp-body">${body}</div>`);
     win.find('.sp-body').scrollTop(scroll);
     installTabNavigation(win.find('.sp-tab-nav .sp-tabs')[0], tabScroll);
+    // A jump from the timeline: bring that part or quest into view and mark it briefly.
+    if (ui.focus) {
+        const el = document.getElementById(ui.focus);
+        ui.focus = null;
+        if (el) { el.scrollIntoView?.({ block: 'center' }); el.classList.add('sp-focus'); setTimeout(() => el.classList.remove('sp-focus'), 1800); }
+    }
 }
 
 // ───────── UI actions ─────────
@@ -2397,6 +2428,15 @@ async function handle(act, id) {
             const timed = s.segs.filter(g => g.time), g = gaps[0]?.g || timed[timed.length - 1]; if (!g) return;
             return startEdit('segtime', `${s.id}|${g.id}${gaps[0]?.edge === 'start' ? '|start' : ''}`);
         }
+        case 'tl-goto': case 'tl-edit': {
+            const [sid, gid] = id.split('|');
+            const g = st?.mem.scenes.find(x => x.id === sid)?.segs.find(x => x.id === gid);
+            if (!g) return;
+            ui.tab = 'journal'; ui.savesOpen.set('scene:' + sid, true); ui.focus = 'sp-seg-' + gid;
+            if (act === 'tl-goto' || ui.run || !g.time) return render(true);
+            return startEdit('segtime', `${sid}|${gid}${g.time.start?.certainty === 'unconfirmed' ? '|start' : ''}`);
+        }
+        case 'tl-quest': ui.tab = 'quests'; ui.edit = null; ui.focus = 'sp-quest-' + id; return render(true);
         case 'edit-segoutline': return startEdit('segoutline', id);
         case 'edit-ent': return startEdit('entity', id);
         case 'edit-rec': return startEdit('record', id);
