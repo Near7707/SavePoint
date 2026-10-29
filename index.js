@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.20';
+const VERSION = '0.6.21';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -1993,7 +1993,7 @@ function recordRow(st, r, extraTools = []) {
     return `<div class="sp-rec ${r.pin ? 'sp-pinned' : ''}"><span class="sp-rec-t">${esc(T(r.text, r.ko))}</span>${evidenceChips(r.msgs, r.oldEvidence)}
         ${tools([...extraTools, btn('pin-rec', r.id, '📌', '항상 주입', r.pin ? 'sp-on' : ''), btn('edit-rec', r.id, '✎'), btn('del-rec', r.id, '🗑')])}</div>`;
 }
-// 📅 Timeline: the recorded parts in order, grouped by time reference, with days, flashbacks,
+// 📅 Timeline: newest recorded parts first, grouped by time reference, with days, flashbacks,
 // unknown times and the promises made in each part. Screen only: nothing extra is injected.
 // A reference without a date can be given one: "its first recorded day = YYYY-MM-DD". Only the
 // chosen reference; a later vague jump starts its own reference and is never linked automatically.
@@ -2009,20 +2009,31 @@ function refHeaderHtml(mem, rows, row) {
     return `<div class="sp-tl-ref">${esc(r.label)}${linked} ${tools([btn('ref-link', `${r.anchor}|${first.day.index}`, r.link ? '📅 연결 수정' : '📅 날짜 연결', '이 기준의 첫 날에 실제 날짜를 연결해요', ui.run ? 'sp-disabled' : '')])}</div>`;
 }
 function timelineHtml(st) {
-    const mem = st.mem, rows = timelineRows(mem);
-    if (!rows.length) return '<div class="sp-empty">기록된 구간이 생기면 여기에 시간 순서로 보여요.</div>';
+    const mem = st.mem, sourceRows = timelineRows(mem);
+    if (!sourceRows.length) return '<div class="sp-empty">기록된 구간이 생기면 여기에 최근 기록부터 보여요.</div>';
+    // Resolve grouping in recording order before reversing the display. Unknown times and
+    // flashbacks keep their original context, never that of a later time jump above them.
+    let groupRef = null, groupDay = null;
+    const rows = sourceRows.map(row => {
+        if (!row.flashback && row.ref) groupRef = row;
+        if (!row.flashback && row.day) groupDay = row.day;
+        return { ...row, groupRef, groupDay };
+    }).reverse();
     const quests = mem.records.filter(r => r.type === 'quest' && r.due && ['promise', 'debt'].includes(r.kind));
     const open = quests.filter(r => r.status === 'open');
     const dueLine = r => `<div class="sp-tl-due sp-due-${dueStatus(mem, r)?.kind || 'closed'}">⏰ <span class="sp-kind">${KIND_KO[r.kind]}</span> ${esc(T(r.text, r.ko))} · ${esc(formatDue(mem, r, 'ko'))} ${btn('tl-quest', r.id, '퀘스트 보기')}</div>`;
-    let html = `<p class="sp-dim">기록된 구간을 기록 순서대로 보여 줘요. 서로 다른 시간 기준은 합치지 않아요. 연표는 화면용이라 AI에게 따로 주입하지 않아요.</p>`;
+    let html = `<p class="sp-dim">기록된 구간을 최근 기록부터 보여 줘요. 서로 다른 시간 기준은 합치지 않아요. 연표는 화면용이라 AI에게 따로 주입하지 않아요.</p>`;
     if (open.length) html += `<div class="sp-card"><div class="sp-aspect">진행 중인 약속·빚의 기한</div>${open.map(dueLine).join('')}</div>`;
     const conflicts = linkConflicts(mem);
     if (conflicts.length) html += `<div class="sp-warn">연결한 날짜와 원문 날짜가 어긋나는 곳이 있어요. 기록은 바꾸지 않았어요.<ul>${conflicts.map(c => `<li>${esc(c.segId)} ${esc(c.date)} — 앞 구간 ${esc(c.beforeSeg)} ${esc(c.before)}보다 이른 날짜예요</li>`).join('')}</ul></div>`;
     let ref = null, day = null, scene = null;
     for (const row of rows) {
         const sc = mem.scenes.find(x => x.id === row.sceneId), g = sc.segs.find(x => x.id === row.segId);
-        if (!row.flashback && row.ref && row.ref.key !== ref) { html += refHeaderHtml(mem, rows, row); ref = row.ref.key; day = null; }
-        if (!row.flashback && row.day && row.day.key !== day) { html += `<div class="sp-tl-day">${esc(row.day.label)}</div>`; day = row.day.key; scene = null; }
+        if ((row.groupRef?.ref.key || null) !== ref) {
+            if (row.groupRef) html += refHeaderHtml(mem, sourceRows, row.groupRef);
+            ref = row.groupRef?.ref.key || null; day = null; scene = null;
+        }
+        if (row.groupDay && row.groupDay.key !== day) { html += `<div class="sp-tl-day">${esc(row.groupDay.label)}</div>`; day = row.groupDay.key; scene = null; }
         if (row.sceneId !== scene) { html += `<div class="sp-tl-scene">${esc(T(sc.title, sc.koTitle))}${sc.status === 'open' ? ' <small class="sp-dim">진행 중</small>' : ''}</div>`; scene = row.sceneId; }
         const made = quests.filter(r => r.due?.seg === row.segId);
         html += `<div class="sp-tl-row ${row.flashback ? 'sp-tl-flash' : ''} ${row.unknown ? 'sp-tl-unknown' : ''}">

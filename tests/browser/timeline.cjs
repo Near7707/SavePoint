@@ -65,17 +65,23 @@ async function storyMemory() {
         M.meta.savePoint = { v: 1, roomKey: null, mem: m, lastIndex: -1, hashes: [], history: [], floor: -1, linkedSave: null, undo: null, review: null, rev: 0, lootQueue: [] }; }, mem);
     await page.click('#sp_open');
     const injBefore = await ev(() => { __savePoint.refreshInjection(); return M.prompts.savepoint?.v || ''; });
+    const memBefore = await ev(() => JSON.stringify(__savePoint.state().mem));
     await ev(() => __savePoint.handle('tab', 'timeline'));
     let r = await ev(() => ({ tab: !!document.querySelector('.sp-tab[data-id=timeline]'), refs: [...document.querySelectorAll('.sp-tl-ref')].map(x => x.textContent), days: [...document.querySelectorAll('.sp-tl-day')].map(x => x.textContent),
-        flash: document.querySelectorAll('.sp-tl-flash').length, unknown: document.querySelectorAll('.sp-tl-unknown').length, rows: document.querySelectorAll('.sp-tl-row').length, due: document.querySelectorAll('.sp-tl-due').length }));
-    ok(r.tab && r.rows === 6, `1. 📅 연표 탭에 구간 6개가 기록 순서대로 (${r.rows})`);
-    ok(r.refs[0] === '실제 날짜' && r.refs.some(x => x.includes('몇 주 뒤')) && r.refs.length === 2, `1. 실제 날짜와 모호한 점프 뒤 기준을 합치지 않음 (${r.refs.join(' / ')})`);
-    ok(r.days.slice(0, 2).join(',') === '2026-10-25,2026-10-26', `1. 같은 날 구간은 날짜 머리 하나 아래 (${r.days.join(', ')})`);
+        flash: document.querySelectorAll('.sp-tl-flash').length, unknown: document.querySelectorAll('.sp-tl-unknown').length, rows: document.querySelectorAll('.sp-tl-row').length, due: document.querySelectorAll('.sp-tl-due').length,
+        order: [...document.querySelectorAll('.sp-tl-row [data-act=tl-goto]')].map(b => b.dataset.id.split('|')[1]),
+        unknownDay: (() => { let el = document.querySelector('[data-act=tl-goto][data-id$="|g5"]').closest('.sp-tl-row').previousElementSibling;
+            while (el && !el.classList.contains('sp-tl-day')) el = el.previousElementSibling; return el?.textContent; })() }));
+    ok(r.tab && r.rows === 6 && r.order.join(',') === 'g6,g5,g4,g3,g2,g1', `1. 📅 연표 탭에 최신 구간부터 (${r.order.join(',')})`);
+    ok(r.refs[0].includes('몇 주 뒤') && r.refs[1] === '실제 날짜' && r.refs.length === 2, `1. 실제 날짜와 모호한 점프 뒤 기준을 합치지 않음 (${r.refs.join(' / ')})`);
+    ok(r.days.slice(-2).join(',') === '2026-10-26,2026-10-25', `1. 날짜도 최신 기록부터, 같은 날은 머리 하나 아래 (${r.days.join(', ')})`);
+    ok(r.unknownDay === '2026-10-26', '1. 미확인 구간은 이후 시간 점프가 아닌 원래 날짜 묶음에 남음');
     ok(r.flash === 1 && r.unknown >= 2, '1. 회상과 시간 미확인을 구분해 표시');
     ok(r.due === 2, '1. 약속 기한이 위쪽 목록과 약속한 구간 두 곳에 연결됨');
     if (SHOTS) await page.screenshot({ path: path.join(OUT, 'timeline.png'), fullPage: true });
     const injAfter = await ev(() => { __savePoint.refreshInjection(); return M.prompts.savepoint?.v || ''; });
     ok(injAfter === injBefore && !injAfter.includes('실제 날짜'), '2. 연표를 열어도 주입은 그대로');
+    ok((await ev(() => JSON.stringify(__savePoint.state().mem))) === memBefore, '2. 화면 순서를 뒤집어도 저장된 장면·구간 순서와 시간은 그대로');
 
     // 3. jumps: journal part, time edit, quest
     const ids = await ev(() => { const s = __savePoint.state().mem.scenes; return { sid: s[1].id, gid: s[1].segs[0].id, q: __savePoint.state().mem.records[0].id }; });
