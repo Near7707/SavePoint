@@ -12,6 +12,13 @@ import * as provenance from '../provenance.js';
 import * as loot from '../loot.js';
 
 const src = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+
+test('the displayed and exported version matches the extension manifest', () => {
+    const manifest = JSON.parse(fs.readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
+    const version = src.match(/^const VERSION = '([^']+)';$/m)?.[1];
+    assert.equal(version, manifest.version);
+});
+
 const section = (a, b) => src.slice(src.indexOf(a), src.indexOf(b, src.indexOf(a)));
 const extractCode = section('function extractPrompt(', '\n// ───────── automatic collection');
 const checkCode = section('function checkStatements(', '\nfunction queueCheck') + section('async function runCheck(', '\nconst gapText');

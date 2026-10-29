@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.17';
+const VERSION = '0.6.19';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
