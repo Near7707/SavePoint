@@ -1,4 +1,4 @@
-import { dueStatus, formatDue, setManualDue, upgradeStoryTimes, timelineRows, linkReference, linkConflicts, PERIODS, editStoryTime, dateAt, formatSegmentTime, sceneTimeRange, storyTimeContext } from './temporal.js';
+import { questEventTimes, dueStatus, formatDue, setManualDue, upgradeStoryTimes, timelineRows, linkReference, linkConflicts, PERIODS, editStoryTime, dateAt, formatSegmentTime, sceneTimeRange, storyTimeContext } from './temporal.js';
 // SavePoint: scene journal + current state memory for SillyTavern, kept per chat room,
 // with game-style save files. Summaries run on demand and at periodic checkpoints.
 import { foldLegacyOutline,
@@ -7,7 +7,7 @@ import { foldLegacyOutline,
     pointInjected, pointSymbol, rekeyItems, validateRekey, applyRekey, sceneOutlineText, sceneOutlineParts,
     refreshProvisionalOutlines, normalizeResult, validateCheck, checkScope, dupState, pointId,
     recordLine, normalizeRecordNames, entityName, estTokens, QUEST_KINDS, WORLD_KINDS, ENTITY_TYPES,
-    groupErrors, findQuote, mostlyNonEnglish,
+    groupErrors, findQuote, mostlyNonEnglish, setQuestStatus,
 } from './core.js';
 import { lootStatus, lootWarning, lootInChunk, lootBlock, attachLoot, settleLoot, failLoot, lootTarget, applyLootSupplement, restoreLostLoot } from './loot.js';
 import { Vault, roomHash } from './vault.js';
@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.19';
+const VERSION = '0.6.20';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -2042,6 +2042,7 @@ function questsHtml(st) {
             if (isEditing('record', q.id)) return `<div class="sp-quest">${editForm()}</div>`;
             const flow = status === 'open' ? [btn('quest-done', q.id, '완료'), btn('quest-fail', q.id, '실패')] : [btn('quest-open', q.id, '다시 진행')];
             return `<div class="sp-quest sp-q-${status}" id="sp-quest-${esc(q.id)}"><span class="sp-qi">${QUEST_ICON[q.kind] || '•'}</span><div class="sp-qb"><div><span class="sp-kind">${KIND_KO[q.kind]}</span> ${esc(T(q.text, q.ko))}</div>
+                ${questEventTimes(st.mem, q).map(at => `<div class="sp-sub sp-quest-time">📅 ${esc(at.label)}: ${esc(at.text)}</div>`).join('')}
                 <div class="sp-sub">${whoChips(st.mem, q.who)}${evidenceChips(q.msgs, q.oldEvidence)}</div>${(() => { if (!q.due) return ''; const d = dueStatus(st.mem, q); return `<div class="sp-due sp-due-${d?.kind || 'closed'}">⏰ ${esc(formatDue(st.mem, q, 'ko'))}${q.due.manual ? ' <small class="sp-dim">직접 지정</small>' : ''}</div>`; })()}${q.terms ? `<details class="sp-terms" data-group="terms:${esc(q.id)}" ${ui.savesOpen.get('terms:' + q.id) ? 'open' : ''}><summary>근거 원문 ${esc(priorTermsLabel(q.terms))}</summary><div class="sp-terms-q">“${esc(q.terms.quote)}”</div><div class="sp-excerpt">${esc(q.terms.context)}</div></details>` : ''}</div>${tools([...flow, btn('pin-rec', q.id, '📌', '항상 주입', q.pin ? 'sp-on' : ''), btn('edit-rec', q.id, '✎'), btn('del-rec', q.id, '🗑')])}</div>`;
         }).join('')}</div>`;
     };
@@ -2404,11 +2405,11 @@ async function saveEdit() {
         } else if (e.kind === 'record') {
             if (!trim(v.text)) return false;
             let r = mem.records.find(x => x.id === e.id);
-            if (!r) { r = { id: 'r' + (mem.next.r++), type: v.type, text: '', src: [], msgs: [], pin: false }; mem.records.push(r); }
+            if (!r) { r = { id: 'r' + (mem.next.r++), type: v.type, text: '', src: [], msgs: [], pin: false, ...(v.type === 'quest' ? { questEvents: { created: null } } : {}) }; mem.records.push(r); }
             if (r.text !== trim(v.text)) { r.text = trim(v.text); delete r.ko; }
             if (r.type === 'party') { r.entity = v.entity || null; r.aspect = v.aspect === 'condition' ? 'condition' : 'relation'; }
             if (r.type === 'item') { r.entity = v.entity || null; r.holder = v.holder || null; }
-            if (r.type === 'quest') { r.kind = QUEST_KINDS.includes(v.kind) ? v.kind : 'goal'; r.status = ['open', 'done', 'failed'].includes(v.status) ? v.status : 'open'; r.who ||= []; }
+            if (r.type === 'quest') { r.kind = QUEST_KINDS.includes(v.kind) ? v.kind : 'goal'; setQuestStatus(r, ['open', 'done', 'failed'].includes(v.status) ? v.status : 'open'); r.who ||= []; }
             if (r.type === 'quest' && dueChanged) setManualDue(mem, r, { day: trim(v.dueDay), expr: trim(v.dueExpr) });
             if (r.type === 'world') { r.kind = WORLD_KINDS.includes(v.kind) ? v.kind : 'rule'; r.knownBy ||= []; }
         }
@@ -2478,7 +2479,7 @@ async function handle(act, id) {
         case 'pin': return commitEdit(m => { const s = m.scenes.find(x => x.id === id); if (!s) return false; s.pin = !s.pin; }, { undoable: false });
         case 'pin-rec': return commitEdit(m => { const r = m.records.find(x => x.id === id); if (!r) return false; r.pin = !r.pin; }, { undoable: false });
         case 'quest-done': case 'quest-fail': case 'quest-open':
-            return commitEdit(m => { const r = m.records.find(x => x.id === id); if (!r) return false; r.status = act === 'quest-done' ? 'done' : act === 'quest-fail' ? 'failed' : 'open'; });
+            return commitEdit(m => { const r = m.records.find(x => x.id === id); if (!r) return false; setQuestStatus(r, act === 'quest-done' ? 'done' : act === 'quest-fail' ? 'failed' : 'open'); });
         case 'del-scene':
             if (!(await confirmBox('이 장면을 저널에서 지울까요? 상태 탭의 항목은 그대로 남아요. (되돌리기 가능)'))) return;
             return commitEdit(m => { m.scenes = m.scenes.filter(x => x.id !== id); });

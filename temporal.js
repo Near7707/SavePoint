@@ -528,6 +528,72 @@ export function resolveDueClaim(raw, { chunk, room = null, segOf }) {
     return cleanDue({ expr, days, date, seg: segOf(n), room, msg: n });
 }
 // The moment a promise was made: only a part that stays on one known day of one reference.
+// Display-only lifecycle dates. Segment ids and room provenance are authoritative;
+// an imported #12 must never be matched to the active chat's #12.
+export function questEventTimes(mem, record) {
+    const all = (mem.scenes || []).flatMap(s => s.segs.map(g => ({ g, external: !!(g.external || g.source || s.external) })));
+    const byId = new Map(all.map(x => [x.g.id, x]));
+    const owner = x => x.g.source?.room || x.g.time?.origin || null;
+    const eventParts = event => {
+        if (!event || event.manual || !event.segs?.length) return [];
+        const use = event.segs.map(id => byId.get(id));
+        if (use.some(x => !x || x.external !== !!event.external ||
+            (event.external && (!event.room || owner(x) !== event.room)) ||
+            (event.room && owner(x) && owner(x) !== event.room))) return [];
+        return all.filter(x => event.segs.includes(x.g.id)).map(x => x.g);
+    };
+    const byRef = (value, room = null, external = false) => {
+        const matches = x => x.external === external && (!external || room && owner(x) === room);
+        if (typeof value === 'string' && /^g\d+$/.test(value)) {
+            const x = byId.get(value); return x && matches(x) ? x.g : null;
+        }
+        if (!Number.isInteger(value) || value < 0) return null;
+        return all.find(x => matches(x) && value >= (external ? x.g.source?.from : x.g.from) &&
+            value <= (external ? x.g.source?.to : x.g.to) &&
+            Number.isInteger(external ? x.g.source?.from : x.g.from) && Number.isInteger(external ? x.g.source?.to : x.g.to))?.g || null;
+    };
+    const legacyPart = () => {
+        if (record.due?.seg) {
+            const x = byId.get(record.due.seg);
+            return x && (!x.external || record.due.room && owner(x) === record.due.room) &&
+                (!record.due.room || !owner(x) || owner(x) === record.due.room) ? x.g : null;
+        }
+        const prior = record.oldEvidence?.find(x => x.msgs?.length);
+        if (prior) return byRef(prior.msgs[0], prior.room, true);
+        if (record.msgs?.length) return byRef(record.msgs[0]);
+        return byId.get(record.src?.[0])?.g || null;
+    };
+    const span = gs => {
+        if (!gs.length || gs.some(g => !g.time)) return null;
+        const anchors = mem.timeAnchors || {}, stamps = gs.flatMap(g => [g.time.start, ...(g.time.via || []), g.time.end]);
+        if (stamps.some(t => !known(t) || !anchors[t.anchor] || stampLabel(t, anchors, 'ko') === '날짜 미상')) return null;
+        const first = stamps[0], date = dateAt(first, anchors, true), iso = isoDay(date);
+        const sameDay = stamps.every(t => (t.anchor === first.anchor && t.day === first.day) ||
+            (iso !== null && isoDay(dateAt(t, anchors, true)) === iso));
+        const modes = new Set(gs.map(g => g.time.mode));
+        const flash = modes.has('flashback') ? modes.size === 1 ? '회상 · ' : '회상 포함 · ' : '';
+        if (sameDay) {
+            // A day-long part does not establish the event's exact clock or period.
+            const period = first.period && stamps.every(t => t.period === first.period) ? KO[first.period] : '';
+            const at = first.clock && stamps.every(t => t.clock === first.clock) ? first.clock : '';
+            return { range: false, text: flash + [stampLabel(first, anchors, 'ko'), period, at].filter(Boolean).join(' · ') };
+        }
+        const labels = stamps.map(t => formatStoryStamp(t, anchors, 'ko')).filter((v, n, a) => n === 0 || v !== a[n - 1]);
+        return { range: true, text: flash + labels.join(' → ') };
+    };
+    const out = [], created = Object.hasOwn(record.questEvents || {}, 'created');
+    const start = span(created ? eventParts(record.questEvents.created) : [legacyPart()].filter(Boolean));
+    if (start) out.push({ label: !created ? '관련 기록 구간' : ['promise', 'debt'].includes(record.kind)
+        ? start.range ? '약속 기록 구간' : '약속한 때' : start.range ? '발생 기록 구간' : '생긴 때', text: start.text });
+    const event = record.questEvents?.resolved;
+    if (event && event.status === record.status && ['done', 'failed'].includes(record.status)) {
+        const end = span(eventParts(event));
+        if (end) out.push({ label: record.status === 'done' ? end.range ? '완료 기록 구간' : '완료한 때'
+            : end.range ? '실패 기록 구간' : '실패한 때', text: end.text });
+    }
+    return out;
+}
+
 function madeAt(mem, segId) {
     const g = parts(mem).find(x => x.id === segId);
     const t = g?.time;

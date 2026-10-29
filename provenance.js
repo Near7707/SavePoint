@@ -13,6 +13,24 @@ export function cleanSource(value) {
     if (Object.hasOwn(value, 'msg')) return { room: room(value.room), msg: num(value.msg) };
     return { room: room(value.room), from: num(value.from), to: num(value.to) };
 }
+// Quest lifecycle evidence is separate from the rolling record evidence list. Dates are
+// resolved from these parts at display time, never copied from a wall-clock timestamp.
+export function cleanQuestEvents(value) {
+    if (!plain(value)) return undefined;
+    const source = x => {
+        if (!plain(x)) return null;
+        const segs = [...new Set((Array.isArray(x.segs) ? x.segs : []).filter(v => typeof v === 'string' && /^g\d+$/.test(v)))];
+        if (!segs.length) return null;
+        return { room: room(x.room), segs, msgs: [...new Set((Array.isArray(x.msgs) ? x.msgs : []).filter(ref))], ...(x.external === true ? { external: true } : {}) };
+    };
+    const out = {};
+    if (Object.hasOwn(value, 'created')) out.created = source(value.created);
+    if (plain(value.resolved) && ['done', 'failed'].includes(value.resolved.status)) {
+        const at = value.resolved.manual === true ? { manual: true } : source(value.resolved);
+        if (at) out.resolved = { ...at, status: value.resolved.status };
+    }
+    return out;
+}
 function archive(item, sourceRoom, segments = new Map()) {
     const msgs = (item.msgs || []).filter(ref);
     if (msgs.length) {
@@ -77,6 +95,9 @@ export function detachEvidence(mem, sourceRoom = null) {
     }
     for (const r of out.records) {
         archive(r, source, segments); archiveTerms(r, source); r.evidenceVersion = 1;
+        for (const at of [r.questEvents?.created, r.questEvents?.resolved]) if (at && !at.manual && !at.external) {
+            at.room ||= source; at.external = true;
+        }
     }
     return out;
 }

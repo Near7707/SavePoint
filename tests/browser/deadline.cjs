@@ -47,12 +47,14 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
                 const data = JSON.parse(raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1));
                 if (data.scenes) for (const sc of data.scenes) {
                     const n = sc.points[0].msgs.find(Number.isInteger);
-                    sc.time = M.step === 'start' ? { mode: 'present', start: { relation: 'explicit', date: '2026-10-24', msg: n, quote: '2026-10-24' }, end: { relation: 'same' } }
+                    sc.time = M.step === 'complete' ? { mode: 'present', start: { relation: 'explicit', date: '2026-10-30', msg: n, quote: '2026-10-30' }, end: { relation: 'same' } }
+                        : M.step === 'start' ? { mode: 'present', start: { relation: 'explicit', date: '2026-10-24', msg: n, quote: '2026-10-24' }, end: { relation: 'same' } }
                         : M.step === 'next' ? { mode: 'present', start: { relation: 'advance', days: 1, msg: n, quote: '다음 날' }, end: { relation: 'same' } }
                         : M.step === 'jump' ? { mode: 'present', start: { relation: 'jump', elapsed: '몇 주 뒤', msg: n, quote: '몇 주 뒤' }, end: { relation: 'same' } }
                         : { mode: 'present', start: { relation: 'same' }, end: { relation: 'same' } };
                 }
                 for (const ch of data.changes || []) if (ch.kind === 'promise' && M.chat[ch.terms.msg].mes.includes('내일')) ch.due = { expr: '내일', days: 1, msg: ch.terms.msg };
+                if (M.step === 'complete' && data.scenes?.length) data.changes.push({ op: 'update', id: M.completeQuest, status: 'done', msgs: [data.scenes[0].points[0].msgs.find(Number.isInteger)] });
                 return JSON.stringify(data);
             } };
         };
@@ -65,6 +67,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     let r = await ev(() => ({ due: $('.sp-due').text(), cls: $('.sp-due').attr('class') || '', inj: M.prompts.savepoint.v }));
     ok(r.due.includes('“내일”') && r.due.includes('2026-10-25') && r.due.includes('1일 남음 (마지막 기록 기준)'), `1. 약속 기한과 남은 날 표시 (${r.due})`);
     ok(r.inj.includes('1 day left as of the last record'), '1. 주입에도 마지막 기록 기준의 기한');
+    r = await ev(() => ({ time: $('.sp-quest-time').text(), inj: M.prompts.savepoint.v }));
+    ok(r.time.includes('약속한 때: 2026-10-24') && !r.inj.includes('약속한 때'), '1. 약속한 날짜는 카드에만 표시, 주입에 추가하지 않음');
 
     for (const step of ['next', 'next']) { await ev(s => { M.step = s; M.add(2, () => '다음 날 아침이 밝았다.'); }, step); await ev(() => __savePoint.handle('run')); }
     await ev(() => __savePoint.handle('tab', 'quests'));
@@ -115,6 +119,25 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(id => __savePoint.handle('quest-done', id), qid);
     r = await ev(() => $('.sp-due').text());
     ok(r.includes('“내일”') && !/남음|지남|확인 필요/.test(r), `5. 완료한 약속은 기한 표현만 (${r})`);
+    ok(!(await ev(() => $('.sp-quest-time').text())).includes('완료한 때'), '5. 직접 완료는 이야기 날짜를 만들지 않음');
+
+    // 6. AI status evidence has its own date; editing status manually clears it and undo restores it.
+    await ev(id => { __savePoint.handle('quest-open', id); }, qid);
+    await ev(id => { M.completeQuest = id; M.step = 'complete'; M.add(2, () => 'It was 2026-10-30. The promised meeting was completed.'); }, qid);
+    await ev(() => __savePoint.handle('run'));
+    await ev(() => __savePoint.handle('tab', 'quests'));
+    r = await ev(() => ({ text: $('.sp-quest-time').text(), size: getComputedStyle(document.querySelector('.sp-quest-time')).fontSize,
+        fits: [...document.querySelectorAll('.sp-quest-time')].every(e => e.scrollWidth <= e.clientWidth + 1) }));
+    ok(r.text.includes('약속한 때: 2026-10-24') && r.text.includes('완료한 때: 2026-10-30'), '6. 생성 날짜와 AI 완료 날짜를 별도로 표시');
+    ok(r.size === '12px' && r.fits, '6. 모바일 카드의 날짜는 작은 글씨로 줄바꿈하고 넘치지 않음');
+    if (SHOTS) await page.screenshot({ path: path.join(OUT, 'quest-dates.png') });
+    await ev(id => __savePoint.handle('edit-rec', id), qid);
+    await page.selectOption('.sp-edit [data-edit=status]', 'failed');
+    await ev(() => __savePoint.handle('edit-save'));
+    r = await ev(() => ({ text: $('.sp-quest-time').text(), event: __savePoint.state().mem.records.find(x => x.id === M.completeQuest).questEvents.resolved }));
+    ok(!/완료한 때|실패한 때/.test(r.text) && r.event.manual && r.event.status === 'failed', '6. 편집 창의 직접 상태 변경도 이전 완료 날짜를 재사용하지 않음');
+    await ev(() => __savePoint.handle('undo'));
+    ok((await ev(() => $('.sp-quest-time').text())).includes('완료한 때: 2026-10-30'), '6. 리와인드하면 완료 근거와 날짜도 복원');
 
     await browser.close(); srv.close();
     console.log(failures ? `${failures} FAILED` : 'ALL PASS');

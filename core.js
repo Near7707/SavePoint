@@ -1,6 +1,6 @@
 import { cleanTimeAnchors, cleanStoryTime, resolveResultTime, formatSegmentTime, compactSceneTimes, storyTimeContext, cleanDue, resolveDueClaim, formatDue } from './temporal.js';
 import { cleanLootSources, restoreLostLoot } from './loot.js';
-import { upgradeEvidence, detachEvidence, cleanPrior, cleanSource } from './provenance.js';
+import { upgradeEvidence, detachEvidence, cleanPrior, cleanSource, cleanQuestEvents } from './provenance.js';
 // SavePoint core: pure data logic (no SillyTavern, no DOM).
 // Memory = scenes (journal) + entities (who/what) + records (current state).
 
@@ -9,6 +9,15 @@ export const ENTITY_TYPES = ['person', 'item', 'place'];
 export const ASPECTS = ['relation', 'condition'];
 export const QUEST_KINDS = ['promise', 'goal', 'debt', 'mystery'];
 export const QUEST_STATUS = ['open', 'done', 'failed'];
+// Manual status changes have no story-time evidence. Keep a marker so old record
+// evidence can never be mistaken for when the user pressed the completion button.
+export function setQuestStatus(record, status) {
+    if (record.type !== 'quest' || !QUEST_STATUS.includes(status) || record.status === status) return;
+    record.questEvents ||= {};
+    if (status === 'open') delete record.questEvents.resolved;
+    else record.questEvents.resolved = { status, manual: true };
+    record.status = status;
+}
 export const WORLD_KINDS = ['place', 'rule', 'name', 'secret'];
 export const HISTORY_BYTES = 3 * 1024 * 1024;
 
@@ -728,6 +737,12 @@ export function applyResult(mem, data, chunk, { close = false, room = null } = {
         }
         return segIds[segIds.length - 1];
     };
+    const questSource = msgs => {
+        const segs = uniq(msgs.map(m => Number.isInteger(m)
+            ? segRanges.find(g => m >= g.from && m <= g.to)?.id
+            : isSegRef(m) ? m : null).filter(Boolean));
+        return segs.length ? { room, segs, msgs: [...msgs] } : null;
+    };
     for (const c of data.changes || []) {
         const msgs = numEvidence(c.msgs);
         const src = segFor(msgs);
@@ -737,6 +752,8 @@ export function applyResult(mem, data, chunk, { close = false, room = null } = {
             if (c.type === 'item') { r.entity = resolve(c.entity); r.holder = resolve(c.holder); }
             if (c.type === 'quest') {
                 r.kind = c.kind; r.status = QUEST_STATUS.includes(c.status) ? c.status : 'open'; r.who = uniq(strList(c.who).map(resolve).filter(Boolean));
+                r.questEvents = { created: questSource(msgs) };
+                if (r.status !== 'open' && r.questEvents.created) r.questEvents.resolved = { ...clone(r.questEvents.created), status: r.status };
                 const t = TERMS_KINDS.includes(c.kind) ? termsOf(c, chunk) : null;
                 if (t) r.terms = t;
                 const due = TERMS_KINDS.includes(c.kind) ? resolveDueClaim(c.due, { chunk, room, segOf: n => segFor([n]) }) : undefined;
@@ -747,7 +764,15 @@ export function applyResult(mem, data, chunk, { close = false, room = null } = {
         } else if (c.op === 'update') {
             const r = next.records.find(x => x.id === c.id);
             if (str(c.text) && str(c.text) !== r.text) { r.text = str(c.text); delete r.ko; }
-            if (c.status !== undefined) r.status = c.status;
+            if (c.status !== undefined) {
+                if (r.type === 'quest' && r.status !== c.status) {
+                    r.questEvents ||= {};
+                    delete r.questEvents.resolved;
+                    const at = questSource(msgs);
+                    if (c.status !== 'open' && at) r.questEvents.resolved = { ...at, status: c.status };
+                }
+                r.status = c.status;
+            }
             if (c.holder !== undefined) r.holder = resolve(c.holder);
             if (Array.isArray(c.knownBy)) r.knownBy = uniq(c.knownBy.map(resolve).filter(Boolean));
             // New terms only when given; a status change keeps the original terms.
@@ -1233,6 +1258,7 @@ export function cleanMem(raw) {
         if (r.type === 'item') { rec.entity = eref(r.entity); rec.holder = eref(r.holder); }
         if (r.type === 'quest') {
             rec.kind = QUEST_KINDS.includes(r.kind) ? r.kind : 'goal'; rec.status = QUEST_STATUS.includes(r.status) ? r.status : 'open'; rec.who = uniq((r.who || []).map(eref).filter(Boolean));
+            if (cleanQuestEvents(r.questEvents)) rec.questEvents = cleanQuestEvents(r.questEvents);
             if (cleanDue(r.due)) rec.due = cleanDue(r.due);
             if (plain(r.terms) && (Number.isInteger(r.terms.msg) || cleanSource(r.terms.source)) && str(r.terms.quote)) rec.terms = { msg: Number.isInteger(r.terms.msg) ? r.terms.msg : null, quote: str(r.terms.quote), context: str(r.terms.context) || str(r.terms.quote), ...(cleanSource(r.terms.source) ? { source: cleanSource(r.terms.source) } : {}) };
         }

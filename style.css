@@ -166,6 +166,7 @@
 .sp-q-failed { opacity: .6; } .sp-q-failed .sp-qb > div:first-child { text-decoration: line-through; text-decoration-color: var(--sp-danger); }
 .sp-kind { font-size: 10px; font-family: var(--sp-head); color: var(--sp-accent); border: 1px solid var(--sp-accent); border-radius: 3px; padding: 0 4px; margin-right: 4px; vertical-align: 1px; }
 .sp-sub { margin-top: 3px; }
+.sp-quest-time { color: var(--sp-dim); font-size: 12px; overflow-wrap: anywhere; }
 .sp-ent-h { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
 .sp-ent-n { font-weight: 700; font-size: 15px; }
 .sp-alias { font-size: 12px; color: var(--sp-dim); }
