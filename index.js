@@ -1,4 +1,4 @@
-import { dueStatus, formatDue, setManualDue, upgradeStoryTimes, timelineRows, PERIODS, editStoryTime, dateAt, formatSegmentTime, sceneTimeRange, storyTimeContext } from './temporal.js';
+import { dueStatus, formatDue, setManualDue, upgradeStoryTimes, timelineRows, linkReference, linkConflicts, PERIODS, editStoryTime, dateAt, formatSegmentTime, sceneTimeRange, storyTimeContext } from './temporal.js';
 // SavePoint: scene journal + current state memory for SillyTavern, kept per chat room,
 // with game-style save files. Summaries run on demand and at periodic checkpoints.
 import { foldLegacyOutline,
@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.15';
+const VERSION = '0.6.16';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -1995,6 +1995,19 @@ function recordRow(st, r, extraTools = []) {
 }
 // 📅 Timeline: the recorded parts in order, grouped by time reference, with days, flashbacks,
 // unknown times and the promises made in each part. Screen only: nothing extra is injected.
+// A reference without a date can be given one: "its first recorded day = YYYY-MM-DD". Only the
+// chosen reference; a later vague jump starts its own reference and is never linked automatically.
+function refHeaderHtml(mem, rows, row) {
+    const r = row.ref, inRef = rows.filter(x => !x.flashback && x.ref?.key === r.key && Number.isInteger(x.day?.index));
+    const first = inRef.reduce((m, x) => (m === null || x.day.index < m.day.index ? x : m), null);
+    if (!r.linkable || !first) return `<div class="sp-tl-ref">${esc(r.label)}</div>`;
+    if (ui.edit?.kind === 'reflink' && ui.edit.id === r.anchor)
+        return `<div class="sp-tl-ref">${esc(r.label)}<div class="sp-edit"><label class="sp-f"><span>이 기준의 첫 날(${esc(ui.edit.values.label)})의 날짜 · YYYY-MM-DD, 비우면 연결 해제</span><input data-edit="date" value="${esc(ui.edit.values.date)}"></label>
+            <div class="sp-dim">저장된 일 수와 메시지 번호는 그대로예요. 표시와 기한 계산에만 쓰고, 원문에 적힌 날짜는 바꾸지 않아요. 뒤에 ‘몇 주 뒤’처럼 새로 시작된 기준은 따로 연결해야 해요.</div>
+            <div class="sp-row">${btn('edit-save', '', '저장')}${btn('edit-cancel', '', '취소')}</div></div></div>`;
+    const linked = r.link ? ` <span class="sp-dim">· 날짜 연결됨</span>` : '';
+    return `<div class="sp-tl-ref">${esc(r.label)}${linked} ${tools([btn('ref-link', `${r.anchor}|${first.day.index}`, r.link ? '📅 연결 수정' : '📅 날짜 연결', '이 기준의 첫 날에 실제 날짜를 연결해요', ui.run ? 'sp-disabled' : '')])}</div>`;
+}
 function timelineHtml(st) {
     const mem = st.mem, rows = timelineRows(mem);
     if (!rows.length) return '<div class="sp-empty">기록된 구간이 생기면 여기에 시간 순서로 보여요.</div>';
@@ -2003,10 +2016,12 @@ function timelineHtml(st) {
     const dueLine = r => `<div class="sp-tl-due sp-due-${dueStatus(mem, r)?.kind || 'closed'}">⏰ <span class="sp-kind">${KIND_KO[r.kind]}</span> ${esc(T(r.text, r.ko))} · ${esc(formatDue(mem, r, 'ko'))} ${btn('tl-quest', r.id, '퀘스트 보기')}</div>`;
     let html = `<p class="sp-dim">기록된 구간을 기록 순서대로 보여 줘요. 서로 다른 시간 기준은 합치지 않아요. 연표는 화면용이라 AI에게 따로 주입하지 않아요.</p>`;
     if (open.length) html += `<div class="sp-card"><div class="sp-aspect">진행 중인 약속·빚의 기한</div>${open.map(dueLine).join('')}</div>`;
+    const conflicts = linkConflicts(mem);
+    if (conflicts.length) html += `<div class="sp-warn">연결한 날짜와 원문 날짜가 어긋나는 곳이 있어요. 기록은 바꾸지 않았어요.<ul>${conflicts.map(c => `<li>${esc(c.segId)} ${esc(c.date)} — 앞 구간 ${esc(c.beforeSeg)} ${esc(c.before)}보다 이른 날짜예요</li>`).join('')}</ul></div>`;
     let ref = null, day = null, scene = null;
     for (const row of rows) {
         const sc = mem.scenes.find(x => x.id === row.sceneId), g = sc.segs.find(x => x.id === row.segId);
-        if (!row.flashback && row.ref && row.ref.key !== ref) { html += `<div class="sp-tl-ref">${esc(row.ref.label)}</div>`; ref = row.ref.key; day = null; }
+        if (!row.flashback && row.ref && row.ref.key !== ref) { html += refHeaderHtml(mem, rows, row); ref = row.ref.key; day = null; }
         if (!row.flashback && row.day && row.day.key !== day) { html += `<div class="sp-tl-day">${esc(row.day.label)}</div>`; day = row.day.key; scene = null; }
         if (row.sceneId !== scene) { html += `<div class="sp-tl-scene">${esc(T(sc.title, sc.koTitle))}${sc.status === 'open' ? ' <small class="sp-dim">진행 중</small>' : ''}</div>`; scene = row.sceneId; }
         const made = quests.filter(r => r.due?.seg === row.segId);
@@ -2350,6 +2365,12 @@ async function saveEdit() {
         const copy = clone(state().mem), r = copy.records.find(x => x.id === e.id) || { type: 'quest' };
         setManualDue(copy, r, { day: trim(v.dueDay), expr: trim(v.dueExpr) });
     }
+    if (e.kind === 'reflink') {
+        // Same check on a copy first: a bad date keeps the form open and changes nothing.
+        const copy = clone(state().mem); linkReference(copy, e.id, v.date, v.day);
+        ui.edit = null;
+        return commitEdit(mem => linkReference(mem, e.id, v.date, v.day));
+    }
     ui.edit = null;
     await commitEdit(mem => {
         if (e.kind === 'scene') {
@@ -2435,6 +2456,16 @@ async function handle(act, id) {
             ui.tab = 'journal'; ui.savesOpen.set('scene:' + sid, true); ui.focus = 'sp-seg-' + gid;
             if (act === 'tl-goto' || ui.run || !g.time) return render(true);
             return startEdit('segtime', `${sid}|${gid}${g.time.start?.certainty === 'unconfirmed' ? '|start' : ''}`);
+        }
+        case 'ref-link': {
+            if (ui.run) return;
+            const sep = id.lastIndexOf('|'), anchor = id.slice(0, sep), dayIndex = Number(id.slice(sep + 1));
+            const a = st?.mem.timeAnchors?.[anchor]; if (!a) return;
+            const row = timelineRows(st.mem).find(x => x.ref?.anchor === anchor && x.day?.index === dayIndex);
+            const label = a.link ? `이 기준 ${dayIndex - (a.baseDay || 0) + 1}일째` : row?.day?.label || '';
+            const date = a.link ? (() => { const d = new Date(Date.parse(a.link.date + 'T00:00:00Z') + (dayIndex - a.link.day) * 86400000); return d.toISOString().slice(0, 10); })() : '';
+            ui.edit = { kind: 'reflink', id: anchor, values: { date, day: dayIndex, label } };
+            return render(true);
         }
         case 'tl-quest': ui.tab = 'quests'; ui.edit = null; ui.focus = 'sp-quest-' + id; return render(true);
         case 'edit-segoutline': return startEdit('segoutline', id);

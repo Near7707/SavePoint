@@ -1,3 +1,17 @@
+# v0.6.16 · ③ 시작 날짜 연결
+
+기준: v0.6.15 `86ef254`.
+
+- 기준점에 `link: {date, day}`(그 기준의 day번째 날 = date). `cleanTimeAnchors`·`basis`(직접 편집이 만든 manual 기준점)·`resolveStamp`의 기준점 재생성에서 보존. 원래 날짜(`a.date`)가 있으면 쓰지 않음.
+- `dateAt(stamp, anchors, linked)`: linked일 때만 연결 날짜 사용. 표시(`stampLabel` → formatStoryStamp·storyTimeContext·연표)와 기한(`isoOf` → dueStamp·dueStatus·setManualDue·madeAt)은 linked, 시간 판정(`resolveStamp`의 same/explicit 비교, floor, upgrade)·연표의 `dated` 묶음 판단·편집 창 기본값은 원래 날짜. 그래서 연결이 원문 날짜를 미확인으로 만들거나 과거 날짜 차단에 끼어들지 않음.
+- `linkReference(mem, anchor, date, day)`: 날짜 없는 기준만, 실제 날짜만(요일 허용), '' = 해제. `linkConflicts(mem)`: 현재 흐름에서 연결이 끼인 곳의 날짜 역행만 보고(변경 없음).
+- 연표 기준 머리: 날짜 없는 기준에 `📅 날짜 연결`/`연결 수정`, 같은 자리 편집 창(첫 날 표시, 비우면 해제). 저장은 복제본 검사 후 commitEdit(리와인드 가능). 어긋남 경고는 연표 위쪽.
+- 모호한 점프 뒤 기준은 별도 기준점이라 자동 연결되지 않음(검사).
+
+검사: Node 306개(신규 reference-link 5개), 브라우저 15묶음(timeline 4번: 버튼, 없는 날짜 거부, 표시·주입 반영, 리와인드).
+
+---
+
 # v0.6.15 · ② 📅 연표 탭
 
 기준: v0.6.14 `e6253cc`.

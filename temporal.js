@@ -24,7 +24,8 @@ export function cleanTimeAnchors(raw) {
             // initial one retains that wording; later references stay local.
             numbered: a.numbered === true || (a.numbered === undefined && a.kind === 'record' && !Object.keys(out).length),
             counted: a.counted === true,
-            kind: ['record', 'explicit', 'jump', 'manual'].includes(a.kind) ? a.kind : 'record' };
+            kind: ['record', 'explicit', 'jump', 'manual'].includes(a.kind) ? a.kind : 'record',
+            ...(cleanLink(a.link) ? { link: cleanLink(a.link) } : {}) };
     }
     return out;
 }
@@ -38,7 +39,8 @@ function cleanStamp(raw) {
         anchor: typeof raw.anchor === 'string' && raw.anchor.startsWith('t:') && raw.anchor.length <= 1600 ? raw.anchor : null,
         day: integer(raw.day) ? raw.day : null, certainty: CERTAINTY.includes(raw.certainty) ? raw.certainty : 'unconfirmed' };
     if (s.manual) { s.manualDay = integer(raw.manualDay) ? raw.manualDay : null;
-        if (object(raw.basis)) s.basis = { date: text(raw.basis.date), label: text(raw.basis.label), baseDay: integer(raw.basis.baseDay) ? raw.basis.baseDay : 0, numbered: raw.basis.numbered === true };
+        if (object(raw.basis)) s.basis = { date: text(raw.basis.date), label: text(raw.basis.label), baseDay: integer(raw.basis.baseDay) ? raw.basis.baseDay : 0, numbered: raw.basis.numbered === true,
+            ...(cleanLink(raw.basis.link) ? { link: cleanLink(raw.basis.link) } : {}) };
     }
     if (!s.manual && s.op !== 'same' && !s.verified) return stampUnknown(s);
     return s;
@@ -69,9 +71,20 @@ function isoDay(s) {
     const ms = Date.parse(s + 'T00:00:00Z');
     return Number.isFinite(ms) && new Date(ms).toISOString().slice(0, 10) === s ? ms / 86400000 : null;
 }
-export function dateAt(stamp, anchors = {}) {
+// A date the user linked to an undated reference: `date` is the calendar day of reference day `day`.
+function cleanLink(raw) {
+    return object(raw) && isoDay(text(raw.date)) !== null && integer(raw.day) ? { date: text(raw.date), day: raw.day } : null;
+}
+// `linked` = also use a date the user linked to an undated reference. Only display and deadlines do;
+// reading the story's own time claims never does, so a link cannot overrule a date in the text.
+export function dateAt(stamp, anchors = {}, linked = false) {
     if (!known(stamp)) return '';
     const a = anchors[stamp.anchor]; if (!a) return '';
+    if (linked && !a.date && a.link) {
+        const d = new Date((isoDay(a.link.date) + (stamp.day ?? a.baseDay) - a.link.day) * 86400000);
+        const result = Number.isFinite(d.getTime()) ? d.toISOString().slice(0, 10) : '';
+        return /^\d{4}-\d{2}-\d{2}$/.test(result) ? result : '';
+    }
     const day = isoDay(a.date), delta = (stamp.day ?? a.baseDay) - a.baseDay;
     if (day !== null) {
         const d = new Date((day + delta) * 86400000);
@@ -168,7 +181,9 @@ function resolveStamp(claim, previous, anchors, key, mode, floor = null) {
     const s = { ...claim, anchor: null, day: null, certainty: 'unconfirmed' };
     if (!claim.manual && claim.date && impossibleDate(claim.date)) return s;
     const anchor = (kind, date = '', label = '', day = 0) => {
-        anchors[key] = { kind, date, label, baseDay: day ?? 0, numbered: kind === 'record', counted: kind === 'manual' && integer(day) }; s.anchor = key; s.day = day;
+        // A date the user linked to this reference survives re-reading.
+        const link = anchors[key]?.link;
+        anchors[key] = { kind, date, label, baseDay: day ?? 0, numbered: kind === 'record', counted: kind === 'manual' && integer(day), ...(link && !date ? { link } : {}) }; s.anchor = key; s.day = day;
     };
     if (claim.manual && claim.op === 'manual') {
         const day = integer(claim.manualDay) ? claim.manualDay : null;
@@ -349,7 +364,7 @@ export function formatStoryStamp(stamp, anchors = {}, lang = 'en') {
 // The date part of a confirmed stamp: a calendar date, a day of a reference, or the reference's own words.
 function stampLabel(stamp, anchors, lang) {
     const ko = lang === 'ko';
-    const a = anchors[stamp.anchor], date = dateAt(stamp, anchors), offset = integer(stamp.day) ? stamp.day - a.baseDay : null, n = stamp.day + 1;
+    const a = anchors[stamp.anchor], date = dateAt(stamp, anchors, true), offset = integer(stamp.day) ? stamp.day - a.baseDay : null, n = stamp.day + 1;
     let label = date;
     if (!label && a.date && offset !== null) label = `${a.date} ${offset >= 0 ? '+' : ''}${offset}${ko ? '일' : ' days'}`;
     if (!label && a.numbered && integer(stamp.day)) label = ko ? `기록 기준 ${n}일째` : `recording day ${n}`;
@@ -405,10 +420,41 @@ export function compactSceneTimes(scene, anchors = {}) {
 function referenceOf(stamp, anchors) {
     const a = anchors[stamp.anchor];
     if (isoDay(dateAt(stamp, anchors)) !== null) return { key: 'dated', label: '실제 날짜' };
-    if (a.kind === 'record' && a.numbered) return { key: 'ref:' + stamp.anchor, label: '기록 기준 (날짜 없음)' };
-    if (a.kind === 'jump') return { key: 'ref:' + stamp.anchor, label: `“${a.label}” 이후` };
-    if (a.counted) return { key: 'ref:' + stamp.anchor, label: '직접 지정한 기준' };
-    return { key: 'ref:' + stamp.anchor, label: a.date ? `${a.date} 기준` : '날짜 미상 기준' };
+    const own = { key: 'ref:' + stamp.anchor, anchor: stamp.anchor, linkable: !a.date, link: a.link || null };
+    if (a.kind === 'record' && a.numbered) return { ...own, label: '기록 기준' };
+    if (a.kind === 'jump') return { ...own, label: `“${a.label}” 이후` };
+    if (a.counted) return { ...own, label: '직접 지정한 기준' };
+    return { ...own, label: a.date ? `${a.date} 기준` : '날짜 미상 기준' };
+}
+// Link a calendar date to an undated reference: reference day `day` (0-based) is `date`. Saved
+// days and message numbers stay; only display and deadlines read it. '' removes the link.
+export function linkReference(mem, anchor, date, day) {
+    const a = mem.timeAnchors?.[anchor];
+    if (!a) throw new Error('그 시간 기준을 찾지 못했어요.');
+    if (a.date) throw new Error('이미 날짜가 있는 기준이에요. 원문 날짜는 바꿀 수 없어요.');
+    const d = String(date ?? '').trim();
+    if (!d) { delete a.link; return true; }
+    if (isoDay(normalizeStoryDate(d)) === null) throw new Error('날짜는 YYYY-MM-DD 형식의 실제 날짜로 입력해 주세요.');
+    if (!integer(day)) throw new Error('연결할 날을 찾지 못했어요.');
+    a.link = { date: normalizeStoryDate(d), day };
+    return true;
+}
+// Where linked dates and dates from the text disagree: the present going back to an earlier day
+// across a linked reference. Reported, never changed.
+export function linkConflicts(mem) {
+    const anchors = mem.timeAnchors || {}, out = [];
+    let last = null;
+    for (const g of parts(mem)) {
+        if (g.time?.mode !== 'present') continue;
+        for (const x of edges(g.time)) {
+            const iso = known(x) ? isoDay(dateAt(x, anchors, true)) : null;
+            if (iso === null) continue;
+            const linked = !!anchors[x.anchor]?.link;
+            if (last && iso < last.iso && (linked || last.linked)) out.push({ segId: g.id, date: dateAt(x, anchors, true), before: last.date, beforeSeg: last.segId });
+            last = { iso, linked, date: dateAt(x, anchors, true), segId: g.id };
+        }
+    }
+    return out;
 }
 // Every part in record order. Unknown times stay in place (no reference of their own); a flashback
 // is marked and does not change the present reference.
@@ -420,7 +466,7 @@ export function timelineRows(mem) {
         if (!g.time) { row.time = '시간 정보 없음'; rows.push(row); continue; }
         const a = stampParts(g.time.start, anchors, 'ko'), b = stampParts(g.time.end, anchors, 'ko');
         const lead = a.known ? g.time.start : b.known ? g.time.end : null;
-        if (lead) { row.day = { key: (a.known ? a : b).key, label: (a.known ? a : b).date }; row.ref = referenceOf(lead, anchors); }
+        if (lead) { row.day = { key: (a.known ? a : b).key, label: (a.known ? a : b).date, index: lead.day }; row.ref = referenceOf(lead, anchors); }
         row.time = row.flashback || !(a.known && b.known && a.key === b.key)
             ? formatSegmentTime(g.time, anchors, 'ko')
             : a.time && b.time && a.time !== b.time ? `${a.time}–${b.time}` : a.time || b.time || '';
@@ -484,7 +530,7 @@ function madeAt(mem, segId) {
     if (!stamps.every(sameDay)) return null;
     return { ...stamps[0], day: dayOn(mem, stamps[0]) };
 }
-const isoOf = (mem, x) => isoDay(dateAt(x, mem.timeAnchors || {}));
+const isoOf = (mem, x) => isoDay(dateAt(x, mem.timeAnchors || {}, true));
 // A confirmed stamp without its own day count sits on its reference's base day (a dated manual edit).
 const dayOn = (mem, x) => integer(x.day) ? x.day : mem.timeAnchors?.[x.anchor]?.baseDay ?? null;
 export function dueStamp(mem, r) {

@@ -92,6 +92,26 @@ async function storyMemory() {
     r = await ev(id => ({ tab: __savePoint.ui.tab, focus: document.getElementById('sp-quest-' + id)?.classList.contains('sp-focus') }), ids.q);
     ok(r.tab === 'quests' && r.focus, '3. 퀘스트 보기: 그 약속으로 이동해 강조');
 
+    // 4. link a date to the undated "weeks later" reference
+    await ev(() => __savePoint.handle('tab', 'timeline'));
+    const jumpBtn = await ev(() => [...document.querySelectorAll('.sp-tl-ref [data-act=ref-link]')].map(b => b.dataset.id));
+    ok(jumpBtn.length === 1, `4. 날짜 없는 기준에만 📅 날짜 연결 버튼 (${jumpBtn.length})`);
+    await page.click('.sp-tl-ref [data-act=ref-link]');
+    await page.fill('.sp-tl-ref [data-edit=date]', '2026-02-30');
+    await page.click('.sp-tl-ref [data-act=edit-save]');
+    r = await ev(() => ({ form: !!document.querySelector('.sp-tl-ref [data-edit=date]'), toast: (toastr.log || []).map(x => x[1]).join(' | ') }));
+    ok(r.form && r.toast.includes('실제 날짜'), '4. 없는 날짜는 저장하지 않고 창 유지');
+    await page.fill('.sp-tl-ref [data-edit=date]', '2026-11-20');
+    await page.click('.sp-tl-ref [data-act=edit-save]');
+    await page.waitForTimeout(200);
+    r = await ev(() => ({ refs: [...document.querySelectorAll('.sp-tl-ref')].map(x => x.textContent), days: [...document.querySelectorAll('.sp-tl-day')].map(x => x.textContent), inj: (__savePoint.refreshInjection(), M.prompts.savepoint?.v || '') }));
+    ok(r.refs.some(x => x.includes('날짜 연결됨')) && r.days.includes('2026-11-20'), `4. 연결하면 그 기준의 날이 날짜로 보임 (${r.days.join(', ')})`);
+    ok(r.inj.includes('Last recorded story time: 2026-11-20'), '4. 마지막 기록 시간 주입에도 연결한 날짜');
+    await ev(() => __savePoint.undo());
+    r = await ev(() => { __savePoint.handle('tab', 'timeline'); return [...document.querySelectorAll('.sp-tl-day')].map(x => x.textContent); });
+    ok(!r.includes('2026-11-20'), '4. 리와인드하면 연결 전으로');
+    if (SHOTS) await page.screenshot({ path: path.join(OUT, 'timeline-link.png'), fullPage: true });
+
     await browser.close(); srv.close();
     console.log(failures ? `${failures} FAILED` : 'ALL PASS');
     process.exit(failures ? 1 : 0);
