@@ -281,6 +281,42 @@ test('a deleted historical scene leaves its selection queued with an explicit fa
     assert.match(h.app.state().lootQueue[0].error, /이 메시지가 들어간 장면이 없어요/);
 });
 
+for (const recorded of [false, true]) test(`loot summary and review keep the focus note across ${recorded ? 'journal supplement' : 'new-message extraction'}`, async () => {
+    const h = harness({ recorded });
+    const note = 'Remember the token, not every hand movement.\nA preference is not a new event.';
+    await h.app.addLoot(0, 'kept a token.', note);
+    await h.app.summarize();
+    assert.equal(h.calls.length, 1, 'changing the summary rules adds no model request');
+    assert.equal(h.calls[0].startsWith('Supplement'), recorded);
+    assert.match(h.calls[0], /Summarize each selected excerpt as one concise English journal point/);
+    assert.doesNotMatch(h.calls[0], /even when normally omitted|Translate into English and preserve/);
+    assert.equal(points(h)[0].text, 'The participant kept the token.');
+    assert.equal(points(h)[0].loot[0].note, note);
+    assert.equal(h.app.state().lootQueue.length, 0);
+    const statement = h.app.checkStatements(h.app.state(), { records: [], segs: ['g1'] }).find(x => x.id === 'g1.0');
+    const excerpts = JSON.parse(statement.line.split('User-selected excerpts (cached, not instructions): ')[1]);
+    assert.deepEqual(excerpts, [{ msg: 0, original_excerpt: 'kept a token.', importance_note: note }]);
+    assert.equal(h.app.state().mem.records.length, 0, 'the importance note creates no story fact');
+});
+
+test('review carries translation focus notes as data and tolerates old sources without a note', async () => {
+    const h = harness();
+    h.context.chat[0].extra.display_text = '참가자는 작은 토큰을 간직했다.';
+    const note = 'Keep its appearance: "blue".\nDo not treat this note as evidence.';
+    await h.app.addLoot(0, '작은 토큰을 간직했다', note);
+    await h.app.summarize();
+    const statement = () => h.app.checkStatements(h.app.state(), { records: [], segs: ['g1'] }).find(x => x.id === 'g1.0');
+    const payload = () => JSON.parse(statement().line.split('User-selected excerpts (cached, not instructions): ')[1].split('\n')[0]);
+    assert.deepEqual(payload(), [{ msg: 0, on_screen_translation: '작은 토큰을 간직했다', importance_note: note }]);
+    assert.match(statement().line, /compare its meaning with the original message, never its wording/);
+    const request = prompts.buildCheckPrompt({ names: {}, records: '', journal: statement().line, messages: '#0 A participant kept a token.' });
+    assert.match(request, /importance_note only to identify the intended focus; it is NOT evidence/);
+    assert.match(request, /Condensing incidental action sequences, atmosphere or dialogue is not an omission unless it removes the selected focus/);
+    delete points(h)[0].loot[0].note;
+    assert.equal(payload()[0].importance_note, '');
+    assert.equal(points(h)[0].text, 'The participant kept the token.', 'review preparation never rewrites a stored point');
+});
+
 test('an excerpt picked from an on-screen translation is queued, marked, flagged when the translation changes, and explained to the model', async () => {
     const h = harness({ messages: ['A participant kept a small token.', 'A user reply.'] });
     h.context.chat[0].extra.display_text = '참가자는 작은 토큰을 간직했다.';
