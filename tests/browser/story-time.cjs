@@ -166,6 +166,13 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(()=>{M.timeCase='week';M.add(2,()=> '일주일 뒤, 다시 길을 나섰다.');});await ev(()=>__savePoint.handle('run'));
     r=await ev(()=>({t:__savePoint.state().mem.scenes.at(-1).segs.at(-1).time.end,calls:M.calls.length,injection:M.prompts.savepoint.v}));
     ok(r.t.certainty==='linked'&&r.t.day===7&&r.calls===beforeWeekCalls+1&&r.injection.includes('Last recorded story time: 2026-11-04'),'15. 일주일 뒤를 요청 한 번으로 +7일 연결하고 화면 주입에 반영');
+    await ev(()=>{M.timeCase='bad-count';M.add(2,()=> '그날 밤 우리는 다음에 만나자고 했다.');});await ev(()=>__savePoint.handle('run'));
+    r=await ev(()=>{const s=__savePoint.state().mem.scenes.at(-1);const gap=s.segs.find(g=>g.time&&(g.time.start.certainty==='unconfirmed'||g.time.end.certainty==='unconfirmed'));
+        __savePoint.handle('tab','journal');const b=[...document.querySelectorAll('.sp-scene-time [data-act=edit-scenetime]')].find(x=>x.dataset.id===s.id);return {has:!!b,sid:s.id,gid:gap?.id,edge:gap?.time.start.certainty==='unconfirmed'?'start':'end'};});
+    await page.click(`.sp-scene-time [data-act=edit-scenetime][data-id="${r.sid}"]`);
+    const opened=await ev(()=>({edit:__savePoint.ui.edit,form:!!document.querySelector('.sp-edit [data-edit=date]')}));
+    ok(r.has&&r.gid&&opened.edit?.kind==='segtime'&&opened.edit.id===`${r.sid}|${r.gid}${r.edge==='start'?'|start':''}`&&opened.form,`16. 장면 시간 줄의 ✎가 미확인 구간 편집을 바로 엶 (${opened.edit?.id})`);
+    await page.click('[data-act=edit-cancel]');
     if(SHOTS)await page.screenshot({path:path.join(OUT,'story-time.png')});
     await browser.close();srv.close();console.log(failures ? `${failures} FAILED` : 'ALL PASS');process.exit(failures?1:0);
 })();

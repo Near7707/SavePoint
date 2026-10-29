@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import * as core from '../core.js';
 import { buildExtractPrompt } from '../prompts.js';
+import { upgradeStoryTimes } from '../temporal.js';
 
 function fixture(text = 'Theo: tired', extra = {}) {
     return { ...core.emptyMem(), entities: [
@@ -86,7 +87,7 @@ test('legacy import/export and history restoration normalize without changing ev
 test('opening old chat metadata persists cleanup once, including a restored undo snapshot', () => {
     const meta = { savePoint: { v: 1, mem: fixture() } }; let saves = 0;
     const state = vm.runInNewContext(section('function state() {', '\nfunction freshState') + ';state', {
-        ...core, MODULE: 'savePoint', ctx: () => ({ chatMetadata: meta }), persistSoon: () => saves++,
+        ...core, upgradeStoryTimes, ui: {}, MODULE: 'savePoint', ctx: () => ({ chatMetadata: meta }), persistSoon: () => saves++,
     });
     state(); state();
     assert.equal(saves, 1);

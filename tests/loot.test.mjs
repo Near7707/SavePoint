@@ -118,7 +118,8 @@ test('missing ids fail visibly without discarding saved chat; a later quicksave 
     h.model = async () => JSON.stringify({ scenes: [{ scene: 'new', title: 'A trip', where: '', who: [], outline: 'A trip began.', notes: '', points: [], ended: false }], entities: [], changes: [] });
     await h.app.summarize();
     assert.equal(h.app.state().lastIndex, 0);
-    assert.equal(h.app.state().lootQueue[0].error, '반영 실패');
+    assert.equal(h.app.state().lootQueue[0].error, '반영 실패 · AI가 이 구절을 어느 포인트에도 연결하지 않았어요');
+    assert.equal(h.app.state().lootQueue[0].fails, 1);
     assert(h.notices.some(([k, msg]) => k === 'warning' && msg.includes('1개')));
     assert.match(h.app.queueHtml(h.app.state()), /⚠ 반영 실패/);
     h.model = null;
@@ -277,7 +278,7 @@ test('a deleted historical scene leaves its selection queued with an explicit fa
     h.app.state().mem.scenes = [];
     await h.app.summarize();
     assert.equal(h.calls.length, 0); assert.equal(h.app.state().lootQueue.length, 1);
-    assert.match(h.app.state().lootQueue[0].error, /해당 장면이 없어요/);
+    assert.match(h.app.state().lootQueue[0].error, /이 메시지가 들어간 장면이 없어요/);
 });
 
 test('an excerpt picked from an on-screen translation is queued, marked, flagged when the translation changes, and explained to the model', async () => {
@@ -476,4 +477,22 @@ test('a failed checkpoint extraction marks only selections actually sent outside
     assert.equal(items.length, 2); assert.match(items.find(x => x.msg === 0).error, /반영 실패/);
     assert.equal(items.find(x => x.msg === 4).error, undefined);
     assert(h.notices.some(([, msg]) => msg.includes('루팅한 내용 1개')));
+});
+
+test('a loot item that was not linked says why, and repeated failures are counted', async () => {
+    const { attachLoot, settleLoot, lootMissText } = await import('../loot.js');
+    const items = [{ id: 'L1', msg: 4, room: 'room-A', quote: 'The lantern went dark.' }, { id: 'L2', msg: 5, room: 'room-A', quote: 'The bell rang twice.' }];
+    const data = { scenes: [{ points: [{ text: 'The lantern went dark.', msgs: [3], lootIds: ['L1'] }, { text: 'Something else.', msgs: [5], lootIds: [] }] }] };
+    const used = attachLoot(data, items);
+    assert.equal(used.size, 0);
+    assert.equal(used.why.get('L1'), 'evidence', 'named on a point that cites another message');
+    assert.equal(used.why.get('L2'), 'unlinked');
+    const st = { lootQueue: structuredClone(items) };
+    const mem = { scenes: [] };
+    assert.equal(settleLoot(st, items, mem, used.why), 2);
+    assert.match(st.lootQueue[0].error, /#4을 근거로 적지 않아서/);
+    assert.match(st.lootQueue[1].error, /어느 포인트에도 연결하지 않았어요/);
+    settleLoot(st, items, mem, used.why);
+    assert.deepEqual(st.lootQueue.map(x => x.fails), [2, 2]);
+    assert.match(lootMissText(items[0], undefined), /검사에서 빠졌어요/, 'linked in the reply but missing after saving');
 });

@@ -1,4 +1,4 @@
-import { dueStatus, formatDue, setManualDue, PERIODS, editStoryTime, dateAt, formatSegmentTime, sceneTimeRange, storyTimeContext } from './temporal.js';
+import { dueStatus, formatDue, setManualDue, upgradeStoryTimes, PERIODS, editStoryTime, dateAt, formatSegmentTime, sceneTimeRange, storyTimeContext } from './temporal.js';
 // SavePoint: scene journal + current state memory for SillyTavern, kept per chat room,
 // with game-style save files. Summaries run on demand and at periodic checkpoints.
 import { foldLegacyOutline,
@@ -9,7 +9,7 @@ import { foldLegacyOutline,
     recordLine, normalizeRecordNames, entityName, estTokens, QUEST_KINDS, WORLD_KINDS, ENTITY_TYPES,
     groupErrors, findQuote, mostlyNonEnglish,
 } from './core.js';
-import { lootStatus, lootWarning, lootInChunk, lootBlock, attachLoot, settleLoot, lootTarget, applyLootSupplement, restoreLostLoot } from './loot.js';
+import { lootStatus, lootWarning, lootInChunk, lootBlock, attachLoot, settleLoot, failLoot, lootTarget, applyLootSupplement, restoreLostLoot } from './loot.js';
 import { Vault, roomHash } from './vault.js';
 import { upgradeEvidence, segmentPrior, evidenceNumbers } from './provenance.js';
 import { assertPromptFits, nextMessageChunk, planReviewBatches } from './request-batches.js';
@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.9';
+const VERSION = '0.6.10';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -120,8 +120,15 @@ function state() {
     if (st.mem.evidenceVersion !== 1) { st.mem = upgradeEvidence(st.mem); persistSoon(); }
     if (foldLegacyOutline(st.mem)) persistSoon();
     if (normalizeRecordNames(st.mem)) persistSoon();
+    // Re-read saved time claims once per memory object with the current rules (weekday dates,
+    // quoted "same"). Not during a run: the run's own results already use these rules.
+    if (!storyTimesChecked.has(st.mem) && !ui.run) {
+        storyTimesChecked.add(st.mem);
+        if (upgradeStoryTimes(st.mem)) persistSoon();
+    }
     return st;
 }
+const storyTimesChecked = new WeakSet();
 function freshState(extra = {}) {
     return { v: 1, roomKey: roomKey(), mem: emptyMem(), lastIndex: -1, hashes: [], history: [], floor: -1, linkedSave: null, undo: null, review: null, rev: 0, lootQueue: [], ...extra };
 }
@@ -646,7 +653,7 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
             if (titles) said.push(`제목 ${titles}개를 임시로 보완했어요`);
             if (outlines) said.push(`개요 ${outlines}개를 포인트로 임시 보완했어요`);
             if (said.length) ui.lastFix = { at: Date.now(), range: `#${chunk.from}–#${chunk.to}`, text: said.join(' · ') };
-            attachLoot(data, lootForChunk(chunk));
+            Object.defineProperty(data, 'lootWhy', { value: attachLoot(data, lootForChunk(chunk)).why, enumerable: false });
             return data;
         }
     }
@@ -688,7 +695,7 @@ async function failPendingLoot(run, items, error) {
     const ids = new Set(items.filter(x => sent.has(x.id)).map(x => x.id));
     const pending = (run.st.lootQueue || []).filter(x => ids.has(x.id) && !lootStatus(x, roomKey(), chat(), fingerprint, viewHash));
     if (!pending.length) return 0;
-    await transact(() => { for (const item of pending) item.error = `반영 실패 · ${errorText(error).slice(0, 300)}`; }, { undoable: false, autosave: false });
+    await transact(() => { for (const item of pending) failLoot(item, errorText(error).slice(0, 300)); }, { undoable: false, autosave: false });
     return pending.length;
 }
 function supplementPrompt(seg, items) {
@@ -706,11 +713,11 @@ async function supplementLoot(run, items, undoPoint = checkpoint(run.st)) {
         const first = left.shift(), target = lootTarget(st.mem, first.msg);
         const markFailed = async (group, error) => {
             await transact(() => {
-                for (const item of st.lootQueue || []) if (group.some(x => x.id === item.id)) item.error = error;
+                for (const item of st.lootQueue || []) if (group.some(x => x.id === item.id)) failLoot(item, error);
             }, { undoable: false, autosave: false });
             failed += group.length;
         };
-        if (!target) { await markFailed([first], '반영 실패 · 해당 장면이 없어요'); continue; }
+        if (!target) { await markFailed([first], '이 메시지가 들어간 장면이 없어요'); continue; }
         const group = [first];
         for (let i = 0; i < left.length && group.length < 20;) {
             const item = left[i];
@@ -737,18 +744,19 @@ async function supplementLoot(run, items, undoPoint = checkpoint(run.st)) {
                 if (!errors.length) break;
             }
             if (errors.length) throw new Error('응답이 검사를 통과하지 못했어요');
-            const next = refreshProvisionalOutlines(applyLootSupplement(st.mem, target.seg.id, data, group));
+            const linked = {};
+            const next = refreshProvisionalOutlines(applyLootSupplement(st.mem, target.seg.id, data, group, linked));
             await transact(() => {
                 const before = st.mem;
                 st.mem = next; pushHistory(st, before, next, { kind: 'edit' });
-                failed += settleLoot(st, group, next);
+                failed += settleLoot(st, group, next, linked.why);
                 st.undo = undoPoint;
                 st.lastRecord = { at: Date.now(), from: Math.min(...group.map(x => x.msg)), to: Math.max(...group.map(x => x.msg)), kind: 'supplement' };
             }, { undoable: false, autosave: false, rehide: true });
             saved++;
         } catch (e) {
             if (e instanceof Cancelled || run.cancelled || state() !== st) throw e;
-            await markFailed(group, `반영 실패 · ${errorText(e)}`);
+            await markFailed(group, errorText(e));
             // An oversized source is deferred; an actual request failure stops this pass.
             if (e.name !== 'InputLimitError') break;
         }
@@ -833,7 +841,7 @@ async function summarize({ close = false, auto = false } = {}) {
                 st.lastRecord = { at: Date.now(), from: start, to: coverTo, kind: auto ? 'checkpoint' : 'quicksave' };
                 st.undo = undoPoint;
                 settleAutoFail(st);
-                lootFailed += settleLoot(st, marked, next);
+                lootFailed += settleLoot(st, marked, next, data.lootWhy);
             }, { undoable: false, autosave: false, rehide: true });
             done++; cursor += chunk.indices.length;
         }
@@ -882,7 +890,7 @@ async function summarize({ close = false, auto = false } = {}) {
             }
         }
     } finally {
-        if (lootFailed && state() === st) toastr.warning(`⚠ 루팅한 내용 ${lootFailed}개가 반영되지 않았어요`, 'SavePoint');
+        if (lootFailed && state() === st) toastr.warning(`⚠ 루팅한 내용 ${lootFailed}개가 반영되지 않았어요.${lootFailNote(st)} 다음 세이브 때 다시 시도해요. 자세한 이유는 ⏳ 대기열에서 볼 수 있어요.`, 'SavePoint', { timeOut: 10000 });
         endRun(run);
         if (done && run.key === roomKey()) { autosave(state()); if (state() === st) queueCheck(st, memBefore, { auto }); }
     }
@@ -1143,6 +1151,11 @@ function reportText(st) {
     if (ui.lastError) {
         out.push('', `[마지막 실패] ${ui.lastError.range} · ${new Date(ui.lastError.at).toLocaleString()}`);
         for (const d of groupErrors(ui.lastError.detail)) out.push(`- ${d}`);
+    }
+    const missed = (st?.lootQueue || []).filter(x => x.error);
+    if (missed.length) {
+        out.push('', `[루팅 반영 실패 ${missed.length}개]`);
+        for (const x of missed) out.push(`- #${x.msg}${x.fails > 1 ? ` (${x.fails}번째)` : ''}: ${x.error} · "${String(x.text).slice(0, 80)}${String(x.text).length > 80 ? '…' : ''}"`);
     }
     const c = st?.check;
     if (c && c.status !== 'running') {
@@ -1792,13 +1805,17 @@ function installLootBar() {
         if (wand.nextElementSibling !== button) wand.insertAdjacentElement('afterend', button);
     } else if (button.parentElement !== host) host.append(button);
 }
+function lootFailNote(st) {
+    const first = (st.lootQueue || []).find(x => x.error?.startsWith('반영 실패'));
+    return first ? ` (${first.error.replace(/^반영 실패 · /, '')})` : '';
+}
 function queueHtml(st) {
     const items = st.lootQueue || [];
     if (!items.length) return '<div class="sp-empty">⏳ 대기열이 비었어요.<br>채팅창의 💎로 담아 주세요. 구절을 드래그한 뒤 누르면 그 구절만 담겨요.</div>';
     return `<p class="sp-dim">다음 퀵세이브·체크포인트 때 반영해요. 선택한 내용은 기억 주입에 우선 반영해요.</p>` + items.map(item => {
         const changed = lootStatus(item, roomKey(), chat(), fingerprint, viewHash) || lootWarning(item, chat(), viewHash);
         return `<div class="sp-card sp-queued"><div class="sp-row"><b>${item.room === roomKey() ? '' : '이전 방 '}#${item.msg}</b>${tools([btn('loot-delete', item.id, '🗑', '대기열에서 삭제', ui.run ? 'sp-disabled' : '')])}</div>
-            ${changed ? `<div class="sp-warn">${esc(changed)}</div>` : ''}${item.error && item.error !== changed ? `<div class="sp-warn">⚠ ${esc(item.error)}</div>` : ''}
+            ${changed ? `<div class="sp-warn">${esc(changed)}</div>` : ''}${item.error && item.error !== changed ? `<div class="sp-warn">⚠ ${esc(item.error)}${item.fails > 1 ? ` · ${item.fails}번째 실패` : ''}</div>${changed ? '' : '<div class="sp-dim">다음 퀵세이브·체크포인트 때 다시 시도해요. 계속 실패하면 메모를 붙여 다시 담거나 삭제해 주세요.</div>'}` : ''}
             <blockquote>${esc(item.text)}</blockquote>${item.note ? `<p class="sp-dim">메모: ${esc(item.note)}</p>` : ''}</div>`;
     }).join('');
 }
@@ -1910,7 +1927,7 @@ function journalHtml(st) {
         const outlineText = sceneOutlineParts(s).length ? '' : '<p class="sp-dim">개요 없음</p>';
         return `<div class="sp-card sp-scene ${s.status === 'open' ? 'sp-open' : ''} ${s.star ? 'sp-star' : ''}">${head}
             <div class="sp-title">${esc(T(s.title, s.koTitle))}${s.titlePending ? ' <small class="sp-dim">임시 제목</small>' : ''}${s.where ? ` <small>@ ${esc(s.where)}</small>` : ''}</div>
-            ${sceneTimeRange(s, mem.timeAnchors, 'ko') ? `<div class="sp-scene-time">📅 ${esc(sceneTimeRange(s, mem.timeAnchors, 'ko'))}</div>` : ''}
+            ${sceneTimeRange(s, mem.timeAnchors, 'ko') ? `<div class="sp-scene-time">📅 ${esc(sceneTimeRange(s, mem.timeAnchors, 'ko'))} ${tools([btn('edit-scenetime', s.id, '✎', '시간 편집 (미확인 구간부터 열어요)', ui.run ? 'sp-disabled' : '')])}</div>` : ''}
             ${s.who.length ? `<div class="sp-who">${whoChips(mem, s.who)}</div>` : ''}
             <div class="sp-outline">${s.segs.filter(g => g.outline).map(g => `<p>${esc(T(g.outline, g.koOutline))}</p>`).join('')}</div>${outlineText}
             <details class="sp-more" data-group="scene:${esc(s.id)}" ${(ui.edit && String(ui.edit.id).startsWith(s.id + '|')) || ui.savesOpen.get('scene:' + s.id) ? 'open' : ''}><summary>구간 ${s.segs.length} · 포인트 ${pts.length} (주입 ${pts.filter(x => pointInjected(x.p)).length})</summary>
@@ -2105,7 +2122,7 @@ function hudHtml(st) {
             ${busy ? btn('stop', '', '중지', '', 'sp-danger') : ''}
         </div>
         ${ui.lastFix ? `<div class="sp-hud-meta"><span class="sp-dim">자동 보정 ${esc(ui.lastFix.range)}: ${esc(ui.lastFix.text)} · ${new Date(ui.lastFix.at).toLocaleTimeString()}</span></div>` : ''}
-        ${(ui.lastError || st?.autoFail || (st?.check && st.check.status !== 'running')) && !busy ? `<div class="sp-row sp-copyrow">${btn('copy-report', '', '📋 결과 복사', '마지막 실패와 기록 확인 결과를 글로 복사해요 (캡처 대신)')}</div>` : ''}
+        ${(ui.lastError || st?.autoFail || st?.lootQueue?.some(x => x.error?.startsWith('반영 실패')) || (st?.check && st.check.status !== 'running')) && !busy ? `<div class="sp-row sp-copyrow">${btn('copy-report', '', '📋 결과 복사', '마지막 실패와 기록 확인 결과를 글로 복사해요 (캡처 대신)')}</div>` : ''}
         ${ui.copyText ? `<div class="sp-copybox"><textarea readonly rows="8">${esc(ui.copyText)}</textarea>${btn('copy-close', '', '닫기')}</div>` : ''}
         ${busy ? `<div class="sp-progress"><span class="sp-spin">◐</span> ${esc(ui.progress)}${ui.req ? ` · <span class="sp-req">${esc(reqText())}</span>` : ''}</div>` : ''}${err}
     </div>`;
@@ -2298,6 +2315,16 @@ async function handle(act, id) {
         case 'edit-notes': return startEdit('notes', id);
         case 'edit-segtime-start': if (ui.run) return; return startEdit('segtime', id + '|start');
         case 'edit-segtime': if (ui.run) return; return startEdit('segtime', id);
+        case 'edit-scenetime': {
+            // The scene line has no edge of its own: open the first unconfirmed edge, else the last end.
+            if (ui.run) return;
+            const s = st?.mem.scenes.find(x => x.id === id); if (!s) return;
+            const timed = s.segs.filter(g => g.time);
+            const gap = timed.find(g => g.time.start?.certainty === 'unconfirmed' || g.time.end?.certainty === 'unconfirmed');
+            const g = gap || timed[timed.length - 1]; if (!g) return;
+            ui.savesOpen.set('scene:' + s.id, true);
+            return startEdit('segtime', `${s.id}|${g.id}${gap && gap.time.start?.certainty === 'unconfirmed' ? '|start' : ''}`);
+        }
         case 'edit-segoutline': return startEdit('segoutline', id);
         case 'edit-ent': return startEdit('entity', id);
         case 'edit-rec': return startEdit('record', id);

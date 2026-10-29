@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import * as core from '../core.js';
 import * as provenance from '../provenance.js';
+import { upgradeStoryTimes } from '../temporal.js';
 import * as batches from '../request-batches.js';
 import { buildCheckPrompt } from '../prompts.js';
 
@@ -276,7 +277,7 @@ test('opening existing chat metadata migrates old evidence once and schedules pe
     const meta = { savePoint: { v: 1, mem: legacyMixed() } };
     let saves = 0;
     const state = vm.runInNewContext(section('function state() {', '\nfunction freshState') + ';state', {
-        MODULE: 'savePoint', ctx: () => ({ chatMetadata: meta }), upgradeEvidence: provenance.upgradeEvidence, foldLegacyOutline: core.foldLegacyOutline, normalizeRecordNames: core.normalizeRecordNames, persistSoon: () => saves++,
+        MODULE: 'savePoint', ctx: () => ({ chatMetadata: meta }), upgradeEvidence: provenance.upgradeEvidence, foldLegacyOutline: core.foldLegacyOutline, normalizeRecordNames: core.normalizeRecordNames, upgradeStoryTimes, ui: {}, persistSoon: () => saves++,
     });
     assert.equal(state().mem.records[0].msgs.length, 0);
     assert.equal(state().mem.records[0].terms.source.room, null);

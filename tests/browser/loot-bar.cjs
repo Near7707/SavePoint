@@ -155,6 +155,17 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await sleep(900);
     r = await ev(() => M.calls.some(p => p.includes('"excerpt_is_translation":true') && p.includes('translation wording is only a pointer')));
     ok(r, '7. 세이브 요청에 번역문 구절임을 알림');
+    // 8. a reply that did not link the excerpt says why, in the queue, the toast and the copy report
+    r = await ev(() => {
+        if (!document.querySelector('.sp-window')?.offsetParent) document.querySelector('#sp_open')?.click();
+        __savePoint.handle('tab', 'queue');
+        const card = document.querySelector('.sp-queued')?.textContent || '';
+        return { card, toast: (toastr.log || []).map(x => x[1]).filter(t => String(t).includes('반영되지 않았어요')).pop() || '', report: __savePoint.reportText(__savePoint.state()) };
+    });
+    ok(r.card.includes('어느 포인트에도 연결하지 않았어요') && r.card.includes('다음 퀵세이브·체크포인트 때 다시 시도해요'), '8. 대기열 카드에 반영 실패 이유와 다시 시도 안내');
+    ok(r.toast.includes('어느 포인트에도 연결하지 않았어요') && r.toast.includes('다음 세이브 때 다시 시도해요'), `8. 알림에 첫 번째 이유 (${r.toast.slice(0, 40)})`);
+    ok(r.report.includes('[루팅 반영 실패') && r.report.includes('어느 포인트에도 연결하지 않았어요'), '8. 결과 복사에 항목별 이유');
+    if (SHOTS) await page.screenshot({ path: path.join(OUT, 'loot-fail-reason.png') });
 
     await browser.close(); srv.close();
     console.log(failures ? `${failures} FAILED` : 'ALL PASS');

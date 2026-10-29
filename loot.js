@@ -38,14 +38,17 @@ export function lootBlock(items) {
 }
 // Only a requested id with matching numeric evidence can become durable provenance.
 // An arbitrary model-provided provenance/keyUser field is never trusted.
+// Returns the ids linked to a point. `used.why` says, for each id that was not linked, what the
+// reply did: 'evidence' (named on a point that does not cite the item's message) or 'unlinked'.
 export function attachLoot(data, items) {
     const byId = new Map(items.map(x => [x.id, x]));
-    const used = new Set();
+    const used = new Set(), named = new Set();
     for (const scene of data.scenes || []) for (const p of scene.points || []) {
         delete p.loot; delete p.keyUser;
         const sources = [];
         for (const id of Array.isArray(p.lootIds) ? p.lootIds : []) {
             const item = byId.get(id);
+            if (item) named.add(id);
             if (item && !used.has(id) && (p.msgs || []).some(n => Number(String(n).replace('#', '')) === item.msg)) {
                 sources.push(lootSource(item)); used.add(id);
             }
@@ -53,7 +56,14 @@ export function attachLoot(data, items) {
         delete p.lootIds;
         if (sources.length) { p.loot = sources; p.keyUser = true; }
     }
+    used.why = new Map(items.filter(x => !used.has(x.id)).map(x => [x.id, named.has(x.id) ? 'evidence' : 'unlinked']));
     return used;
+}
+// Why an item that was sent did not end up in the saved memory, in words the queue can show.
+export function lootMissText(item, why) {
+    if (why === 'evidence') return `AI가 이 구절을 붙인 포인트가 #${item.msg}을 근거로 적지 않아서 반영하지 않았어요`;
+    if (why === 'unlinked') return 'AI가 이 구절을 어느 포인트에도 연결하지 않았어요';
+    return '연결한 포인트가 저장 전 검사에서 빠졌어요';
 }
 export function recordedLoot(mem) {
     return new Set(mem.scenes.flatMap(s => s.segs.flatMap(g => g.points.flatMap(p => (p.loot || []).map(x => x.id)))));
@@ -86,15 +96,21 @@ export function restoreLostLoot(queue, before, after, { room, hashes = [], fallb
     }
     return out;
 }
-export function settleLoot(st, attempted, mem) {
+export function settleLoot(st, attempted, mem, why = new Map()) {
     const accepted = recordedLoot(mem), ids = new Set(attempted.map(x => x.id));
     let failed = 0;
     st.lootQueue = (st.lootQueue || []).filter(item => {
         if (!ids.has(item.id)) return true;
         if (accepted.has(item.id)) return false;
-        item.error = '반영 실패'; failed++; return true;
+        failLoot(item, lootMissText(item, why.get(item.id))); failed++; return true;
     });
     return failed;
+}
+// Every failure keeps its reason and counts how often it happened, so a user can tell a
+// passing hiccup from an excerpt or note that never works.
+export function failLoot(item, reason) {
+    item.error = `반영 실패 · ${reason}`;
+    item.fails = (Number.isInteger(item.fails) && item.fails > 0 ? item.fails : 0) + 1;
 }
 export function lootTarget(mem, msg) {
     for (const scene of mem.scenes) for (const seg of scene.segs)
@@ -102,12 +118,12 @@ export function lootTarget(mem, msg) {
             return { scene, seg };
     return null;
 }
-export function applyLootSupplement(mem, segId, data, items) {
+export function applyLootSupplement(mem, segId, data, items, out = {}) {
     const next = structuredClone(mem);
     const seg = next.scenes.flatMap(s => s.segs).find(g => g.id === segId && !g.external && !g.source);
     if (!seg) throw new Error('보충할 장면이 없어요');
     const wrapped = { scenes: [{ points: structuredClone(data.points) }] };
-    attachLoot(wrapped, items);
+    out.why = attachLoot(wrapped, items).why;
     for (const p of wrapped.scenes[0].points) {
         if (!p.loot?.length) continue;
         const existing = seg.points.find(x => x.text.trim().toLowerCase() === p.text.trim().toLowerCase());

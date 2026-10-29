@@ -19,7 +19,7 @@ export function cleanTimeAnchors(raw) {
     if (!object(raw)) return out;
     for (const [id, a] of Object.entries(raw)) {
         if (!id.startsWith('t:') || id.length > 1600 || !object(a)) continue;
-        out[id] = { date: text(a.date), label: text(a.label), baseDay: integer(a.baseDay) ? a.baseDay : 0,
+        out[id] = { date: normalizeStoryDate(text(a.date)), label: text(a.label), baseDay: integer(a.baseDay) ? a.baseDay : 0,
             // v0.6.0 could create more than one unnamed "record" anchor. Only an
             // initial one retains that wording; later references stay local.
             numbered: a.numbered === true || (a.numbered === undefined && a.kind === 'record' && !Object.keys(out).length),
@@ -48,6 +48,14 @@ export function cleanStoryTime(raw) {
     return { mode: raw.mode === 'flashback' ? 'flashback' : 'present', origin: text(raw.origin, 1200) || null,
         start: cleanStamp(raw.start), end: cleanStamp(raw.end),
         ...(Array.isArray(raw.via) && raw.via.length <= 200 ? { via: raw.via.map(cleanStamp) } : {}) };
+}
+// "2026-10-25 (Sun)", "2026-10-25 Sun.", "2026-10-25 (일요일)" -> "2026-10-25". Info boxes often add a
+// weekday; it is a label, not a different calendar. Only a valid ISO date is shortened.
+const WEEKDAY = '(?:sun|mon|tue|tues|wed|thu|thur|thurs|fri|sat)(?:day|nesday|sday|urday|rsday)?\\.?|[일월화수목금토](?:요일)?';
+const WEEKDAY_DATE = new RegExp(`^(\\d{4}-\\d{2}-\\d{2})\\s*(?:[(\\[（]\\s*(?:${WEEKDAY})\\s*[)\\]）]|,?\\s*(?:${WEEKDAY}))$`, 'i');
+export function normalizeStoryDate(date) {
+    const s = String(date ?? '').trim(), m = s.match(WEEKDAY_DATE);
+    return m && isoDay(m[1]) !== null ? m[1] : s;
 }
 function isoDay(s) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(s || '')) return null;
@@ -135,7 +143,7 @@ function claimFromModel(raw, { chunk, seg, room, quoteMatches }) {
     const quote = text(raw.quote, 2000), source = chunk.texts?.[n];
     const verified = Number.isInteger(n) && n >= seg.from && n <= seg.to && chunk.indices.includes(n) &&
         timeQuoteMatches(source, quote, quoteMatches);
-    const date = text(raw.date), period = PERIODS.includes(raw.period) ? raw.period : '', at = clock(raw.clock);
+    const date = normalizeStoryDate(text(raw.date)), period = PERIODS.includes(raw.period) ? raw.period : '', at = clock(raw.clock);
     const s = { op, date, period, clock: at, days: integer(raw.days) && raw.days >= 0 ? raw.days : null, elapsed: text(raw.elapsed),
         evidence: verified ? { room: room || null, msg: n, quote } : null, verified, manual: false };
     // An absent mention inherits; an unsupported claim cannot masquerade as inheritance.
@@ -147,6 +155,7 @@ function claimFromModel(raw, { chunk, seg, room, quoteMatches }) {
     return s;
 }
 function resolveStamp(claim, previous, anchors, key, mode) {
+    if (claim.date) claim = { ...claim, date: normalizeStoryDate(claim.date) };
     const s = { ...claim, anchor: null, day: null, certainty: 'unconfirmed' };
     const anchor = (kind, date = '', label = '', day = 0) => {
         anchors[key] = { kind, date, label, baseDay: day ?? 0, numbered: kind === 'record', counted: kind === 'manual' && integer(day) }; s.anchor = key; s.day = day;
@@ -159,7 +168,13 @@ function resolveStamp(claim, previous, anchors, key, mode) {
     }
     if (claim.op === 'unknown') return s;
     if (claim.op === 'same') {
-        if (claim.date && known(previous) && dateAt(previous, anchors) && claim.date !== dateAt(previous, anchors)) return s;
+        // "Same" that quotes its own date or time (an info box on every reply) does not need the
+        // previous part: an unconfirmed gap before it must not spread, and a different quoted
+        // date is read as that date. The explicit rules (no backward date) still apply.
+        const stated = claim.verified && claim.evidence && (claim.date || claim.period || claim.clock);
+        const before = known(previous) && anchors[previous.anchor] ? dateAt(previous, anchors) : null;
+        if (stated && (before === null || (claim.date && claim.date !== before)))
+            return resolveStamp({ ...claim, op: 'explicit' }, previous, anchors, key, mode);
         if (!previous && mode === 'present') { anchor('record'); s.certainty = 'linked'; }
         else if (known(previous) && anchors[previous.anchor]) { s.anchor = previous.anchor; s.day = previous.day; s.certainty = 'linked'; }
         else return s;
@@ -254,13 +269,22 @@ export function recomputeStoryTimes(mem, { fromSegment = null, edge = 'start' } 
         remember(t);
     }
 }
+// Saved claims re-read with the current rules (weekday dates, quoted "same"). Manual edits and
+// the retained boundary of a deleted prefix are kept by recomputeStoryTimes. Returns whether
+// anything visible changed, so a caller saves only then.
+export function upgradeStoryTimes(mem) {
+    if (!parts(mem).some(g => g.time)) return false;
+    const before = JSON.stringify([parts(mem).map(g => g.time || null), mem.timeAnchors || {}]);
+    recomputeStoryTimes(mem);
+    return JSON.stringify([parts(mem).map(g => g.time || null), mem.timeAnchors || {}]) !== before;
+}
 export function editStoryTime(mem, segmentId, values, room = null) {
     const g = parts(mem).find(x => x.id === segmentId); if (!g) return false;
     const existing = cleanStoryTime(g.time), origin = existing?.origin || g.source?.room || room;
     const edge = values.edge === 'start' ? 'start' : 'end';
     const day = values.day === '' || values.day === undefined ? existing?.[edge]?.day ?? null : Number(values.day) - 1;
     if (day !== null && (!integer(day) || day < 0)) throw new Error('기준 일 수는 1 이상의 정수로 입력해 주세요.');
-    const date = text(values.date), period = PERIODS.includes(values.period) ? values.period : '', at = clock(values.clock);
+    const date = normalizeStoryDate(text(values.date)), period = PERIODS.includes(values.period) ? values.period : '', at = clock(values.clock);
     if (/^\d{4}-\d{2}-\d{2}$/.test(date) && isoDay(date) === null) throw new Error('ISO 날짜가 유효하지 않아요. 작품 고유 달력은 이름을 포함해 적어 주세요.');
     if (values.clock && !at) throw new Error('시각은 00:00–23:59 형식으로 입력해 주세요.');
     if (typeof values.date === 'string' && values.date.trim().length > 180) throw new Error('날짜 표현은 180자 이내로 입력해 주세요.');
