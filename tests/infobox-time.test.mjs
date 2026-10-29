@@ -115,7 +115,7 @@ test('the upgrade runs once, revives a quoted first boundary, and never loses a 
         seg('g1', 0, { op: 'same', date: '2026-10-25', clock: '14:38', evidence: ev('14:38'), verified: true, anchor: null, day: null, certainty: 'unconfirmed' }, unknownSame)] }] });
     assert.equal(upgradeStoryTimes(a), true);
     assert.equal(formatSegmentTime(a.scenes[0].segs[0].time, a.timeAnchors, 'ko'), '2026-10-25 · 14:38');
-    assert.equal(a.timeRules, 2); assert.equal(cleanMem(JSON.parse(JSON.stringify(a))).timeRules, 2, 'the marker survives export');
+    assert.equal(a.scenes[0].segs[0].time.rules, 2); assert.equal(cleanMem(JSON.parse(JSON.stringify(a))).scenes[0].segs[0].time.rules, 2, 'the mark survives export');
     assert.equal(upgradeStoryTimes(a), false);
     // An old record confirmed a backward date after a gap. Re-reading would lose it, so nothing changes.
     let b = save(first(), 'The courier waited.', { start: { relation: 'same' }, end: { relation: 'unknown' } });
@@ -123,7 +123,7 @@ test('the upgrade runs once, revives a quoted first boundary, and never loses a 
     const g = b.scenes[0].segs.at(-1);
     g.time.end = { op: 'manual', manual: true, verified: false, manualDay: 3, date: '', period: 'night', clock: '', days: null, elapsed: '', evidence: null, anchor: g.time.start.anchor, day: 3, certainty: 'manual' };
     const manualBefore = JSON.stringify(g.time.end);
-    delete b.timeRules;
+    for (const x of b.scenes.flatMap(sc => sc.segs)) delete x.time.rules;
     upgradeStoryTimes(b);
     assert.equal(JSON.stringify(b.scenes[0].segs.at(-1).time.end), manualBefore, 'manual time kept');
 });
@@ -152,4 +152,49 @@ test('review: an old first part kept as "recording day 1" despite a quoted date 
     assert.deepEqual(m.scenes[0].segs.map(g => formatSegmentTime(g.time, m.timeAnchors, 'ko')), ['2026-10-25 · 14:38', '2026-10-25 · 14:38 → 2026-10-26']);
     assert.equal(upgradeStoryTimes(m), false);
     assert.equal(formatSegmentTime(m.scenes[0].segs[1].time, m.timeAnchors, 'ko'), '2026-10-25 · 14:38 → 2026-10-26', 'a second pass does not add the day again');
+});
+
+test('review v0.6.12: a clock-only time after a gap does not reopen earlier dates', () => {
+    let m = save(first(), 'The courier waited.', { start: { relation: 'same' }, end: { relation: 'unknown' } });
+    m = save(m, '🕒 Time: 16:30\nThe courier waited.', { start: { relation: 'same', clock: '16:30', quote: '🕒 Time: 16:30' }, end: { relation: 'same' } });
+    assert.equal(last(m), '날짜 미상 · 16:30');
+    m = save(m, box('2026-10-20 (Tue)', '10:00'), { start: { relation: 'explicit', date: '2026-10-20 (Tue)', clock: '10:00', quote: line('2026-10-20 (Tue)', '10:00') }, end: { relation: 'same' } });
+    assert.equal(last(m), '시간 미확인');
+    m = save(m, box('2026-10-26 (Mon)', '09:00'), { start: { relation: 'explicit', date: '2026-10-26 (Mon)', clock: '09:00', quote: line('2026-10-26 (Mon)', '09:00') }, end: { relation: 'same' } });
+    assert.equal(last(m), '2026-10-26 · 09:00');
+});
+
+test('review v0.6.12: undoing an old edit brings old part times back, and they are upgraded again without adding days twice', async () => {
+    const { memDiff, applyDiff } = await import('../core.js');
+    const ev = { room: 'room-A', msg: 0, quote: line('2026-10-25 (Sun)', '14:38') };
+    const key = 't:' + JSON.stringify(['room-A', 'g1', 'start']);
+    const old = cleanMem({ ...emptyMem(), timeAnchors: { [key]: { kind: 'record', date: '', label: '', baseDay: 0, numbered: true, counted: false } }, scenes: [{ id: 's1', title: 'x', where: '', who: [], status: 'open', segs: [
+        { id: 'g1', from: 0, to: 0, outline: 'x', points: [], time: { mode: 'present', origin: 'room-A',
+            start: { op: 'same', date: '2026-10-25', clock: '14:38', evidence: ev, verified: true, anchor: key, day: 0, certainty: 'linked' },
+            end: { op: 'same', anchor: key, day: 0, certainty: 'linked', clock: '14:38' } } },
+        { id: 'g2', from: 1, to: 1, outline: 'x', points: [], time: { mode: 'present', origin: 'room-A',
+            start: { op: 'same', anchor: key, day: 0, certainty: 'linked' },
+            end: { op: 'advance', days: 1, evidence: { room: 'room-A', msg: 1, quote: '다음 날 아침' }, verified: true, anchor: key, day: 1, certainty: 'linked' } } }] }] });
+    const edited = structuredClone(old); edited.scenes[0].title = 'y';
+    const diff = memDiff(old, edited);
+    const now = structuredClone(edited);
+    upgradeStoryTimes(now);
+    const show = m => m.scenes[0].segs.map(g => formatSegmentTime(g.time, m.timeAnchors, 'ko'));
+    assert.deepEqual(show(now), ['2026-10-25 · 14:38', '2026-10-25 · 14:38 → 2026-10-26']);
+    const undone = applyDiff(now, diff, true);
+    assert.equal(show(undone)[0], '기록 기준 1일째 · 14:38', 'the old edit brings the old times back');
+    assert.equal(upgradeStoryTimes(undone), true);
+    assert.deepEqual(show(undone), ['2026-10-25 · 14:38', '2026-10-25 · 14:38 → 2026-10-26']);
+    assert.equal(upgradeStoryTimes(undone), false);
+});
+
+test('a part already read with the current rules keeps its verdict when an earlier scene is deleted', () => {
+    // 10-25 confirmed, then a quoted earlier date blocked. Deleting the first scene must not revive it.
+    let m = first();
+    m = save(m, box('2026-10-20 (Tue)', '10:00'), { start: { relation: 'explicit', date: '2026-10-20 (Tue)', clock: '10:00', quote: line('2026-10-20 (Tue)', '10:00') }, end: { relation: 'same' } });
+    assert.equal(last(m), '시간 미확인');
+    const kept = cleanMem(JSON.parse(JSON.stringify(m)));
+    kept.scenes[0].segs = kept.scenes[0].segs.slice(1);
+    assert.equal(upgradeStoryTimes(kept), false, 'nothing to upgrade');
+    assert.equal(formatSegmentTime(kept.scenes[0].segs[0].time, kept.timeAnchors, 'ko'), '시간 미확인');
 });

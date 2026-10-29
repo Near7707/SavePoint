@@ -46,6 +46,7 @@ function cleanStamp(raw) {
 export function cleanStoryTime(raw) {
     if (!object(raw)) return undefined;
     return { mode: raw.mode === 'flashback' ? 'flashback' : 'present', origin: text(raw.origin, 1200) || null,
+        ...(integer(raw.rules) && raw.rules > 0 ? { rules: raw.rules } : {}),
         start: cleanStamp(raw.start), end: cleanStamp(raw.end),
         ...(Array.isArray(raw.via) && raw.via.length <= 200 ? { via: raw.via.map(cleanStamp) } : {}) };
 }
@@ -213,7 +214,8 @@ function resolveStamp(claim, previous, anchors, key, mode, floor = null) {
             const oldDate = dateAt(previous, anchors), oldDay = isoDay(oldDate), newDay = isoDay(claim.date);
             // A quoted letter or recalled date cannot silently turn the present backward.
             // Keep the claim for review; only acted flashbacks and manual edits may do that.
-            const limit = oldDay ?? (known(previous) ? null : floor);
+            // An undated reference (a clock-only time, a vague jump) does not lift the floor either.
+            const limit = oldDay ?? floor;
             if (mode !== 'flashback' && limit !== null && newDay !== null && newDay < limit) return s;
             if (known(previous) && oldDate && claim.date === oldDate) { s.anchor = previous.anchor; s.day = previous.day; }
             else if (known(previous) && oldDay !== null && newDay !== null) { s.anchor = previous.anchor; s.day = (previous.day ?? anchors[previous.anchor].baseDay) + newDay - oldDay; }
@@ -242,7 +244,7 @@ export function resolveResultTime(mem, raw, { chunk, seg, room = null, quoteMatc
     const prev = mode === 'present' ? lastStoryTime(mem)?.stamp : last?.time?.mode === 'flashback' ? last.time.end : null;
     // Old saves and models that omit this optional field remain fully usable, without backfilling dates.
     if (raw === undefined && !prev) return undefined;
-    const time = { mode, origin: room, start: null, end: null };
+    const time = { mode, origin: room, rules: TIME_RULES, start: null, end: null };
     const invalid = raw !== undefined && (!object(raw) || (raw.mode !== undefined && !['present', 'flashback'].includes(raw.mode)));
     mem.timeAnchors ||= {};
     const options = { chunk, seg, room, quoteMatches };
@@ -271,14 +273,19 @@ export function recomputeStoryTimes(mem, { fromSegment = null, edge = 'start', r
     };
     // revive (one-time upgrade only): an unconfirmed boundary whose own claim quotes a date or a
     // clock may be read again; plain inherited gaps stay as they were.
-    const standsAlone = c => revive && !c.manual && c.verified && c.evidence && (c.op === 'explicit' || (c.op === 'same' && (c.date || c.clock)));
+    // Only parts saved under older rules (no `rules` mark) are revived: a part already read with the
+    // current rules keeps its verdict, e.g. a backward date blocked when the earlier scene still existed.
+    let reviveThis = false;
+    const standsAlone = c => reviveThis && !c.manual && c.verified && c.evidence && (c.op === 'explicit' || (c.op === 'same' && (c.date || c.clock)));
     for (const g of parts(mem)) {
         if (!g.time) continue;
         if (g.id === fromSegment) active = true;
         // A manual edit cannot reinterpret an earlier saved boundary or revive an
         // earlier unconfirmed claim just because its preceding scene was deleted.
         if (!active) { remember(g.time); continue; }
+        reviveThis = revive && !(g.time.rules >= TIME_RULES);
         const t = cleanStoryTime(g.time); g.time = t;
+        if (revive) t.rules = TIME_RULES;
         const previous = t.mode === 'flashback' ? wasFlashback ? flashback : null : present;
         const keepStart = g.id === fromSegment && edge === 'end';
         // A deleted prefix is not a new story beginning. Its anchor remains a valid
@@ -298,20 +305,22 @@ export function recomputeStoryTimes(mem, { fromSegment = null, edge = 'start', r
         remember(t);
     }
 }
-// One-time upgrade of records saved before these rules (weekday dates, quoted "same"). Runs once per
-// memory (marked by timeRules) so a later scene deletion keeps its own boundary rules. It only adds
-// confirmation: if re-reading would lose a confirmed time or change a manual one, nothing is changed.
+// Upgrade of parts saved before these rules (weekday dates, quoted "same", dated first parts). Each
+// part carries the rules it was read with, so a part brought back by undoing an old edit is upgraded
+// again, while a part already read with these rules keeps its verdict. Re-reading recalculates from
+// the saved claims, so elapsed days are never added twice. It only adds confirmation: if it would
+// lose a confirmed time or change a manual one, the times stay as they were (only marked).
 export const TIME_RULES = 2;
 export function upgradeStoryTimes(mem) {
-    if (mem.timeRules >= TIME_RULES) return false;
-    mem.timeRules = TIME_RULES;
-    if (!parts(mem).some(g => g.time)) return false;
+    const old = parts(mem).filter(g => g.time && !(g.time.rules >= TIME_RULES));
+    if (!old.length) return false;
     const trial = structuredClone({ scenes: mem.scenes, timeAnchors: mem.timeAnchors || {} });
     recomputeStoryTimes(trial, { revive: true });
     const before = parts(mem).flatMap(g => g.time ? edges(g.time) : []), after = parts(trial).flatMap(g => g.time ? edges(g.time) : []);
     const safe = before.length === after.length && before.every((x, i) =>
         (!known(x) || known(after[i])) && (!x.manual || JSON.stringify(x) === JSON.stringify(after[i])));
     if (safe) { mem.scenes = trial.scenes; mem.timeAnchors = trial.timeAnchors; }
+    else for (const g of old) g.time.rules = TIME_RULES;
     return true;
 }
 export function editStoryTime(mem, segmentId, values, room = null) {
@@ -327,7 +336,7 @@ export function editStoryTime(mem, segmentId, values, room = null) {
     const manual = { op: 'manual', manual: true, verified: false, manualDay: day, date, period, clock: at, days: null, elapsed: '', evidence: null };
     const basis = mem.timeAnchors?.[existing?.[edge]?.anchor];
     if (basis) manual.basis = { ...basis };
-    g.time = { mode: values.mode === 'flashback' ? 'flashback' : 'present', origin,
+    g.time = { mode: values.mode === 'flashback' ? 'flashback' : 'present', origin, ...(existing?.rules ? { rules: existing.rules } : {}),
         start: existing?.start || { op: 'same' }, ...(existing?.via ? { via: existing.via } : {}), end: existing?.end || { op: 'same' } };
     g.time[edge] = manual;
     recomputeStoryTimes(mem, { fromSegment: segmentId, edge }); return true;

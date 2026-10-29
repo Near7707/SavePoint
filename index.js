@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.12';
+const VERSION = '0.6.13';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -699,11 +699,17 @@ async function failPendingLoot(run, items, error) {
     const pending = () => (state()?.lootQueue || []).filter(x => ids.has(x.id) && !lootStatus(x, roomKey(), chat(), fingerprint, viewHash));
     const count = pending().length;
     if (!count) return 0;
-    const base = new Set(run.lootCounted);
-    const mark = () => { const counted = new Set(base); for (const item of pending()) failLoot(item, errorText(error).slice(0, 300), counted); return counted; };
-    try { let counted; await transact(() => { counted = mark(); }, { undoable: false, autosave: false }); run.lootCounted = counted; }
-    catch { run.lootCounted = mark(); persistSoon(); render(); }
+    await noteLootFailure(run, pending().map(x => x.id), errorText(error).slice(0, 300));
     return count;
+}
+// Writes the reason and the count; if the chat file cannot be written, keeps them on screen (looked
+// up in the room's current state, which a failed write may have replaced) and saves them later.
+// Counts made inside a write that was rolled back are discarded.
+async function noteLootFailure(run, ids, reason) {
+    const want = new Set(ids), base = new Set(run.lootCounted);
+    const mark = () => { const counted = new Set(base); for (const item of state()?.lootQueue || []) if (want.has(item.id)) failLoot(item, reason, counted); return counted; };
+    try { let counted; await transact(() => { counted = mark(); }, { undoable: false, autosave: false }); run.lootCounted = counted; }
+    catch { if (run.key === roomKey() && run.epoch === roomEpoch && state()) { run.lootCounted = mark(); persistSoon(); render(); } }
 }
 function supplementPrompt(seg, items) {
     const originals = [...new Set(items.map(x => x.msg))].map(n => `#${n} ${speaker(chat()[n])}: ${cleanText(chat()[n].mes)}`).join('\n\n');
@@ -718,12 +724,7 @@ async function supplementLoot(run, items, undoPoint = checkpoint(run.st)) {
     while (left.length) {
         assertValid(run, chat().length - 1);
         const first = left.shift(), target = lootTarget(st.mem, first.msg);
-        const markFailed = async (group, error) => {
-            await transact(() => {
-                for (const item of st.lootQueue || []) if (group.some(x => x.id === item.id)) failLoot(item, error, run.lootCounted);
-            }, { undoable: false, autosave: false });
-            failed += group.length;
-        };
+        const markFailed = async (group, error) => { await noteLootFailure(run, group.map(x => x.id), error); failed += group.length; };
         if (!target) { await markFailed([first], '이 메시지가 들어간 장면이 없어요'); continue; }
         const group = [first];
         for (let i = 0; i < left.length && group.length < 20;) {
@@ -763,7 +764,8 @@ async function supplementLoot(run, items, undoPoint = checkpoint(run.st)) {
             run.lootCounted = counted;
             saved++;
         } catch (e) {
-            if (e instanceof Cancelled || run.cancelled || state() !== st) throw e;
+            // A failed chat-file write replaces the state with a copy; the reason is still recorded there.
+            if (e instanceof Cancelled || run.cancelled || run.key !== roomKey() || run.epoch !== roomEpoch) throw e;
             await markFailed(group, errorText(e));
             // An oversized source is deferred; an actual request failure stops this pass.
             if (e.name !== 'InputLimitError') break;
@@ -1840,7 +1842,7 @@ async function retryLoot(id) {
         ui.progress = '루팅한 기억 다시 반영'; render();
         result = await supplementLoot(run, [item], checkpoint(st));
         if (result.saved && !result.failed) toastr.success('루팅한 구절을 저널에 반영했어요.', 'SavePoint');
-        else toastr.warning(`⚠ 다시 반영하지 못했어요.${lootFailNote(st)}`, 'SavePoint', { timeOut: 10000 });
+        else toastr.warning(`⚠ 다시 반영하지 못했어요.${lootFailNote(state() || st)}`, 'SavePoint', { timeOut: 10000 });
     } catch (e) {
         if (!(e instanceof Cancelled)) { console.error('[SavePoint]', e); toastr.error(errorText(e), 'SavePoint'); }
     } finally {
@@ -1860,9 +1862,10 @@ function queueHtml(st) {
     const items = st.lootQueue || [];
     if (!items.length) return '<div class="sp-empty">⏳ 대기열이 비었어요.<br>채팅창의 💎로 담아 주세요. 구절을 드래그한 뒤 누르면 그 구절만 담겨요.</div>';
     return `<p class="sp-dim">다음 퀵세이브·체크포인트 때 반영해요. 선택한 내용은 기억 주입에 우선 반영해요.</p>` + items.map(item => {
-        const changed = lootStatus(item, roomKey(), chat(), fingerprint, viewHash) || lootWarning(item, chat(), viewHash);
+        // A changed original blocks reflection; a re-translated on-screen text is only a warning.
+        const blocked = lootStatus(item, roomKey(), chat(), fingerprint, viewHash), warned = lootWarning(item, chat(), viewHash), changed = blocked || warned;
         return `<div class="sp-card sp-queued"><div class="sp-row"><b>${item.room === roomKey() ? '' : '이전 방 '}#${item.msg}</b>${tools([btn('loot-delete', item.id, '🗑', '대기열에서 삭제', ui.run ? 'sp-disabled' : '')])}</div>
-            ${changed ? `<div class="sp-warn">${esc(changed)}</div>` : ''}${item.error && item.error !== changed ? `<div class="sp-warn">⚠ ${esc(item.error)}${item.fails > 1 ? ` · ${item.fails}번째 실패` : ''}</div>` : ''}${lootNextStep(st, item, changed)}
+            ${changed ? `<div class="sp-warn">${esc(changed)}</div>` : ''}${item.error && item.error !== changed ? `<div class="sp-warn">⚠ ${esc(item.error)}${item.fails > 1 ? ` · ${item.fails}번째 실패` : ''}</div>` : ''}${lootNextStep(st, item, blocked)}
             <blockquote>${esc(item.text)}</blockquote>${item.note ? `<p class="sp-dim">메모: ${esc(item.note)}</p>` : ''}</div>`;
     }).join('');
 }

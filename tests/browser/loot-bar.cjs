@@ -190,6 +190,27 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await sleep(300);
     r = await ev(() => { M.failMeta = false; const q = __savePoint.state().lootQueue || []; const x = q.find(i => i.text === 'The ferry horn sounded'); return { err: x?.error || '', fails: x?.fails || 0 }; });
     ok(r.err.includes('disk full') && r.fails === 1, `11. 파일 저장 실패에도 항목별 이유와 횟수가 남음 (${r.err} · ${r.fails})`);
+    // 12. the same for ↻: a failed file write updates that item's reason and count
+    await ev(async () => { M.failMeta = false; await __savePoint.handle('tab', 'queue'); });
+    r = await ev(() => { const x = (__savePoint.state().lootQueue || []).find(i => i.error && i.msg <= __savePoint.state().lastIndex && document.querySelector(`[data-act=loot-retry][data-id="${i.id}"]`)); return x ? { id: x.id, fails: x.fails || 0 } : null; });
+    if (r) {
+        await ev(() => { M.supplementLinks = true; M.failMeta = true; });
+        await page.click(`[data-act=loot-retry][data-id="${r.id}"]`);
+        await sleep(600);
+        const after = await ev(id => { M.failMeta = false; M.supplementLinks = false; const x = __savePoint.state().lootQueue.find(i => i.id === id); return x ? { err: x.error, fails: x.fails } : null; }, r.id);
+        ok(after && after.err.includes('disk full') && after.fails === r.fails + 1, `12. ↻ 중 파일 저장 실패도 이유·횟수 갱신, 항목 보존 (${after?.fails})`);
+    } else ok(false, '12. ↻ 버튼이 있는 실패 항목을 찾지 못함');
+    // 13. a re-translated on-screen text is only a warning: ↻ stays available
+    r = await ev(() => {
+        const st = __savePoint.state(), base = st.lootQueue.find(i => i.msg <= st.lastIndex);
+        const real = M.chat[base.msg]; const hadView = real.extra?.display_text;
+        real.extra = { ...(real.extra || {}), display_text: 'A newer translation of the same line.' };
+        const div = document.createElement('div');
+        div.innerHTML = __savePoint.queueHtml({ ...st, lootQueue: [{ ...base, view: true, viewHash: 'translated-earlier', error: '반영 실패 · AI 응답에서 이 구절의 반영 연결을 찾지 못했어요' }] });
+        if (hadView === undefined) delete real.extra.display_text; else real.extra.display_text = hadView;
+        return { text: div.textContent, retry: !!div.querySelector('[data-act=loot-retry]') };
+    });
+    ok(r.text.includes('번역문이 바뀜') && r.retry && !r.text.includes('자동으로 반영하지 않아요'), '13. 재번역은 경고만, ↻ 다시 반영 유지');
 
     await browser.close(); srv.close();
     console.log(failures ? `${failures} FAILED` : 'ALL PASS');
