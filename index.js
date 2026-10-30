@@ -13,13 +13,13 @@ import { lootStatus, lootWarning, lootInChunk, lootBlock, attachLoot, settleLoot
 import { Vault, roomHash } from './vault.js';
 import { upgradeEvidence, segmentPrior, evidenceNumbers } from './provenance.js';
 import { assertPromptFits, nextMessageChunk, planReviewBatches } from './request-batches.js';
-import { DEFAULT_GUIDE, guideHash, OLD_GUIDE_HASHES, buildCheckPrompt, buildRekeyPrompt, buildExtractPrompt, retryNote, extractionRepairNote, TRANSLATE_PROMPT } from './prompts.js';
+import { DEFAULT_GUIDE, guideHash, OLD_GUIDE_HASHES, buildCheckPrompt, buildRekeyPrompt, buildExtractPrompt, buildExtractPromptParts, PROMPT_PART_LABELS, retryNote, extractionRepairNote, TRANSLATE_PROMPT } from './prompts.js';
 
 const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.21';
+const VERSION = '0.6.22';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -446,7 +446,7 @@ async function readModelReply(reply, progress, active) {
     } else take(reply);
     return { text, reasoningChars, finishReason };
 }
-async function llm(prompt, run, { attempt = 0, why = '', responseLength, timeoutSeconds } = {}) {
+async function llm(prompt, run, { attempt = 0, why = '', responseLength, timeoutSeconds, parts = null } = {}) {
     const s = settings(), c = ctx(), max = responseLength ?? num('responseLength', 500, 64000);
     assertPromptFits(prompt, num('inputChars', 5000, 1000000));
     const limit = (timeoutSeconds ?? num('timeoutSec', 5, 3600)) * 1000;
@@ -458,7 +458,8 @@ async function llm(prompt, run, { attempt = 0, why = '', responseLength, timeout
     let accepting = true;
     const stats = { at: start, task: ui.progress || '요청', profile: profileLabel(), stream: false,
         effort: profileId ? effort || '프로필 설정' : '메인 API 설정', chars: prompt.length,
-        maxTokens: max, textChars: 0, reasoningChars: 0, firstDataMs: null, finishReason: null };
+        maxTokens: max, textChars: 0, reasoningChars: 0, firstDataMs: null, firstReasoningMs: null, firstTextMs: null, finishReason: null,
+        ...(parts ? { parts: { ...parts } } : {}) };
     const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
     const onRunAbort = () => ctrl?.abort();
     if (run?.ctrl?.signal?.aborted) ctrl?.abort(); else run?.ctrl?.signal?.addEventListener?.('abort', onRunAbort);
@@ -467,6 +468,9 @@ async function llm(prompt, run, { attempt = 0, why = '', responseLength, timeout
         if (!active() || (run && ui.req?.id !== id)) return;
         Object.assign(stats, part);
         if (stats.firstDataMs === null && (stats.textChars || stats.reasoningChars)) stats.firstDataMs = Date.now() - start;
+        // A thinking model may stream only reasoning for minutes: the first body text is timed separately.
+        if (stats.firstReasoningMs === null && stats.reasoningChars) stats.firstReasoningMs = Date.now() - start;
+        if (stats.firstTextMs === null && stats.textChars) stats.firstTextMs = Date.now() - start;
         if (run && stats.stream) ui.req = { ...ui.req, ...part, phase: 'stream' };
     };
     const send = async () => {
@@ -597,9 +601,10 @@ function checkpoint(st) {
 }
 
 // One chunk: ask, check, retry once with the problems listed, then give up without saving.
-function extractPrompt(mem, chunk, note = '') {
+function extractPrompt(mem, chunk, note = '') { return extractPromptParts(mem, chunk, note).text; }
+function extractPromptParts(mem, chunk, note = '') {
     const marked = lootForChunk(chunk);
-    return buildExtractPrompt({ guide: settings().guide || DEFAULT_GUIDE, names: names(), card: cardText(), context: { ...promptContext(mem, chunk.text), time: storyTimeContext(mem) }, chunk, note: [note, lootBlock(marked)].filter(Boolean).join('\n\n') });
+    return buildExtractPromptParts({ guide: settings().guide || DEFAULT_GUIDE, names: names(), card: cardText(), context: { ...promptContext(mem, chunk.text), time: storyTimeContext(mem) }, chunk, note: [note, lootBlock(marked)].filter(Boolean).join('\n\n') });
 }
 function lootForChunk(chunk) {
     const items = state()?.lootQueue || [];
@@ -607,14 +612,15 @@ function lootForChunk(chunk) {
     return lootInChunk(items.filter(x => !lootStatus(x, roomKey(), chat(), fingerprint, viewHash)), chunk.indices);
 }
 async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {}) {
-    const prompt = extractPrompt(mem, chunk, note);
+    const built = extractPromptParts(mem, chunk, note), prompt = built.text;
     let data = null, errors = [], lang = [];
     const tries = [];   // what each request did, for the failure details
     let lastKind = '';
     const fail = (head, detail) => {
         ui.lastError = { at: Date.now(), range: `#${chunk.from}–#${chunk.to}`, detail: [...tries.map((t, k) => `${k ? '재요청' : '첫 요청'}: ${t}`), ...detail] };
         const err = new Error(head);
-        err.detail = ui.lastError.detail;
+        err.detail = ui.lastError.detail; err.chunk = { from: chunk.from, to: chunk.to };
+        ui.lastError.request = requestLines(ui.lastRequest);
         return err;
     };
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -625,7 +631,7 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
         try {
             assertPromptFits(requestPrompt, num('inputChars', 5000, 1000000));
             run.lootAttempted = lootForChunk(chunk).map(x => x.id);
-            raw = await llm(requestPrompt, run, { attempt, why });
+            raw = await llm(requestPrompt, run, { attempt, why, parts: attempt ? { ...built.parts, retry: requestPrompt.length - prompt.length } : built.parts });
         }
         catch (e) {
             if (run.cancelled || e instanceof Cancelled) throw new Cancelled('중지했어요.');
@@ -670,7 +676,11 @@ const FAIL_STAGE = { boundary: '장면 경계 확인', collect: '장면 기록',
 const isTry = l => /^(첫 요청|재요청):/.test(l);
 function recordAutoFail(st, { stage, from, to, error, tries = [], detail = [] }) {
     const cut = l => String(l).slice(0, 300);
+    // The record keeps what happened then (the failed request and the range left unsaved);
+    // what still needs saving is worked out when it is shown, never by rewriting these numbers.
     st.autoFail = { at: Date.now(), kind: 'collect', stage, from, to, reason: errorText(error).slice(0, 400),
+        ...(error?.chunk ? { request: { from: error.chunk.from, to: error.chunk.to } } : {}),
+        requestLines: requestLines(ui.lastRequest).map(cut),
         attempts: tries.length, tries: tries.map(cut), detail: groupErrors(detail).slice(0, 40).map(cut) };
     persistSoon();
     toastr.warning(`체크포인트 실패 (#${from}–#${to}) · 해당 구간 원문 유지`, 'SavePoint');
@@ -679,8 +689,9 @@ function settleAutoFail(st) {
     const f = st.autoFail;
     if (!f) return;
     if (st.lastIndex >= f.to) delete st.autoFail;
-    else if (st.lastIndex >= f.from) f.from = st.lastIndex + 1;
 }
+// The part of a failure's range that is still unsaved now.
+function autoFailRemaining(st, f) { return { from: Math.max(f.from, (st?.lastIndex ?? -1) + 1), to: f.to }; }
 
 async function markStaleLoot(run, items) {
     const stale = items.filter(x => lootStatus(x, roomKey(), chat(), fingerprint, viewHash));
@@ -1154,18 +1165,29 @@ function statementText(mem, id) {
     for (const sc of mem.scenes) for (const g of sc.segs) if (g.id === gid) return j === undefined ? (g.outline || '') : (g.points[Number(j)]?.text || '(지워짐)');
     return '(지워짐)';
 }
+// One request in words: what was sent (by section, as the extension built it) and what came back.
+function requestLines(r) {
+    if (!r) return [];
+    const parts = r.parts ? Object.entries(r.parts).filter(([, n]) => n > 0) : [];
+    const sum = parts.reduce((a, [, n]) => a + n, 0);
+    if (parts.length && sum !== r.chars) parts.push(['other', r.chars - sum]);
+    const when = ms => (ms === null || ms === undefined ? '없음' : fmtSec(ms));
+    return [`${r.task} · ${r.profile}${r.model ? ' · ' + r.model : ''} · ${r.status || '진행 중'} · ${fmtSec(r.ms || 0)}`,
+        `입력 ${r.chars.toLocaleString()}자 (확장이 만든 요청 기준) · 응답 상한 ${r.maxTokens}토큰 · ${r.stream ? '실시간 수신' : '일괄 응답'} · 추론 요청: ${r.effort}`,
+        ...(parts.length ? [`입력 내역: ${parts.map(([k, n]) => `${PROMPT_PART_LABELS[k] || k} ${n.toLocaleString()}`).join(' · ')}`] : []),
+        `수신 본문 ${r.textChars.toLocaleString()}자 / 사고 ${r.reasoningChars.toLocaleString()}자 · 첫 사고 수신 ${when(r.firstReasoningMs)} · 첫 본문 수신 ${when(r.firstTextMs)} · 종료 사유 ${r.finishReason || 'API에서 제공하지 않음'}`];
+}
 function reportText(st) {
     const out = [`SavePoint v${VERSION} · 요약 AI: ${profileLabel()}`];
     const r = ui.lastRequest;
-    if (r) out.push('', `[마지막 요청] ${r.task} · ${r.profile}${r.model ? ' · ' + r.model : ''} · ${r.status} · ${fmtSec(r.ms)}`,
-        `입력 ${r.chars}자 · 응답 상한 ${r.maxTokens}토큰 · ${r.stream ? '실시간 수신' : '일괄 응답'} · 추론 요청: ${r.effort}`,
-        `수신 본문 ${r.textChars}자 / 사고 ${r.reasoningChars}자 · 첫 내용 수신 ${r.firstDataMs === null ? '없음' : fmtSec(r.firstDataMs)} · 종료 사유 ${r.finishReason || 'API에서 제공하지 않음'}`);
+    if (r) { const [head, ...rest] = requestLines(r); out.push('', `[마지막 요청] ${head}`, ...rest); }
     if (hasChat()) out.push(`방: ${names().char || ''} · 기록 ${st ? st.lastIndex + 1 : 0} / ${chat().length}`);
     if (ui.lastFix) out.push('', `[자동 보정] ${ui.lastFix.range} · ${ui.lastFix.text}`);
     if (st?.autoFail) out.push('', '[체크포인트 실패 · 수집]', ...autoFailLines(st.autoFail).map(l => `- ${l}`));
     if (ui.lastError) {
         out.push('', `[마지막 실패] ${ui.lastError.range} · ${new Date(ui.lastError.at).toLocaleString()}`);
         for (const d of groupErrors(ui.lastError.detail)) out.push(`- ${d}`);
+        if (ui.lastError.request?.length) out.push('실패한 요청의 기록:', ...ui.lastError.request.map(l => `  ${l}`));
     }
     const missed = (st?.lootQueue || []).filter(x => x.error);
     if (missed.length) {
@@ -1208,14 +1230,18 @@ async function copyReport() {
     else { ui.copyText = text; toastr.info('자동 복사가 막혀서 아래 칸에 띄웠어요. 길게 눌러 전체 선택 후 복사해 주세요.', 'SavePoint'); }
     render();
 }
-function autoFailLines(f) {
-    return [`시각: ${new Date(f.at).toLocaleString()}`, `단계: ${FAIL_STAGE[f.stage] || f.stage}`, `메시지 범위: #${f.from}–#${f.to}`, `이유: ${f.reason}`,
-        `요청 횟수: ${f.attempts}`, ...(f.tries || []), ...(f.detail || [])];
+function autoFailLines(f, st = state()) {
+    const left = autoFailRemaining(st, f);
+    return [`시각: ${new Date(f.at).toLocaleString()}`, `단계: ${FAIL_STAGE[f.stage] || f.stage}`,
+        ...(f.request ? [`실패한 요청: #${f.request.from}–#${f.request.to}`] : []),
+        `그때 저장하지 못한 범위: #${f.from}–#${f.to}`, `현재 재시도가 필요한 범위: #${left.from}–#${left.to}`,
+        `이유: ${f.reason}`, `요청 횟수: ${f.attempts}`, ...(f.tries || []),
+        ...(f.requestLines?.length ? ['실패한 요청의 기록:', ...f.requestLines.map(l => '  ' + l)] : []), ...(f.detail || [])];
 }
 function autoFailHtml(st) {
     const f = st?.autoFail;
     if (!f) return '';
-    return `<details class="sp-err" data-group="hud-autofail" ${ui.savesOpen.get('hud-autofail') ? 'open' : ''}><summary>⚠ 체크포인트 실패 #${f.from}–#${f.to} · ${new Date(f.at).toLocaleTimeString()} — 자세히</summary><ul class="sp-scroll">${autoFailLines(f).map(l => `<li>${esc(l)}</li>`).join('')}<li class="sp-dim">해당 구간 원문은 그대로예요. 다음 체크포인트나 퀵세이브로 이 구간이 저장되면 이 기록이 사라져요.</li></ul></details>`;
+    return `<details class="sp-err" data-group="hud-autofail" ${ui.savesOpen.get('hud-autofail') ? 'open' : ''}><summary>⚠ 체크포인트 실패 · 남은 범위 #${autoFailRemaining(st, f).from}–#${f.to} · ${new Date(f.at).toLocaleTimeString()} — 자세히</summary><ul class="sp-scroll">${autoFailLines(f, st).map(l => `<li>${esc(l)}</li>`).join('')}<li class="sp-dim">해당 구간 원문은 그대로예요. 다음 체크포인트나 퀵세이브로 이 구간이 저장되면 이 기록이 사라져요.</li></ul></details>`;
 }
 function checkHtml(st) {
     const c = st?.check;
@@ -1642,7 +1668,7 @@ function openWindow() {
     $('#sp_overlay').css('display', 'flex');
     render(true);
 }
-function closeWindow() { tabResizeObserver?.disconnect(); ui.open = false; ui.edit = null; $('#sp_overlay').hide(); updateSaveBanner(); }
+function closeWindow() { tabResizeObserver?.disconnect(); ui.open = false; ui.edit = null; ui.revealFailure = false; $('#sp_overlay').hide(); updateSaveBanner(); }
 
 // Checks one excerpt against its message and builds the queue item. The excerpt may come from the
 // original or, when a translator shows a translation instead, from that on-screen translation.
@@ -2226,16 +2252,34 @@ function hudHtml(st) {
     const autoLast = attemptAt ? `<span class="${st.autoFail ? 'sp-warn' : 'sp-dim'}">마지막 자동 저장 시도 ${new Date(attemptAt).toLocaleTimeString()} · ${esc(ui.run?.auto ? '체크포인트 저장 중…' : st.autoAttemptAt && (!st.autoLast || st.autoLast.at < st.autoAttemptAt) ? '이번 시도 결과 없음 또는 중단됨 · 다음 간격에 다시' : st.autoLast?.result || '결과 대기')}</span>` : '';
     const lastRecord = st?.lastRecord ? `<span class="sp-dim">마지막 실제 기록 ${new Date(st.lastRecord.at).toLocaleTimeString()} · #${st.lastRecord.from}–#${st.lastRecord.to}</span>` : st?.lastIndex >= 0 ? `<span class="sp-dim">마지막 실제 기록 · 시각 정보 없음 · #0–#${st.lastIndex}</span>` : '<span class="sp-dim">마지막 실제 기록 없음</span>';
     const err = ui.lastError ? `<details class="sp-err" data-group="hud-err" ${ui.savesOpen.get('hud-err') ? 'open' : ''}><summary>마지막 실패 ${esc(ui.lastError.range)} — 자세히</summary><ul class="sp-scroll">${groupErrors(ui.lastError.detail).map(d => `<li>${esc(d)}</li>`).join('')}</ul></details>` : '';
-    return `<div class="sp-hud">
+    // Folded by default on narrow screens: one status line stands for the rest, and turns to a warning
+    // colour when something failed or needs checking, so a folded panel never hides a problem.
+    const openHud = hudOpen();
+    // A checkpoint failure is also the last failure; the same one is counted once.
+    const sameFailure = st?.autoFail && ui.lastError && Math.abs(st.autoFail.at - ui.lastError.at) < 10000;
+    const fails = (st?.autoFail ? 1 : 0) + (ui.lastError && !sameFailure ? 1 : 0), lootFails = (st?.lootQueue || []).filter(x => x.error?.startsWith('반영 실패')).length;
+    const issues = st?.check && st.check.status !== 'running' && settings().check ? st.check.status === 'failed' ? 1 : st.check.issues.filter(x => !x.ignored).length : 0;
+    const interrupted = interruptedNote(st);
+    const alerting = fails || lootFails || issues || ui.inj?.pinOverflow || interrupted;
+    const chip = [`미기록 ${pending}`, ...(st?.lootQueue?.length ? [`⏳ ${st.lootQueue.length}`] : []), ...(fails ? [`⚠ 실패 ${fails}`] : []),
+        ...(lootFails ? [`💎 반영 실패 ${lootFails}`] : []), ...(issues ? [`확인 필요 ${issues}`] : []), ...(interrupted ? ['저장 중단됨'] : []),
+        ...(ui.inj?.pinOverflow ? ['📌 주입 못 함'] : [])].join(' · ');
+    return `<div class="sp-hud ${openHud ? 'sp-hud-open' : 'sp-hud-folded'}">
         <div class="sp-scene-now">${open ? `<span class="sp-cursor">▶</span> <b>${esc(T(open.title, open.koTitle))}</b>${open.where ? ` <span class="sp-dim">@ ${esc(open.where)}</span>` : ''}` : '<span class="sp-dim">▷ 진행 중인 장면 없음</span>'}</div>
-        ${storyTimeContext(st?.mem || {}, 'ko') ? `<div class="sp-hud-time">마지막 기록 기준 · ${esc(storyTimeContext(st.mem, 'ko'))}</div>` : ''}
         <div class="sp-bar" title="기록된 메시지 비율"><div class="sp-bar-fill" style="width:${pct}%"></div><span>기록 ${covered} / ${total}</span></div>
+        <button type="button" class="sp-hud-chip ${alerting ? 'sp-alerting' : ''}" data-act="hud-toggle" aria-expanded="${openHud}" title="${openHud ? '자세한 상태 접기' : '자세한 상태 펼치기'}"><span>${esc(chip)}</span><span class="sp-hud-caret">${openHud ? '▴' : '▾'}</span></button>
+        ${review}
+        <div class="sp-hud-more">
+        ${storyTimeContext(st?.mem || {}, 'ko') ? `<div class="sp-hud-time">마지막 기록 기준 · ${esc(storyTimeContext(st.mem, 'ko'))}</div>` : ''}
         <div class="sp-hud-meta"><span>미기록 <b>${pending}</b></span>${btn('tab', 'queue', `⏳ 대기열 ${st?.lootQueue?.length || 0}개`)}<span>주입 ${ui.inj ? ui.inj.tokens.toLocaleString() : 0} / ${num('budget', 300, 100000).toLocaleString()} 토큰</span><span>요약 AI: ${esc(profileLabel())}</span>${ui.inj?.pinOverflow ? `<span class="sp-warn">📌 ${ui.inj.pinMissing}개 주입 못 함</span>` : ''}</div>
         <div class="sp-hud-meta sp-auto-line">${autoLine}${autoLast}${lastRecord}</div>
-        ${(() => { const it = interruptedNote(st); return it && !busy ? `<div class="sp-hud-meta"><span class="sp-warn">⚠ 지난 저장이 방을 옮기면서 중간에 멈췄어요 (#${it.from}부터 미기록)</span>${btn('run', '', '퀵세이브로 이어서')}</div>` : ''; })()}
+        ${interrupted && !busy ? `<div class="sp-hud-meta"><span class="sp-warn">⚠ 지난 저장이 방을 옮기면서 중간에 멈췄어요 (#${interrupted.from}부터 미기록)</span>${btn('run', '', '퀵세이브로 이어서')}</div>` : ''}
         ${autoFailHtml(st)}
         ${checkHtml(st)}
-        ${review}
+        ${ui.lastFix ? `<div class="sp-hud-meta"><span class="sp-dim">자동 보정 ${esc(ui.lastFix.range)}: ${esc(ui.lastFix.text)} · ${new Date(ui.lastFix.at).toLocaleTimeString()}</span></div>` : ''}
+        ${(ui.lastError || st?.autoFail || st?.lootQueue?.some(x => x.error) || (st?.check && st.check.status !== 'running')) && !busy ? `<div class="sp-row sp-copyrow">${btn('copy-report', '', '📋 결과 복사', '마지막 실패와 기록 확인 결과를 글로 복사해요 (캡처 대신)')}</div>` : ''}
+        ${err}
+        </div>
         <div class="sp-row sp-actions">
             ${btn('run', '', '⏺ 퀵세이브', '마지막 메시지까지 바로 기록하고, 끝나지 않은 장면은 열어 둬요', 'sp-primary' + (busy ? ' sp-disabled' : ''))}
             ${btn('run-close', '', '■ 장면 클리어', '마지막 메시지까지 기록하고 진행 중인 장면을 닫아요', busy ? 'sp-disabled' : '')}
@@ -2243,11 +2287,16 @@ function hudHtml(st) {
             ${btn('translate', '', '🌐 번역', '한국어 보기가 없는 항목을 번역해요', busy ? 'sp-disabled' : '')}
             ${busy ? btn('stop', '', '중지', '', 'sp-danger') : ''}
         </div>
-        ${ui.lastFix ? `<div class="sp-hud-meta"><span class="sp-dim">자동 보정 ${esc(ui.lastFix.range)}: ${esc(ui.lastFix.text)} · ${new Date(ui.lastFix.at).toLocaleTimeString()}</span></div>` : ''}
-        ${(ui.lastError || st?.autoFail || st?.lootQueue?.some(x => x.error) || (st?.check && st.check.status !== 'running')) && !busy ? `<div class="sp-row sp-copyrow">${btn('copy-report', '', '📋 결과 복사', '마지막 실패와 기록 확인 결과를 글로 복사해요 (캡처 대신)')}</div>` : ''}
         ${ui.copyText ? `<div class="sp-copybox"><textarea readonly rows="8">${esc(ui.copyText)}</textarea>${btn('copy-close', '', '닫기')}</div>` : ''}
-        ${busy ? `<div class="sp-progress"><span class="sp-spin">◐</span> ${esc(ui.progress)}${ui.req ? ` · <span class="sp-req">${esc(reqText())}</span>` : ''}</div>` : ''}${err}
+        ${busy ? `<div class="sp-progress"><span class="sp-spin">◐</span> ${esc(ui.progress)}${ui.req ? ` · <span class="sp-req">${esc(reqText())}</span>` : ''}</div>` : ''}
     </div>`;
+}
+// Whether the details under the status line are shown: the user's last choice, else open on wide
+// screens and folded on phones.
+function hudOpen() {
+    if (ui.revealFailure) return true;
+    const v = settings().hudOpen;
+    return typeof v === 'boolean' ? v : !(typeof window !== 'undefined' && window.innerWidth <= 700);
 }
 let tabResizeObserver = null;
 function installTabNavigation(strip, previousScroll) {
@@ -2430,6 +2479,7 @@ async function handle(act, id) {
     const st = state();
     switch (act) {
         case 'close': return closeWindow();
+        case 'hud-toggle': settings().hudOpen = !hudOpen(); ui.revealFailure = false; saveSettings(); return render(true);
         case 'tab': ui.tab = id; ui.edit = null; if (id === 'inject') refreshInjection(); return render(true);
         case 'loot-retry': return retryLoot(id);
         case 'loot-delete':
@@ -2708,17 +2758,40 @@ function saveBanner() {
         el.id = 'sp_save_banner'; el.className = 'sp-window sp-save-banner'; el.hidden = true;
         el.setAttribute('role', 'status'); el.setAttribute('aria-live', 'polite');
         el.innerHTML = '<span class="sp-sb-icon"></span><div class="sp-sb-text"><div class="sp-sb-title"></div><div class="sp-sb-sub"></div></div>';
-        el.onclick = () => openWindow();
+        el.onclick = () => {
+            // A failure notice opens the window with the failure details unfolded, and is then done.
+            if (el.dataset.tone === 'warning') { ui.revealFailure = true; ui.savesOpen.set('hud-autofail', true); ui.savesOpen.set('hud-err', true); }
+            if (el.dataset.flash) { clearTimeout(bannerTimer); delete el.dataset.flash; delete el.dataset.flashRoom; el.hidden = true; }
+            openWindow();
+        };
         document.body.append(el);
+        // On phones the on-screen keyboard scrolls the page under a fixed banner; keep it inside the
+        // part of the page that is actually visible.
+        window.visualViewport?.addEventListener?.('resize', () => placeSaveBanner(el));
+        window.visualViewport?.addEventListener?.('scroll', () => placeSaveBanner(el));
+        document.addEventListener?.('visibilitychange', showPendingBanner);
     }
     el.setAttribute('data-theme', settings().theme in THEMES ? settings().theme : 'jrpg');
     return el;
+}
+function placeSaveBanner(el) {
+    if (!el || el.hidden) return;
+    const top = window.visualViewport?.offsetTop || 0;
+    el.style.top = top > 1 ? `${Math.round(top + 8)}px` : '';
+}
+// A result that arrives while the page is not visible (phone locked, another app) waits until it is.
+let pendingBanner = null;
+function showPendingBanner() {
+    if (document.hidden || !pendingBanner) return;
+    const p = pendingBanner; pendingBanner = null;
+    if (p.room === String(roomKey())) flashSaveBanner(p.text, { tone: p.tone });
 }
 function setBanner(el, { icon, title, count = '', sub }) {
     el.querySelector('.sp-sb-icon').className = `sp-sb-icon ${icon}`;
     el.querySelector('.sp-sb-title').innerHTML = `${esc(title)}${count ? ` <b>${esc(count)}</b>` : ''}`;
     el.querySelector('.sp-sb-sub').textContent = sub;
     el.hidden = false;
+    placeSaveBanner(el);
 }
 function updateSaveBanner() {
     const el = saveBanner();
@@ -2739,11 +2812,14 @@ function flashSaveBanner(text, { tone = 'success' } = {}) {
     if (!el) return;
     clearTimeout(bannerTimer);
     if (ui.open || !settings().enabled) { delete el.dataset.flash; el.hidden = true; return; }
+    if (typeof document !== 'undefined' && document.hidden) { pendingBanner = { text, tone, room: String(roomKey()) }; return; }
     const [title, ...rest] = text.split(' · ');
     el.dataset.flash = '1'; el.dataset.flashRoom = String(roomKey());
     el.dataset.tone = tone;
-    setBanner(el, { icon: tone === 'warning' ? 'sp-sb-warn' : tone === 'info' ? 'sp-sb-info' : 'sp-sb-done', title, sub: rest.join(' · ') });
-    bannerTimer = setTimeout(() => { delete el.dataset.flash; delete el.dataset.flashRoom; updateSaveBanner(); }, tone === 'warning' ? 8000 : 3500);
+    setBanner(el, { icon: tone === 'warning' ? 'sp-sb-warn' : tone === 'info' ? 'sp-sb-info' : 'sp-sb-done', title,
+        sub: [...rest, ...(tone === 'warning' ? ['눌러서 자세히 보기'] : [])].join(' · ') });
+    // A failure stays until it is tapped, a new save starts, or the room changes; other results fade.
+    if (tone !== 'warning') bannerTimer = setTimeout(() => { delete el.dataset.flash; delete el.dataset.flashRoom; updateSaveBanner(); }, 3500);
 }
 // A save cut off by leaving the room is remembered per room until that room saves again.
 function clearInterrupted(room) {

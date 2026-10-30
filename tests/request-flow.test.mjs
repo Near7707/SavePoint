@@ -164,13 +164,13 @@ test('a number not in the review request is held back instead of accepted as evi
     assert.equal(h.st.check.issues[0].kind, 'partial');
 });
 
-test('a stored checkpoint failure keeps only its unrecorded part after a partial quick save, and is cleared once saved', async () => {
+test('a stored checkpoint failure keeps its original range after a partial quick save (the rest is computed), and is cleared once saved', async () => {
     const h = harness({ failAt: 2 });
     h.st.autoFail = { at: 1, kind: 'collect', stage: 'collect', from: 0, to: 30, reason: 'x', attempts: 2, tries: [], detail: [] };
     await h.summarize();
     const saved = h.st.lastIndex;
     assert(saved >= 0 && saved < 30);
-    assert.deepEqual([h.st.autoFail.from, h.st.autoFail.to], [saved + 1, 30]);
+    assert.deepEqual([h.st.autoFail.from, h.st.autoFail.to], [0, 30], 'what failed then is not rewritten');
     await h.summarize();
     assert.equal(h.st.lastIndex, 39);
     assert.equal(h.st.autoFail, undefined);

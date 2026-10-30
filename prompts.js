@@ -109,36 +109,32 @@ export function fillNames(text, names) {
     return String(text).replace(/\{\{char\}\}/gi, names.char || 'the character').replace(/\{\{user\}\}/gi, names.user || 'the user');
 }
 
-export function buildExtractPrompt({ guide, names, card, context, chunk, note = '' }) {
+// The request as labelled sections. Every line (with its newline) belongs to exactly one section,
+// so the section sizes add up to the request length: what the extension sent, not what a
+// connection profile or preset may add on top.
+export const PROMPT_PART_LABELS = { guide: '지침·출력 형식', card: '카드·페르소나', state: '상태·인물·시간', open: '진행 장면', recent: '최근 장면', note: '루팅·안내', messages: '새 원문', retry: '재요청 안내', other: '기타' };
+export function buildExtractPromptParts({ guide, names, card, context, chunk, note = '' }) {
     const format = OUTPUT_FORMAT.replace('{FROM}', chunk.from).replace('{TO}', chunk.to);
-    return [
-        fillNames(guide, names),
-        '',
-        '[CHARACTER CARD / PERSONA: already known, do not record]',
-        card || '(not available)',
-        '',
-        '[KNOWN ENTITIES]',
-        context.entities,
-        '',
-        '[CURRENT STATE] (record ids for update/remove)',
-        context.state,
-        '',
-        '[LAST RECORDED STORY TIME: later messages take priority]',
-        context.time || '(not recorded; do not infer a calendar date)',
-        '',
-        '[OPEN SCENE] (continue it if the new messages carry on the same scene)',
-        context.open === '(none)' ? '(none: there is no open scene, so the first scene must be "new")' : context.open,
-        '',
-        '[RECENT SCENES] (for continuity only, do not repeat)',
-        context.recent,
-        '',
-        ...(note ? ['[BATCH NOTE]', note, ''] : []),
-        `[NEW MESSAGES] #${chunk.from} to #${chunk.to}`,
-        chunk.text,
-        '',
-        fillNames(format, names),
-    ].join('\n');
+    const sections = [
+        ['guide', [fillNames(guide, names), '']],
+        ['card', ['[CHARACTER CARD / PERSONA: already known, do not record]', card || '(not available)', '']],
+        ['state', ['[KNOWN ENTITIES]', context.entities, '', '[CURRENT STATE] (record ids for update/remove)', context.state, '',
+            '[LAST RECORDED STORY TIME: later messages take priority]', context.time || '(not recorded; do not infer a calendar date)', '']],
+        ['open', ['[OPEN SCENE] (continue it if the new messages carry on the same scene)',
+            context.open === '(none)' ? '(none: there is no open scene, so the first scene must be "new")' : context.open, '']],
+        ['recent', ['[RECENT SCENES] (for continuity only, do not repeat)', context.recent, '']],
+        ['note', note ? ['[BATCH NOTE]', note, ''] : []],
+        ['messages', [`[NEW MESSAGES] #${chunk.from} to #${chunk.to}`, chunk.text, '']],
+        ['guide', [fillNames(format, names)]],
+    ];
+    const lines = sections.flatMap(([, ls]) => ls), parts = {};
+    let i = 0;
+    for (const [key, ls] of sections) for (const line of ls) {
+        parts[key] = (parts[key] || 0) + String(line).length + (++i < lines.length ? 1 : 0);
+    }
+    return { text: lines.join('\n'), parts };
 }
+export function buildExtractPrompt(args) { return buildExtractPromptParts(args).text; }
 
 export function retryNote(errors, languageIssues) {
     const lines = ['', '', 'YOUR PREVIOUS REPLY WAS REJECTED. Fix these problems and return the complete JSON again. For each problem, reread the message it cites and write what that message actually shows; do not just swap fields to pass the check:'];

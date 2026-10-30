@@ -691,3 +691,11 @@ label.sp-has-reset { position: relative; padding-right: 30px; }
 .sp-tl-unknown .sp-tl-time { color: var(--sp-danger); }
 .sp-tl-due { margin: 3px 0; font-size: 12.5px; }
 .sp-focus { outline: 2px solid var(--sp-accent); outline-offset: 2px; border-radius: 6px; transition: outline-color .3s; }
+
+/* Status panel: one status line stands for the details, which fold away on phones. */
+.sp-hud-chip { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 8px; margin: 6px 0 2px; padding: 4px 10px;
+    border: 1px solid var(--sp-line); border-radius: 999px; background: var(--sp-panel); color: var(--sp-dim); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.sp-hud-chip > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.sp-hud-chip.sp-alerting { border-color: var(--sp-danger); color: var(--sp-danger); font-weight: 700; }
+.sp-hud-caret { flex: 0 0 auto; }
+.sp-hud-folded .sp-hud-more { display: none; }

@@ -38,6 +38,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         await page.addInitScript(([s, f, d]) => { if (s) window.__presetSettings = s; if (f) window.__presetFiles = f; if (d) window.__presetServerDown = true; }, [settings || null, files || null, !!serverDown]);
         await page.goto(URL);
         await page.waitForFunction(() => !!globalThis.__savePoint && __savePoint.vault.ready);
+        // These checks read the status details, which a phone-width window folds by default.
+        await page.evaluate(() => { M.settings.savePoint.hudOpen = true; });
         await page.waitForTimeout(300);
         return page;
     }

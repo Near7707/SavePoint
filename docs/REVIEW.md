@@ -1,3 +1,18 @@
+# v0.6.22 · 요청 분량 내역, 실패 표시, 상태 칸 접기, 배너
+
+기준: v0.6.21 `4998720`. 반복 줄이기(수집 요청의 진행 장면 개요)는 실제 분량 내역을 본 뒤 다음 단계로.
+
+- `prompts.js buildExtractPromptParts`: 수집 요청을 구역별로 만들고 각 줄(줄바꿈 포함)을 한 구역에만 셈 → 구역 합계 = 요청 길이. `buildExtractPrompt`는 같은 문자열(검사). 구역: 지침·출력 형식 / 카드·페르소나 / 상태·인물·시간 / 진행 장면 / 최근 장면 / 루팅·안내 / 새 원문, 재요청이면 재요청 안내(차이), 맞지 않으면 기타.
+- `llm`: `parts`를 요청 기록에, `firstReasoningMs`·`firstTextMs` 분리(기존 firstDataMs 유지). `requestLines`가 결과 복사에 "확장이 만든 요청 기준"으로 표시. 실패 시 요청 기록을 `ui.lastError.request`와 `autoFail.requestLines`에 남겨 이후 요청에 덮이지 않음.
+- 체크포인트 실패: `settleAutoFail`이 `from`을 고치지 않음(다 저장되면 삭제만). `request`(실패한 요청 구간) 저장, 표시할 때 `autoFailRemaining`으로 현재 남은 범위 계산. 기존 request-flow 검사 기대값을 새 규칙으로 바꿈.
+- 상태 칸: 장면·진행 바·요약 줄(`.sp-hud-chip`)·세이브 버튼·진행 표시는 항상, 나머지는 `.sp-hud-more`. `settings.hudOpen`(없으면 폭 700 이하 접힘). 실패·루팅 실패·확인·저장 중단·📌 초과가 있으면 경고색. 체크포인트 실패와 같은 시각(10초 이내)의 마지막 실패는 한 번만 셈. checks·v029 검사는 상세를 읽으므로 시작 시 펼침.
+- 배너: warning은 타이머 없이 유지(누르기·새 작업·방 이동까지). 누르면 `ui.revealFailure`로 상태 칸과 실패 상세를 펼친 채 창 열기. `document.hidden`이면 결과를 보류했다가 visibilitychange에서 표시. `visualViewport.offsetTop`이 있으면 그 아래 8px로 위치(키보드).
+- 실기기 확인 필요: 아이폰 키보드에서 배너 위치, 잠금 후 복귀 시 배너.
+
+검사: Node 326개(신규 prompt-parts), 브라우저 16묶음(신규 status.cjs 15개).
+
+---
+
 # v0.6.21 · 연표 최신 기록 우선
 
 기준: v0.6.20 `9875757`.
