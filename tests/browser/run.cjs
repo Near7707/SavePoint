@@ -43,7 +43,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     // 1. first summary through the last message
     await ev(() => { M.add(40); __savePoint.handle('tab', 'journal'); $('#sp_wand').trigger('click'); });
     await ev(() => __savePoint.handle('run'));
-    await sleep(1600);
+    // Autosave is debounced and then writes asynchronously; wait for the result, not a fixed delay.
+    await page.waitForFunction(() => __savePoint.listSaves().some(x => x.auto) && [...M.files.keys()].some(k => k.startsWith('savepoint-auto-')), null, { timeout: 10000 });
     let r = await ev(() => { const st = __savePoint.state(); return { last: st.lastIndex, scenes: st.mem.scenes.length, open: st.mem.scenes[0]?.status,
         hid: M.chat.map(m => m.is_system), inj: M.prompts.savepoint?.v || '', autos: __savePoint.listSaves().filter(x => x.auto).length, calls: M.calls.length, chatSaves: M.chatSaves, serverAuto: [...M.files.keys()].some(k => k.startsWith('savepoint-auto-')) }; });
     ok(r.last === 39, `마지막 메시지까지 정리 (#${r.last})`);
@@ -246,10 +247,12 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const layoutFailures = [], recordThemes = await ev(() => [...document.querySelectorAll('#sp_settings [data-set="theme"] option')].map(x => x.value));
     await ev(() => {
         const mem = __savePoint.state().mem;
-        mem.entities.push({ id: 'layout-person', type: 'person', name: 'Courier', aliases: [] }, { id: 'layout-item', type: 'item', name: 'Brass compass', aliases: [] });
+        mem.entities.push({ id: 'layout-person', type: 'person', name: 'Courier', aliases: [] },
+            { id: 'layout-item', type: 'item', name: "Courier's weatherproof expedition jacket", aliases: [] },
+            { id: 'layout-place', type: 'place', name: 'North harbor guest apartment', aliases: [] });
         const common = { text: 'A carefully repaired brass compass still points toward the northern harbor, even when carried through the crowded market. '.repeat(4), msgs: [3, 4, 12, 14, 25, 29], oldEvidence: [{ room: 'example-room', msgs: [48, 49] }], pin: true };
         mem.records.push({ ...common, id: 'layout-party', type: 'party', entity: 'layout-person', aspect: 'condition' },
-            { ...common, id: 'layout-item-record', type: 'item', entity: 'layout-item', holder: 'layout-person' },
+            { ...common, id: 'layout-item-record', type: 'item', entity: 'layout-item', holder: 'layout-place' },
             { ...common, id: 'layout-world', type: 'world', kind: 'secret', knownBy: ['layout-person'] });
     });
     const recordLayoutSnapshot = await ev(() => ({ mem: JSON.stringify(__savePoint.state().mem), injection: M.prompts.savepoint?.v }));
@@ -263,7 +266,11 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
                     return rows.length === 1 && rows.every(row => {
                         const text = row.querySelector('.sp-rec-t').getBoundingClientRect(), refs = row.querySelector('.sp-evs').getBoundingClientRect();
                         const box = row.getBoundingClientRect();
-                        return refs.top >= text.bottom - 1 && Math.abs(text.width - row.clientWidth) <= 2 && refs.right <= box.right + 1 && row.scrollWidth <= row.clientWidth + 1
+                        const header = tab === 'items' ? row.closest('.sp-item').querySelector('.sp-item-h') : null;
+                        const holder = header?.querySelector('.sp-holder').getBoundingClientRect(), name = header?.querySelector('.sp-ent-n').getBoundingClientRect();
+                        const holderAtTop = !header || (Math.abs(holder.top - name.top) <= 1 && holder.left >= name.right + 7 && Math.abs(holder.right - header.getBoundingClientRect().right) <= 1
+                            && header.scrollWidth <= header.clientWidth + 1 && text.top >= Math.max(holder.bottom, name.bottom));
+                        return holderAtTop && refs.top >= text.bottom - 1 && Math.abs(text.width - row.clientWidth) <= 2 && refs.right <= box.right + 1 && row.scrollWidth <= row.clientWidth + 1
                             && row.querySelector('.sp-evs').title.includes('이전 방') && row.querySelectorAll('.sp-tools button').length === 3;
                     });
                 }, { theme, tab });
@@ -271,7 +278,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
             }
         }
     }
-    ok(recordThemes.length > 0 && layoutFailures.length === 0, `파티·인벤토리·월드 본문 전체 너비와 하단 근거 번호 (${recordThemes.length}개 테마·360–1100px): ${layoutFailures.join(', ') || '정상'}`);
+    ok(recordThemes.length > 0 && layoutFailures.length === 0, `상태 본문 전체 너비·하단 근거 번호·긴 물건 이름의 소지자 우측 상단 유지 (${recordThemes.length}개 테마·360–1100px): ${layoutFailures.join(', ') || '정상'}`);
     ok(await ev(before => JSON.stringify(__savePoint.state().mem) === before.mem && M.prompts.savepoint?.v === before.injection, recordLayoutSnapshot), '기록 배치를 바꿔도 기억과 주입은 그대로');
     await ev(before => { __savePoint.state().mem = before.mem; M.settings.savePoint.theme = before.theme; }, recordLayoutBefore);
     await page.setViewportSize({ width: 390, height: 844 });

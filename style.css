@@ -175,7 +175,9 @@
 .sp-ent-n { font-weight: 700; font-size: 15px; }
 .sp-alias { font-size: 12px; color: var(--sp-dim); }
 .sp-aspect { font-family: var(--sp-head); font-size: 10px; letter-spacing: .12em; color: var(--sp-dim); margin-top: 6px; text-transform: uppercase; }
-.sp-item-h { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.sp-item-h { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.sp-item-h > .sp-ent-n { flex: 1 1 0; min-width: 0; overflow-wrap: anywhere; }
+.sp-item-h > .sp-holder { flex: 0 1 auto; min-width: 0; max-width: 45%; text-align: right; overflow-wrap: anywhere; }
 .sp-holder { font-size: 12px; }
 
 /* saves */
