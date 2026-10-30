@@ -72,7 +72,7 @@ async function storyMemory() {
         order: [...document.querySelectorAll('.sp-tl-row [data-act=tl-goto]')].map(b => b.dataset.id.split('|')[1]),
         unknownDay: (() => { let el = document.querySelector('[data-act=tl-goto][data-id$="|g5"]').closest('.sp-tl-row').previousElementSibling;
             while (el && !el.classList.contains('sp-tl-day')) el = el.previousElementSibling; return el?.textContent; })() }));
-    ok(r.tab && r.rows === 6 && r.order.join(',') === 'g6,g5,g4,g3,g2,g1', `1. 📅 연표 탭에 최신 구간부터 (${r.order.join(',')})`);
+    ok(r.tab && r.rows === 6 && r.order.join(',') === 'g6,g5,g4,g3,g2,g1', `1. 📅 타임라인 탭에 최신 구간부터 (${r.order.join(',')})`);
     ok(r.refs[0].includes('몇 주 뒤') && r.refs[1] === '실제 날짜' && r.refs.length === 2, `1. 실제 날짜와 모호한 점프 뒤 기준을 합치지 않음 (${r.refs.join(' / ')})`);
     ok(r.days.slice(-2).join(',') === '2026-10-26,2026-10-25', `1. 날짜도 최신 기록부터, 같은 날은 머리 하나 아래 (${r.days.join(', ')})`);
     ok(r.unknownDay === '2026-10-26', '1. 미확인 구간은 이후 시간 점프가 아닌 원래 날짜 묶음에 남음');
@@ -80,7 +80,7 @@ async function storyMemory() {
     ok(r.due === 2, '1. 약속 기한이 위쪽 목록과 약속한 구간 두 곳에 연결됨');
     if (SHOTS) await page.screenshot({ path: path.join(OUT, 'timeline.png'), fullPage: true });
     const injAfter = await ev(() => { __savePoint.refreshInjection(); return M.prompts.savepoint?.v || ''; });
-    ok(injAfter === injBefore && !injAfter.includes('실제 날짜'), '2. 연표를 열어도 주입은 그대로');
+    ok(injAfter === injBefore && !injAfter.includes('실제 날짜'), '2. 타임라인을 열어도 주입은 그대로');
     ok((await ev(() => JSON.stringify(__savePoint.state().mem))) === memBefore, '2. 화면 순서를 뒤집어도 저장된 장면·구간 순서와 시간은 그대로');
 
     // 3. jumps: journal part, time edit, quest

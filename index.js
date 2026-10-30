@@ -19,30 +19,30 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.23';
+const VERSION = '0.6.24';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
 
 const DEFAULTS = {
-    enabled: true, check: true, auto: true, autoEvery: 20, autoReserve: 2, profileId: '', responseLength: 8000, inputChars: 60000, timeoutSec: 300,
+    enabled: true, check: true, auto: true, autoEvery: 20, autoReserve: 2, profileId: '', responseLength: 8000, inputChars: 60000, timeoutSec: 300, timeoutTotalMin: 20,
     requestStream: true, reasoningEffort: '',
     budget: 6000, titleCap: 600, recentScenes: 3, recall: true, rawRecall: false,
     hide: true, keepRecent: 10, position: 1, depth: 4, role: 0,
     theme: 'jrpg', showKo: false, autoKeep: 30, guide: DEFAULT_GUIDE, slotCache: [], localSaves: {}, settingsOpen: {}, interrupted: {},
 };
 const SETTING_GROUPS = {
-    connection: { title: '연결·AI 요청', keys: ['profileId', 'requestStream', 'reasoningEffort', 'responseLength', 'inputChars', 'timeoutSec'] },
+    connection: { title: '연결·AI 요청', keys: ['profileId', 'requestStream', 'reasoningEffort', 'responseLength', 'inputChars', 'timeoutSec', 'timeoutTotalMin'] },
     recording: { title: '체크포인트·기록 확인', keys: ['check', 'auto', 'autoEvery', 'autoReserve', 'guide'] },
     injection: { title: '기억 주입', keys: ['budget', 'titleCap', 'recentScenes', 'recall', 'rawRecall', 'position', 'depth', 'role'] },
     storage: { title: '하이드·보관', keys: ['hide', 'keepRecent', 'autoKeep'] },
     appearance: { title: '화면', keys: ['theme', 'showKo'] },
 };
-const THEMES = { jrpg: '클래식 JRPG', neon: '네온 아케이드', glass: '글래스 사이버', archive: '다크 아카이브', pastel: '파스텔 드림', terminal: '터미널', eggpet: '딸기우유', dualwhite: '듀얼 화이트', ink: '먹과 한지', cream: '크림 라테', vanilla: '바닐라 버터', consolenight: '스토리 콘솔', cranelemon: '레몬 인형뽑기', st: '실리 테마 따라가기' };
+const THEMES = { jrpg: '클래식 JRPG', neon: '네온 아케이드', glass: '글래스 사이버', archive: '다크 아카이브', pastel: '파스텔 드림', terminal: '터미널', eggpet: '딸기우유', dualwhite: '듀얼 화이트', ink: '먹과 한지', cream: '크림 라테', consolenight: '스토리 콘솔', cranelemon: '레몬 인형뽑기', gingerbread: '진저브레드 하우스', xmasknit: '크리스마스 니트', st: '실리 테마 따라가기' };
 // Themes that were retired, and the closest one now.
-const RETIRED_THEMES = { parchment: 'cream', colorpocket: 'eggpet', joycon: 'dualwhite' };
+const RETIRED_THEMES = { parchment: 'cream', colorpocket: 'eggpet', joycon: 'dualwhite', vanilla: 'cream' };
 const TABS = [
-    ['journal', '📜', '저널'], ['timeline', '📅', '연표'], ['queue', '⏳', '대기열'], ['quests', '❗', '퀘스트'], ['party', '👥', '파티'],
+    ['timeline', '📅', '타임라인'], ['journal', '📜', '저널'], ['queue', '⏳', '대기열'], ['quests', '❗', '퀘스트'], ['party', '👥', '파티'],
     ['items', '🎒', '인벤토리'], ['world', '🗺', '월드'], ['saves', '💾', '세이브'], ['inject', '👁', '주입'],
 ];
 const KIND_KO = {
@@ -397,7 +397,11 @@ function refreshInjection() {
 // ───────── AI calls ─────────
 
 class Cancelled extends Error {}
-class RequestTimeout extends Error {}
+class RequestTimeout extends Error {
+    // kind: 'idle' = no new output for the wait limit, 'total' = the overall maximum was reached,
+    // 'limit' = a request whose progress cannot be seen ran past its single time limit.
+    constructor(message, kind = 'limit') { super(message); this.kind = kind; }
+}
 function cancelRun() {
     if (!ui.run) return;
     ui.run.cancelled = true;
@@ -411,14 +415,23 @@ function cancelRun() {
 // progress line of a newer task.
 let reqSeq = 0, reqTicker = null;
 const fmtSec = ms => { const t = Math.floor(ms / 1000); return t >= 60 ? `${Math.floor(t / 60)}분 ${String(t % 60).padStart(2, '0')}초` : `${t}초`; };
+// A configured limit reads better as "5분" than "5분 00초".
+const fmtLimit = ms => { const t = Math.round(ms / 1000); return t >= 60 && t % 60 === 0 ? `${t / 60}분` : fmtSec(ms); };
+function limitText(r) {
+    if (!r?.limitMode) return '';
+    if (r.limitMode === 'idle') return `대기 ${fmtLimit(r.idleMs)} · 출력 중 연장 · 최대 ${fmtLimit(r.totalMs)}`;
+    return `전체 제한 ${fmtLimit(r.totalMs)}`;
+}
 function reqText() {
     const r = ui.req;
     if (!r) return '';
     const step = (r.attempt ? `재요청${r.why ? ` (${r.why})` : ''}` : '첫 요청') + ` · 입력 ${r.chars.toLocaleString()}자`;
     if (r.phase === 'got') return `${step} · 응답 받음 (${fmtSec(r.ms)}) · 검사 중`;
     const elapsed = fmtSec(Date.now() - r.start);
-    if (r.phase === 'stream') return `${step} · 수신 중 ${elapsed} · 사고 ${(r.reasoningChars || 0).toLocaleString()}자 / 본문 ${(r.textChars || 0).toLocaleString()}자`;
-    return `${step} · 응답 대기 ${elapsed}`;
+    const lim = limitText(r);
+    const quiet = r.limitMode === 'idle' && r.lastOutputAt && Date.now() - r.lastOutputAt >= 30000 ? ` · 새 출력 없음 ${fmtSec(Date.now() - r.lastOutputAt)}` : '';
+    if (r.phase === 'stream') return `${step} · 수신 중 ${elapsed} · 사고 ${(r.reasoningChars || 0).toLocaleString()}자 / 본문 ${(r.textChars || 0).toLocaleString()}자${quiet}${lim ? ` · ${lim}` : ''}`;
+    return `${step} · 응답 대기 ${elapsed}${lim ? ` · ${lim}` : ''}`;
 }
 function tickReq() {
     clearInterval(reqTicker);
@@ -454,19 +467,32 @@ async function llm(prompt, run, { attempt = 0, why = '', responseLength, timeout
     const id = ++reqSeq;
     const profileId = s.profileId;
     const stream = !!profileId && !!s.requestStream;
+    // v0.6.24: when the reply streams, the wait limit only counts time without new output, so a
+    // model that is still thinking or writing is not cut off; the overall maximum still applies.
+    // A request whose progress cannot be seen keeps one time limit for the whole request.
+    const idleMode = stream && timeoutSeconds === undefined;
+    const totalLimit = idleMode ? Math.max(limit, num('timeoutTotalMin', 1, 120) * 60000) : limit;
     const effort = ['low', 'high', 'max'].includes(s.reasoningEffort) ? s.reasoningEffort : '';
     const start = Date.now();
     let accepting = true;
     const stats = { at: start, task: ui.progress || '요청', profile: profileLabel(), stream: false,
         effort: profileId ? effort || '프로필 설정' : '메인 API 설정', chars: prompt.length,
         maxTokens: max, textChars: 0, reasoningChars: 0, firstDataMs: null, firstReasoningMs: null, firstTextMs: null, finishReason: null,
+        limitMode: idleMode ? 'idle' : 'limit', idleMs: idleMode ? limit : null, totalMs: totalLimit, lastOutputMs: null,
         ...(parts ? { parts: { ...parts } } : {}) };
     const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
     const onRunAbort = () => ctrl?.abort();
     if (run?.ctrl?.signal?.aborted) ctrl?.abort(); else run?.ctrl?.signal?.addEventListener?.('abort', onRunAbort);
     const active = () => accepting && !run?.cancelled && !ctrl?.signal?.aborted;
+    let seen = 0, idleTimer = null, onIdle = null;
+    const armIdle = () => { if (!idleMode || !onIdle) return; clearTimeout(idleTimer); idleTimer = setTimeout(onIdle, limit); };
     const progress = part => {
-        if (!active() || (run && ui.req?.id !== id)) return;
+        if (!active()) return;
+        // Only output that actually grew counts as activity; a repeated cumulative chunk or an
+        // empty keep-alive does not restart the wait.
+        const total = (part.textChars || 0) + (part.reasoningChars || 0);
+        if (total > seen) { seen = total; stats.lastOutputMs = Date.now() - start; armIdle(); if (run && ui.req?.id === id) ui.req.lastOutputAt = Date.now(); }
+        if (run && ui.req?.id !== id) return;
         Object.assign(stats, part);
         if (stats.firstDataMs === null && (stats.textChars || stats.reasoningChars)) stats.firstDataMs = Date.now() - start;
         // A thinking model may stream only reasoning for minutes: the first body text is timed separately.
@@ -492,11 +518,19 @@ async function llm(prompt, run, { attempt = 0, why = '', responseLength, timeout
         const result = await readModelReply(res, progress, active);
         return result.text;
     };
-    if (run) { ui.req = { id, attempt, why, start, phase: 'wait', chars: prompt.length }; render(); tickReq(); }
+    if (run) { ui.req = { id, attempt, why, start, phase: 'wait', chars: prompt.length, limitMode: stats.limitMode, idleMs: stats.idleMs, totalMs: totalLimit, lastOutputAt: null }; render(); tickReq(); }
     let timer, onCancel;
+    const limitP = new Promise((_, reject) => {
+        if (idleMode) {
+            onIdle = () => reject(new RequestTimeout(stats.lastOutputMs === null
+                ? `${fmtLimit(limit)} 동안 응답이 하나도 오지 않았어요.`
+                : `마지막 출력 뒤 ${fmtLimit(limit)} 동안 새 출력이 없었어요.`, 'idle'));
+            timer = setTimeout(() => reject(new RequestTimeout(`전체 최대 시간 ${fmtLimit(totalLimit)}에 도달해서 중단했어요. 응답은 아직 이어지는 중이었어요.`, 'total')), totalLimit);
+        } else timer = setTimeout(() => reject(new RequestTimeout(`응답이 ${fmtLimit(limit)} 안에 오지 않았어요.`, 'limit')), limit);
+    });
+    armIdle();
     const request = send();
     request.catch(() => {});   // a late failure after the time limit is ignored
-    const limitP = new Promise((_, reject) => { timer = setTimeout(() => reject(new RequestTimeout(`응답이 ${fmtSec(limit)} 안에 오지 않았어요.`)), limit); });
     const cancelP = new Promise((_, reject) => { onCancel = () => reject(new Cancelled('중지했어요.')); if (run) (run.onCancel ||= []).push(onCancel); });
     try {
         const raw = await Promise.race([request, limitP, cancelP]);
@@ -505,6 +539,7 @@ async function llm(prompt, run, { attempt = 0, why = '', responseLength, timeout
         return raw;
     } catch (e) {
         stats.status = e instanceof RequestTimeout ? 'timeout' : run?.cancelled || e instanceof Cancelled ? 'cancelled' : 'error';
+        if (e instanceof RequestTimeout) stats.timeoutKind = e.kind;
         if (e instanceof RequestTimeout) { try { ctrl?.abort(); } catch { /* ignore */ } }
         throw e;
     } finally {
@@ -512,7 +547,7 @@ async function llm(prompt, run, { attempt = 0, why = '', responseLength, timeout
         stats.ms = Date.now() - start;
         if (run) run.requestRecord = { ...stats };
         if (!run || ui.req?.id === id) ui.lastRequest = { ...stats };
-        clearTimeout(timer);
+        clearTimeout(timer); clearTimeout(idleTimer);
         run?.ctrl?.signal?.removeEventListener?.('abort', onRunAbort);
         if (run?.onCancel) run.onCancel = run.onCancel.filter(f => f !== onCancel);
     }
@@ -639,7 +674,7 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
             if (run.cancelled || e instanceof Cancelled) throw new Cancelled('중지했어요.');
             if (e instanceof RequestTimeout) {
                 const r = ui.lastRequest;
-                tries.push(`${fmtSec(Date.now() - start)} · 제한 시간 초과로 취소${r ? ` · 수신 본문 ${r.textChars}자 / 사고 ${r.reasoningChars}자` : ''}`);
+                tries.push(`${fmtSec(Date.now() - start)} · ${timeoutLabel(e)}${r ? ` · 수신 본문 ${r.textChars}자 / 사고 ${r.reasoningChars}자` : ''}`);
                 throw fail(`${e.message} 이 구간(#${chunk.from}–#${chunk.to})은 취소했고 저장하지 않았어요.`, ['부분 응답과 늦게 도착하는 응답은 저장하지 않아요. 결과 복사의 마지막 요청에서 수신 여부를 확인할 수 있어요.']);
             }
             tries.push(`${fmtSec(Date.now() - start)} · 요청 오류: ${errorText(e)}`);
@@ -1082,7 +1117,7 @@ async function runCheck(st, scope, { auto = false } = {}) {
                 let raw;
                 try { raw = await llm(attempt ? prompt + retryNote(errors, []) : prompt, run, { attempt, why: attempt ? cKind : '' }); }
                 catch (e) {
-                    if (!(e instanceof Cancelled)) cTries.push(`${label}: ${fmtSec(Date.now() - t0)} · ${e instanceof RequestTimeout ? '응답 없음 → 제한 시간 초과로 취소' : `요청 오류: ${errorText(e)}`}`);
+                    if (!(e instanceof Cancelled)) cTries.push(`${label}: ${fmtSec(Date.now() - t0)} · ${e instanceof RequestTimeout ? timeoutLabel(e) : `요청 오류: ${errorText(e)}`}`);
                     throw e;
                 }
                 assertValid(run, end);
@@ -1177,6 +1212,8 @@ function statementText(mem, id) {
     return '(지워짐)';
 }
 // One request in words: what was sent (by section, as the extension built it) and what came back.
+const timeoutLabel = e => e?.kind === 'idle' ? '새 출력 없음 → 대기 제한으로 취소' : e?.kind === 'total' ? '출력 중 전체 최대 시간 초과로 취소' : '제한 시간 초과로 취소';
+const TIMEOUT_KIND = { idle: '새 출력 없음', total: '전체 최대 시간 초과', limit: '제한 시간 안에 응답 없음' };
 function requestLines(r) {
     if (!r) return [];
     const parts = r.parts ? Object.entries(r.parts).filter(([, n]) => n > 0) : [];
@@ -1186,7 +1223,8 @@ function requestLines(r) {
     return [`${r.task} · ${r.profile}${r.model ? ' · ' + r.model : ''} · ${r.status || '진행 중'} · ${fmtSec(r.ms || 0)}`,
         `입력 ${r.chars.toLocaleString()}자 (확장이 만든 요청 기준) · 응답 상한 ${r.maxTokens}토큰 · ${r.stream ? '실시간 수신' : '일괄 응답'} · 추론 요청: ${r.effort}`,
         ...(parts.length ? [`입력 내역: ${parts.map(([k, n]) => `${PROMPT_PART_LABELS[k] || k} ${n.toLocaleString()}`).join(' · ')}`] : []),
-        `수신 본문 ${r.textChars.toLocaleString()}자 / 사고 ${r.reasoningChars.toLocaleString()}자 · 첫 사고 수신 ${when(r.firstReasoningMs)} · 첫 본문 수신 ${when(r.firstTextMs)} · 종료 사유 ${r.finishReason || 'API에서 제공하지 않음'}`];
+        `수신 본문 ${r.textChars.toLocaleString()}자 / 사고 ${r.reasoningChars.toLocaleString()}자 · 첫 사고 수신 ${when(r.firstReasoningMs)} · 첫 본문 수신 ${when(r.firstTextMs)} · 종료 사유 ${r.finishReason || 'API에서 제공하지 않음'}`,
+        ...(r.limitMode ? [`시간 제한: ${r.limitMode === 'idle' ? `새 출력 대기 ${fmtLimit(r.idleMs)} · 전체 최대 ${fmtLimit(r.totalMs)} · 마지막 출력 ${when(r.lastOutputMs)}` : `전체 제한 ${fmtLimit(r.totalMs)} (실시간 수신 확인 불가)`}${r.timeoutKind ? ` · 중단 이유: ${TIMEOUT_KIND[r.timeoutKind] || r.timeoutKind}` : ''}`] : [])];
 }
 function reportText(st) {
     const out = [`SavePoint v${VERSION} · 요약 AI: ${profileLabel()}`];
@@ -2061,7 +2099,7 @@ function timelineHtml(st) {
     const quests = mem.records.filter(r => r.type === 'quest' && r.due && ['promise', 'debt'].includes(r.kind));
     const open = quests.filter(r => r.status === 'open');
     const dueLine = r => `<div class="sp-tl-due sp-due-${dueStatus(mem, r)?.kind || 'closed'}">⏰ <span class="sp-kind">${KIND_KO[r.kind]}</span> ${esc(T(r.text, r.ko))} · ${esc(formatDue(mem, r, 'ko'))} ${btn('tl-quest', r.id, '퀘스트 보기')}</div>`;
-    let html = `<p class="sp-dim">기록된 구간을 최근 기록부터 보여 줘요. 서로 다른 시간 기준은 합치지 않아요. 연표는 화면용이라 AI에게 따로 주입하지 않아요.</p>`;
+    let html = `<p class="sp-dim">기록된 구간을 최근 기록부터 보여 줘요. 서로 다른 시간 기준은 합치지 않아요. 타임라인은 화면용이라 AI에게 따로 주입하지 않아요.</p>`;
     if (open.length) html += `<div class="sp-card"><div class="sp-aspect">진행 중인 약속·빚의 기한</div>${open.map(dueLine).join('')}</div>`;
     const conflicts = linkConflicts(mem);
     if (conflicts.length) html += `<div class="sp-warn">연결한 날짜와 원문 날짜가 어긋나는 곳이 있어요. 기록은 바꾸지 않았어요.<ul>${conflicts.map(c => `<li>${esc(c.segId)} ${esc(c.date)} — 앞 구간 ${esc(c.beforeSeg)} ${esc(c.before)}보다 이른 날짜예요</li>`).join('')}</ul></div>`;
@@ -2618,7 +2656,9 @@ function settingsHtml() {
                 <div class="sp-set-row"><button class="menu_button" id="sp_test_connection">짧은 연결 시험</button></div><div class="sp-set-note" id="sp_probe_result">대화 원문을 보내거나 기억을 바꾸지 않고 짧은 요청으로 연결을 시험해요 (API 호출 1회, 최대 60초).</div>
                 <label>응답 최대 토큰 <input type="number" data-set="responseLength" min="500" max="64000"></label>
                 <label>한 번에 보낼 입력 한도 (글자) <input type="number" data-set="inputChars" min="5000" max="1000000"></label>
-                <label title="이 시간 안에 응답이 오지 않으면 그 요청을 취소해요. 그 구간은 저장하지 않고 원문을 그대로 둬요. 늦게 도착한 응답은 버려요.">요청 제한 시간 (초) <input type="number" data-set="timeoutSec" min="5" max="3600"></label>
+                <label title="실시간 수신 중에는 새 사고·본문이 들어올 때마다 이 시간을 다시 세요. 실시간 수신을 확인할 수 없는 요청(메인 API, 실시간 받기 끔)에는 요청 전체의 제한 시간이 돼요.">요청 대기 제한 (초) <input type="number" data-set="timeoutSec" min="5" max="3600"></label>
+                <label title="실시간 수신 중 출력이 계속 들어와도 이 시간이 지나면 중단해요.">전체 최대 시간 (분) <input type="number" data-set="timeoutTotalMin" min="1" max="120"></label>
+                <div class="sp-set-note">새 출력이 들어오는 동안 대기 제한을 연장해요. 전체 최대 시간에 도달하면 중단해요. 중단된 구간은 저장하지 않고 원문을 그대로 두며, 늦게 도착한 응답은 버려요.</div>
             `)}
             ${settingSection('recording', `
                 <label class="checkbox_label"><input type="checkbox" data-set="check"> 기록 후 확인 (모순·원문과 다른 해석을 찾아 경고 · 분량에 따라 추가 요청)</label>
@@ -2656,7 +2696,7 @@ function settingsHtml() {
 function updateSettingsSummaries() {
     const s = settings();
     const summaries = {
-        connection: `${profileLabel()} · 제한 ${s.timeoutSec}초`,
+        connection: `${profileLabel()} · 대기 ${s.timeoutSec}초 · 최대 ${s.timeoutTotalMin}분`,
         recording: `${s.auto ? s.autoEvery + '개마다 · 여유분 ' + s.autoReserve + '개' : '체크포인트 꺼짐'} · 확인 ${s.check ? '켜짐' : '꺼짐'}`,
         injection: `${Number(s.budget).toLocaleString()}토큰 · 최근 ${s.recentScenes}장면`,
         storage: `${s.hide ? '최근 ' + s.keepRecent + '개 남김' : '하이드 꺼짐'} · 보관 ${s.autoKeep}개 방`,

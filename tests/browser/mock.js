@@ -108,6 +108,7 @@ window.SillyTavern = {
         getRequestHeaders: () => ({ 'Content-Type': 'application/json', 'X-CSRF-Token': 'test' }),
         setExtensionPrompt(k, v, p, d, s, r) { M.prompts[k] = { v, p, d, r }; },
         eventSource, event_types,
+        get ConnectionManagerRequestService() { return M.cm; },
         async generateRaw({ prompt }) { M.calls.push(prompt); if (M.throwNext) { const e = M.throwNext; M.throwNext = null; throw e; } if (M.badJson && !prompt.startsWith('You are checking')) return 'Sure! Here is the summary: {not json'; if (M.delay) await new Promise(r => setTimeout(r, M.delay)); if (M.delayOnce) { const d = M.delayOnce; M.delayOnce = 0; await new Promise(r => setTimeout(r, d)); M.lateDone = (M.lateDone || 0) + 1; } return fake(prompt); },
         callGenericPopup: async (text, type) => (type === 3 ? M.popupInput : M.confirm),
         POPUP_TYPE: { TEXT: 1, CONFIRM: 2, INPUT: 3 },

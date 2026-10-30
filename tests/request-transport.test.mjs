@@ -8,7 +8,7 @@ const src = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 const code = src.slice(src.indexOf('class Cancelled extends'), src.indexOf('// What a reply looked like'));
 
 function harness(sendRequest, extra = {}) {
-    const config = { profileId: 'p', requestStream: true, reasoningEffort: '', responseLength: 8000, timeoutSec: 300, inputChars: 60000, ...extra };
+    const config = { profileId: 'p', requestStream: true, reasoningEffort: '', responseLength: 8000, timeoutSec: 300, timeoutTotalMin: 20, inputChars: 60000, ...extra };
     const calls = [], timers = [], writes = [], messages = [];
     const ui = {};
     const profiles = [{ id: 'p', name: 'Test profile', mode: 'cc' }];
@@ -85,12 +85,13 @@ test('a timeout reports reasoning-only progress, and a late chunk cannot affect 
         yield { text: 'LATE', state: { reasoning: 'late thoughts' } };
     });
     const promise = h.llm('prompt', h.run);
-    const rejected = assert.rejects(promise, /안에 오지 않았어요/);
+    const rejected = assert.rejects(promise, /마지막 출력 뒤 5분 동안 새 출력이 없었어요/);
     await settle();
-    assert.match(h.reqText(), /수신 중.*사고 15자 \/ 본문 0자/);
-    h.timers[0].fn();
+    assert.match(h.reqText(), /수신 중.*사고 15자 \/ 본문 0자.*대기 5분 · 출력 중 연장 · 최대 20분/);
+    h.timers.filter(t => t.ms === 300000 && !t.cleared).at(-1).fn();
     await rejected;
     assert.equal(h.ui.lastRequest.status, 'timeout');
+    assert.equal(h.ui.lastRequest.timeoutKind, 'idle');
     assert.equal(h.calls[0][3].signal.aborted, true);
     const old = h.ui.lastRequest;
     h.ui.req = { id: 999, phase: 'wait', textChars: 0 };
@@ -158,4 +159,62 @@ test('a failed request keeps its own run diagnostics after a different run succe
     assert.equal(h.run.requestRecord, record);
     assert.equal(h.run.requestRecord.status, 'error');
     assert.equal(next.requestRecord.status, 'received');
+});
+
+test('streaming output extends the wait: only new characters restart it, the overall maximum still ends it', async () => {
+    let step;
+    const next = () => new Promise(resolve => { step = resolve; });
+    const h = harness(() => async function* () {
+        yield { text: '', state: { reasoning: 'a' } };
+        await next();
+        yield { text: '', state: { reasoning: 'a' } };          // same cumulative output again
+        yield { text: '' };                                     // keep-alive without content
+        await next();
+        yield { text: '{"ok"', state: { reasoning: 'a' } };    // body starts after thinking
+        await next();
+    });
+    const promise = h.llm('prompt', h.run);
+    const rejected = assert.rejects(promise, /전체 최대 시간 20분에 도달/);
+    const idle = () => h.timers.filter(t => t.ms === 300000);
+    const live = () => idle().filter(t => !t.cleared);
+    assert.equal(h.timers.filter(t => t.ms === 1200000).length, 1, 'one overall timer');
+    assert.equal(idle().length, 1, 'the first wait is the same 300 seconds');
+    await settle();
+    assert.equal(idle().length, 2, 'first reasoning restarts the wait');
+    assert.equal(live().length, 1);
+    step(); await settle();
+    assert.equal(idle().length, 2, 'repeated output and keep-alives do not restart it');
+    step(); await settle();
+    assert.equal(idle().length, 3, 'the first body text restarts it');
+    assert.equal(live().length, 1);
+    h.timers.find(t => t.ms === 1200000).fn();
+    await rejected;
+    assert.equal(h.ui.lastRequest.timeoutKind, 'total');
+    assert.equal(h.ui.lastRequest.limitMode, 'idle');
+    assert(live().length === 0, 'no wait timer is left behind');
+    step();
+});
+
+test('a stream that never sends anything stops after the first 300 seconds with its own reason', async () => {
+    const h = harness(() => async function* () { await new Promise(() => {}); });
+    const promise = h.llm('prompt', h.run);
+    const rejected = assert.rejects(promise, /5분 동안 응답이 하나도 오지 않았어요/);
+    await settle();
+    h.timers.find(t => t.ms === 300000).fn();
+    await rejected;
+    assert.equal(h.ui.lastRequest.timeoutKind, 'idle');
+    assert.equal(h.ui.lastRequest.lastOutputMs, null);
+});
+
+test('a request whose progress cannot be seen keeps one time limit for the whole request', async () => {
+    const h = harness(() => new Promise(() => {}), { requestStream: false });
+    const promise = h.llm('prompt', h.run);
+    const rejected = assert.rejects(promise, /응답이 5분 안에 오지 않았어요/);
+    await settle();
+    assert.deepEqual(h.timers.map(t => t.ms), [300000]);
+    assert.match(h.reqText(), /응답 대기 .*전체 제한 5분/);
+    h.timers[0].fn();
+    await rejected;
+    assert.equal(h.ui.lastRequest.timeoutKind, 'limit');
+    assert.equal(h.ui.lastRequest.limitMode, 'limit');
 });

@@ -51,7 +51,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     });
     ok(r.n === 1 && r.good && r.aligned && r.pill, 'flex order가 있는 채팅창에서도 ☰ → 🪄 → 💎 정렬, 💎는 옅은 바탕의 버튼형');
     // Retired themes migrate before the setting menu, window and looting dialog read them.
-    for (const [previous, replacement] of [['parchment', 'cream'], ['joycon', 'dualwhite']]) {
+    for (const [previous, replacement] of [['parchment', 'cream'], ['joycon', 'dualwhite'], ['vanilla', 'cream']]) {
         const p2 = await browser.newPage({ viewport: { width: 390, height: 844 } });
         await p2.addInitScript(theme => { window.__presetSettings = { savePoint: { theme } }; }, previous);
         await p2.goto(`http://localhost:${srv.address().port}/`);
@@ -62,7 +62,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
                 field: document.querySelector('[data-set=theme]').value,
                 options: [...document.querySelectorAll('[data-set=theme] option')].map(o => o.value) };
         });
-        ok(t.theme === replacement && t.windowTheme === replacement && t.field === replacement && !t.options.includes('joycon') && !t.options.includes('parchment') && !t.options.includes('colorpocket') && t.options.includes('vanilla'), `없앤 테마(${previous}) 설정은 ${replacement}로 전환, 목록과 창에 반영`);
+        ok(t.theme === replacement && t.windowTheme === replacement && t.field === replacement && !t.options.includes('joycon') && !t.options.includes('parchment') && !t.options.includes('colorpocket') && !t.options.includes('vanilla') && t.options.includes('gingerbread') && t.options.includes('xmasknit'), `없앤 테마(${previous}) 설정은 ${replacement}로 전환, 목록과 창에 반영`);
         await p2.close();
     }
     r = await ev(() => [...document.querySelectorAll('[data-settings-group]')].map(d => [d.dataset.settingsGroup, d.open]));
