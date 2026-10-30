@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.26';
+const VERSION = '0.6.27';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -2292,6 +2292,7 @@ function hudHtml(st) {
     const total = chat().length;
     const covered = st ? st.lastIndex + 1 : 0;
     const pending = pendingCount();
+    const injectionStatus = `주입 ${ui.inj ? ui.inj.tokens.toLocaleString() : 0} / ${num('budget', 300, 100000).toLocaleString()} 토큰`;
     const pct = total ? Math.round(covered / total * 100) : 0;
     const busy = !!ui.run;
     const review = st?.review ? `<div class="sp-alert">이미 기억에 반영된 예전 원문 #${st.review.at}이(가) 바뀌었어요. 저장 기록 이전이라 자동으로 되감을 수 없어요.
@@ -2312,7 +2313,7 @@ function hudHtml(st) {
     const issues = st?.check && st.check.status !== 'running' && settings().check ? st.check.status === 'failed' ? 1 : st.check.issues.filter(x => !x.ignored).length : 0;
     const interrupted = interruptedNote(st);
     const alerting = fails || lootFails || issues || ui.inj?.pinOverflow || interrupted;
-    const chip = [`미기록 ${pending}`, ...(st?.lootQueue?.length ? [`⏳ ${st.lootQueue.length}`] : []), ...(fails ? [`⚠ 실패 ${fails}`] : []),
+    const chip = [`미기록 ${pending}`, injectionStatus, ...(st?.lootQueue?.length ? [`⏳ ${st.lootQueue.length}`] : []), ...(fails ? [`⚠ 실패 ${fails}`] : []),
         ...(lootFails ? [`💎 반영 실패 ${lootFails}`] : []), ...(issues ? [`확인 필요 ${issues}`] : []), ...(interrupted ? ['저장 중단됨'] : []),
         ...(ui.inj?.pinOverflow ? ['📌 주입 못 함'] : [])].join(' · ');
     return `<div class="sp-hud ${openHud ? 'sp-hud-open' : 'sp-hud-folded'}">
@@ -2322,7 +2323,7 @@ function hudHtml(st) {
         ${review}
         <div class="sp-hud-more">
         ${storyTimeContext(st?.mem || {}, 'ko') ? `<div class="sp-hud-time">마지막 기록 기준 · ${esc(storyTimeContext(st.mem, 'ko'))}</div>` : ''}
-        <div class="sp-hud-meta"><span>미기록 <b>${pending}</b></span>${btn('tab', 'queue', `⏳ 대기열 ${st?.lootQueue?.length || 0}개`)}<span>주입 ${ui.inj ? ui.inj.tokens.toLocaleString() : 0} / ${num('budget', 300, 100000).toLocaleString()} 토큰</span><span>요약 AI: ${esc(profileLabel())}</span>${ui.inj?.pinOverflow ? `<span class="sp-warn">📌 ${ui.inj.pinMissing}개 주입 못 함</span>` : ''}</div>
+        <div class="sp-hud-meta"><span>미기록 <b>${pending}</b></span>${btn('tab', 'queue', `⏳ 대기열 ${st?.lootQueue?.length || 0}개`)}<span>${esc(injectionStatus)}</span><span>요약 AI: ${esc(profileLabel())}</span>${ui.inj?.pinOverflow ? `<span class="sp-warn">📌 ${ui.inj.pinMissing}개 주입 못 함</span>` : ''}</div>
         <div class="sp-hud-meta sp-auto-line">${autoLine}${autoLast}${lastRecord}</div>
         ${interrupted && !busy ? `<div class="sp-hud-meta"><span class="sp-warn">⚠ 지난 저장이 방을 옮기면서 중간에 멈췄어요 (#${interrupted.from}부터 미기록)</span>${btn('run', '', '퀵세이브로 이어서')}</div>` : ''}
         ${autoFailHtml(st)}

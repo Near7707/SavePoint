@@ -38,7 +38,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     // 1. the status panel folds on phones; the status line stands for the details
     await ev(() => document.querySelector('#sp_open').click());
     let r = await ev(() => ({ folded: !!document.querySelector('.sp-hud.sp-hud-folded'), chip: $('.sp-hud-chip').text(), more: getComputedStyle(document.querySelector('.sp-hud-more')).display, h: document.querySelector('.sp-hud').offsetHeight }));
-    ok(r.folded && r.more === 'none' && r.chip.includes('미기록'), `1. 휴대폰 폭에서 상태 상세가 접히고 요약 줄 표시 (${r.chip.trim()})`);
+    ok(r.folded && r.more === 'none' && r.chip.includes('미기록') && r.chip.includes('주입 0 / 6,000 토큰'), `1. 휴대폰 폭에서 접힌 요약 줄에 미기록·주입 토큰 표시 (${r.chip.trim()})`);
     await page.click('.sp-hud-chip');
     r = await ev(() => ({ open: !!document.querySelector('.sp-hud.sp-hud-open'), saved: M.settings.savePoint.hudOpen, more: getComputedStyle(document.querySelector('.sp-hud-more')).display }));
     ok(r.open && r.saved === true && r.more !== 'none', '1. 요약 줄을 누르면 펼쳐지고 선택을 기억');
@@ -89,6 +89,11 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => false }); document.dispatchEvent(new Event('visibilitychange')); });
     r = await banner();
     ok(r.shown && /저장 완료/.test(r.text), `5. 화면이 다시 보이면 결과 배너 표시 (${r.text?.trim().slice(0, 20)})`);
+    await ev(() => document.querySelector('#sp_open').click());
+    r = await ev(() => ({ tokens: __savePoint.ui.inj?.tokens, chip: $('.sp-hud-chip').text(),
+        detail: [...document.querySelectorAll('.sp-hud-meta > span')].find(x => x.textContent.startsWith('주입 '))?.textContent }));
+    ok(r.tokens > 0 && r.chip.includes(r.detail) && r.detail.includes(r.tokens.toLocaleString()), '5. 저장 후 요약 줄과 펼친 상세의 실제 주입 토큰이 일치');
+    await ev(() => document.querySelector('[data-act=close]').click());
 
     // 6. the on-screen keyboard: the banner follows the visible part of the page
     await ev(() => { Object.defineProperty(window.visualViewport, 'offsetTop', { configurable: true, get: () => 320 }); window.visualViewport.dispatchEvent(new Event('scroll')); });
@@ -132,6 +137,24 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r = await twice.evaluate(() => ({ a: __savePoint.state().autoFail, b: __savePoint.ui.lastError, chip: $('.sp-hud-chip').text() }));
     ok(r.a.at === r.b.at && r.a.failureId && r.b.failureId && r.a.failureId !== r.b.failureId && r.chip.includes('실패 2'),
         '9. 같은 시각의 별개 실패는 고유 ID로 구분해 2건 표시');
+    // Long warning lines wrap so the token count cannot push failures out of view.
+    const themes = await twice.evaluate(() => [...document.querySelectorAll('#sp_settings [data-set="theme"] option')].map(x => x.value));
+    const clipped = [];
+    for (const width of [360, 390, 1100]) {
+        await twice.setViewportSize({ width, height: 900 });
+        for (const theme of themes) {
+            const fits = await twice.evaluate(theme => {
+                M.settings.savePoint.theme = theme; M.settings.savePoint.hudOpen = false; M.settings.savePoint.budget = 100000;
+                __savePoint.refreshInjection(); __savePoint.render(true);
+                const chip = document.querySelector('.sp-hud-chip'), text = chip.firstElementChild, arrow = chip.lastElementChild;
+                return chip.getAttribute('aria-expanded') === 'false' && chip.textContent.includes('주입 0 / 100,000 토큰') && chip.textContent.includes('실패 2')
+                    && text.scrollWidth <= text.clientWidth + 1 && text.scrollHeight <= text.clientHeight + 1
+                    && arrow.getBoundingClientRect().right <= chip.getBoundingClientRect().right && chip.scrollWidth <= chip.clientWidth + 1;
+            }, theme);
+            if (!fits) clipped.push(`${width}/${theme}`);
+        }
+    }
+    ok(themes.length > 0 && !clipped.length, `10. 접힌 상태에서도 토큰·실패 표시·화살표가 잘리지 않음 (${themes.length}개 테마·360/390/1100px): ${clipped.join(', ') || '정상'}`);
     await browser.close(); srv.close();
     console.log(failures ? `${failures} FAILED` : 'ALL PASS'); process.exit(failures ? 1 : 0);
 })();
