@@ -241,6 +241,41 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r = await ev(() => __savePoint.estTokens(M.prompts.savepoint.v));
     ok(r <= 610, `주입 상한 지킴 (${r} 토큰)`);
 
+    // Supporting numbers must never take width away from state text, in any state tab.
+    const recordLayoutBefore = await ev(() => ({ mem: structuredClone(__savePoint.state().mem), theme: M.settings.savePoint.theme }));
+    const layoutFailures = [], recordThemes = await ev(() => [...document.querySelectorAll('#sp_settings [data-set="theme"] option')].map(x => x.value));
+    await ev(() => {
+        const mem = __savePoint.state().mem;
+        mem.entities.push({ id: 'layout-person', type: 'person', name: 'Courier', aliases: [] }, { id: 'layout-item', type: 'item', name: 'Brass compass', aliases: [] });
+        const common = { text: 'A carefully repaired brass compass still points toward the northern harbor, even when carried through the crowded market. '.repeat(4), msgs: [3, 4, 12, 14, 25, 29], oldEvidence: [{ room: 'example-room', msgs: [48, 49] }], pin: true };
+        mem.records.push({ ...common, id: 'layout-party', type: 'party', entity: 'layout-person', aspect: 'condition' },
+            { ...common, id: 'layout-item-record', type: 'item', entity: 'layout-item', holder: 'layout-person' },
+            { ...common, id: 'layout-world', type: 'world', kind: 'secret', knownBy: ['layout-person'] });
+    });
+    const recordLayoutSnapshot = await ev(() => ({ mem: JSON.stringify(__savePoint.state().mem), injection: M.prompts.savepoint?.v }));
+    for (const width of [360, 390, 560, 1100]) {
+        await page.setViewportSize({ width, height: 900 });
+        for (const theme of recordThemes) {
+            for (const tab of ['party', 'items', 'world']) {
+                const result = await ev(({ theme, tab }) => {
+                    M.settings.savePoint.theme = theme; __savePoint.handle('tab', tab);
+                    const rows = [...document.querySelectorAll('.sp-record-row')].filter(row => row.textContent.includes('carefully repaired brass compass'));
+                    return rows.length === 1 && rows.every(row => {
+                        const text = row.querySelector('.sp-rec-t').getBoundingClientRect(), refs = row.querySelector('.sp-evs').getBoundingClientRect();
+                        const box = row.getBoundingClientRect();
+                        return refs.top >= text.bottom - 1 && Math.abs(text.width - row.clientWidth) <= 2 && refs.right <= box.right + 1 && row.scrollWidth <= row.clientWidth + 1
+                            && row.querySelector('.sp-evs').title.includes('이전 방') && row.querySelectorAll('.sp-tools button').length === 3;
+                    });
+                }, { theme, tab });
+                if (!result) layoutFailures.push(`${width}/${theme}/${tab}`);
+            }
+        }
+    }
+    ok(recordThemes.length > 0 && layoutFailures.length === 0, `파티·인벤토리·월드 본문 전체 너비와 하단 근거 번호 (${recordThemes.length}개 테마·360–1100px): ${layoutFailures.join(', ') || '정상'}`);
+    ok(await ev(before => JSON.stringify(__savePoint.state().mem) === before.mem && M.prompts.savepoint?.v === before.injection, recordLayoutSnapshot), '기록 배치를 바꿔도 기억과 주입은 그대로');
+    await ev(before => { __savePoint.state().mem = before.mem; M.settings.savePoint.theme = before.theme; }, recordLayoutBefore);
+    await page.setViewportSize({ width: 390, height: 844 });
+
     if (SHOTS) {
         await ev(() => { M.settings.savePoint.budget = 6000; M.settings.savePoint.showKo = false; __savePoint.refreshInjection(); });
         for (const theme of ['jrpg', 'cream', 'terminal', 'st']) {

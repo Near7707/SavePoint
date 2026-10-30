@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.24';
+const VERSION = '0.6.25';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -2067,7 +2067,7 @@ function journalHtml(st) {
 }
 function recordRow(st, r, extraTools = []) {
     if (isEditing('record', r.id)) return `<div class="sp-rec">${editForm()}</div>`;
-    return `<div class="sp-rec ${r.pin ? 'sp-pinned' : ''}"><span class="sp-rec-t">${esc(T(r.text, r.ko))}</span>${evidenceChips(r.msgs, r.oldEvidence)}
+    return `<div class="sp-rec sp-record-row ${r.pin ? 'sp-pinned' : ''}"><span class="sp-rec-t">${esc(T(r.text, r.ko))}</span>${evidenceChips(r.msgs, r.oldEvidence)}
         ${tools([...extraTools, btn('pin-rec', r.id, '📌', '항상 주입', r.pin ? 'sp-on' : ''), btn('edit-rec', r.id, '✎'), btn('del-rec', r.id, '🗑')])}</div>`;
 }
 // 📅 Timeline: newest recorded parts first, grouped by time reference, with days, flashbacks,
