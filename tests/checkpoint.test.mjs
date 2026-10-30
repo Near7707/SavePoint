@@ -140,6 +140,42 @@ test('input overflow does not permanently hold checkpoints; the next interval ca
     await h.app.autoCollect(); assert(h.app.state().lastIndex >= 0);
 });
 
+test('a checkpoint rejected before sending does not label an earlier request as its failure', async () => {
+    const h = harness({ limit: 5000 });
+    h.app.ui.lastRequest = { task: 'Previous successful quicksave', chars: 100, maxTokens: 8000,
+        textChars: 2, reasoningChars: 0, status: 'received' };
+    const previous = h.app.ui.lastRequest;
+    await h.app.autoCollect();
+    const f = h.app.state().autoFail;
+    assert.equal(h.calls.length, 0);
+    assert.equal(f.attempts, 0);
+    assert.equal(f.requestNotSent, true);
+    assert.deepEqual(f.requestLines, []);
+    assert.deepEqual(h.app.ui.lastError.request, []);
+    assert.match(h.app.ui.lastError.requestNote, /AI 호출 없음/);
+    assert.equal(h.app.ui.lastRequest, previous);
+    assert.equal(f.failureId, h.app.ui.lastError.failureId);
+});
+
+test('a later chunk that cannot be planned does not reuse the preceding saved chunk diagnostics', async () => {
+    const h = harness({ count: 40 });
+    h.model = async (prompt, run) => {
+        run.requestRecord = { task: 'Saved first chunk', chars: prompt.length, maxTokens: 8000,
+            textChars: 2, reasoningChars: 0, status: 'received' };
+        h.app.settings().inputChars = 5000;
+        return JSON.stringify({ scenes: [{ scene: 'new', title: 'A walk', where: 'Street', who: [],
+            outline: 'The participants continued walking.', notes: '', points: [], ended: false }], entities: [], changes: [] });
+    };
+    await h.app.autoCollect();
+    assert.equal(h.calls.length, 1);
+    const st = h.app.state();
+    assert(st.lastIndex >= 0 && st.lastIndex < 37);
+    assert.equal(st.autoLast.status, 'partial');
+    assert.equal(st.autoFail.requestNotSent, true);
+    assert.deepEqual(st.autoFail.requestLines, []);
+    assert.deepEqual(h.app.ui.lastError.request, []);
+});
+
 test('hiding uses the whole-chat recent count, and retained messages stay visible regardless', async () => {
     const h = harness({ keep: 4 }); await h.app.autoCollect();
     assert.equal(h.app.state().lastIndex, 17);

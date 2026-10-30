@@ -132,3 +132,30 @@ test('a reasoning-only probe is not reported as a successful answer', async () =
     assert(!h.messages.some(([k]) => k === 'success'));
     assert.match(h.ui.lastError.detail[0], /본문이 비어.*사고 13자/);
 });
+
+test('request diagnostics belong to the run; a rejected input cannot reuse an earlier request', async () => {
+    const h = harness(() => ({ content: '{"ok":true}' }));
+    await h.llm('A previous successful request', h.run);
+    const previous = h.ui.lastRequest;
+    assert.equal(h.run.requestRecord.status, 'received');
+    h.config.inputChars = 5;
+    await assert.rejects(h.llm('An input that will not be sent', h.run), /한도/);
+    assert.equal(h.calls.length, 1);
+    assert.equal(h.run.requestRecord, null);
+    assert.equal(h.ui.lastRequest, previous, 'the separately labelled last request is still available');
+});
+
+test('a failed request keeps its own run diagnostics after a different run succeeds', async () => {
+    let fail = true;
+    const h = harness(() => { if (fail) throw new Error('First request failed'); return { content: '{}' }; });
+    await assert.rejects(h.llm('First request', h.run), /First request failed/);
+    const record = h.run.requestRecord;
+    assert.equal(record.status, 'error');
+    fail = false;
+    const next = { ctrl: new AbortController(), cancelled: false };
+    h.ui.run = next;
+    await h.llm('Second request', next);
+    assert.equal(h.run.requestRecord, record);
+    assert.equal(h.run.requestRecord.status, 'error');
+    assert.equal(next.requestRecord.status, 'received');
+});

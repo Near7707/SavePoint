@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.22';
+const VERSION = '0.6.23';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -447,6 +447,7 @@ async function readModelReply(reply, progress, active) {
     return { text, reasoningChars, finishReason };
 }
 async function llm(prompt, run, { attempt = 0, why = '', responseLength, timeoutSeconds, parts = null } = {}) {
+    if (run) run.requestRecord = null;
     const s = settings(), c = ctx(), max = responseLength ?? num('responseLength', 500, 64000);
     assertPromptFits(prompt, num('inputChars', 5000, 1000000));
     const limit = (timeoutSeconds ?? num('timeoutSec', 5, 3600)) * 1000;
@@ -509,6 +510,7 @@ async function llm(prompt, run, { attempt = 0, why = '', responseLength, timeout
     } finally {
         accepting = false;
         stats.ms = Date.now() - start;
+        if (run) run.requestRecord = { ...stats };
         if (!run || ui.req?.id === id) ui.lastRequest = { ...stats };
         clearTimeout(timer);
         run?.ctrl?.signal?.removeEventListener?.('abort', onRunAbort);
@@ -620,7 +622,7 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
         ui.lastError = { at: Date.now(), range: `#${chunk.from}–#${chunk.to}`, detail: [...tries.map((t, k) => `${k ? '재요청' : '첫 요청'}: ${t}`), ...detail] };
         const err = new Error(head);
         err.detail = ui.lastError.detail; err.chunk = { from: chunk.from, to: chunk.to };
-        ui.lastError.request = requestLines(ui.lastRequest);
+        ui.lastError.request = requestLines(run.requestRecord);
         return err;
     };
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -674,13 +676,14 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
 // checkpoint or a quick save; a partial save keeps the part that is still unrecorded.
 const FAIL_STAGE = { boundary: '장면 경계 확인', collect: '장면 기록', save: '채팅 파일 저장' };
 const isTry = l => /^(첫 요청|재요청):/.test(l);
-function recordAutoFail(st, { stage, from, to, error, tries = [], detail = [] }) {
+function recordAutoFail(st, { stage, from, to, error, tries = [], detail = [], failureId, requestRecord = null }) {
     const cut = l => String(l).slice(0, 300);
     // The record keeps what happened then (the failed request and the range left unsaved);
     // what still needs saving is worked out when it is shown, never by rewriting these numbers.
     st.autoFail = { at: Date.now(), kind: 'collect', stage, from, to, reason: errorText(error).slice(0, 400),
         ...(error?.chunk ? { request: { from: error.chunk.from, to: error.chunk.to } } : {}),
-        requestLines: requestLines(ui.lastRequest).map(cut),
+        failureId, requestNotSent: !requestRecord && error?.name === 'InputLimitError',
+        requestLines: requestLines(requestRecord).map(cut),
         attempts: tries.length, tries: tries.map(cut), detail: groupErrors(detail).slice(0, 40).map(cut) };
     persistSoon();
     toastr.warning(`체크포인트 실패 (#${from}–#${to}) · 해당 구간 원문 유지`, 'SavePoint');
@@ -844,6 +847,8 @@ async function summarize({ close = false, auto = false } = {}) {
         while (cursor < msgs.length) {
             assertValid(run, end);
             stage = 'collect';
+            // Planning can fail before llm runs. Never borrow an earlier chunk's request.
+            run.requestRecord = null;
             const chunk = nextMessageChunk(msgs.slice(cursor), c => extractPrompt(st.mem, c), num('inputChars', 5000, 1000000));
             const last = cursor + chunk.indices.length === msgs.length;
             ui.progress = `${auto ? '체크포인트' : close ? '장면 클리어' : '퀵세이브'} ${done + 1}구간 #${chunk.from}–#${chunk.to} · ${cursor}/${msgs.length}메시지 완료`;
@@ -896,7 +901,13 @@ async function summarize({ close = false, auto = false } = {}) {
         if (queued.length && !(e instanceof Cancelled) && run.key === roomKey()) {
             try { lootFailed += await failPendingLoot(run, queued, e); } catch { /* a failed disk write leaves the queue intact */ }
         }
-        if (!(e instanceof Cancelled) && !e.detail) ui.lastError = { at: Date.now(), range: `#${msgs[cursor]?.index ?? start}–#${end}`, detail: [errorText(e)] };
+        const failureId = !(e instanceof Cancelled) ? newId() : null;
+        if (!(e instanceof Cancelled)) {
+            if (!e.detail || !ui.lastError) ui.lastError = { at: Date.now(), range: `#${msgs[cursor]?.index ?? start}–#${end}`, detail: [errorText(e)] };
+            ui.lastError.failureId = failureId;
+            ui.lastError.request = requestLines(run.requestRecord);
+            if (!run.requestRecord && e?.name === 'InputLimitError') ui.lastError.requestNote = '요청 전 입력 검사에서 중단 · AI 호출 없음';
+        }
         const where = done ? ` ${done}개 구간(${cursor}개 메시지)은 저장했고, 남은 ${msgs.length - cursor}개 메시지의 원문은 그대로 남겨 뒀어요.` : ' 기억과 원문은 바뀌지 않았어요.';
         // Leaving the room has its own notice (onChatChanged); don't repeat it in the new room.
         if (e instanceof Cancelled) { if (run.key === roomKey()) toastr.info(e.message + where, 'SavePoint'); }
@@ -906,7 +917,7 @@ async function summarize({ close = false, auto = false } = {}) {
             if (cur) {
                 const cancelled = e instanceof Cancelled;
                 const detail = Array.isArray(e.detail) ? e.detail : [];
-                if (!cancelled) recordAutoFail(cur, { stage, from: msgs[cursor]?.index ?? start, to: end, error: e,
+                if (!cancelled) recordAutoFail(cur, { stage, from: msgs[cursor]?.index ?? start, to: end, error: e, failureId, requestRecord: run.requestRecord,
                     tries: detail.filter(isTry), detail: detail.filter(x => !isTry(x)) });
                 const result = cursor ? `체크포인트 일부 저장 · #${start}–#${cur.lastIndex} 완료 · #${cur.lastIndex + 1}부터 다음에 다시`
                     : cancelled ? '체크포인트 취소 · 원문 유지 · 다음 간격에 다시'
@@ -1187,6 +1198,7 @@ function reportText(st) {
     if (ui.lastError) {
         out.push('', `[마지막 실패] ${ui.lastError.range} · ${new Date(ui.lastError.at).toLocaleString()}`);
         for (const d of groupErrors(ui.lastError.detail)) out.push(`- ${d}`);
+        if (ui.lastError.requestNote) out.push(ui.lastError.requestNote);
         if (ui.lastError.request?.length) out.push('실패한 요청의 기록:', ...ui.lastError.request.map(l => `  ${l}`));
     }
     const missed = (st?.lootQueue || []).filter(x => x.error);
@@ -1236,6 +1248,7 @@ function autoFailLines(f, st = state()) {
         ...(f.request ? [`실패한 요청: #${f.request.from}–#${f.request.to}`] : []),
         `그때 저장하지 못한 범위: #${f.from}–#${f.to}`, `현재 재시도가 필요한 범위: #${left.from}–#${left.to}`,
         `이유: ${f.reason}`, `요청 횟수: ${f.attempts}`, ...(f.tries || []),
+        ...(f.requestNotSent ? ['요청 전 입력 검사에서 중단 · AI 호출 없음'] : []),
         ...(f.requestLines?.length ? ['실패한 요청의 기록:', ...f.requestLines.map(l => '  ' + l)] : []), ...(f.detail || [])];
 }
 function autoFailHtml(st) {
@@ -2256,7 +2269,7 @@ function hudHtml(st) {
     // colour when something failed or needs checking, so a folded panel never hides a problem.
     const openHud = hudOpen();
     // A checkpoint failure is also the last failure; the same one is counted once.
-    const sameFailure = st?.autoFail && ui.lastError && Math.abs(st.autoFail.at - ui.lastError.at) < 10000;
+    const sameFailure = st?.autoFail?.failureId && st.autoFail.failureId === ui.lastError?.failureId;
     const fails = (st?.autoFail ? 1 : 0) + (ui.lastError && !sameFailure ? 1 : 0), lootFails = (st?.lootQueue || []).filter(x => x.error?.startsWith('반영 실패')).length;
     const issues = st?.check && st.check.status !== 'running' && settings().check ? st.check.status === 'failed' ? 1 : st.check.issues.filter(x => !x.ignored).length : 0;
     const interrupted = interruptedNote(st);

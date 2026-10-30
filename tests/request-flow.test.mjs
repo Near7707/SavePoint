@@ -23,6 +23,7 @@ const section = (a, b) => src.slice(src.indexOf(a), src.indexOf(b, src.indexOf(a
 const extractCode = section('function extractPrompt(', '\n// ───────── automatic collection');
 const checkCode = section('function checkStatements(', '\nfunction queueCheck') + section('async function runCheck(', '\nconst gapText');
 const parseCode = section('function replyKind(', '\nfunction newRun');
+const diagnosticsCode = section('function requestLines(', '\nfunction reportText');
 class Cancelled extends Error {}
 class RequestTimeout extends Error {}
 
@@ -32,8 +33,9 @@ function harness({ count = 40, chars = 1000, limit = 20000, failAt = Infinity, c
     const s = { guide: prompts.DEFAULT_GUIDE, inputChars: limit, profileId: 'fake', responseLength: 8000 };
     const calls = [], notifications = [];
     const ui = {};
+    let failureSeq = 0;
     const sandbox = { ...core, ...temporal, ...prompts, ...batches, ...provenance, ...loot, Cancelled, RequestTimeout, ui,
-        structuredClone, Set, Map, Date, console: { error() {} },
+        structuredClone, Set, Map, Date, newId: () => `test-failure-${++failureSeq}`, console: { error() {} },
         settings: () => s, num: key => s[key], names: () => ({}), cardText: () => '',
         chat: () => chat, state: () => st, ensureState: () => st, hasChat: () => true, mainBusy: () => false, reconcile: () => true,
         collect: (a, b) => chat.map((m, index) => ({ index, name: m.name, text: m.mes })).filter(m => m.index >= a && m.index <= b),
@@ -57,7 +59,7 @@ function harness({ count = 40, chars = 1000, limit = 20000, failAt = Infinity, c
                 points: [{ text: 'They shared a quiet walk.', kind: 'moment', key: false, msgs: [nums[0]] }] }], entities: [], changes: [] });
         },
     };
-    const api = vm.runInNewContext(parseCode + extractCode + checkCode + ';({summarize,runCheck,checkStatements})', sandbox);
+    const api = vm.runInNewContext(parseCode + diagnosticsCode + extractCode + checkCode + ';({summarize,runCheck,checkStatements})', sandbox);
     return { ...api, st, s, chat, calls, notifications, sandbox };
 }
 

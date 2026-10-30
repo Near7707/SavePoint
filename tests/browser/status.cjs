@@ -102,6 +102,36 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await wide.goto(`http://localhost:${srv.address().port}/`); await wide.waitForFunction(() => !!globalThis.__savePoint);
     await wide.evaluate(() => { M.add(3); document.querySelector('#sp_open').click(); });
     ok(await wide.evaluate(() => !!document.querySelector('.sp-hud.sp-hud-open')), '7. 넓은 화면은 처음부터 펼침');
+
+    // 8. an input rejected before sending cannot borrow a previous successful request
+    const small = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    small.on('pageerror', e => { console.log('PAGE ERROR', e.message); failures++; });
+    await small.goto(`http://localhost:${srv.address().port}/`); await small.waitForFunction(() => !!globalThis.__savePoint && __savePoint.vault.ready);
+    await small.evaluate(async () => {
+        M.settings.savePoint.check = false; M.add(21); await __savePoint.summarize();
+        M.add(20); M.settings.savePoint.inputChars = 5000; await __savePoint.autoCollect();
+    });
+    r = await small.evaluate(() => ({ f: __savePoint.state().autoFail, last: __savePoint.ui.lastRequest,
+        report: __savePoint.reportText(__savePoint.state()), calls: M.calls.length }));
+    ok(r.f.attempts === 0 && r.f.requestNotSent && r.f.requestLines.length === 0 && r.last.status === 'received',
+        '8. 전송 전 실패는 이전 성공 요청을 실패 기록으로 붙이지 않음');
+    ok(r.report.includes('요청 전 입력 검사에서 중단 · AI 호출 없음') && !r.report.split('[체크포인트 실패 · 수집]')[1].includes('실패한 요청의 기록:'),
+        '8. 결과 복사에 AI 호출 없음 표시, 마지막 성공 요청은 별도로 보존');
+
+    // 9. distinct failures count separately even when they have exactly the same timestamp
+    const twice = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    twice.on('pageerror', e => { console.log('PAGE ERROR', e.message); failures++; });
+    await twice.goto(`http://localhost:${srv.address().port}/`); await twice.waitForFunction(() => !!globalThis.__savePoint && __savePoint.vault.ready);
+    await twice.evaluate(async () => {
+        const now = Date.now(); Date.now = () => now;
+        M.settings.savePoint.check = false; M.add(21); M.throwNext = new Error('First request failed');
+        await __savePoint.autoCollect();
+        M.throwNext = new Error('Second request failed'); await __savePoint.summarize();
+        document.querySelector('#sp_open').click();
+    });
+    r = await twice.evaluate(() => ({ a: __savePoint.state().autoFail, b: __savePoint.ui.lastError, chip: $('.sp-hud-chip').text() }));
+    ok(r.a.at === r.b.at && r.a.failureId && r.b.failureId && r.a.failureId !== r.b.failureId && r.chip.includes('실패 2'),
+        '9. 같은 시각의 별개 실패는 고유 ID로 구분해 2건 표시');
     await browser.close(); srv.close();
     console.log(failures ? `${failures} FAILED` : 'ALL PASS'); process.exit(failures ? 1 : 0);
 })();

@@ -36,6 +36,7 @@ function harness({ count = 10, lastIndex = 9, keepRecent = 2 } = {}) {
         lootForChunk: () => [], settleLoot: () => 0, supplementLoot: async () => ({ saved: 0, failed: 0 }), markStaleLoot: async () => {}, failPendingLoot: async () => 0,
         async extractChunk() { calls++; return { scenes: [{}] }; }, applyResult: () => ({ mem: meta.savePoint.mem }),
         endRun() { ui.run = null; }, queueCheck() {}, Cancelled: class extends Error {}, errorText: e => e.message,
+        newId: () => 'hide-test-failure', requestLines: () => [],
         reportError: e => notifications.push(['error', e.message]), console: { error() {} },
         toastr: Object.fromEntries(['success', 'info', 'warning', 'error'].map(k => [k, m => notifications.push([k, m])])),
         autoBlocked: () => false, names: () => ({}), buildBoundaryPrompt: () => 'boundary',
