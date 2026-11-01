@@ -306,6 +306,7 @@ test('carried #0 replaces the greeting with its content-bound data, marks the ch
     moveTo(h, [g()]); h.failWriteAt = h.writeCount + 1;
     await h.app.loadSave('slot');
     assert.deepEqual(h.context.chat[0], g()); assert.equal(h.context.chatMetadata.savePoint, undefined);
+    assert(!Object.hasOwn(h.context.chatMetadata, 'tainted'), 'the edited-chat mark is undone with the load');
 });
 
 test('answering no twice cancels the whole load', async () => {

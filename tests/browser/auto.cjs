@@ -59,8 +59,9 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(()=>{M.settings.savePoint.autoEvery=20;M.settings.savePoint.autoReserve=2;M.settings.savePoint.inputChars=60000;M.add(40,i=>'Message '+i+' '+'words '.repeat(160));});
     const before=r.calls;await run();r=await snap();
     ok(r.calls>before+1&&r.st.lastIndex===104&&!r.st.autoHold,'긴 미기록은 작은 요청으로 분할 저장');
-    await page.waitForTimeout(1500);
-    ok(await ev(()=>M.settings.savePoint.slotCache.some(s=>s.auto&&s.msgCount===105)),'오토세이브에 실제 기록 위치 반영');
+    // Wait for the debounced autosave itself rather than a fixed time.
+    const autoSaved=await page.waitForFunction(()=>M.settings.savePoint.slotCache.some(s=>s.auto&&s.msgCount===105),null,{timeout:8000}).then(()=>true,()=>false);
+    ok(autoSaved,'오토세이브에 실제 기록 위치 반영');
     await ev(()=>{M.settings.savePoint.auto=false;M.add(20);});const off=r.calls;await run();
     ok((await ev(()=>M.calls.length))===off,'체크포인트를 끄면 자동 요청 안 함');
     await browser.close();srv.close();console.log(failures?failures+' FAILED':'ALL PASS');process.exit(failures?1:0);

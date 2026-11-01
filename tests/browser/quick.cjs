@@ -131,6 +131,17 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     });
     ok(r.length === 1 && r[0][0] === 'Newer local QUICK' && r[0][1], `6. 같은 ID는 설정에 보관한 최신 사본 하나만 표시 (${JSON.stringify(r)})`);
 
+    // 7. SillyTavern swallows a server error and returns: the read-back finds the old file and everything is undone
+    const qid2 = (await saves()).find(x => x.quick && x.room.includes('chatA')).id;
+    await ev(() => M.switchChat('chatFail', [{ name: 'Ari', is_user: false, is_system: false, mes: 'Fresh greeting for the failing room.', swipe_id: 0, swipes: ['Fresh greeting for the failing room.'], extra: {} }], {}));
+    await page.waitForTimeout(300);
+    await ev(() => { M.writeServerChat(); M.silentSaveFail = true; toastr.log.length = 0; });
+    await ev(async id => { M.confirm = 1; await __savePoint.handle('load', id); }, qid2);
+    await page.waitForTimeout(300);
+    r = await ev(() => ({ mes: M.chat[0].mes, st: __savePoint.state(), tainted: Object.hasOwn(M.meta, 'tainted'), toast: toastr.log.map(x => x[1]).join(' | ') }));
+    ok(r.mes === 'Fresh greeting for the failing room.' && !r.st && !r.tainted && r.toast.includes('되돌렸어요'), `7. 서버 저장이 조용히 실패하면 첫 메시지·기억·수정 표시를 되돌림 (${r.toast.slice(0, 60)})`);
+    await ev(() => { M.silentSaveFail = false; });
+
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();

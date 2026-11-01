@@ -103,8 +103,8 @@ window.SillyTavern = {
         characters: [{ avatar: 'ari.png', name: 'Ari', description: 'Ari is a courier with green hair.' }], characterId: 0, groups: [],
         name1: 'Me', name2: 'Ari',
         get chat() { return M.chat; }, get chatMetadata() { return M.meta; },
-        async saveMetadata() { if (M.metaDelay) await new Promise(r => setTimeout(r, M.metaDelay)); if (M.failMeta) throw new Error('disk full'); if (M.swallowMeta) { M.swallowed = (M.swallowed || 0) + 1; return; } M.saves = (M.saves || 0) + 1; },
-        async saveChat() { M.chatSaves++; },
+        async saveMetadata() { if (M.metaDelay) await new Promise(r => setTimeout(r, M.metaDelay)); if (M.failMeta) throw new Error('disk full'); if (M.swallowMeta) { M.swallowed = (M.swallowed || 0) + 1; return; } M.saves = (M.saves || 0) + 1; M.writeServerChat(); },
+        async saveChat() { M.chatSaves++; M.writeServerChat(); },
         getRequestHeaders: () => ({ 'Content-Type': 'application/json', 'X-CSRF-Token': 'test' }),
         setExtensionPrompt(k, v, p, d, s, r) { M.prompts[k] = { v, p, d, r }; },
         eventSource, event_types,
@@ -114,6 +114,7 @@ window.SillyTavern = {
         POPUP_TYPE: { TEXT: 1, CONFIRM: 2, INPUT: 3 },
     }),
 };
+M.writeServerChat = () => { if (!M.silentSaveFail) M.serverChat = JSON.parse(JSON.stringify([{ chat_metadata: M.meta }, ...M.chat])); };
 M.add = (n, fn) => {
     for (let i = 0; i < n; i++) {
         const idx = M.chat.length, user = idx % 2 === 1;
@@ -128,6 +129,9 @@ const fromB64 = b64 => new TextDecoder().decode(Uint8Array.from(atob(b64), c => 
 window.fetch = async (url, opts = {}) => {
     const u = String(url);
     const res = (body, status = 200) => new Response(typeof body === 'string' ? body : JSON.stringify(body), { status });
+    // SillyTavern's chat read-back: the copy last written by a save that "succeeded" on the server.
+    // M.silentSaveFail mimics SillyTavern swallowing a server error: the call returns, the file stays old.
+    if (u === '/api/chats/get') return M.serverChat ? res(M.serverChat) : res([]);
     if (!u.startsWith('/api/files/') && !u.startsWith('/user/files/')) return realFetch(url, opts);
     if (M.serverDown) return res('down', 503);
     if (u === '/api/files/upload') {

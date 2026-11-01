@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.32';
+const VERSION = '0.6.33';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -1673,6 +1673,10 @@ async function loadSave(id) {
     if (!here()) return moved();
     const insert = plan?.kind === 'insert' && plan.use;
     let undoMessage = null, st = null, exact = false, carried = false;
+    // The edited-chat mark is put back too if the load is undone (it must not outlive a cancelled load).
+    const meta0 = ctx().chatMetadata, hadTainted = Object.hasOwn(meta0, 'tainted'), oldTainted = meta0.tainted;
+    const prevModule = meta0[MODULE] === undefined ? undefined : clone(meta0[MODULE]);
+    const undoTainted = () => { const m = ctx().chatMetadata; if (hadTainted) m.tainted = oldTainted; else delete m.tainted; };
     // The new #0, the room's memory and the chat's "edited" mark are written by the same chat-file save,
     // so they are kept together or dropped together.
     try {
@@ -1697,10 +1701,25 @@ async function loadSave(id) {
         });
         if (ok === false) return moved();
     } catch (e) {
-        if (undoMessage) { undoMessage(); if (here()) await showCarried(); }
+        if (undoMessage) { undoMessage(); undoTainted(); if (here()) await showCarried(); }
         reportError(e); return;
     }
+    // SillyTavern's save handles most server errors itself and returns normally, so a finished call
+    // does not prove the file changed. The new #0 is the one change that must not exist only in the
+    // page: read the saved chat back and undo everything when the file does not have it.
+    let verified = null;
+    if (insert && here()) {
+        verified = await savedChatHas(reply.text, st.rev);
+        if (verified === false && here()) {
+            clearTimeout(autosaveTimer); undoMessage(); undoTainted();
+            if (prevModule === undefined) delete ctx().chatMetadata[MODULE]; else ctx().chatMetadata[MODULE] = prevModule;
+            syncHide(); refreshInjection(); await showCarried(); render();
+            toastr.error('채팅 파일에 저장되지 않아서 이어하기를 되돌렸어요. 첫 메시지와 기억은 불러오기 전 그대로예요. 잠시 뒤 다시 시도해 주세요.', 'SavePoint', { timeOut: 12000 });
+            return;
+        }
+    }
     if (insert && here()) await showCarried();
+    if (insert && verified === null) toastr.info('채팅 파일에 저장됐는지 확인하지 못했어요. 새로고침한 뒤 첫 메시지가 그대로인지 봐 주세요.', 'SavePoint');
     toastr.success(exact ? `저장 당시 위치(#${st.lastIndex})로 돌아갔어요. 그 뒤 메시지는 미기록이에요.`
         : carried && reply.recorded ? `이전 방 #${reply.index}에서 이어서 시작해요. #0은 이미 기록된 메시지라 새 기록은 #1부터예요.`
         : carried ? `이전 방 #${reply.index} 메시지로 시작했어요. 이 메시지는 아직 기록 전이라 다음 세이브 때 기록해요.`
@@ -1742,6 +1761,21 @@ function putCarried(reply) {
     const keep = Object.fromEntries([HIDE_KEY, VISIBLE_KEY].filter(k => m.extra && Object.hasOwn(m.extra, k)).map(k => [k, m.extra[k]]));
     m.extra = keep;
     return () => { for (const k of Object.keys(m)) delete m[k]; Object.assign(m, before); };
+}
+// Read the room's chat file back from the server. true/false: whether the file has this #0 text and
+// this memory revision; null: it could not be checked (group chat, no server route, network error).
+async function savedChatHas(text, rev) {
+    try {
+        const c = ctx(), file = c.getCurrentChatId?.(), ch = c.characters?.[c.characterId];
+        if (!file || c.groupId || !ch) return null;
+        const r = await fetch('/api/chats/get', { method: 'POST', headers: serverHeaders(), body: JSON.stringify({ ch_name: ch.name, file_name: file, avatar_url: ch.avatar }) });
+        if (!r.ok) return null;
+        const data = await r.json();
+        if (!Array.isArray(data) || !data.length) return null;
+        const head = data[0]?.chat_metadata ? data[0] : null;
+        const first = (head ? data.slice(1) : data)[0];
+        return !!first && sameText(first.mes, text) && (!head || head.chat_metadata?.[MODULE]?.rev === rev);
+    } catch { return null; }
 }
 // Show the new #0 after the memory is in place: redraw that message when SillyTavern offers it,
 // otherwise reload the chat view (which reads the saved chat and metadata back).
