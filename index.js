@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.28';
+const VERSION = '0.6.29';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -2891,7 +2891,7 @@ function updateSaveBanner() {
     if (!text || ui.open || !settings().enabled || run.key !== roomKey()) { el.hidden = true; return; }
     const m = String(ui.progress || '').match(/(\d+)\/(\d+)메시지/);
     el.dataset.tone = 'running';
-    setBanner(el, { icon: 'sp-sb-spin', title: text[0], count: m && Number(m[1]) > 0 ? `${m[1]}/${m[2]}` : '', sub: text[1] });
+    setBanner(el, { icon: 'sp-sb-spin', title: text[0], count: m ? `${m[1]}/${m[2]}` : '', sub: text[1] });
 }
 function flashSaveBanner(text, { tone = 'success' } = {}) {
     const el = saveBanner();

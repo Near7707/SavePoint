@@ -44,7 +44,10 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await sleep(300);
     let r = await banner();
     ok(r.shown && r.text.includes('저장 중입니다') && r.text.includes('다른 채팅방으로 이동하면 저장이 취소돼요') && r.theme === 'eggpet', `1. 저장 중 안내 창 (${r.text.trim()})`);
+    ok(r.text.includes('0/30'), '1. 첫 구간을 기록하는 동안에도 완료 메시지 수 0/30 표시');
     if (SHOTS) await page.screenshot({ path: path.join(OUT, 'save-banner.png') });
+    await page.waitForFunction(() => document.querySelector('#sp_save_banner .sp-sb-title b')?.textContent === '15/30');
+    ok((await banner()).text.includes('15/30'), '1. 다음 구간에서는 이미 저장한 메시지 수 15/30 표시');
     await p1; await sleep(100);
     r = await banner();
     ok(r.shown && r.text.includes('저장 완료') && r.text.includes('#0–#29'), `1. 끝나면 저장 완료로 바뀜 (${r.text.trim()})`);
@@ -105,10 +108,13 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await sleep(3700);
 
     // 6. a checkpoint whose chat-file write fails shows no "완료"
-    await ev(() => { M.delay = 0; M.settings.savePoint.auto = true; M.settings.savePoint.autoEvery = 5; const b = M.chat.length; M.add(12, i => (i === b + 6 ? 'SCENEBREAK at the gate. ' : '') + `Message ${i}`); M.failMeta = true; });
+    await ev(() => { M.delay = 400; M.settings.savePoint.auto = true; M.settings.savePoint.autoEvery = 5; const b = M.chat.length; M.add(12, i => (i === b + 6 ? 'SCENEBREAK at the gate. ' : '') + `Message ${i}`); M.failMeta = true; });
     await ev(() => { if (M.chat.at(-1).is_user) M.add(1); });
     const before6 = await ev(() => ({ last: __savePoint.state().lastIndex, calls: M.calls.length }));
-    await ev(() => __savePoint.autoCollect());
+    const p6 = ev(() => __savePoint.autoCollect());
+    await page.waitForFunction(() => /^0\/\d+$/.test(document.querySelector('#sp_save_banner .sp-sb-title b')?.textContent || ''));
+    ok((await banner()).text.includes('체크포인트 저장 중'), '6. 체크포인트도 첫 구간부터 완료 메시지 수 0/N 표시');
+    await p6;
     await sleep(100);
     r = await ev(() => ({ b: (() => { const x = document.getElementById('sp_save_banner'); return { shown: !x.hidden, text: x.textContent }; })(), last: __savePoint.state().lastIndex, calls: M.calls.length, fail: __savePoint.state().autoFail, tone: document.getElementById('sp_save_banner').dataset.tone, auto: __savePoint.state().autoLast?.result || '' }));
     const t6 = await ev(() => toastr.log.slice(-3).map(x => x[1]).join(' | '));
