@@ -68,7 +68,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const autosOnServer = Object.keys(f).filter(k => k.startsWith('savepoint-auto-'));
     const idx = JSON.parse(f['savepoint-index.json']);
     ok(autosOnServer.length === 3 && idx.saves.filter(e => e.auto).length === 3, `3. 오토세이브 방마다 3개 (서버 파일 ${autosOnServer.length}개)`);
-    ok(f['savepoint-index.prev.json'] && JSON.parse(f['savepoint-index.prev.json']).saves.length === 3, '3. 이전 목록 보관');
+    ok(f['savepoint-index.prev.json'] && JSON.parse(f['savepoint-index.prev.json']).saves.filter(e => e.auto).length === 3, '3. 이전 목록 보관');
     const autos = await ev(() => __savePoint.listSaves().filter(x => x.auto).map(x => x.msgCount));
     ok(autos[0] > autos[1] && autos[1] > autos[2], `3. 최신 → 이전 → 그 전 순서 (${autos})`);
     await ev(() => { M.popupInput = 'Route A'; return __savePoint.handle('save-new'); });
@@ -119,7 +119,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await page.evaluate(() => { $('#sp_wand').trigger('click'); return __savePoint.handle('find'); });
     await page.waitForTimeout(300);
     r = await page.evaluate(() => ({ text: $('.sp-found').text(), n: $('.sp-found [data-act="restore"]').length, list: __savePoint.listSaves().length }));
-    ok(r.n === 3 && r.text.includes('이 방 오토세이브 이름') && !r.text.includes('Route A') && r.list === 0, '7. 백업 찾기 → 이 방 오토세이브 3개만 보여 주고 아무것도 바꾸지 않음');
+    ok(r.n === 4 && r.text.includes('이 방 오토세이브·QUICK 이름') && !r.text.includes('Route A') && r.list === 0, `7. 백업 찾기 → 이 방 오토세이브 3개 + QUICK 1개만 보여 주고 아무것도 바꾸지 않음 (${r.n})`);
     ok(r.text.includes('savepoint-slot-'), '7. 직접 만든 슬롯은 수동으로 가져오라는 안내');
     const file = await page.evaluate(() => $('.sp-found [data-act="restore"]').first().attr('data-id'));
     await page.evaluate(fl => __savePoint.handle('restore', fl), file);

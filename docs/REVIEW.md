@@ -1,3 +1,26 @@
+# v0.6.31 · QUICK 슬롯, 사본 저장, 세이브 화면 정리, 새 방 이어하기
+
+기준: v0.6.30 `79ab2db`. 기억 기록·주입·수집 지침은 변경하지 않음. **코드 리뷰를 특히 부탁하는 곳은 ★ 표시.**
+
+## 무엇을 바꿨나
+- **QUICK 슬롯 (`vault.js`)**: `record.quick`, id `quick_<roomHash>`, 파일 `savepoint-quick-<room>-0|1.json`을 번갈아 씀. 순서는 새 파일 → 목록(이전 목록 보관) → 이전 QUICK 파일 삭제. 쓰기 실패 시 목록과 이전 파일 그대로. 오토세이브 3개 규칙·보관 방 수 정리에서 제외. `find()`가 방 이름으로 QUICK 파일도 찾고, `restore()`는 같은 방 QUICK을 하나만 목록에 둠. `metaOf`는 `lastReply`를 목록에서 뺌(파일에만 보관).
+- **QUICK 갱신 시점 (`summarize`)**: 수동(퀵세이브·장면 클리어) 실행이 예외 없이 끝났을 때(`complete`)만 `finally`에서 `quickSave`. 체크포인트·실패·일부 저장·취소는 갱신 안 함. 새 메시지가 없어 일찍 끝나는 경로에서도 지금 기억으로 갱신(편집 반영, AI 호출 없음). 서버 실패 시 `storeSave`가 설정에 보관하고 `기록 완료 · QUICK 백업 실패` 경고.
+- **lastReply (`saveRecord`)**: 마지막 캐릭터 메시지 `{index, name, text(원문 mes), recorded, after, pending}`. `recorded`는 `index <= lastIndex`이고 저장된 지문이 지금 메시지와 같을 때만 true. 모든 세이브 종류에 담김.
+- **불러오기 (`loadSave`)** — 다른 방으로 불러올 때 `carryPlan`:
+  - `match`: #0이 캐릭터 메시지이고 글(앞뒤 공백·줄바꿈 정규화)이 같음 → 채팅은 그대로, 연결만.
+  - `insert`: 방이 비었거나 인사말 하나뿐 → 확인 후 #0을 그 원문으로(인사말이면 `mes`·`swipes`·`swipe_id` 교체, `display_text` 제거) → `saveChat` → 상태 저장 → `updateMessageBlock` 또는 `reloadCurrentChat`으로 표시.
+  - 그 외(이미 다른 대화가 있음) → 기억만.
+  - 연결됐고 `recorded`면 `lastIndex 0, hashes, floor 0`. 아니면 #0을 새로 수집. 둘 다 `st.carry = {room, index, recorded}` 기록. 기록 안 됐거나 뒤에 메시지가 더 있었으면 확인 창에 경고. QUICK·AUTO는 `linkedSave`에 연결하지 않음.
+- **화면**: 카드 `QUICK/AUTO/FILE`, QUICK 테두리형 배지, 🎬 저장 당시 장면 제목(`stats.lastTitle`, 없으면 생략). QUICK·AUTO에는 `사본 저장`(창 제목 "다른 이름으로 저장", 원본 유지), FILE에는 `저장`·`이름`. 순서 QUICK → FILE(만든 순서) → AUTO. 방 폴더 🗝️ + 최신 저장본 장면 제목, 최신 방 먼저. 다른 캐릭터 👾, 방이 둘 이상이면 방별 폴더. 세이브 탭 숫자 = 이 방 슬롯 수. 기억 없는 방에는 같은 캐릭터 다른 방의 최근 QUICK(최대 3개) `이어하기` 칸.
+- 검사: Node 341개(vault QUICK 4개, checkpoint 이어하기·QUICK 4개 추가), 브라우저 20묶음(새 `quick.cjs`). 기존 하네스에 `quickSave`·`reportError`·`roomKey` 대체 함수 추가, 기억만 옮기는 기존 검사는 `lastReply`를 지워 의도 유지, vault·checks 검사는 QUICK이 늘어난 개수에 맞춤.
+
+## 재검토할 것
+1. ★ **실제 실리태번에서 인사말 교체**: `chat[0]` 직접 수정 + `saveChat` + `updateMessageBlock`/`reloadCurrentChat` 순서. 다른 확장이 `chat[0]`에 붙인 정보, 인사말 스와이프(대체 인사말) 정리, `reloadCurrentChat`이 일으키는 채팅 변경 이벤트와 SavePoint 상태 쓰기 순서(상태를 먼저 쓰고 표시를 나중에 함)가 맞는지. 빈 방에 새로 넣는 메시지의 `send_date`(숫자) 형식도.
+2. ★ **QUICK 교체 안전성**: 두 이름 번갈아 쓰기에서 목록 쓰기 실패·삭제 실패·설정 보관(서버 불가) 경로. 서버 불가 때 설정에 쌓이는 QUICK이 방마다 하나로 유지되는지(같은 id로 덮어씀).
+3. ★ **`recorded` 판정**: `st.hashes[i] === fingerprint(m)`로 확인. 스와이프로 마지막 답을 바꾼 뒤 기록 전에 세이브된 경우 false가 되는지. 연결 후 `reconcile`이 #0 지문을 정상으로 보는지.
+4. **확인 창 동작**: 인사말만 있는 방인데 그 방에 이미 기억이 있으면, `insert` 확인 창에서 아니요를 눌러도 기억은 바뀜(문구로 안내). 완전 취소가 필요한지.
+5. 루팅 일부 실패(`lootFailed`)로 끝난 퀵세이브는 기록 자체는 끝났으므로 QUICK을 갱신함. 이 판단이 맞는지.
+
 # v0.6.30 · 방·탭별 스크롤 위치
 
 기준: v0.6.29 `a676610`. 본문 스크롤 복원만 변경. 기억·AI 요청·주입·설정 저장 구조는 그대로.

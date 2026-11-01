@@ -9,6 +9,10 @@
 // - Autosaves use fixed names per room (savepoint-auto-<room>-0..3.json), so a room's autosaves
 //   can be found by opening that room even if both index files are lost. Four names rotate
 //   while three are kept, so a new autosave never overwrites one that is still listed.
+// - v0.6.31: a QUICK slot (one per room, written only by a manual quicksave or scene clear) uses
+//   savepoint-quick-<room>-0..1.json. The new file and the index are written before the old file is
+//   deleted, so a failed write never loses the previous QUICK. QUICK slots are not pruned with
+//   autosaves; they stay until deleted by hand.
 // - The server has no "list folder" API. Manual slots can only be found through an index file;
 //   without one they must be imported by hand from the server folder.
 
@@ -31,12 +35,15 @@ function hash(text) {
 }
 export const roomHash = roomKey => hash(String(roomKey || ''));
 export const autoName = (rh, k) => `savepoint-auto-${rh}-${k}.json`;
+export const quickName = (rh, k) => `savepoint-quick-${rh}-${k}.json`;
+export const quickId = rh => `quick_${rh}`;
 export const slotName = id => `savepoint-slot-${String(id).replace(/[^a-zA-Z0-9_-]/g, '')}.json`;
 const fileOk = name => /^[a-zA-Z0-9_\-.]+$/.test(name) && !name.startsWith('.');
 
 // What the index and the settings cache keep about a slot: everything but the memory itself.
 export function metaOf(record, file, k) {
-    const { mem: _m, local: _l, ...rest } = record;
+    // The carried last reply stays in the save file only, so the index stays small.
+    const { mem: _m, local: _l, lastReply: _r, ...rest } = record;
     const meta = { ...clone(rest), file };
     if (Number.isInteger(k)) meta.k = k;
     return meta;
@@ -106,9 +113,17 @@ export class Vault {
     async put(record, { keepRooms = 30 } = {}) {
         return this.run(async () => {
             try {
-                const others = this.entries.filter(e => e.id !== record.id && !(record.auto && e.auto && e.roomHash === record.roomHash));
+                const others = this.entries.filter(e => e.id !== record.id && !(record.auto && e.auto && e.roomHash === record.roomHash)
+                    && !(record.quick && e.quick && e.roomHash === record.roomHash));
                 let file, k, removed = [], next;
-                if (record.auto) {
+                if (record.quick) {
+                    const olds = this.entries.filter(e => e.quick && e.roomHash === record.roomHash);
+                    const taken = new Set(olds.map(e => e.k));
+                    k = [0, 1].find(n => !taken.has(n)) ?? [...olds].sort((a, b) => a.updated - b.updated)[0].k;
+                    file = quickName(record.roomHash, k);
+                    removed = olds;
+                    next = [metaOf(record, file, k), ...others];
+                } else if (record.auto) {
                     const autos = this.entries.filter(e => e.auto && e.roomHash === record.roomHash).sort((a, b) => b.updated - a.updated);
                     const taken = new Set(autos.map(e => e.k));
                     k = [...Array(AUTO_NAMES).keys()].find(n => !taken.has(n)) ?? autos[autos.length - 1].k;
@@ -152,13 +167,13 @@ export class Vault {
         });
     }
 
-    // Renaming an autosave turns a copy of it into a manual slot (the autosave rotation is left alone).
+    // Renaming an autosave or QUICK turns a copy of it into a manual slot (the original is left alone).
     async rename(id, name, newId) {
         const e = this.entries.find(x => x.id === id);
         if (!e) return null;
         const rec = await this.read(e);
         rec.name = name;
-        if (e.auto) { rec.auto = false; rec.id = newId; delete rec.roomHash; }
+        if (e.auto || e.quick) { rec.auto = false; rec.quick = false; rec.id = newId; delete rec.roomHash; }
         return this.put(rec);
     }
 
@@ -177,6 +192,12 @@ export class Vault {
                 const rec = recordFrom(await this.io.get(name).catch(() => null));
                 if (rec) add({ ...metaOf(rec, name, k), roomHash: rh, auto: true }, 'room');
             }
+            for (let k = 0; k < 2; k++) {
+                const name = quickName(rh, k);
+                if (found.has(name)) continue;
+                const rec = recordFrom(await this.io.get(name).catch(() => null));
+                if (rec) add({ ...metaOf(rec, name, k), roomHash: rh, quick: true, auto: false }, 'room');
+            }
         }
         const list = [...found.values()];
         const there = list.length ? await this.io.exists(list.map(e => e.file)) : {};
@@ -192,7 +213,9 @@ export class Vault {
             if (!rec) throw new Error('백업 파일을 읽지 못했어요.');
             const meta = metaOf(rec, item.file, item.k);
             if (item.auto) { meta.auto = true; meta.roomHash = item.roomHash || rec.roomHash; }
-            const next = [meta, ...this.entries.filter(e => e.id !== meta.id && e.file !== meta.file)];
+            if (item.quick) { meta.quick = true; meta.auto = false; meta.roomHash = item.roomHash || rec.roomHash; }
+            // A room has one QUICK: restoring an older one replaces the listed one (its file is kept).
+            const next = [meta, ...this.entries.filter(e => e.id !== meta.id && e.file !== meta.file && !(meta.quick && e.quick && e.roomHash === meta.roomHash))];
             try { await this.writeIndex(next); } catch (e) { this.fail(e); }
             return meta;
         });

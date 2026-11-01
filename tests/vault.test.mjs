@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Vault, INDEX, PREV_INDEX, roomHash, autoName, slotName } from '../vault.js';
+import { Vault, INDEX, PREV_INDEX, roomHash, autoName, slotName, quickName, quickId } from '../vault.js';
 
 // In-memory stand-in for the SillyTavern files API. `log` records every write/delete in order.
 function fakeServer({ failPut = () => false, offline = false } = {}) {
@@ -176,4 +176,61 @@ test('renaming an autosave keeps a manual copy and leaves the rotation alone', a
     const a = v.entries[0];
     await v.rename(a.id, 'Before the storm', 'kept1');
     assert.deepEqual(v.entries.map(e => [e.name, !!e.auto]).sort(), [['Before the storm', false], ['auto 1', true]]);
+});
+
+const quick = (n, rh = RH) => rec({ id: quickId(rh), quick: true, auto: false, roomHash: rh, name: 'quick ' + n, lastReply: { index: 9, text: 'long reply '.repeat(50), recorded: true } });
+
+test('QUICK: one per room on two alternating files; new file -> index -> delete the old one', async () => {
+    const s = fakeServer();
+    const v = new Vault(s.io);
+    await v.init([]);
+    await v.put(quick(1));
+    assert.deepEqual(v.entries.map(e => [e.name, e.file]), [['quick 1', quickName(RH, 0)]]);
+    s.log.length = 0;
+    await v.put(quick(2));
+    assert.deepEqual(s.log.map(x => x.join(' ')), [`put ${quickName(RH, 1)}`, `put ${PREV_INDEX}`, `put ${INDEX}`, `del ${quickName(RH, 0)}`]);
+    assert.deepEqual(v.entries.map(e => e.name), ['quick 2']);
+    await v.put(quick(3));
+    assert.deepEqual(v.entries.map(e => e.file), [quickName(RH, 0)]);
+    assert.equal(v.entries[0].lastReply, undefined, 'the carried reply stays out of the index');
+    assert.equal((await v.read(v.entries[0])).lastReply.recorded, true);
+});
+
+test('QUICK: a failed write keeps the previous QUICK listed and its file in place', async () => {
+    let failing = null;
+    const s = fakeServer({ failPut: n => n === failing });
+    const v = new Vault(s.io);
+    await v.init([]);
+    await v.put(quick(1));
+    failing = quickName(RH, 1);
+    await assert.rejects(v.put(quick(2)));
+    assert.deepEqual(v.entries.map(e => e.name), ['quick 1']);
+    assert.ok(s.files.has(quickName(RH, 0)));
+    failing = INDEX;
+    await assert.rejects(v.put(quick(3)));
+    assert.deepEqual(v.entries.map(e => e.name), ['quick 1']);
+    assert.ok(s.files.has(quickName(RH, 0)), 'old QUICK file not deleted when the index was not written');
+});
+
+test('QUICK is separate from autosaves: not counted in the 3, not pruned with old rooms', async () => {
+    const s = fakeServer();
+    const v = new Vault(s.io);
+    await v.init([]);
+    await v.put(quick(1, roomHash('r1')));
+    for (const r of ['r1', 'r2', 'r3']) for (let i = 1; i <= 4; i++) await v.put(auto(i, roomHash(r)), { keepRooms: 2 });
+    assert.equal(v.entries.filter(e => e.auto && e.roomHash === roomHash('r2')).length, 3);
+    assert.ok(!v.entries.some(e => e.auto && e.roomHash === roomHash('r1')), 'old room autosaves pruned');
+    assert.ok(v.entries.some(e => e.quick && e.roomHash === roomHash('r1')), 'its QUICK stays');
+});
+
+test('QUICK: a copy becomes a manual slot and the QUICK stays; find() locates QUICK files by room', async () => {
+    const s = fakeServer();
+    const v = new Vault(s.io);
+    await v.init([]);
+    await v.put(quick(1));
+    await v.rename(quickId(RH), 'Kept', 'copy1');
+    assert.deepEqual(v.entries.map(e => [e.name, !!e.quick, !!e.auto]).sort(), [['Kept', false, false], ['quick 1', true, false]]);
+    s.files.delete(INDEX); s.files.delete(PREV_INDEX);
+    const found = await new Vault(s.io).find(RH);
+    assert.ok(found.some(e => e.quick && e.file === quickName(RH, 0)));
 });

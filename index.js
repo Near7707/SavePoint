@@ -10,7 +10,7 @@ import { foldLegacyOutline,
     groupErrors, findQuote, mostlyNonEnglish, setQuestStatus,
 } from './core.js';
 import { lootStatus, lootWarning, lootInChunk, lootBlock, attachLoot, settleLoot, failLoot, lootTarget, applyLootSupplement, restoreLostLoot } from './loot.js';
-import { Vault, roomHash } from './vault.js';
+import { Vault, roomHash, quickId } from './vault.js';
 import { upgradeEvidence, segmentPrior, evidenceNumbers } from './provenance.js';
 import { assertPromptFits, nextMessageChunk, planReviewBatches } from './request-batches.js';
 import { DEFAULT_GUIDE, guideHash, OLD_GUIDE_HASHES, buildCheckPrompt, buildRekeyPrompt, buildExtractPrompt, buildExtractPromptParts, PROMPT_PART_LABELS, retryNote, extractionRepairNote, TRANSLATE_PROMPT } from './prompts.js';
@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.30';
+const VERSION = '0.6.31';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -890,6 +890,8 @@ async function summarize({ close = false, auto = false } = {}) {
                 toastr.info('기록할 새 메시지가 없어요. 하이드 상태를 다시 확인했어요.');
             } catch (e) { reportError(e); }
         } else toastr.info('기록할 새 메시지가 없어요.');
+        // Nothing new to collect, but the memory may have been edited by hand: keep it as QUICK.
+        if (!auto && state() === st) await quickSave(st).catch(reportError);
         return;
     }
     if (!auto) { st.autoMark = latest; st.autoHold = null; persistSoon(); }
@@ -901,7 +903,7 @@ async function summarize({ close = false, auto = false } = {}) {
     let stage = 'collect';
     const oldLoot = queued.filter(x => x.msg <= st.lastIndex);
     const attemptedLoot = new Set();
-    let lootFailed = 0;
+    let lootFailed = 0, complete = false;
     try {
         while (cursor < msgs.length) {
             assertValid(run, end);
@@ -956,6 +958,7 @@ async function summarize({ close = false, auto = false } = {}) {
             run.notice = { text: result, tone: lootFailed ? 'warning' : done ? 'success' : 'info' };
         }
         clearInterrupted(run.key);
+        complete = true;
     } catch (e) {
         if (queued.length && !(e instanceof Cancelled) && run.key === roomKey()) {
             try { lootFailed += await failPendingLoot(run, queued, e); } catch { /* a failed disk write leaves the queue intact */ }
@@ -990,6 +993,8 @@ async function summarize({ close = false, auto = false } = {}) {
         if (lootFailed && run.key === roomKey() && state()) toastr.warning(`⚠ 루팅한 내용 ${lootFailed}개가 반영되지 않았어요.${lootFailNote(state())} 다음 세이브 때 다시 시도해요. 자세한 이유는 ⏳ 대기열에서 볼 수 있어요.`, 'SavePoint', { timeOut: 10000 });
         endRun(run);
         if (done && run.key === roomKey()) { autosave(state()); if (state() === st) queueCheck(st, memBefore, { auto }); }
+        // A partial, failed or cancelled run keeps the previous QUICK; what it saved is in AUTO.
+        if (complete && !auto && run.key === roomKey() && state() === st) await quickSave(st).catch(reportError);
     }
 }
 
@@ -1539,11 +1544,27 @@ async function readSave(entry) {
     if (entry.local) return localSaves()[entry.id];
     return vault.read(entry);
 }
-function saveRecord(st, name, id = newId(), auto = false) {
+// v0.6.31: the last character message travels with a save, so a new room can start from it.
+// "recorded" says whether that exact message was already in memory when the save was made; only
+// then may a new room skip collecting it again.
+function lastReplyOf(st) {
+    if (!st || roomKey() !== st.roomKey) return null;
+    const list = chat();
+    for (let i = list.length - 1; i >= 0; i--) {
+        const m = list[i];
+        if (!eligible(m) || m.is_user) continue;   // eligible keeps our own hidden messages
+        return { index: i, name: speaker(m), text: String(m.mes || ''),
+            recorded: i <= st.lastIndex && st.hashes?.[i] === fingerprint(m),
+            after: list.length - 1 - i, pending: Math.max(0, list.length - 1 - st.lastIndex) };
+    }
+    return null;
+}
+function saveRecord(st, name, id = newId(), auto = false, { quick = false } = {}) {
     const ci = charInfo();
     const prev = findSave(id);
+    const reply = lastReplyOf(st);
     return {
-        id, name, auto, room: st.roomKey, roomHash: roomHash(st.roomKey), char: ci?.name || '', created: prev?.created || Date.now(), updated: Date.now(),
+        id, name, auto, ...(quick ? { quick: true } : {}), ...(reply ? { lastReply: reply } : {}), room: st.roomKey, roomHash: roomHash(st.roomKey), char: ci?.name || '', created: prev?.created || Date.now(), updated: Date.now(),
         stats: memStats(st.mem), msgCount: st.lastIndex + 1,
         pos: { lastIndex: st.lastIndex, digest: digest(st.hashes) }, mem: clone(st.mem), version: VERSION,
     };
@@ -1590,6 +1611,14 @@ function autosave(st) {
         storeSave(saveRecord(cur, `오토세이브 · ${charInfo()?.name || ''}`, `auto_${rh}_${Date.now().toString(36)}`, true));
     }, 1200);
 }
+// QUICK: one per room, replaced only after a manual quicksave or scene clear finished completely.
+async function quickSave(st) {
+    if (!st || !hasMemory(st.mem) || roomKey() !== st.roomKey) return null;
+    const res = await storeSave(saveRecord(st, `퀵세이브 · ${charInfo()?.name || ''}`, quickId(roomHash(st.roomKey)), false, { quick: true }));
+    if (res.local) toastr.warning(`기록 완료 · QUICK 백업 실패 (설정에만 보관): ${res.error?.message || ''}`, 'SavePoint');
+    render();
+    return res;
+}
 async function saveNew() {
     const st = state();
     if (!st || !hasMemory(st.mem)) { toastr.info('저장할 기억이 없어요.'); return; }
@@ -1602,7 +1631,7 @@ async function saveNew() {
 }
 async function overwriteSave(id) {
     const st = state(), old = findSave(id);
-    if (!st || !old || old.auto || !hasMemory(st.mem)) return;
+    if (!st || !old || old.auto || old.quick || !hasMemory(st.mem)) return;
     if (!(await confirmBox(`"${old.name}" 슬롯을 지금 기억으로 덮어쓸까요?`))) return;
     const res = await storeSave(saveRecord(st, old.name, id));
     st.linkedSave = id; persistSoon(); render();
@@ -1613,15 +1642,24 @@ async function loadSave(id) {
     if (ui.run) return;
     const save = findSave(id);
     if (!save || !hasChat()) return;
-    let mem, sourceRoom;
+    let mem, sourceRoom, reply = null;
     try {
         const body = await readSave(save);
         mem = cleanMem(body?.mem);
         sourceRoom = typeof body?.room === 'string' ? body.room : typeof save.room === 'string' ? save.room : null;
+        reply = validReply(body?.lastReply);
     } catch (e) { reportError(e); return; }
     const cur = state();
-    if (cur && hasMemory(cur.mem) && !(await confirmBox('이 방의 지금 기억을 이 세이브 슬롯으로 바꿀까요? (⏪ 리와인드로 되돌릴 수 있어요)'))) return;
-    const st = freshState({ mem, lootQueue: clone(cur?.lootQueue || []), linkedSave: save.auto ? null : id, autoMark: chat().length - 1 });
+    // A new room can start from the save's last character message (see carryPlan).
+    const plan = sourceRoom !== roomKey() ? carryPlan(reply) : null;
+    if (plan?.kind === 'insert') {
+        const warn = reply.recorded && !reply.after ? '' : `\n\n⚠ ${carryGap(reply)} 이전 방에서 퀵세이브한 뒤 QUICK으로 불러오면 빠지는 내용이 없어요. 그대로 진행하면 이 메시지는 새로 기록해요.`;
+        plan.use = await confirmBox(`저장 당시 마지막 캐릭터 메시지(이전 방 #${reply.index})로 이 방을 시작할까요?\n${chat().length ? '첫 인사말을 그 메시지로 바꿔요.' : '그 메시지를 첫 메시지로 넣어요.'} 아니요를 누르면 기억만 불러와요.${cur && hasMemory(cur.mem) ? ' 어느 쪽이든 이 방의 지금 기억은 이 세이브로 바뀌어요(⏪ 리와인드 가능).' : ''}${warn}`);
+    } else if (cur && hasMemory(cur.mem) && !(await confirmBox('이 방의 지금 기억을 이 세이브 슬롯으로 바꿀까요? (⏪ 리와인드로 되돌릴 수 있어요)'))) return;
+    if (plan?.kind === 'insert' && plan.use) {
+        try { await startFromReply(reply); } catch (e) { reportError(e); return; }
+    }
+    const st = freshState({ mem, lootQueue: clone(cur?.lootQueue || []), linkedSave: save.auto || save.quick ? null : id, autoMark: chat().length - 1 });
     const p = save.pos;
     let exact = false;
     if (p && Number.isInteger(p.lastIndex) && p.lastIndex >= 0 && p.lastIndex < chat().length) {
@@ -1629,20 +1667,75 @@ async function loadSave(id) {
         if (digest(h) === p.digest) { exact = true; st.lastIndex = p.lastIndex; st.hashes = h; st.floor = p.lastIndex; }
     }
     if (!exact) st.mem = detachMem(mem, sourceRoom);
+    // #0 is the carried reply: when it was already in memory, the new room starts collecting at #1.
+    const carried = !exact && (plan?.kind === 'match' || (plan?.kind === 'insert' && plan.use)) && carryMatches(reply);
+    if (carried) {
+        st.carry = { room: sourceRoom, index: reply.index, recorded: reply.recorded, at: Date.now() };
+        if (reply.recorded) { st.lastIndex = 0; st.hashes = hashesTo(0); st.floor = 0; }
+    }
     if (cur) st.lootQueue = restoreLostLoot(cur.lootQueue, cur.mem, st.mem, { room: roomKey(), hashes: cur.hashes, fallback: cur.undo?.lootQueue });
     try { await transact(() => { ctx().chatMetadata[MODULE] = st; }); }
     catch (e) { reportError(e); return; }
+    if (plan?.kind === 'insert' && plan.use) await showCarried();
     toastr.success(exact ? `저장 당시 위치(#${st.lastIndex})로 돌아갔어요. 그 뒤 메시지는 미기록이에요.`
+        : carried && reply.recorded ? `이전 방 #${reply.index}에서 이어서 시작해요. #0은 이미 기록된 메시지라 새 기록은 #1부터예요.`
+        : carried ? `이전 방 #${reply.index} 메시지로 시작했어요. 이 메시지는 아직 기록 전이라 다음 세이브 때 기록해요.`
         : `불러왔어요. 원문이 저장 당시와 달라서 기억만 가져왔고, 이 방의 메시지 ${pendingCount()}개는 미기록이에요.`, 'SavePoint');
+}
+const validReply = r => (r && typeof r === 'object' && !Array.isArray(r) && Number.isInteger(r.index) && typeof r.text === 'string' && r.text.trim()
+    ? { index: r.index, name: String(r.name || ''), text: r.text, recorded: r.recorded === true, after: Number(r.after) || 0, pending: Number(r.pending) || 0 } : null);
+const sameText = (a, b) => String(a || '').replace(/\r\n?/g, '\n').trim() === String(b || '').replace(/\r\n?/g, '\n').trim();
+// What a load into another room can do with the carried reply:
+// 'match'  — #0 here is a character message with exactly that text (the user pasted it);
+// 'insert' — the room is empty or holds only the greeting, so the reply can become #0;
+// null     — the room already has its own story; only the memory is loaded.
+function carryPlan(reply) {
+    if (!reply) return null;
+    const list = chat(), first = list[0];
+    if (first && !first.is_user && !first.is_system && sameText(first.mes, reply.text)) return { kind: 'match' };
+    if (!list.length || (list.length === 1 && first && !first.is_user)) return { kind: 'insert' };
+    return null;
+}
+function carryMatches(reply) { const m = chat()[0]; return !!m && !m.is_user && !m.is_system && sameText(m.mes, reply.text); }
+function carryGap(reply) {
+    if (!reply.recorded) return `이 세이브는 마지막 메시지 ${reply.pending}개가 아직 기록되지 않은 상태예요.`;
+    return `이 세이브의 마지막 캐릭터 메시지 뒤에 메시지 ${reply.after}개가 더 있었는데, 그건 가져가지 않아요.`;
+}
+// Put the reply in as #0: an empty room gets a new message; a greeting-only room has its greeting
+// (and alternative greetings) replaced. Never used when the room already has other messages.
+async function startFromReply(reply) {
+    const c = ctx(), list = chat();
+    if (!list.length) list.push({ name: reply.name || charInfo()?.name || '', is_user: false, is_system: false, send_date: Date.now(), mes: reply.text, extra: {}, swipe_id: 0, swipes: [reply.text] });
+    else {
+        const m = list[0];
+        m.mes = reply.text; m.swipes = [reply.text]; m.swipe_id = 0;
+        if (Array.isArray(m.swipe_info)) m.swipe_info = m.swipe_info.slice(0, 1);
+        m.extra = { ...(m.extra || {}) }; delete m.extra.display_text;
+    }
+    await Promise.resolve((c.saveChat || c.saveChatConditional)?.call(c));
+}
+// Show the new #0 after the memory is in place: redraw that message when SillyTavern offers it,
+// otherwise reload the chat view (which reads the saved chat and metadata back).
+async function showCarried() {
+    const c = ctx();
+    if (typeof c.updateMessageBlock === 'function' && typeof document !== 'undefined' && document.querySelector('#chat .mes[mesid="0"]')) c.updateMessageBlock(0, chat()[0]);
+    else await Promise.resolve(c.reloadCurrentChat?.()).catch(() => {});
 }
 async function renameSave(id) {
     const save = findSave(id);
     if (!save) return;
-    const name = await askText(save.auto ? '이름 (이름을 붙이면 세이브 슬롯으로 따로 보관돼요)' : '새 이름', save.auto ? '' : save.name);
+    // AUTO and QUICK cards: "사본 저장" keeps the original and makes a named FILE slot from it.
+    const copy = save.auto || save.quick;
+    const name = await askText(copy ? '다른 이름으로 저장' : '새 이름', copy ? `${save.char || 'Save'} · ${save.stats?.lastTitle || ''}`.slice(0, 60) : save.name);
     if (!name) return;
     try {
-        if (save.local) { const r = localSaves()[id]; r.name = name; if (r.auto) { r.auto = false; } saveSettings(); render(); return; }
-        await vault.rename(id, name, newId());
+        if (save.local) {
+            const r = localSaves()[id];
+            if (copy) { const nid = newId(); localSaves()[nid] = { ...clone(r), id: nid, name, auto: false, quick: false, created: Date.now(), updated: Date.now() }; delete localSaves()[nid].roomHash; }
+            else r.name = name;
+            saveSettings(); render();
+        } else await vault.rename(id, name, newId());
+        if (copy) toastr.success(`"${name}" FILE 슬롯으로 저장했어요. 원래 카드는 그대로예요.`);
     } catch (e) { reportError(e); }
 }
 async function deleteSave(id) {
@@ -1698,7 +1791,7 @@ async function importFile(file) {
     if (!n) toastr.error('가져올 수 있는 세이브가 없었어요.');
     else toastr[local ? 'warning' : 'success'](`세이브 슬롯 ${n}개를 가져왔어요.${local ? ` (${local}개는 서버 백업 실패로 설정에만 저장)` : ''}`);
 }
-const FOUND_SOURCE = { index: '목록', prev: '이전 목록', room: '이 방 오토세이브 이름' };
+const FOUND_SOURCE = { index: '목록', prev: '이전 목록', room: '이 방 오토세이브·QUICK 이름' };
 async function findBackups() {
     if (!vault.online) { toastr.warning('서버 저장소에 연결할 수 없어요.'); return; }
     ui.found = { loading: true, list: [] }; ui.tab = 'saves'; render(true);
@@ -2232,30 +2325,56 @@ function roomLabel(room) {
     return m ? `${m[1]} ${m[2].padStart(2, '0')}:${m[3]} 채팅` : (chatName || '알 수 없는 방');
 }
 function roomChar(room) { try { return String(JSON.parse(room)[0] || ''); } catch { return ''; } }
+const slotKind = sv => (sv.quick ? 'QUICK' : sv.auto ? 'AUTO' : 'FILE');
+// The scene title at the time the save was made (old saves may not have one).
+const saveTitle = sv => String(sv?.stats?.lastTitle || '').trim();
 function saveCard(sv, st, { showRoom = false, autoRank = 0 } = {}) {
     const s = sv.stats || {};
     const linked = st?.linkedSave === sv.id;
+    const kind = slotKind(sv);
     const genLabel = sv.auto ? ['최신', '이전', '그 전'][autoRank] || '' : '';
-    return `<div class="sp-card sp-save ${sv.auto ? 'sp-auto' : ''} ${linked ? 'sp-linked' : ''}">
-        <div class="sp-save-h"><span class="sp-slot">${sv.auto ? 'AUTO' : 'FILE'}</span><span class="sp-save-n">${esc(sv.name)}</span>${genLabel ? `<span class="sp-badge">${genLabel}</span>` : ''}${linked ? '<span class="sp-badge sp-badge-on" title="이 방에서 마지막으로 저장하거나 불러온 슬롯이에요">▶ 플레이 중</span>' : ''}${sv.local ? '<span class="sp-badge sp-badge-warn">설정에만 있음</span>' : ''}</div>
-        <div class="sp-save-meta">${showRoom ? `📁 ${esc(roomLabel(sv.room))} · ` : ''}${esc(sv.char || '')} · ${fmtDate(sv.updated)}</div>
+    const title = saveTitle(sv);
+    const copy = kind !== 'FILE';
+    return `<div class="sp-card sp-save sp-save-${kind.toLowerCase()} ${sv.auto ? 'sp-auto' : ''} ${linked ? 'sp-linked' : ''}">
+        <div class="sp-save-h"><span class="sp-slot">${kind}</span><span class="sp-save-n">${esc(sv.name)}</span>${genLabel ? `<span class="sp-badge">${genLabel}</span>` : ''}${linked ? '<span class="sp-badge sp-badge-on" title="이 방에서 마지막으로 저장하거나 불러온 슬롯이에요">▶ 플레이 중</span>' : ''}${sv.local ? '<span class="sp-badge sp-badge-warn" title="서버에 쓰지 못해 설정에만 있어요">설정에만</span>' : ''}</div>
+        ${title ? `<div class="sp-save-title" title="저장 당시 장면">🎬 ${esc(title)}</div>` : ''}
+        <div class="sp-save-meta">${showRoom ? `🗝️ ${esc(roomLabel(sv.room))} · ` : ''}${esc(sv.char || '')} · ${fmtDate(sv.updated)}</div>
         <div class="sp-save-stats"><span>장면 ${s.scenes ?? 0}</span><span>메시지 ${sv.msgCount ?? 0}</span><span>❗ ${s.openQuests ?? 0}</span>${s.place ? `<span>📍 ${esc(s.place)}</span>` : ''}</div>
         <div class="sp-row">${btn('load', sv.id, '불러오기', '이 방의 기억을 이 슬롯으로 바꿔요. 슬롯은 저장을 누를 때만 덮어써요', 'sp-primary')}
-            ${sv.auto ? '' : btn('save-over', sv.id, '저장', '이 슬롯을 지금 기억으로 덮어써요')}${btn('save-rename', sv.id, '이름')}${btn('save-export', sv.id, '📤', '이 슬롯을 .json 파일로 내보내기')}${btn('save-del', sv.id, '삭제', '', 'sp-danger')}</div></div>`;
+            ${copy ? btn('save-rename', sv.id, '사본 저장', '이 시점을 이름 붙인 FILE 슬롯으로 따로 저장해요. 이 카드는 그대로예요')
+                : btn('save-over', sv.id, '저장', '이 슬롯을 지금 기억으로 덮어써요') + btn('save-rename', sv.id, '이름', '이 슬롯의 이름을 바꿔요')}${btn('save-export', sv.id, '📤', '이 슬롯을 .json 파일로 내보내기')}${btn('save-del', sv.id, '삭제', '', 'sp-danger')}</div></div>`;
 }
 function cardsOf(list, st, opts) {
     const rank = {};
     return list.map(sv => saveCard(sv, st, { ...opts, autoRank: sv.auto ? (rank[sv.roomHash] = (rank[sv.roomHash] ?? -1) + 1) : 0 })).join('');
+}
+// A room folder: its name plus the scene title of the newest save made in it.
+function roomTitle(room, list) {
+    const newest = [...list].sort((a, b) => b.updated - a.updated).find(x => saveTitle(x));
+    return `🗝️ ${esc(roomLabel(room))}${newest ? ` · ${esc(saveTitle(newest))}` : ''}`;
+}
+function byRoom(list) {
+    const rooms = new Map();
+    for (const sv of list) { if (!rooms.has(sv.room)) rooms.set(sv.room, []); rooms.get(sv.room).push(sv); }
+    // Rooms with the newest save first.
+    return [...rooms.entries()].sort((a, b) => Math.max(...b[1].map(x => x.updated)) - Math.max(...a[1].map(x => x.updated)));
 }
 function groupBox(key, title, count, body, openByDefault) {
     const open = ui.savesOpen.has(key) ? ui.savesOpen.get(key) : openByDefault;
     return `<details class="sp-savegroup" data-group="${esc(key)}" ${open ? 'open' : ''}><summary><span class="sp-group-h">${title} <span>${count}</span></span></summary>${body}</details>`;
 }
 // Other characters: one folder per character card.
+// Other characters: one folder per character; inside it one folder per room when there are several.
 function otherCharsHtml(list, st, order) {
     const byChar = new Map();
     for (const sv of list) { const k = roomChar(sv.room) || sv.char || '?'; if (!byChar.has(k)) byChar.set(k, []); byChar.get(k).push(sv); }
-    return [...byChar.entries()].map(([k, l]) => groupBox('char:' + k, `🃏 ${esc(l[0].char || k)}`, l.length, cardsOf(order(l), st, { showRoom: true }), false)).join('');
+    return [...byChar.entries()].map(([k, l]) => {
+        const rooms = byRoom(l);
+        const body = rooms.length > 1
+            ? rooms.map(([room, rl]) => groupBox(`room:${room}`, roomTitle(room, rl), rl.length, cardsOf(order(rl), st, {}), false)).join('')
+            : cardsOf(order(l), st, { showRoom: true });
+        return groupBox('char:' + k, `👾 ${esc(l[0].char || k)}`, l.length, body, false);
+    }).join('');
 }
 function savesHtml(st) {
     const saves = listSaves();
@@ -2263,20 +2382,23 @@ function savesHtml(st) {
     const top = `<div class="sp-addbar">${btn('save-new', '', '＋ 새 세이브 슬롯')}${btn('export-room', '', '📤 세이브 내보내기', '이 방 기억을 .json 파일로 내려받아요')}
         ${btn('import', '', '📥 세이브 가져오기', '.json 파일에서 슬롯으로 불러와요')}${btn('find', '', '🔍 백업 찾기', '서버에 남은 백업을 찾아 보여 줘요 (아무것도 바꾸지 않아요)')}
         ${btn('clear-room', '', '리셋', '이 방의 기억을 모두 지워요 (세이브 슬롯은 남아요)', 'sp-danger')}</div>${vaultLine()}${notice}${foundHtml()}`;
-    if (!saves.length) return top + '<div class="sp-empty">세이브 슬롯이 없어요. 기억이 기록되면 방마다 오토세이브가 생겨요(최근 3개).</div>';
+    if (!saves.length) return top + '<div class="sp-empty">세이브 슬롯이 없어요. 퀵세이브하면 방마다 QUICK이, 기억이 바뀔 때마다 오토세이브가 생겨요(최근 3개).</div>';
     const here = roomKey(), charKey = charInfo()?.key || '';
-    // Manual slots always on top, in the order they were made (renaming or saving does not move them);
-    // autosaves below, newest first.
-    const order = list => [...list.filter(x => !x.auto).sort((a, b) => (b.created || 0) - (a.created || 0)),
+    // QUICK first, then manual slots in the order they were made (renaming or saving does not move
+    // them), then autosaves, newest first.
+    const order = list => [...list.filter(x => x.quick),
+        ...list.filter(x => !x.auto && !x.quick).sort((a, b) => (b.created || 0) - (a.created || 0)),
         ...list.filter(x => x.auto).sort((a, b) => b.updated - a.updated)];
     const thisRoom = order(saves.filter(x => x.room === here));
     const sameChar = saves.filter(x => x.room !== here && roomChar(x.room) === charKey);
     const others = saves.filter(x => x.room !== here && roomChar(x.room) !== charKey);
-    const byRoom = new Map();
-    for (const sv of sameChar) { if (!byRoom.has(sv.room)) byRoom.set(sv.room, []); byRoom.get(sv.room).push(sv); }
-    const roomBoxes = [...byRoom.entries()].map(([room, list]) =>
-        groupBox('room:' + room, `📁 ${esc(roomLabel(room))}`, list.length, cardsOf(order(list), st, {}), false)).join('');
-    return top
+    const roomBoxes = byRoom(sameChar).map(([room, list]) =>
+        groupBox('room:' + room, roomTitle(room, list), list.length, cardsOf(order(list), st, {}), false)).join('');
+    // A room without memory yet (a new chat): offer the newest QUICK of this character's other rooms first.
+    const resume = !hasMemory(st?.mem) ? sameChar.filter(x => x.quick).sort((a, b) => b.updated - a.updated).slice(0, 3) : [];
+    const resumeBox = resume.length ? `<div class="sp-resume"><div class="sp-aspect">이어하기 · 다른 방의 최근 QUICK</div>
+        <div class="sp-dim">불러오면 저장 당시 마지막 캐릭터 메시지로 이 방을 시작할 수 있어요.</div>${cardsOf(resume, st, { showRoom: true })}</div>` : '';
+    return top + resumeBox
         + groupBox('here', '이 방', thisRoom.length, thisRoom.length ? cardsOf(thisRoom, st, {}) : '<div class="sp-dim">이 방에서 만든 세이브가 아직 없어요.</div>', true)
         + (sameChar.length ? groupBox('char', `${esc(charInfo()?.name || '이 캐릭터')}의 다른 방`, sameChar.length, roomBoxes, false) : '')
         + (others.length ? groupBox('others', '다른 캐릭터', others.length, otherCharsHtml(others, st, order), false) : '');
@@ -2436,8 +2558,10 @@ function render(force = false) {
     const counts = st ? {
         queue: st.lootQueue?.length || 0, journal: st.mem.scenes.length, quests: st.mem.records.filter(r => r.type === 'quest' && r.status === 'open').length,
         party: st.mem.entities.filter(e => e.type === 'person').length, items: st.mem.records.filter(r => r.type === 'item').length,
-        world: st.mem.records.filter(r => r.type === 'world').length, saves: listSaves().length,
+        world: st.mem.records.filter(r => r.type === 'world').length,
     } : {};
+    // The save tab counts this room's QUICK + AUTO + FILE, like every other tab counts this room.
+    if (hasChat()) counts.saves = listSaves().filter(x => x.room === roomKey()).length;
     const tabs = TABS.map(([k, icon, label]) => `<button class="sp-tab ${ui.tab === k ? 'sp-active' : ''}" data-act="tab" data-id="${k}"><span class="sp-ti">${icon}</span><span>${label}</span>${counts[k] ? `<em>${counts[k]}</em>` : ''}</button>`).join('');
     let body;
     if (!hasChat()) body = '<div class="sp-empty">채팅방을 열면 그 방의 기억이 여기에 보여요.</div>';

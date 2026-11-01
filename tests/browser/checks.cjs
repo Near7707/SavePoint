@@ -125,7 +125,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         __savePoint.handle('tab', 'saves');
     });
     r = await ev(() => ({ here: $('details[data-group="here"] .sp-save-n').map((i, e) => e.textContent).get(), chars: $('details[data-group^="char:"] > summary').map((i, e) => e.textContent.trim()).get() }));
-    ok(r.here[0] === 'Second' && r.here[1] === 'First renamed' && r.here.slice(2).every(n => n.startsWith('오토세이브')), `7. 직접 만든 슬롯은 맨 위, 만든 순서로 고정 (${r.here.slice(0, 3).join(' / ')})`);
+    ok(r.here[0].startsWith('퀵세이브') && r.here[1] === 'Second' && r.here[2] === 'First renamed' && r.here.slice(3).every(n => n.startsWith('오토세이브')), `7. QUICK 다음에 직접 만든 슬롯이 만든 순서로 고정 (${r.here.slice(0, 4).join(' / ')})`);
     ok(r.chars.length === 2 && r.chars.some(t => t.includes('Wren')) && r.chars.some(t => t.includes('Ivy')), '7. 다른 캐릭터는 캐릭터 카드별로 묶음');
 
     // 8. bare names instead of ids are linked; nothing to retry

@@ -15,7 +15,7 @@ function harness({ count = 20, chars = 30, reserve = 2, keep = 0, limit = 60000 
     const source = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8').replace(/^import\s*\{([\s\S]*?)\}\s*from\s*['"][^'"]+['"];\n/gm, (_, list) => {
         names.push(...list.split(',').map(x => x.trim()).filter(Boolean)); return '';
     });
-    const writes = [], calls = [], notices = [], backups = [], checks = [];
+    const writes = [], calls = [], notices = [], backups = [], checks = [], quicks = [];
     const context = { characterId: 0, characters: [{ name: 'Participant', avatar: 'participant.png' }], chatId: 'room-A',
         chat: [], chatMetadata: {}, extensionSettings: { savePoint: { profileId: 'fake', autoEvery: 20, autoReserve: reserve, keepRecent: keep, inputChars: limit, check: false } },
         setExtensionPrompt() {}, saveSettingsDebounced() {},
@@ -25,10 +25,11 @@ function harness({ count = 20, chars = 30, reserve = 2, keep = 0, limit = 60000 
             writes.push(structuredClone(context.chatMetadata.savePoint));
         } };
     const toast = Object.fromEntries(['info', 'error', 'warning', 'success'].map(k => [k, msg => notices.push([k, msg])]));
-    const app = new Function(...names, 'SillyTavern', 'jQuery', 'toastr', 'backups', 'checks', 'console', source + `
+    const app = new Function(...names, 'SillyTavern', 'jQuery', 'toastr', 'backups', 'checks', 'quicks', 'console', source + `
         setHidden = (m, i, hidden) => { m.is_system = !!hidden; };
         render = () => {}; persistSoon = () => {}; saveChatSoon = () => {};
         autosave = st => { if (st) backups.push({ lastIndex: st.lastIndex, mem: clone(st.mem) }); };
+        quickSave = async st => { quicks.push(st.lastIndex); return null; };
         queueCheck = (st, before, opts) => checks.push(opts);
         const realEnd = endRun; let lastNotice;
         endRun = run => { lastNotice = clone(run.notice); realEnd(run); };
@@ -36,8 +37,8 @@ function harness({ count = 20, chars = 30, reserve = 2, keep = 0, limit = 60000 
             addLoot, saveRecord, hudHtml, syncHide, ui, RequestTimeout, Cancelled,
             notice: () => lastNotice, setModel(fn) { llm = fn; },
             setSlot(rec) { findSave = () => rec; readSave = async () => rec; confirmBox = async () => true; } };
-    `)(...names.map(n => imported[n]), { getContext: () => context }, () => {}, toast, backups, checks, { error() {}, warn() {} });
-    const h = { app, context, writes, calls, notices, backups, checks, writeCount: 0, failWriteAt: Infinity, failAt: Infinity };
+    `)(...names.map(n => imported[n]), { getContext: () => context }, () => {}, toast, backups, checks, quicks, { error() {}, warn() {} });
+    const h = { app, context, writes, calls, notices, backups, checks, quicks, writeCount: 0, failWriteAt: Infinity, failAt: Infinity };
     h.add = (n, text = i => 'A participant continued walking. ' + 'x'.repeat(chars) + ' END' + i) => {
         for (let k = 0; k < n; k++) { const i = context.chat.length; context.chat.push({ name: 'Participant', mes: text(i), is_user: false, extra: {} }); }
     };
@@ -199,6 +200,7 @@ test('an empty retained tail is shown separately from the last actual saved rang
 test('room transfer preserves the open scene and starts recording with local message numbers', async () => {
     const h = harness(); await h.app.summarize(); const sid = h.app.state().mem.scenes[0].id;
     const rec = h.app.saveRecord(h.app.state(), 'A slot', 'slot', false); h.app.setSlot(rec);
+    delete rec.lastReply;   // memory-only transfer (carrying the last reply is tested below)
     h.context.chatId = 'room-B'; h.context.chat = []; h.context.chatMetadata = {};
     await h.app.loadSave('slot'); h.add(20); await h.app.autoCollect();
     const st = h.app.state(); assert.equal(st.lastIndex, 17); assert.equal(st.mem.scenes.length, 1);
@@ -219,4 +221,60 @@ test('cancelled checkpoints retain the interval mark and can be saved manually',
     assert.equal(h.app.state().autoLast.status, 'cancelled'); assert.equal(h.app.state().autoMark, 19);
     h.add(1); await h.app.autoCollect(); assert.equal(h.calls.length, 1);
     h.model = null; await h.app.summarize(); assert.equal(h.app.state().lastIndex, 20);
+});
+
+// v0.6.31: QUICK and starting a new room from the save's last character message.
+test('QUICK is written only after a complete manual quicksave, also when nothing new was collected', async () => {
+    const h = harness(); await h.app.autoCollect();
+    assert.deepEqual(h.quicks, [], 'a checkpoint never writes QUICK');
+    h.failAt = 2; h.add(30); await h.app.summarize();
+    assert.deepEqual(h.quicks, [], 'a partial manual save keeps the previous QUICK');
+    h.failAt = Infinity; await h.app.summarize();
+    assert.deepEqual(h.quicks, [h.app.state().lastIndex]);
+    await h.app.summarize();
+    assert.equal(h.quicks.length, 2, 'pressed again with nothing new: current memory becomes QUICK');
+});
+
+function moveTo(h, chat) { h.context.chatId = 'room-B'; h.context.chat = chat; h.context.chatMetadata = {}; }
+const greeting = () => ({ name: 'Participant', mes: 'Welcome to the very first scene.', is_user: false, extra: {} });
+
+test('new room with only a greeting: #0 becomes the recorded reply and collection starts at #1', async () => {
+    const h = harness(); await h.app.summarize();
+    const rec = h.app.saveRecord(h.app.state(), 'Q', 'slot', false, { quick: true }); h.app.setSlot(rec);
+    assert.equal(rec.lastReply.index, 19); assert.equal(rec.lastReply.recorded, true);
+    moveTo(h, [greeting()]);
+    await h.app.loadSave('slot');
+    const st = h.app.state();
+    assert.equal(h.context.chat.length, 1); assert.equal(h.context.chat[0].mes, rec.lastReply.text);
+    assert.equal(st.lastIndex, 0); assert.equal(st.carry.index, 19); assert.equal(st.linkedSave, null, 'QUICK is never linked for overwriting');
+    h.add(3); const before = h.calls.length; await h.app.summarize();
+    const sent = h.calls.slice(before).join('\n');
+    assert(!/^#0 /m.test(sent) && /^#1 /m.test(sent), 'the carried #0 is not collected again');
+});
+
+test('a reply that was not yet recorded (checkpoint reserve) is carried but collected in the new room', async () => {
+    const h = harness(); await h.app.autoCollect();   // #18-#19 held back
+    const rec = h.app.saveRecord(h.app.state(), 'A', 'slot', true); h.app.setSlot(rec);
+    assert.equal(rec.lastReply.recorded, false); assert.equal(rec.lastReply.pending, 2);
+    moveTo(h, []);
+    await h.app.loadSave('slot');
+    assert.equal(h.context.chat[0].mes, rec.lastReply.text);
+    assert.equal(h.app.state().lastIndex, -1, 'nothing skipped');
+    const before = h.calls.length; await h.app.summarize();
+    assert(/^#0 /m.test(h.calls.slice(before).join('\n')));
+});
+
+test('a pasted identical #0 is linked without changes; an edited paste or a room with its own story is left alone', async () => {
+    const h = harness(); await h.app.summarize();
+    const rec = h.app.saveRecord(h.app.state(), 'Q', 'slot', false, { quick: true }); h.app.setSlot(rec);
+    moveTo(h, [{ name: 'Participant', mes: `  ${rec.lastReply.text}\r\n`, is_user: false, extra: {} }, { name: 'Me', mes: 'Hi again.', is_user: true, extra: {} }]);
+    await h.app.loadSave('slot');
+    assert.equal(h.app.state().lastIndex, 0); assert.equal(h.context.chat.length, 2);
+    moveTo(h, [{ name: 'Participant', mes: rec.lastReply.text + ' (edited)', is_user: false, extra: {} }, { name: 'Me', mes: 'Hi.', is_user: true, extra: {} }]);
+    await h.app.loadSave('slot');
+    assert.equal(h.app.state().lastIndex, -1); assert(h.context.chat[0].mes.endsWith('(edited)'));
+    moveTo(h, [{ name: 'Me', mes: rec.lastReply.text, is_user: true, extra: {} }]);
+    await h.app.loadSave('slot');
+    assert.equal(h.app.state().lastIndex, -1, 'pasted as a user message: not treated as the carried reply');
+    assert.equal(h.context.chat[0].is_user, true);
 });
