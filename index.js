@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.29';
+const VERSION = '0.6.30';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -52,7 +52,7 @@ const KIND_KO = {
 };
 const QUEST_ICON = { promise: '🤝', goal: '🎯', debt: '💰', mystery: '❓' };
 
-const ui = { open: false, tab: 'journal', run: null, progress: '', edit: null, inj: null, lastError: null, found: null, savesOpen: new Map() };
+const ui = { open: false, tab: 'journal', run: null, progress: '', edit: null, inj: null, lastError: null, found: null, savesOpen: new Map(), scrollPositions: new Map() };
 let roomEpoch = 0;
 let mainGenerating = false;
 let persistTimer = null;
@@ -2426,7 +2426,12 @@ function render(force = false) {
     const st = state();
     const s = settings();
     win.attr('data-theme', s.theme in THEMES ? s.theme : 'jrpg');
-    const scroll = win.find('.sp-body').scrollTop() || 0;
+    // ui.tab and the current room may already have changed. Save the old body under the
+    // room/tab it actually displays, then restore the target's own position (initially top).
+    const oldBody = win.find('.sp-body')[0];
+    if (oldBody?.dataset.scrollKey) ui.scrollPositions.set(oldBody.dataset.scrollKey, oldBody.scrollTop);
+    const scrollKey = JSON.stringify([roomKey(), ui.tab]);
+    const scroll = ui.scrollPositions.get(scrollKey) ?? 0;
     const tabScroll = win.find('.sp-tabs').scrollLeft() || 0;
     const counts = st ? {
         queue: st.lootQueue?.length || 0, journal: st.mem.scenes.length, quests: st.mem.records.filter(r => r.type === 'quest' && r.status === 'open').length,
@@ -2447,7 +2452,7 @@ function render(force = false) {
                 <button class="sp-btn sp-mini" data-act="close" title="닫기">✕</button></div></div>
         ${hasChat() ? hudHtml(st) : ''}
         <div class="sp-tab-nav"><button type="button" class="sp-tab-arrow" data-tab-scroll="prev" aria-label="이전 탭 보기" title="이전 탭 보기">‹</button><div class="sp-tabs">${tabs}</div><button type="button" class="sp-tab-arrow" data-tab-scroll="next" aria-label="다음 탭 보기" title="다음 탭 보기">›</button></div>
-        <div class="sp-body">${body}</div>`);
+        <div class="sp-body" data-scroll-key="${esc(scrollKey)}">${body}</div>`);
     win.find('.sp-body').scrollTop(scroll);
     installTabNavigation(win.find('.sp-tab-nav .sp-tabs')[0], tabScroll);
     // A jump from the timeline: bring that part or quest into view and mark it briefly.
