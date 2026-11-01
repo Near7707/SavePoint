@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.31';
+const VERSION = '0.6.32';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -1537,7 +1537,11 @@ const vault = new Vault(serverIO, { onChange: list => { settings().slotCache = l
 function localSaves() { return settings().localSaves; }
 function listSaves() {
     const listed = vault.ready && vault.online ? vault.entries : settings().slotCache;
-    return [...listed, ...Object.values(localSaves()).map(r => ({ ...r, local: true }))].sort((a, b) => b.updated - a.updated);
+    // A slot kept in settings after a failed server write is the newer copy of the same id
+    // (a QUICK, or an overwritten FILE): show only that one, so every card acts on what it shows.
+    const local = Object.values(localSaves()).map(r => ({ ...r, local: true }));
+    const mine = new Set(local.map(r => r.id));
+    return [...listed.filter(e => !mine.has(e.id)), ...local].sort((a, b) => b.updated - a.updated);
 }
 function findSave(id) { return listSaves().find(x => x.id === id) || null; }
 async function readSave(entry) {
@@ -1642,6 +1646,11 @@ async function loadSave(id) {
     if (ui.run) return;
     const save = findSave(id);
     if (!save || !hasChat()) return;
+    // Everything below belongs to the room the load was started in. Each wait (file read, questions)
+    // can outlast a room change; then nothing is changed anywhere.
+    const key = roomKey(), epoch = roomEpoch;
+    const here = () => roomKey() === key && roomEpoch === epoch;
+    const moved = () => { toastr.info('불러오는 동안 채팅방이 바뀌어서 아무것도 바꾸지 않았어요.', 'SavePoint'); };
     let mem, sourceRoom, reply = null;
     try {
         const body = await readSave(save);
@@ -1649,34 +1658,49 @@ async function loadSave(id) {
         sourceRoom = typeof body?.room === 'string' ? body.room : typeof save.room === 'string' ? save.room : null;
         reply = validReply(body?.lastReply);
     } catch (e) { reportError(e); return; }
+    if (!here()) return moved();
     const cur = state();
     // A new room can start from the save's last character message (see carryPlan).
-    const plan = sourceRoom !== roomKey() ? carryPlan(reply) : null;
+    const plan = sourceRoom !== key ? carryPlan(reply) : null;
+    const replaces = cur && hasMemory(cur.mem) ? ' 이 방의 지금 기억은 이 세이브로 바뀌어요(⏪ 리와인드 가능).' : '';
     if (plan?.kind === 'insert') {
         const warn = reply.recorded && !reply.after ? '' : `\n\n⚠ ${carryGap(reply)} 이전 방에서 퀵세이브한 뒤 QUICK으로 불러오면 빠지는 내용이 없어요. 그대로 진행하면 이 메시지는 새로 기록해요.`;
-        plan.use = await confirmBox(`저장 당시 마지막 캐릭터 메시지(이전 방 #${reply.index})로 이 방을 시작할까요?\n${chat().length ? '첫 인사말을 그 메시지로 바꿔요.' : '그 메시지를 첫 메시지로 넣어요.'} 아니요를 누르면 기억만 불러와요.${cur && hasMemory(cur.mem) ? ' 어느 쪽이든 이 방의 지금 기억은 이 세이브로 바뀌어요(⏪ 리와인드 가능).' : ''}${warn}`);
+        plan.use = await confirmBox(`저장 당시 마지막 캐릭터 메시지(이전 방 #${reply.index})로 이 방을 시작할까요?\n${chat().length ? '첫 인사말을 그 메시지로 바꿔요.' : '그 메시지를 첫 메시지로 넣어요.'}${replaces}${warn}`);
+        if (!here()) return moved();
+        // "No" is not yet "memory only": ask once more so the whole load can still be cancelled.
+        if (!plan.use && !(await confirmBox(`메시지는 그대로 두고 기억만 불러올까요?${replaces}\n아니요를 누르면 아무것도 바꾸지 않아요.`))) return;
     } else if (cur && hasMemory(cur.mem) && !(await confirmBox('이 방의 지금 기억을 이 세이브 슬롯으로 바꿀까요? (⏪ 리와인드로 되돌릴 수 있어요)'))) return;
-    if (plan?.kind === 'insert' && plan.use) {
-        try { await startFromReply(reply); } catch (e) { reportError(e); return; }
+    if (!here()) return moved();
+    const insert = plan?.kind === 'insert' && plan.use;
+    let undoMessage = null, st = null, exact = false, carried = false;
+    // The new #0, the room's memory and the chat's "edited" mark are written by the same chat-file save,
+    // so they are kept together or dropped together.
+    try {
+        const ok = await transact(() => {
+            if (!here()) return false;
+            if (insert) { undoMessage = putCarried(reply); ctx().chatMetadata.tainted = true; }
+            st = freshState({ mem, lootQueue: clone(cur?.lootQueue || []), linkedSave: save.auto || save.quick ? null : id, autoMark: chat().length - 1 });
+            const p = save.pos;
+            if (p && Number.isInteger(p.lastIndex) && p.lastIndex >= 0 && p.lastIndex < chat().length) {
+                const h = hashesTo(p.lastIndex);
+                if (digest(h) === p.digest) { exact = true; st.lastIndex = p.lastIndex; st.hashes = h; st.floor = p.lastIndex; }
+            }
+            if (!exact) st.mem = detachMem(mem, sourceRoom);
+            // #0 is the carried reply: when it was already in memory, the new room starts collecting at #1.
+            carried = !exact && (plan?.kind === 'match' || insert) && carryMatches(reply);
+            if (carried) {
+                st.carry = { room: sourceRoom, index: reply.index, recorded: reply.recorded, at: Date.now() };
+                if (reply.recorded) { st.lastIndex = 0; st.hashes = hashesTo(0); st.floor = 0; }
+            }
+            if (cur) st.lootQueue = restoreLostLoot(cur.lootQueue, cur.mem, st.mem, { room: key, hashes: cur.hashes, fallback: cur.undo?.lootQueue });
+            ctx().chatMetadata[MODULE] = st;
+        });
+        if (ok === false) return moved();
+    } catch (e) {
+        if (undoMessage) { undoMessage(); if (here()) await showCarried(); }
+        reportError(e); return;
     }
-    const st = freshState({ mem, lootQueue: clone(cur?.lootQueue || []), linkedSave: save.auto || save.quick ? null : id, autoMark: chat().length - 1 });
-    const p = save.pos;
-    let exact = false;
-    if (p && Number.isInteger(p.lastIndex) && p.lastIndex >= 0 && p.lastIndex < chat().length) {
-        const h = hashesTo(p.lastIndex);
-        if (digest(h) === p.digest) { exact = true; st.lastIndex = p.lastIndex; st.hashes = h; st.floor = p.lastIndex; }
-    }
-    if (!exact) st.mem = detachMem(mem, sourceRoom);
-    // #0 is the carried reply: when it was already in memory, the new room starts collecting at #1.
-    const carried = !exact && (plan?.kind === 'match' || (plan?.kind === 'insert' && plan.use)) && carryMatches(reply);
-    if (carried) {
-        st.carry = { room: sourceRoom, index: reply.index, recorded: reply.recorded, at: Date.now() };
-        if (reply.recorded) { st.lastIndex = 0; st.hashes = hashesTo(0); st.floor = 0; }
-    }
-    if (cur) st.lootQueue = restoreLostLoot(cur.lootQueue, cur.mem, st.mem, { room: roomKey(), hashes: cur.hashes, fallback: cur.undo?.lootQueue });
-    try { await transact(() => { ctx().chatMetadata[MODULE] = st; }); }
-    catch (e) { reportError(e); return; }
-    if (plan?.kind === 'insert' && plan.use) await showCarried();
+    if (insert && here()) await showCarried();
     toastr.success(exact ? `저장 당시 위치(#${st.lastIndex})로 돌아갔어요. 그 뒤 메시지는 미기록이에요.`
         : carried && reply.recorded ? `이전 방 #${reply.index}에서 이어서 시작해요. #0은 이미 기록된 메시지라 새 기록은 #1부터예요.`
         : carried ? `이전 방 #${reply.index} 메시지로 시작했어요. 이 메시지는 아직 기록 전이라 다음 세이브 때 기록해요.`
@@ -1701,18 +1725,23 @@ function carryGap(reply) {
     if (!reply.recorded) return `이 세이브는 마지막 메시지 ${reply.pending}개가 아직 기록되지 않은 상태예요.`;
     return `이 세이브의 마지막 캐릭터 메시지 뒤에 메시지 ${reply.after}개가 더 있었는데, 그건 가져가지 않아요.`;
 }
-// Put the reply in as #0: an empty room gets a new message; a greeting-only room has its greeting
-// (and alternative greetings) replaced. Never used when the room already has other messages.
-async function startFromReply(reply) {
-    const c = ctx(), list = chat();
-    if (!list.length) list.push({ name: reply.name || charInfo()?.name || '', is_user: false, is_system: false, send_date: Date.now(), mes: reply.text, extra: {}, swipe_id: 0, swipes: [reply.text] });
-    else {
-        const m = list[0];
-        m.mes = reply.text; m.swipes = [reply.text]; m.swipe_id = 0;
-        if (Array.isArray(m.swipe_info)) m.swipe_info = m.swipe_info.slice(0, 1);
-        m.extra = { ...(m.extra || {}) }; delete m.extra.display_text;
+// Put the reply in as #0 (in the page only; the caller's chat-file save writes it): an empty room
+// gets a new message; a greeting-only room has its greeting replaced, including everything that
+// belonged to the greeting's text (alternative greetings, their swipe info, images, translations).
+// Returns a function that puts the room back exactly as it was if that save fails.
+function putCarried(reply) {
+    const list = chat();
+    const fresh = () => ({ send_date: Date.now(), extra: {} });
+    if (!list.length) {
+        list.push({ name: reply.name || charInfo()?.name || '', is_user: false, is_system: false, send_date: Date.now(), mes: reply.text, extra: {}, swipe_id: 0, swipes: [reply.text], swipe_info: [fresh()] });
+        return () => { list.splice(0, 1); };
     }
-    await Promise.resolve((c.saveChat || c.saveChatConditional)?.call(c));
+    const m = list[0], before = clone(m);
+    m.mes = reply.text; m.swipes = [reply.text]; m.swipe_id = 0; m.swipe_info = [fresh()];
+    // Only our own visibility marks are kept; any content-bound data of the old greeting goes.
+    const keep = Object.fromEntries([HIDE_KEY, VISIBLE_KEY].filter(k => m.extra && Object.hasOwn(m.extra, k)).map(k => [k, m.extra[k]]));
+    m.extra = keep;
+    return () => { for (const k of Object.keys(m)) delete m[k]; Object.assign(m, before); };
 }
 // Show the new #0 after the memory is in place: redraw that message when SillyTavern offers it,
 // otherwise reload the chat view (which reads the saved chat and metadata back).
@@ -1783,7 +1812,7 @@ async function importFile(file) {
         try {
             const mem = cleanMem(raw.mem);
             const { roomHash: _r, k: _k, file: _f, ...rest } = raw;
-            const res = await storeSave({ ...rest, id: newId(), auto: false, mem, name: String(raw.name || '가져온 세이브'), updated: Date.now(), created: raw.created || Date.now(), stats: memStats(mem), version: raw.version || VERSION });
+            const res = await storeSave({ ...rest, id: newId(), auto: false, quick: false, mem, name: String(raw.name || '가져온 세이브'), updated: Date.now(), created: raw.created || Date.now(), stats: memStats(mem), version: raw.version || VERSION });
             n++; if (res.local) local++;
         } catch (e) { console.warn('[SavePoint] import skipped', e); }
     }

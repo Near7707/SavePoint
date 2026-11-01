@@ -296,7 +296,7 @@ async function loadFixture(exact, mode = 'continue') {
         freshState: extra => ({ v: 1, mem: core.emptyMem(), lastIndex: -1, hashes: [], floor: -1, ...extra }),
         chat: () => currentChat, hashesTo: n => currentChat.slice(0, n + 1).map(m => m.mes), digest,
         transact: async fn => fn(), ctx: () => ({ chatMetadata: meta }), MODULE: 'savePoint',
-        pendingCount: () => currentChat.length, toastr: { success() {} }, reportError: e => { throw e; }, roomKey: () => 'room-B',
+        pendingCount: () => currentChat.length, toastr: { success() {} }, reportError: e => { throw e; }, roomKey: () => 'room-B', roomEpoch: 0,
     };
     const load = vm.runInNewContext(section('async function loadSave(', '\nasync function renameSave') + ';loadSave', box);
     await load('slot', mode);

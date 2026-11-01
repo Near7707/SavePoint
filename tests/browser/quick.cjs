@@ -110,6 +110,27 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     if (SHOTS) { await ev(() => { $('details[data-group="others"], details[data-group="char:wren.png"]').attr('open', ''); }); await page.screenshot({ path: path.join(OUT, 'quick-folders.png'), fullPage: true }); }
     ok(r.char.startsWith('👾') && r.rooms.length === 2 && r.rooms[0].includes('🗝️ 2026-02-01 09:30 채팅 · Night market'), `4. 캐릭터 👾 → 방 🗝️ 폴더, 최신 방 먼저·장면 제목 (${r.rooms.join(' | ')})`);
 
+    // 5. importing QUICK files gives independent FILE slots (two rooms' QUICKs do not replace each other)
+    const body = await ev(async () => { const q = __savePoint.listSaves().find(x => x.quick); return JSON.stringify(await __savePoint.vault.read(q)); });
+    const mk = (room, n) => JSON.stringify({ format: 'savepoint', saves: [{ ...JSON.parse(body), id: 'quick_x' + n, room, name: 'Imported ' + n }] });
+    for (const [n, room] of [[1, '["a.png","A - 2026-01-01@10h00m00s000ms"]'], [2, '["b.png","B - 2026-01-02@10h00m00s000ms"]']]) {
+        await page.setInputFiles('#sp_file', { name: `q${n}.json`, mimeType: 'application/json', buffer: Buffer.from(mk(room, n)) });
+        await page.waitForTimeout(500);
+    }
+    list = await saves();
+    const imp = list.filter(x => x.name.startsWith('Imported'));
+    ok(imp.length === 2 && imp.every(x => !x.quick && !x.auto), `5. 가져온 QUICK 2개는 각각 FILE 슬롯 (${imp.map(x => x.name).join(', ')})`);
+
+    // 6. a newer copy kept in settings (failed server write) is the only card for that id
+    r = await ev(() => {
+        const q = __savePoint.listSaves().find(x => x.quick && !x.local);
+        __savePoint.settings().localSaves[q.id] = { ...q, name: 'Newer local QUICK', updated: Date.now() + 1000, mem: __savePoint.state().mem };
+        const same = __savePoint.listSaves().filter(x => x.id === q.id);
+        delete __savePoint.settings().localSaves[q.id];
+        return same.map(x => [x.name, !!x.local]);
+    });
+    ok(r.length === 1 && r[0][0] === 'Newer local QUICK' && r[0][1], `6. 같은 ID는 설정에 보관한 최신 사본 하나만 표시 (${JSON.stringify(r)})`);
+
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();

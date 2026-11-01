@@ -36,7 +36,8 @@ function harness({ count = 20, chars = 30, reserve = 2, keep = 0, limit = 60000 
         return { ensureState, state, settings, summarize, autoCollect, autoCount, autoBlocked, reconcile, undo, loadSave,
             addLoot, saveRecord, hudHtml, syncHide, ui, RequestTimeout, Cancelled,
             notice: () => lastNotice, setModel(fn) { llm = fn; },
-            setSlot(rec) { findSave = () => rec; readSave = async () => rec; confirmBox = async () => true; } };
+            setSlot(rec) { findSave = () => rec; readSave = async () => rec; confirmBox = async () => true; },
+            setConfirm(fn) { confirmBox = fn; } };
     `)(...names.map(n => imported[n]), { getContext: () => context }, () => {}, toast, backups, checks, quicks, { error() {}, warn() {} });
     const h = { app, context, writes, calls, notices, backups, checks, quicks, writeCount: 0, failWriteAt: Infinity, failAt: Infinity };
     h.add = (n, text = i => 'A participant continued walking. ' + 'x'.repeat(chars) + ' END' + i) => {
@@ -277,4 +278,46 @@ test('a pasted identical #0 is linked without changes; an edited paste or a room
     await h.app.loadSave('slot');
     assert.equal(h.app.state().lastIndex, -1, 'pasted as a user message: not treated as the carried reply');
     assert.equal(h.context.chat[0].is_user, true);
+});
+
+test('room change while the continue question is open: nothing changes in either room', async () => {
+    const h = harness(); await h.app.summarize();
+    const rec = h.app.saveRecord(h.app.state(), 'Q', 'slot', false, { quick: true }); h.app.setSlot(rec);
+    const roomB = [greeting()]; moveTo(h, roomB);
+    h.app.setConfirm(async () => { h.context.chatId = 'room-C'; h.context.chat = [greeting(), { name: 'Me', mes: 'Other story.', is_user: true, extra: {} }]; h.context.chatMetadata = {}; return true; });
+    await h.app.loadSave('slot');
+    assert.equal(roomB[0].mes, greeting().mes, 'the first room keeps its greeting');
+    assert.equal(h.context.chatMetadata.savePoint, undefined, 'the room now open gets no memory');
+    assert(h.notices.some(([, m]) => m.includes('채팅방이 바뀌어서')));
+});
+
+test('carried #0 replaces the greeting with its content-bound data, marks the chat edited, and rolls back on a failed save', async () => {
+    const h = harness(); await h.app.summarize();
+    const rec = h.app.saveRecord(h.app.state(), 'Q', 'slot', false, { quick: true }); h.app.setSlot(rec);
+    const g = () => ({ ...greeting(), swipe_id: 1, swipes: ['Welcome to the very first scene.', 'Alt greeting'],
+        swipe_info: [{ extra: { image: 'a.png', display_text: 'old translation' } }, { extra: {} }], extra: { image: 'a.png', display_text: 'old translation', inline_image: true } });
+    moveTo(h, [g()]);
+    await h.app.loadSave('slot');
+    const m = h.context.chat[0];
+    assert.equal(m.mes, rec.lastReply.text); assert.deepEqual(m.swipes, [rec.lastReply.text]); assert.equal(m.swipe_id, 0);
+    assert.deepEqual(Object.keys(m.extra).filter(k => k !== 'savepointHidden'), [], 'only our own hide mark remains'); assert.equal(m.swipe_info.length, 1); assert.deepEqual(m.swipe_info[0].extra, {});
+    assert.equal(h.context.chatMetadata.tainted, true, 'SillyTavern will not regenerate the greeting over it');
+    // A failed chat-file save puts the greeting back and stores no memory.
+    moveTo(h, [g()]); h.failWriteAt = h.writeCount + 1;
+    await h.app.loadSave('slot');
+    assert.deepEqual(h.context.chat[0], g()); assert.equal(h.context.chatMetadata.savePoint, undefined);
+});
+
+test('answering no twice cancels the whole load', async () => {
+    const h = harness(); await h.app.summarize();
+    const rec = h.app.saveRecord(h.app.state(), 'Q', 'slot', false, { quick: true }); h.app.setSlot(rec);
+    moveTo(h, [greeting()]);
+    const asked = []; h.app.setConfirm(async text => { asked.push(text); return false; });
+    await h.app.loadSave('slot');
+    assert.equal(asked.length, 2); assert(asked[1].includes('기억만'));
+    assert.equal(h.context.chat[0].mes, greeting().mes); assert.equal(h.context.chatMetadata.savePoint, undefined);
+    h.app.setConfirm(async text => !text.includes('마지막 캐릭터 메시지'));
+    await h.app.loadSave('slot');
+    assert.equal(h.context.chat[0].mes, greeting().mes, 'memory only: greeting kept');
+    assert(h.context.chatMetadata.savePoint && h.app.state().lastIndex === -1);
 });
