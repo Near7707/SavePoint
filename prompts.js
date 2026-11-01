@@ -63,7 +63,7 @@ export const OUTPUT_FORMAT = `Return ONLY one JSON object, with the fields in th
       "time": { "mode": "present" | "flashback", "start": <time stamp>, "end": <time stamp> },
       "points": [ { "text": "one line, about 20 words", "kind": "change" | "moment", "key": true | false, "msgs": [<message numbers>] } ],
       "notes": "detailed English notes for later recall: specifics, paraphrased dialogue, small objects, how things happened",
-      "outline": "1-2 sentences for THIS PART only (these new messages in this scene): main events and results, plus anything still unconfirmed",
+      "outline": "1-2 sentences for THIS PART only (these new messages in this scene): main events and results, and the situation at the last confirmed point, including anything still undecided",
       "ended": true | false,
       "star": true | false
     }
@@ -92,6 +92,7 @@ Rules for the JSON:
 1. "checklist" first: scan the messages for each category and note what you found in a few words, or "none". It is a working list and is not stored.
 2. "scenes": only the first scene may be "continue", and only to extend the OPEN SCENE. Every scene needs a title, an outline and its points.
    A batch may stop in the middle of an ongoing scene. Record only outcomes confirmed within these messages; leave unfinished actions and unresolved conditions pending. A later return of an item is a new event, not a reason to erase the earlier handover. Never force a scene to end merely because this batch ends.
+   When a part stops partway, write the last confirmed situation inside the story and keep unfinished, undecided or uncertain matters as they are ("whether the deal goes through is still undecided"). In every field, never describe the recording process: no "the scene is still in progress", "at the last message", "this batch ended mid-deal" or similar.
    Each scene's "outline" covers only the part in these new messages. Earlier parts of the OPEN SCENE keep their own outlines and are never rewritten, so do not repeat them.
    Every point is stored, but only "key" points are shown to the roleplay model together with the outlines and the CURRENT STATE. Set "key": true only for an important result, an unresolved matter or a recall cue that neither this part's outline nor the state lists (including the changes in this reply) already carry. If nothing needs adding, every point is false; never pick points just to have some.
 3. "entities": declare each new person, item or place with a ref you invent ("new1", "new2", ...). For anything already in KNOWN ENTITIES use its id (e.g. "e3"), never a new ref and never a bare name. Two different things may share an alias (two keys can both be called by the same word), but each needs its own entry and a distinguishing English name. Every "who", "entity", "holder" and "knownBy" value must be an existing id or a ref declared here.

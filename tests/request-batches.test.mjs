@@ -9,22 +9,23 @@ const extractPrompt = (mem, chunk) => buildExtractPrompt({ guide: DEFAULT_GUIDE,
 const checkPrompt = input => buildCheckPrompt({ names: {}, ...input });
 const statement = (id, nums) => ({ id, kind: 'journal', line: `${id}: An event happened.`, messages: nums });
 
+// The limit sits just above the fixed format (v0.6.28 added the mid-part wording rule).
 test('manual collection recalculates full prompts as open-scene memory grows; no message lost or repeated', () => {
     const source = messages(100);
     const original = JSON.stringify(source);
     let mem = emptyMem(), cursor = 0;
     const seen = [], sizes = [], counts = [];
     while (cursor < source.length) {
-        const chunk = nextMessageChunk(source.slice(cursor), c => extractPrompt(mem, c), 20000);
+        const chunk = nextMessageChunk(source.slice(cursor), c => extractPrompt(mem, c), 20400);
         const prompt = extractPrompt(mem, chunk);
-        assert(prompt.length <= 20000);
+        assert(prompt.length <= 20400);
         seen.push(...chunk.indices); sizes.push(prompt.length); counts.push(chunk.indices.length);
         // A continuing scene grows while the same manual operation is still running.
         ({ mem } = applyResult(mem, { scenes: [{ scene: openScene(mem) ? 'continue' : 'new', title: 'A walk', who: [],
             points: Array.from({ length: 10 }, () => ({ text: 'A small event happened. '.repeat(5), kind: 'moment', key: false, msgs: [chunk.from] })),
             outline: 'They continued walking and talking. '.repeat(6), notes: 'A walk.', ended: false }], entities: [], changes: [] }, chunk));
         cursor += chunk.indices.length;
-        if (cursor < source.length && extractPrompt(mem, { from: source[cursor].index, to: source[cursor].index, indices: [source[cursor].index], text: `#${source[cursor].index} Speaker: ${source[cursor].text}`, texts: {} }).length > 20000) break;
+        if (cursor < source.length && extractPrompt(mem, { from: source[cursor].index, to: source[cursor].index, indices: [source[cursor].index], text: `#${source[cursor].index} Speaker: ${source[cursor].text}`, texts: {} }).length > 20400) break;
     }
     // The planner must either fit the remaining full message or clearly stop;
     // an unbounded existing outline must never cause an oversized request.
@@ -32,7 +33,7 @@ test('manual collection recalculates full prompts as open-scene memory grows; no
     assert.equal(JSON.stringify(source), original);
     assert(sizes.length > 2);
     assert(counts.some(n => n < counts[0]));
-    if (cursor < source.length) assert.throws(() => nextMessageChunk(source.slice(cursor), c => extractPrompt(mem, c), 20000), InputLimitError);
+    if (cursor < source.length) assert.throws(() => nextMessageChunk(source.slice(cursor), c => extractPrompt(mem, c), 20400), InputLimitError);
 });
 
 test('a generous input setting still uses small complete-message chunks', () => {

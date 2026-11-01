@@ -181,7 +181,7 @@ function reviewHarness(mem) {
         get(target, key) { if (/^\d+$/.test(String(key))) reads.push(Number(key)); return target[key]; },
     });
     const box = { ...core, ...provenance, ...batches, buildCheckPrompt, names: () => ({}), state: () => st, chat: () => chat,
-        eligible: () => true, speaker: m => m.name, cleanText: s => s, ui: {}, num: () => 60000,
+        eligible: () => true, speaker: m => m.name, cleanText: s => s, msgText: m => m?.mes ?? "", ui: {}, num: () => 60000,
         newRun: () => ({ cancelled: false }), assertValid() {}, endRun() {}, render() {}, persistSoon() {},
         errorText: e => e.message, fmtSec: () => '0초', replyKind: () => null, parseJson: JSON.parse,
         Cancelled: class extends Error {}, RequestTimeout: class extends Error {}, retryNote: () => '',

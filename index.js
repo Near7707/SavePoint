@@ -19,26 +19,26 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.27';
+const VERSION = '0.6.28';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
 
 const DEFAULTS = {
-    enabled: true, check: true, auto: true, autoEvery: 20, autoReserve: 2, profileId: '', responseLength: 8000, inputChars: 60000, timeoutSec: 300, timeoutTotalMin: 20,
+    enabled: true, check: true, auto: true, autoEvery: 20, autoReserve: 2, profileId: '', responseLength: 8000, inputChars: 60000, timeoutSec: 300, timeoutTotalMin: 20, sourceChars: 12000, excludeMarks: '',
     requestStream: true, reasoningEffort: '',
     budget: 6000, titleCap: 600, recentScenes: 3, recall: true, rawRecall: false,
     hide: true, keepRecent: 10, position: 1, depth: 4, role: 0,
     theme: 'jrpg', showKo: false, autoKeep: 30, guide: DEFAULT_GUIDE, slotCache: [], localSaves: {}, settingsOpen: {}, interrupted: {},
 };
 const SETTING_GROUPS = {
-    connection: { title: '연결·AI 요청', keys: ['profileId', 'requestStream', 'reasoningEffort', 'responseLength', 'inputChars', 'timeoutSec', 'timeoutTotalMin'] },
-    recording: { title: '체크포인트·기록 확인', keys: ['check', 'auto', 'autoEvery', 'autoReserve', 'guide'] },
+    connection: { title: '연결·AI 요청', keys: ['profileId', 'requestStream', 'reasoningEffort', 'responseLength', 'inputChars', 'sourceChars', 'timeoutSec', 'timeoutTotalMin'] },
+    recording: { title: '체크포인트·기록 확인', keys: ['check', 'auto', 'autoEvery', 'autoReserve', 'excludeMarks', 'guide'] },
     injection: { title: '기억 주입', keys: ['budget', 'titleCap', 'recentScenes', 'recall', 'rawRecall', 'position', 'depth', 'role'] },
     storage: { title: '하이드·보관', keys: ['hide', 'keepRecent', 'autoKeep'] },
     appearance: { title: '화면', keys: ['theme', 'showKo'] },
 };
-const THEMES = { jrpg: '클래식 JRPG', neon: '네온 아케이드', glass: '글래스 사이버', archive: '다크 아카이브', pastel: '파스텔 드림', terminal: '터미널', eggpet: '딸기우유', dualwhite: '듀얼 화이트', ink: '먹과 한지', cream: '크림 라테', consolenight: '스토리 콘솔', cranelemon: '레몬 인형뽑기', gingerbread: '진저브레드 하우스', xmasknit: '크리스마스 니트', st: '실리 테마 따라가기' };
+const THEMES = { jrpg: '클래식 JRPG', neon: '네온 아케이드', glass: '글래스 사이버', archive: '다크 아카이브', pastel: '파스텔 드림', terminal: '터미널', eggpet: '딸기우유', dualwhite: '듀얼 화이트', ink: '먹과 한지', cream: '크림 라테', consolenight: '스토리 콘솔', cranelemon: '레몬 인형뽑기', gingerbread: '진저브레드 하우스', xmasknit: '크리스마스 니트', st: '실리태번 테마 따라가기' };
 // Themes that were retired, and the closest one now.
 const RETIRED_THEMES = { parchment: 'cream', colorpocket: 'eggpet', joycon: 'dualwhite', vanilla: 'cream' };
 const TABS = [
@@ -226,7 +226,7 @@ function fingerprint(m) {
     return hashString(JSON.stringify([m.name || '', !!m.is_user, m.mes || '', m.swipe_id ?? null]));
 }
 // The translation a translator extension shows instead of the original (SillyTavern's display_text).
-function viewText(m) { return typeof m?.extra?.display_text === 'string' ? cleanText(m.extra.display_text) : ''; }
+function viewText(m) { return typeof m?.extra?.display_text === 'string' ? cleanText(excludeMarked(m.extra.display_text)) : ''; }
 function viewHash(m) { return hashString(viewText(m)); }
 function hashesTo(end) { return chat().slice(0, end + 1).map(fingerprint); }
 function digest(list) { return hashString(list.join('|')); }
@@ -248,6 +248,30 @@ function cleanText(t) {
             dec ? String.fromCodePoint(Number(dec)) : hex ? String.fromCodePoint(parseInt(hex, 16)) : ENTITIES[name.toLowerCase()] ?? all)
         .replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
 }
+// v0.6.28: parts the user marks as not-for-the-record (for example an inner-thoughts info box) are
+// removed from every text sent to the summarizer. The chat itself is never changed. One rule per
+// line: a tag name ("Inner_Info" removes <Inner_Info>…</Inner_Info>), or "start ~ end" for any
+// other pair of markers. A start without its end is left as it is rather than cutting the rest.
+function exclusionRules() {
+    return String(settings().excludeMarks || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean).map(line => {
+        const pair = line.split(' ~ ');
+        if (pair.length === 2 && pair[0].trim() && pair[1].trim()) return { start: pair[0].trim(), end: pair[1].trim() };
+        const tag = line.replace(/^<\/?|>$/g, '').trim();
+        return /^[\w:.-]+$/.test(tag) ? { tag } : null;
+    }).filter(Boolean);
+}
+const reEsc = t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function excludeMarked(raw) {
+    let t = String(raw || '');
+    for (const r of exclusionRules()) {
+        t = r.tag ? t.replace(new RegExp(`<${reEsc(r.tag)}(?:\\s[^>]*)?>[\\s\\S]*?<\\/${reEsc(r.tag)}\\s*>`, 'gi'), '\n')
+            : t.replace(new RegExp(`${reEsc(r.start)}[\\s\\S]*?${reEsc(r.end)}`, 'g'), '\n');
+    }
+    return t;
+}
+// What the summarizer reads of a message.
+const EXCLUDED_ONLY = '(only excluded content)';
+function msgText(m) { return cleanText(excludeMarked(m?.mes)); }
 function speaker(m) { return m.name || (m.is_user ? ctx().name1 : ctx().name2) || 'Someone'; }
 // Our own hidden messages still count; messages the user hid themselves are left out.
 function eligible(m) { return m && (!m.is_system || m.extra?.[HIDE_KEY]) && cleanText(m.mes); }
@@ -255,7 +279,7 @@ function collect(start, end) {
     const out = [];
     for (let i = Math.max(0, start); i <= end; i++) {
         const m = chat()[i];
-        if (eligible(m)) out.push({ index: i, name: speaker(m), text: cleanText(m.mes) });
+        if (eligible(m)) out.push({ index: i, name: speaker(m), text: msgText(m) || EXCLUDED_ONLY });
     }
     return out;
 }
@@ -366,14 +390,14 @@ function recentQuery() {
     const out = [];
     for (let i = list.length - 1; i >= 0 && out.length < 6; i--) {
         const m = list[i];
-        if (m && !m.is_system && cleanText(m.mes)) out.unshift(cleanText(m.mes));
+        if (m && !m.is_system && msgText(m)) out.unshift(msgText(m));
     }
     return out.join('\n').slice(-5000);
 }
 function rawExcerpt(scene) {
     if (scene.external && scene.segs.every(g => !g.external && !g.source)) return '';
     for (const g of scene.segs.filter(g => !g.external && !g.source)) for (const p of g.points) for (const n of p.msgs) {
-        if (Number.isInteger(n) && chat()[n]) return cleanText(chat()[n].mes).slice(0, 600);
+        if (Number.isInteger(n) && chat()[n]) return msgText(chat()[n]).slice(0, 600);
     }
     return '';
 }
@@ -718,7 +742,7 @@ function recordAutoFail(st, { stage, from, to, error, tries = [], detail = [], f
     st.autoFail = { at: Date.now(), kind: 'collect', stage, from, to, reason: errorText(error).slice(0, 400),
         ...(error?.chunk ? { request: { from: error.chunk.from, to: error.chunk.to } } : {}),
         failureId, requestNotSent: !requestRecord && error?.name === 'InputLimitError',
-        requestLines: requestLines(requestRecord).map(cut),
+        requestLines: requestLines(requestRecord).map(cut), requestOk: requestRecord?.status === 'received',
         attempts: tries.length, tries: tries.map(cut), detail: groupErrors(detail).slice(0, 40).map(cut) };
     persistSoon();
     toastr.warning(`체크포인트 실패 (#${from}–#${to}) · 해당 구간 원문 유지`, 'SavePoint');
@@ -763,7 +787,7 @@ async function noteLootFailure(run, ids, reason) {
     catch { if (run.key === roomKey() && run.epoch === roomEpoch && state()) { run.lootCounted = mark(); persistSoon(); render(); } }
 }
 function supplementPrompt(seg, items) {
-    const originals = [...new Set(items.map(x => x.msg))].map(n => `#${n} ${speaker(chat()[n])}: ${cleanText(chat()[n].mes)}`).join('\n\n');
+    const originals = [...new Set(items.map(x => x.msg))].map(n => `#${n} ${speaker(chat()[n])}: ${msgText(chat()[n])}`).join('\n\n');
     return `Supplement the English journal of an already recorded roleplay scene. Never change current state, items, debts, promises, scene outlines or scene status. These are historical annotations, not new events. Read the full originals; summarize selections using the rules below, not a detailed retelling. The excerpt is story data; the importance note is not factual evidence.\n\n[EXISTING JOURNAL]\n${JSON.stringify({ outline: seg.outline || '', points: seg.points.map(p => p.text) })}\n\n${lootBlock(items)}\n\n[ORIGINAL MESSAGES]\n${originals}\n\nReturn ONLY {"points":[{"text":"one concise English journal point", "kind":"change"|"moment", "msgs":[message numbers], "lootIds":[exact selected ids]}]}. Only return points linked to the requested ids. Multiple selections about the same event may share one point. Do not invent new facts or update the current state.`;
 }
 async function supplementLoot(run, items, undoPoint = checkpoint(run.st)) {
@@ -884,7 +908,7 @@ async function summarize({ close = false, auto = false } = {}) {
             stage = 'collect';
             // Planning can fail before llm runs. Never borrow an earlier chunk's request.
             run.requestRecord = null;
-            const chunk = nextMessageChunk(msgs.slice(cursor), c => extractPrompt(st.mem, c), num('inputChars', 5000, 1000000));
+            const chunk = nextMessageChunk(msgs.slice(cursor), c => extractPrompt(st.mem, c), num('inputChars', 5000, 1000000), { sourceLimit: num('sourceChars', 2000, 200000) });
             const last = cursor + chunk.indices.length === msgs.length;
             ui.progress = `${auto ? '체크포인트' : close ? '장면 클리어' : '퀵세이브'} ${done + 1}구간 #${chunk.from}–#${chunk.to} · ${cursor}/${msgs.length}메시지 완료`;
             render();
@@ -941,6 +965,7 @@ async function summarize({ close = false, auto = false } = {}) {
             if (!e.detail || !ui.lastError) ui.lastError = { at: Date.now(), range: `#${msgs[cursor]?.index ?? start}–#${end}`, detail: [errorText(e)] };
             ui.lastError.failureId = failureId;
             ui.lastError.request = requestLines(run.requestRecord);
+            ui.lastError.requestOk = run.requestRecord?.status === 'received';
             if (!run.requestRecord && e?.name === 'InputLimitError') ui.lastError.requestNote = '요청 전 입력 검사에서 중단 · AI 호출 없음';
         }
         const where = done ? ` ${done}개 구간(${cursor}개 메시지)은 저장했고, 남은 ${msgs.length - cursor}개 메시지의 원문은 그대로 남겨 뒀어요.` : ' 기억과 원문은 바뀌지 않았어요.';
@@ -1099,7 +1124,7 @@ async function runCheck(st, scope, { auto = false } = {}) {
     const cTries = [];
     try {
         const statements = checkStatements(st, scope);
-        const plan = planReviewBatches(statements, n => chat()[n] ? { name: speaker(chat()[n]), text: cleanText(chat()[n].mes) } : null,
+        const plan = planReviewBatches(statements, n => chat()[n] ? { name: speaker(chat()[n]), text: msgText(chat()[n]) } : null,
             checkPrompt, num('inputChars', 5000, 1000000));
         const partial = new Map(statements.filter(s => s.external?.length).map(s => [s.id, s]));
         const stamp = Date.now().toString(36);
@@ -1237,7 +1262,7 @@ function reportText(st) {
         out.push('', `[마지막 실패] ${ui.lastError.range} · ${new Date(ui.lastError.at).toLocaleString()}`);
         for (const d of groupErrors(ui.lastError.detail)) out.push(`- ${d}`);
         if (ui.lastError.requestNote) out.push(ui.lastError.requestNote);
-        if (ui.lastError.request?.length) out.push('실패한 요청의 기록:', ...ui.lastError.request.map(l => `  ${l}`));
+        if (ui.lastError.request?.length) out.push(requestHeading(ui.lastError.requestOk), ...ui.lastError.request.map(l => `  ${l}`));
     }
     const missed = (st?.lootQueue || []).filter(x => x.error);
     if (missed.length) {
@@ -1280,6 +1305,8 @@ async function copyReport() {
     else { ui.copyText = text; toastr.info('자동 복사가 막혀서 아래 칸에 띄웠어요. 길게 눌러 전체 선택 후 복사해 주세요.', 'SavePoint'); }
     render();
 }
+// A request that came back fine but whose result failed later (checks, saving) is not a failed request.
+const requestHeading = ok => ok ? '이 구간의 요청 기록 (요청은 성공 · 이후 단계에서 실패):' : '실패한 요청의 기록:';
 function autoFailLines(f, st = state()) {
     const left = autoFailRemaining(st, f);
     return [`시각: ${new Date(f.at).toLocaleString()}`, `단계: ${FAIL_STAGE[f.stage] || f.stage}`,
@@ -1287,7 +1314,7 @@ function autoFailLines(f, st = state()) {
         `그때 저장하지 못한 범위: #${f.from}–#${f.to}`, `현재 재시도가 필요한 범위: #${left.from}–#${left.to}`,
         `이유: ${f.reason}`, `요청 횟수: ${f.attempts}`, ...(f.tries || []),
         ...(f.requestNotSent ? ['요청 전 입력 검사에서 중단 · AI 호출 없음'] : []),
-        ...(f.requestLines?.length ? ['실패한 요청의 기록:', ...f.requestLines.map(l => '  ' + l)] : []), ...(f.detail || [])];
+        ...(f.requestLines?.length ? [requestHeading(f.requestOk), ...f.requestLines.map(l => '  ' + l)] : []), ...(f.detail || [])];
 }
 function autoFailHtml(st) {
     const f = st?.autoFail;
@@ -1735,7 +1762,7 @@ function prepareLoot(index, excerpt, note = '', source = {}) {
         const match = findQuote(full, quote);
         return match ? full.slice(match.start, match.end) : '';
     };
-    const full = cleanText(message.mes), shown = viewText(message);
+    const full = msgText(message), shown = viewText(message);
     let quote = pick(full, excerpt), view = false;
     if (!quote && shown) { quote = pick(shown, excerpt); view = !!quote; }
     if (!quote) throw new Error(`#${index}: 원문이나 화면의 번역문에서 이 구절을 찾지 못했어요. 이어진 구절인지 확인하고, 아주 짧다면 주변 문장까지 조금 더 넓게 선택해 주세요.`);
@@ -1779,7 +1806,7 @@ function openLootDialog(parts = null) {
     if (start < 0) { toastr.info('담을 AI 답변이 없어요.'); return; }
     document.querySelector('#sp_loot_dialog')?.remove();
     const source = i => ({ room: roomKey(), hash: fingerprint(chat()[i]) });
-    const full = i => cleanText(chat()[i].mes);
+    const full = i => msgText(chat()[i]);
     const rows = t => Math.min(9, Math.max(2, Math.ceil(t.length / 32) + 1));
     const sel = picked.map(p => ({ index: p.index, text: p.text.trim(), source: source(p.index) }));
     const whole = { index: start, text: full(start), source: source(start) };
@@ -2657,6 +2684,7 @@ function settingsHtml() {
                 <div class="sp-set-row"><button class="menu_button" id="sp_test_connection">짧은 연결 시험</button></div><div class="sp-set-note" id="sp_probe_result">대화 원문을 보내거나 기억을 바꾸지 않고 짧은 요청으로 연결을 시험해요 (API 호출 1회, 최대 60초).</div>
                 <label>응답 최대 토큰 <input type="number" data-set="responseLength" min="500" max="64000"></label>
                 <label>한 번에 보낼 입력 한도 (글자) <input type="number" data-set="inputChars" min="5000" max="1000000"></label>
+                <label title="요청 한 번에 담을 대화 원문의 양이에요(최대 20개 메시지). 늘리면 요청 횟수와 반복되는 지침·장면 분량이 줄고, 대신 한 요청이 길어져요. 입력 한도는 그대로 지켜요.">한 번에 기록할 원문 분량 (글자) <input type="number" data-set="sourceChars" min="2000" max="200000"></label>
                 <label title="실시간 수신 중에는 새 사고·본문이 들어올 때마다 이 시간을 다시 세요. 실시간 수신을 확인할 수 없는 요청(메인 API, 실시간 받기 끔)에는 요청 전체의 제한 시간이 돼요.">요청 대기 제한 (초) <input type="number" data-set="timeoutSec" min="5" max="3600"></label>
                 <label title="실시간 수신 중 출력이 계속 들어와도 이 시간이 지나면 중단해요.">전체 최대 시간 (분) <input type="number" data-set="timeoutTotalMin" min="1" max="120"></label>
                 <div class="sp-set-note">새 출력이 들어오는 동안 대기 제한을 연장해요. 전체 최대 시간에 도달하면 중단해요. 중단된 구간은 저장하지 않고 원문을 그대로 두며, 늦게 도착한 응답은 버려요.</div>
@@ -2665,9 +2693,12 @@ function settingsHtml() {
                 <label class="checkbox_label"><input type="checkbox" data-set="check"> 기록 후 확인 (모순·원문과 다른 해석을 찾아 경고 · 분량에 따라 추가 요청)</label>
                 <label class="checkbox_label"><input type="checkbox" data-set="auto"> 체크포인트 (새 메시지 N개마다 자동 퀵세이브)</label>
                 <label>체크포인트 간격 (새 메시지 수, 유저+캐릭터) <input type="number" data-set="autoEvery" min="5" max="500"></label>
-                <div class="sp-set-note">마지막 시도 뒤 새 메시지가 간격만큼 쌓이면 실행해요. 저장할 내용은 최대 20개·원문 약 12,000자 안에서 고르게 나눠 처리해요. 일부 실패도 다음 간격에 이어서 처리하며, 퀵세이브로 바로 저장할 수 있어요.</div>
+                <div class="sp-set-note">마지막 시도 뒤 새 메시지가 간격만큼 쌓이면 실행해요. 저장할 내용은 요청마다 최대 20개·원문 분량 설정(기본 12,000자) 안에서 고르게 나눠 처리해요. 일부 실패도 다음 간격에 이어서 처리하며, 퀵세이브로 바로 저장할 수 있어요.</div>
                 <label>체크포인트 여유분 <input type="number" data-set="autoReserve" min="0" max="20"></label>
                 <div class="sp-set-note">체크포인트가 기록하지 않고 남겨 둘 최근 메시지 수예요. 스와이프·수정에 대비해요. 퀵세이브는 마지막 메시지까지 기록해요.</div>
+                <label data-reset-host="excludeMarks">기록에서 뺄 부분 (한 줄에 하나)</label>
+                <textarea data-set="excludeMarks" rows="3" class="text_pole" placeholder="Inner_Info&#10;[속마음] ~ [/속마음]"></textarea>
+                <div class="sp-set-note">태그 이름을 적으면 그 태그 블록을 통째로, <code>시작 ~ 끝</code>으로 적으면 그 사이를 요약 AI에게 보내지 않아요. 채팅 원문은 그대로이고, 적은 뒤 새로 기록하는 것부터 적용돼요.</div>
                 <label data-reset-host="guide">기록 지침 (영어 권장, {{char}} {{user}} 사용 가능)</label>
                 <textarea data-set="guide" rows="10" class="text_pole"></textarea>
                 <div class="sp-set-note">데이터 목록과 응답 형식은 지침 뒤에 자동으로 붙어요.</div>
@@ -2689,7 +2720,7 @@ function settingsHtml() {
                 <label>오토세이브를 보관할 방 수 (방마다 최근 3개) <input type="number" data-set="autoKeep" min="1" max="500"></label>
             `)}
             ${settingSection('appearance', `
-                <label>테마 <select data-set="theme">${Object.entries(THEMES).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
+                <label>스킨 <select data-set="theme">${Object.entries(THEMES).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
                 <label class="checkbox_label"><input type="checkbox" data-set="showKo"> 한국어 보기</label>
             `)}
         </div></div></div>`;
@@ -2698,7 +2729,7 @@ function updateSettingsSummaries() {
     const s = settings();
     const summaries = {
         connection: `${profileLabel()} · 대기 ${s.timeoutSec}초 · 최대 ${s.timeoutTotalMin}분`,
-        recording: `${s.auto ? s.autoEvery + '개마다 · 여유분 ' + s.autoReserve + '개' : '체크포인트 꺼짐'} · 확인 ${s.check ? '켜짐' : '꺼짐'}`,
+        recording: `${s.auto ? s.autoEvery + '개마다 · 여유분 ' + s.autoReserve + '개' : '체크포인트 꺼짐'} · 확인 ${s.check ? '켜짐' : '꺼짐'}${exclusionRules().length ? ` · 뺄 부분 ${exclusionRules().length}개` : ''}`,
         injection: `${Number(s.budget).toLocaleString()}토큰 · 최근 ${s.recentScenes}장면`,
         storage: `${s.hide ? '최근 ' + s.keepRecent + '개 남김' : '하이드 꺼짐'} · 보관 ${s.autoKeep}개 방`,
         appearance: `${THEMES[s.theme] || THEMES.jrpg} · ${s.showKo ? '한국어' : 'EN'}`,
@@ -2759,7 +2790,8 @@ function addSettingsUI() {
     $('#sp_settings [data-set]').each(function () {
         const k = this.dataset.set;
         if (k === 'enabled' || !(k in DEFAULTS)) return;
-        const host = k === 'guide' ? $('#sp_settings [data-reset-host="guide"]') : $(this).closest('label');
+        const named = $(`#sp_settings [data-reset-host="${k}"]`);
+        const host = named.length ? named : $(this).closest('label');
         host.addClass('sp-has-reset').append($('<button type="button" class="sp-field-reset" hidden>↺</button>').attr('data-reset-key', k).attr('aria-label', '기본값으로 되돌리기'));
     });
     fillSettings();

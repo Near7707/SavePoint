@@ -39,7 +39,7 @@ function harness({ count = 40, chars = 1000, limit = 20000, failAt = Infinity, c
         settings: () => s, num: key => s[key], names: () => ({}), cardText: () => '',
         chat: () => chat, state: () => st, ensureState: () => st, hasChat: () => true, mainBusy: () => false, reconcile: () => true,
         collect: (a, b) => chat.map((m, index) => ({ index, name: m.name, text: m.mes })).filter(m => m.index >= a && m.index <= b),
-        speaker: m => m.name, cleanText: s => s, eligible: m => !m.is_system,
+        speaker: m => m.name, cleanText: s => s, msgText: m => m?.mes ?? "", EXCLUDED_ONLY: "(only excluded content)", eligible: m => !m.is_system,
         render() {}, persistSoon() {}, autosave() {}, queueCheck() {}, clearInterrupted() {}, roomKey: () => undefined,
         toastr: Object.fromEntries(['info', 'error', 'warning', 'success'].map(k => [k, m => notifications.push([k, m])])),
         newRun: () => { const run = { hashes: chat.map(m => m.mes), cancelled: false }; ui.run = run; return run; },
