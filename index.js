@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.45';
+const VERSION = '0.6.46';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -253,12 +253,16 @@ async function writeEntry(queue, entry) {
                 const patch = x.patch;
                 x.change = () => {
                     const st = ensureState(), before = st.mem, next = clone(before);
-                    if (!applyPaths(next, patch)) return false;
+                    const res = applyPaths(next, patch);
+                    if (res === 'stop') throw new Error('replay stopped');
+                    if (res === 'same') return false;
+                    cleanMem(clone(next));   // the result must still be a valid memory, or nothing is kept
                     st.mem = next; pushHistory(st, before, next, { kind: 'edit' });
                 };
-                try { ok = applyEntry(x) !== false; } catch { ok = false; }
+                try { ok = applyEntry(x) !== false ? true : 'same'; } catch { ok = false; }
             }
-            if (ok) { queue.pending.push(x); replayed++; }
+            if (ok === 'same') x.done = true;   // already so: nothing to write, not an error
+            else if (ok) { queue.pending.push(x); replayed++; }
             else x.cancelled = new Error(`앞선 변경을 채팅 파일에 저장하지 못해서 이 변경도 취소했어요. (${e?.message || e})`);
         }
         if (here) {
@@ -273,8 +277,12 @@ async function writeEntry(queue, entry) {
     if (roomKey() === entry.key && roomEpoch === entry.epoch) { if (entry.autosave) autosave(state()); render(); }
     return true;
 }
-// Leaf-level differences between two JSON values: [{ path, value }] or [{ path, del: true }]. Arrays
-// of the same length are compared item by item; otherwise the whole array is the value.
+// v0.6.46: what a button edit changed, as steps a replay can repeat safely. Items in lists that have
+// ids (scenes, parts, entities, records) are addressed by id, never by position: { id } in a path,
+// { add, after } to insert, { remove } to delete. Lists without ids (points) are addressed by
+// position only while their length is the one the edit saw ({ i, len }); a list that changed
+// length there cannot be replayed. Anything that cannot be found makes the replay stop.
+const hasIds = l => Array.isArray(l) && l.length > 0 && l.every(x => x && typeof x === 'object' && typeof x.id === 'string');
 function diffPaths(a, b, path = [], out = []) {
     if (JSON.stringify(a) === JSON.stringify(b)) return out;
     const obj = v => v && typeof v === 'object' && !Array.isArray(v);
@@ -283,23 +291,52 @@ function diffPaths(a, b, path = [], out = []) {
             if (!(k in b)) out.push({ path: [...path, k], del: true });
             else diffPaths(a[k], b[k], [...path, k], out);
         }
+    } else if (Array.isArray(a) && Array.isArray(b) && (hasIds(a) || hasIds(b)) && [...a, ...b].every(x => x && typeof x.id === 'string')) {
+        const ida = new Map(a.map(x => [x.id, x])), idb = new Set(b.map(x => x.id));
+        for (const x of a) if (!idb.has(x.id)) out.push({ path, remove: x.id });
+        b.forEach((x, i) => {
+            if (ida.has(x.id)) diffPaths(ida.get(x.id), x, [...path, { id: x.id }], out);
+            else out.push({ path, add: clone(x), after: i ? b[i - 1].id : null });
+        });
     } else if (Array.isArray(a) && Array.isArray(b) && a.length === b.length) {
-        a.forEach((x, i) => diffPaths(x, b[i], [...path, i], out));
-    } else out.push({ path, value: clone(b) });
+        a.forEach((x, i) => diffPaths(x, b[i], [...path, { i, len: a.length }], out));
+    } else if (Array.isArray(a) || Array.isArray(b)) out.push({ path, unsafe: true });
+    else if (path.length && typeof path.at(-1) === 'string') out.push({ path, value: clone(b) });
+    else out.push({ path, unsafe: true });
     return out;
 }
-// Sets those paths; false when nothing changes (already so).
+// Repeats those steps on `target`. Returns 'changed', 'same' (already so) or 'stop' (a target is
+// gone, a list changed under it, or a step is not repeatable) — then nothing should be kept.
 function applyPaths(target, patch) {
     let changed = false;
-    for (const { path, value, del } of patch) {
-        if (!path.length) continue;
+    const walk = path => {
         let o = target;
-        for (const k of path.slice(0, -1)) { if (o[k] === null || typeof o[k] !== 'object') o[k] = typeof k === 'number' ? [] : {}; o = o[k]; }
-        const k = path.at(-1);
-        if (del) { if (k in o) { delete o[k]; changed = true; } }
-        else if (JSON.stringify(o[k]) !== JSON.stringify(value)) { o[k] = clone(value); changed = true; }
+        for (const seg of path) {
+            if (o === null || typeof o !== 'object') return null;
+            if (typeof seg === 'string') o = o[seg];
+            else if ('id' in seg) o = Array.isArray(o) ? o.find(x => x?.id === seg.id) : undefined;
+            else o = Array.isArray(o) && o.length === seg.len ? o[seg.i] : undefined;
+            if (o === undefined) return null;
+        }
+        return o;
+    };
+    for (const step of patch) {
+        if (step.unsafe) return 'stop';
+        if ('remove' in step || 'add' in step) {
+            const list = walk(step.path);
+            if (!Array.isArray(list)) return 'stop';
+            if ('remove' in step) { const i = list.findIndex(x => x?.id === step.remove); if (i >= 0) { list.splice(i, 1); changed = true; } continue; }
+            if (list.some(x => x?.id === step.add.id)) return 'stop';
+            const at = step.after === null ? 0 : list.findIndex(x => x?.id === step.after) + 1;
+            if (step.after !== null && at === 0) return 'stop';
+            list.splice(at, 0, clone(step.add)); changed = true; continue;
+        }
+        const parent = walk(step.path.slice(0, -1)), k = step.path.at(-1);
+        if (parent === null || typeof parent !== 'object' || typeof k !== 'string') return 'stop';
+        if (step.del) { if (k in parent) { delete parent[k]; changed = true; } }
+        else if (JSON.stringify(parent[k]) !== JSON.stringify(step.value)) { parent[k] = clone(step.value); changed = true; }
     }
-    return changed;
+    return changed ? 'changed' : 'same';
 }
 function persistSoon() {
     clearTimeout(persistTimer);

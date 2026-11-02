@@ -203,6 +203,37 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r = await ev(() => ({ bMeta: JSON.stringify(M.meta) }));
     ok(o2.startsWith('fail:채팅방을 옮겨서') && !r.bMeta.includes('savePoint'), `14. 방을 옮긴 뒤 이전 방의 대기 저장은 새 방을 저장하지 않고 알림 (${o1} · ${o2.slice(0, 40)})`);
     await ev(a => M.switchChat(a.id, a.chat, a.meta), roomA);
+
+    // 15–17. (v0.6.46) replays address items by id; a gone target stops the replay; the file stays valid
+    const setup = () => ev(() => { const st = __savePoint.state();
+        for (const id of ['r950', 'r951']) if (!st.mem.records.some(x => x.id === id)) st.mem.records.push({ id, type: 'quest', kind: 'goal', status: 'open', who: [], text: `Thread ${id}.`, src: [], msgs: [], pin: false, questEvents: { created: null } });
+        for (const x of st.mem.records) if (['r950', 'r951'].includes(x.id)) x.pin = false;
+        __savePoint.render(true); });
+    const both = () => ev(() => { const st = __savePoint.state(), f = M.serverChat[0].chat_metadata.savePoint;
+        const pick = m => ['r950', 'r951'].map(id => { const x = m.records.find(r => r.id === id); return x ? (x.pin ? 'pin' : 'on') : 'gone'; }).join(',');
+        return { page: pick(st.mem), file: pick(f.mem) }; });
+    const slowFail = () => ev(() => { M.metaDelay = 400; M.failOnce = true; });
+    const settle = async (...ps) => { for (const p of ps) await p.catch(() => {}); await ev(() => { M.metaDelay = 0; M.failOnce = false; }); };
+    await setup(); await ev(() => __savePoint.handle('pin-rec', 'r950').then(() => __savePoint.handle('pin-rec', 'r950')));   // write the setup once
+    await slowFail();
+    let p1 = ev(() => __savePoint.handle('del-rec', 'r950')); await page.waitForTimeout(60);
+    let p2 = ev(() => __savePoint.handle('pin-rec', 'r951'));
+    await settle(p1, p2); r = await both();
+    ok(r.page === 'on,pin' && r.file === r.page, `15. A 삭제 실패 + B 📌: 📌는 B에, A는 되돌아옴 (${JSON.stringify(r)})`);
+    await setup(); await ev(() => __savePoint.handle('pin-rec', 'r951').then(() => __savePoint.handle('pin-rec', 'r951')));
+    await slowFail();
+    p1 = ev(() => __savePoint.handle('pin-rec', 'r950')); await page.waitForTimeout(60);
+    p2 = ev(() => __savePoint.handle('del-rec', 'r951'));
+    await settle(p1, p2); r = await both();
+    ok(r.page === 'on,gone' && r.file === r.page, `16. A 📌 실패 + B 삭제: 실패한 📌는 되살아나지 않음 (${JSON.stringify(r)})`);
+    await slowFail();
+    p1 = ev(async () => { __savePoint.handle('add-rec', 'quest'); __savePoint.ui.edit.values.text = 'A brand new thread.'; return __savePoint.handle('edit-save'); }); await page.waitForTimeout(60);
+    const newId = await ev(() => __savePoint.state().mem.records.find(x => x.text === 'A brand new thread.')?.id);
+    p2 = ev(id => __savePoint.handle('pin-rec', id), newId);
+    await settle(p1, p2);
+    r = await ev(() => { const f = M.serverChat[0].chat_metadata.savePoint; const bad = f.mem.records.some(x => Array.isArray(x) || !x || !x.type);
+        return { bad, pageHas: __savePoint.state().mem.records.some(x => x.text === 'A brand new thread.'), fileHas: f.mem.records.some(x => x.text === 'A brand new thread.') }; });
+    ok(newId && !r.bad && !r.pageHas && !r.fileHas, `17. 추가 실패 + 그 항목 📌: 없는 자리를 만들지 않고 취소, 파일 형식 유지 (${JSON.stringify(r)})`);
     if (SHOTS) await page.locator('#sp_overlay .sp-window').screenshot({ path: path.join(OUT, 'quests-main.png') });
 
     await page.close();
