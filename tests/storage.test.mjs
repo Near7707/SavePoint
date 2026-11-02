@@ -107,8 +107,12 @@ test('a gone item the user took out is no longer gone once the story brings it b
     assert(!text.includes('[item, gone] Borrowed coat'), 'no contradictory gone line');
     const id = mem.entities.find(e => e.name === 'Borrowed coat').id;
     mem = step(mem, [{ op: 'remove', id: coat.id, text: 'Lost again.' }]);
-    mem = step(mem, [{ op: 'add', type: 'item', entity: id, holder: null, text: 'The coat turned up at the inn.' }]);
+    // v0.6.41: an add only updates it; "still not found" must not bring it back, "back": true does
+    mem = step(mem, [{ op: 'add', type: 'item', entity: id, holder: null, text: 'The coat is still not found.' }]);
     assert.equal(mem.records.filter(r => r.entity === id).length, 1, 'an add for a gone item updates it');
+    assert(mem.records.find(r => r.entity === id).gone && mem.records.find(r => r.entity === id).stored, 'no back: still gone and boxed');
+    assert.doesNotMatch(buildInjection(mem, { budget: 6000 }).text, /still not found/);
+    mem = step(mem, [{ op: 'add', type: 'item', entity: id, holder: null, text: 'The coat turned up at the inn.', back: true }]);
     assert(!mem.records.find(r => r.entity === id).gone);
 });
 

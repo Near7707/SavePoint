@@ -5,8 +5,8 @@ import { emptyMem, applyResult, normalizeResult, validateResult, buildInjection,
 
 function story(questMode = 'auto') {
     let mem = emptyMem(), n = 0;
-    const step = (changes, entities = [], { mode = questMode, expectErrors = false } = {}) => {
-        const w = `m${n}: "I will bring the lantern back tomorrow," Ari said.`;
+    const step = (changes, entities = [], { mode = questMode, expectErrors = false, say = '' } = {}) => {
+        const w = `m${n}: "I will bring the lantern back tomorrow," Ari said.${say ? ' ' + say : ''}`;
         const chunk = { from: n, to: n, indices: [n], text: `#${n} ${w}`, texts: { [n]: w } };
         const d = { scenes: [{ scene: 'new', title: `Scene ${n}`, where: 'Harbor', who: [], ended: true, outline: `Outline ${n}.`, notes: '',
             points: [{ text: 'They talked.', kind: 'moment', key: false, msgs: [n] }] }], entities, changes: changes.map(c => ({ msgs: [n], ...c })) };
@@ -64,7 +64,10 @@ test('the same thread in other words stays untracked; new terms make it a candid
     // v0.6.40: the same terms quoted again change nothing; really new terms make it a candidate again
     s.step([{ op: 'update', id: first.id, terms: { msg: s.n(), quote: 'I will bring the lantern back tomorrow' } }]);
     assert.equal(s.mem.records.find(r => r.id === first.id).track, 'declined', 're-quote: still untracked');
+    // v0.6.41: a shorter cut of the same words is no change either
     s.step([{ op: 'update', id: first.id, terms: { msg: s.n(), quote: 'lantern back tomorrow' } }]);
+    assert.equal(s.mem.records.find(r => r.id === first.id).track, 'declined', 'shorter quote: still untracked');
+    s.step([{ op: 'update', id: first.id, terms: { msg: s.n(), quote: 'Ari said' } }]);
     assert.equal(s.mem.records.find(r => r.id === first.id).track, 'pending');
     assert.equal(sameQuest({ kind: 'goal', text: 'Find the lantern.' }, { kind: 'promise', text: 'Find the lantern.' }), false, 'kinds differ');
 });
@@ -140,4 +143,32 @@ test('v0.6.40: retire puts a scene prop away as 정리됨; mentions and adds do 
     s.step([{ op: 'update', id: q.id, text: 'Reach the coast soon.', retire: true }]);
     assert.equal(s.mem.records.find(x => x.id === q.id).stored, undefined);
     assert.equal(cleanMem(JSON.parse(JSON.stringify(s.mem))).records.find(x => x.id === tea.id).pin, true);
+});
+
+test('v0.6.41: the same calendar date said again later is no change; a new date is', () => {
+    const s = story('auto');
+    const say = (extra) => s.step([lantern(s, extra)]);
+    const at = n => ({ msg: n });
+    s.step([{ op: 'add', type: 'quest', kind: 'promise', who: [s.ari], text: 'Ari will return the lantern.',
+        terms: { msg: s.n(), quote: 'I will bring the lantern back tomorrow' }, due: { expr: 'tomorrow', date: '', days: 1, msg: s.n() } }]);
+    const q = s.mem.records.find(r => r.type === 'quest'); q.track = 'declined';
+    // no story time: "tomorrow" said again cannot be placed, so it reads as the same words
+    s.step([{ op: 'update', id: q.id, due: { expr: 'tomorrow', days: 1, msg: s.n() } }]);
+    assert.equal(s.mem.records.find(r => r.id === q.id).track, 'declined');
+    s.step([{ op: 'update', id: q.id, mutual: true, by: [s.ari, s.bo], to: [] }]);
+    assert.equal(s.mem.records.find(r => r.id === q.id).mutual, true);
+    s.step([{ op: 'update', id: q.id, mutual: false }]);
+    assert.equal(s.mem.records.find(r => r.id === q.id).mutual, undefined, 'mutual: false clears it (alone is a change)');
+});
+
+test('v0.6.41: a fixed date repeated in a later part stays untracked; a different date makes it a candidate', () => {
+    const s = story('auto');
+    const say = 'Return it by 2026-11-08.';
+    s.step([lantern(s, { due: { expr: 'by 2026-11-08', date: '2026-11-08', days: null, msg: s.n() } })], [], { say });
+    const q = s.mem.records.find(r => r.type === 'quest'); q.track = 'declined';
+    s.step([{ op: 'update', id: q.id, due: { expr: 'by 2026-11-08', date: '2026-11-08', days: null, msg: s.n() } }], [], { say });
+    assert.equal(s.mem.records.find(r => r.id === q.id).track, 'declined', 'same date, later part');
+    assert.equal(s.mem.records.find(r => r.id === q.id).due?.date, '2026-11-08', 'the date was applied');
+    s.step([{ op: 'update', id: q.id, due: { expr: 'by 2026-11-09', date: '2026-11-09', days: null, msg: s.n() } }], [], { say: 'Return it by 2026-11-09.' });
+    assert.equal(s.mem.records.find(r => r.id === q.id).track, 'pending', 'moved deadline');
 });

@@ -1,4 +1,4 @@
-import { cleanTimeAnchors, cleanStoryTime, resolveResultTime, formatSegmentTime, compactSceneTimes, storyTimeContext, cleanDue, resolveDueClaim, formatDue } from './temporal.js';
+import { cleanTimeAnchors, cleanStoryTime, resolveResultTime, formatSegmentTime, compactSceneTimes, storyTimeContext, cleanDue, resolveDueClaim, formatDue, dueStamp } from './temporal.js';
 import { cleanLootSources, restoreLostLoot } from './loot.js';
 import { upgradeEvidence, detachEvidence, cleanPrior, cleanSource, cleanQuestEvents } from './provenance.js';
 // SavePoint core: pure data logic (no SillyTavern, no DOM).
@@ -437,7 +437,7 @@ export function normalizeResult(data, { mem, chunk } = {}) {
         // by/to belong to promises and debts only; elsewhere (or null) they are dropped, not an error.
         const qKind = c.op === 'add' ? (c.type === 'quest' ? c.kind : null) : mem?.records?.find(r => r.id === c.id && r.type === 'quest')?.kind;
         for (const k of ['by', 'to']) if (c[k] !== undefined && (c[k] === null || !TERMS_KINDS.includes(qKind))) delete c[k];
-        if (c.mutual !== undefined && (c.mutual !== true || !TERMS_KINDS.includes(qKind))) delete c.mutual;
+        if (c.mutual !== undefined && (typeof c.mutual !== 'boolean' || !TERMS_KINDS.includes(qKind))) delete c.mutual;
         // retire belongs to items only and only as true; anything else is dropped, not an error.
         if (c.retire !== undefined && (c.retire !== true || c.op !== 'update' || mem?.records?.find(r => r.id === c.id)?.type !== 'item')) delete c.retire;
         if (c.by !== undefined) c.by = fixList(c.by);
@@ -726,14 +726,30 @@ export function sameQuest(a, b) {
 // apart: the people, who keeps it / to whom, the quoted terms and the deadline. When unsure, the
 // new one is shown (as found or new) instead of being hidden.
 const sameSet = (a, b) => { const x = [...new Set(a || [])].sort(), y = [...new Set(b || [])].sort(); return x.length === y.length && x.every((v, i) => v === y[i]); };
-// A deadline is the same when the words, the day count and the part they were said in are the same.
-const dueKey = d => (d ? JSON.stringify([d.expr || '', d.date || '', d.days ?? null, d.seg || null, d.manual?.day ?? null]) : '');
-function sameThread(a, b) {
+// v0.6.41: what a deadline means, not where it was quoted: the story day it falls on when that can be
+// placed (a calendar date, or a day of the story's time reference), else the date words, else the
+// deadline words. Saying the same date again, or "tomorrow" again on the same day, is no change.
+function dueKey(mem, r) {
+    const d = r?.due; if (!d) return '';
+    const at = dueStamp(mem, r);
+    if (at) return at.iso !== undefined && at.iso !== null ? `iso:${at.iso}` : `day:${at.anchor}:${at.day}`;
+    if (d.date) return `date:${squash(d.date)}`;
+    return `words:${squash(d.expr)}:${d.days ?? ''}`;
+}
+const squash = t => String(t || '').toLowerCase().replace(/[\s"'“”‘’.,!?…~·:;()\[\]-]+/g, '');
+// The same terms: the same words, or one quote inside the other (a shorter or longer cut of the same
+// sentence). Moving the quote to another message with the same words is no change either.
+function sameTerms(a, b) {
+    if (!a?.quote || !b?.quote) return !a?.quote === !b?.quote;
+    const x = squash(a.quote), y = squash(b.quote);
+    return x === y || (!!x && !!y && (x.includes(y) || y.includes(x)) && (a.msg === b.msg || squash(a.context).includes(y) || squash(b.context).includes(x)));
+}
+function sameThread(mem, a, b) {
     return sameQuest(a, b) && sameSet(a.who, b.who) && sameSet(a.by, b.by) && sameSet(a.to, b.to) && !!a.mutual === !!b.mutual
-        && (a.terms?.quote || '') === (b.terms?.quote || '') && dueKey(a.due) === dueKey(b.due);
+        && sameTerms(a.terms, b.terms) && dueKey(mem, a) === dueKey(mem, b);
 }
 function declinedTwin(mem, r) {
-    return mem.records.find(x => x !== r && x.type === 'quest' && x.track === 'declined' && sameThread(x, r)) || null;
+    return mem.records.find(x => x !== r && x.type === 'quest' && x.track === 'declined' && sameThread(mem, x, r)) || null;
 }
 export function questTracked(r) { return r.type !== 'quest' || r.track !== 'declined' && r.track !== 'pending'; }
 // v0.6.38: the order records were last added or changed in. `seq` grows with every add/update, so the
@@ -837,9 +853,9 @@ export function applyResult(mem, data, chunk, { close = false, room = null, boxM
             const r = next.records.find(x => x.type === 'item' && (x.stored || x.gone) && x.entity === resolve(c.entity));
             if (str(c.text)) { r.text = str(c.text); delete r.ko; }
             if (c.holder !== undefined) r.holder = resolve(c.holder);
-            // "add" means the item is in the story now, except for a put-away scene prop (v0.6.40):
-            // only "back": true (a new reason to follow it) brings that one back.
-            touchItem(r, r.stored?.reason === 'retired' ? c.back === true : true, boxMode);
+            // v0.6.41: updates that record; whether it comes back is "back": true alone, for a lost or
+            // used-up item as for a put-away scene prop ("still not found" must not bring it back).
+            touchItem(r, c.back === true, boxMode);
             r.src = uniq([...(r.src || []), src]); r.msgs = uniq([...(r.msgs || []), ...msgs]).slice(-12);
             stamp(next, r);
         } else if (c.op === 'add') {
@@ -866,7 +882,7 @@ export function applyResult(mem, data, chunk, { close = false, room = null, boxM
             next.records.push(r);
         } else if (c.op === 'update') {
             const r = next.records.find(x => x.id === c.id);
-            const condBefore = { quote: JSON.stringify(r.terms?.quote || ''), due: dueKey(r.due) };
+            const condBefore = { terms: r.terms ? clone(r.terms) : null, due: dueKey(next, r) };
             if (str(c.text) && str(c.text) !== r.text) { r.text = str(c.text); delete r.ko; }
             if (c.status !== undefined) {
                 if (r.type === 'quest' && r.status !== c.status) {
@@ -887,7 +903,7 @@ export function applyResult(mem, data, chunk, { close = false, room = null, boxM
             // Terms or a deadline that really changed make an untracked promise or debt a candidate
             // again (v0.6.40: compared after they were checked and applied; a re-quote changes nothing).
             if (r.type === 'quest' && r.track === 'declined' && TERMS_KINDS.includes(r.kind)
-                && (JSON.stringify(r.terms?.quote || '') !== condBefore.quote || dueKey(r.due) !== condBefore.due)) { r.track = 'pending'; delete r.autoDeclined; }
+                && (!sameTerms(condBefore.terms, r.terms) || dueKey(next, r) !== condBefore.due)) { r.track = 'pending'; delete r.autoDeclined; }
             if (r.type === 'item') touchItem(r, c.back === true, boxMode);
             // v0.6.40: a scene prop that needs no more following goes to the box as "정리됨" with its last
             // state. Not for the user's own box, a pinned item or one the user added by hand.
