@@ -19,13 +19,13 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.36';
+const VERSION = '0.6.37';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
 
 const DEFAULTS = {
-    enabled: true, check: true, auto: true, autoEvery: 20, autoReserve: 2, profileId: '', responseLength: 8000, inputChars: 60000, timeoutSec: 300, timeoutTotalMin: 20, sourceChars: 12000, excludeMarks: '', askResume: true, resumeDismissed: {}, boxMode: 'notify',
+    enabled: true, check: true, auto: true, autoEvery: 20, autoReserve: 2, profileId: '', responseLength: 8000, inputChars: 60000, timeoutSec: 300, timeoutTotalMin: 20, sourceChars: 12000, excludeMarks: '', askResume: true, resumeDismissed: {}, boxMode: 'notify', firstTab: 'main',
     requestStream: true, reasoningEffort: '',
     budget: 6000, titleCap: 600, recentScenes: 3, recall: true, rawRecall: false,
     hide: true, keepRecent: 10, position: 1, depth: 4, role: 0,
@@ -36,15 +36,17 @@ const SETTING_GROUPS = {
     recording: { title: '체크포인트·기록 확인', keys: ['check', 'auto', 'autoEvery', 'autoReserve', 'excludeMarks', 'guide'] },
     injection: { title: '기억 주입', keys: ['budget', 'titleCap', 'recentScenes', 'recall', 'rawRecall', 'position', 'depth', 'role'] },
     storage: { title: '하이드·보관', keys: ['hide', 'keepRecent', 'autoKeep', 'boxMode', 'askResume'] },
-    appearance: { title: '화면', keys: ['theme', 'showKo'] },
+    appearance: { title: '화면', keys: ['theme', 'firstTab', 'showKo'] },
 };
 const THEMES = { jrpg: '클래식 JRPG', neon: '네온 아케이드', glass: '글래스 사이버', archive: '다크 아카이브', pastel: '파스텔 드림', terminal: '터미널', eggpet: '딸기우유', dualwhite: '듀얼 화이트', ink: '먹과 한지', cream: '크림 라테', consolenight: '스토리 콘솔', cranelemon: '레몬 인형뽑기', gingerbread: '진저브레드 하우스', xmasknit: '크리스마스 니트', lilac: '라일락 미드나잇', st: '실리태번 테마 따라가기' };
 // Themes that were retired, and the closest one now.
 const RETIRED_THEMES = { parchment: 'cream', colorpocket: 'eggpet', joycon: 'dualwhite', vanilla: 'cream' };
+// v0.6.37: 💠 메인 (STATUS) first; the loot queue lives in its alert area instead of its own tab.
 const TABS = [
-    ['timeline', '📅', '타임라인'], ['journal', '📜', '저널'], ['queue', '⏳', '대기열'], ['quests', '❗', '퀘스트'], ['party', '👥', '파티'],
+    ['main', '💠', '메인'], ['journal', '📜', '저널'], ['timeline', '📅', '타임라인'], ['quests', '❗', '퀘스트'], ['party', '👥', '파티'],
     ['items', '🎒', '인벤토리'], ['world', '🗺', '월드'], ['saves', '💾', '세이브'], ['inject', '👁', '주입'],
 ];
+const FIRST_TABS = { main: '💠 메인', journal: '📜 저널', timeline: '📅 타임라인', quests: '❗ 퀘스트' };
 const KIND_KO = {
     promise: '약속', goal: '목표', debt: '빚', mystery: '수수께끼',
     place: '장소', rule: '규칙', name: '별명·이름', secret: '비밀',
@@ -638,7 +640,7 @@ function parseJson(text, open = '{', close = '}') {
 function newRun(st, end, kind = '') {
     // kind: 'save' (quick save / scene clear), 'auto' (checkpoint), 'check', 'other' (memory edits by AI),
     // '' (no banner). The saving banner and the leaving-the-room notice depend on it.
-    const run = { st, key: roomKey(), epoch: roomEpoch, cancelled: false, hashes: hashesTo(end), lootCounted: new Set(),
+    const run = { id: newId(), st, key: roomKey(), epoch: roomEpoch, cancelled: false, hashes: hashesTo(end), lootCounted: new Set(),
         viaMain: !settings().profileId, ctrl: typeof AbortController === 'function' ? new AbortController() : null,
         kind, from: (st?.lastIndex ?? -1) + 1, roomName: `${charInfo()?.name ? charInfo().name + ' · ' : ''}${roomLabel(roomKey())}` };
     ui.run = run;
@@ -651,7 +653,7 @@ function assertValid(run, upTo) {
     if (!ok) { run.cancelled = true; throw new Cancelled('대화나 채팅방이 바뀌어서 이 구간은 저장하지 않았어요.'); }
 }
 function endRun(run) {
-    if (ui.run === run) { ui.run = null; ui.progress = ''; ui.req = null; }
+    if (ui.run === run) { ui.run = null; ui.progress = ''; ui.req = null; applyPendingSettings(); }
     render();
     if ((run.notice || run.doneText) && run.key === roomKey()) {
         if (run.notice) flashSaveBanner(run.notice.text, { tone: run.notice.tone });
@@ -930,9 +932,9 @@ async function summarize({ close = false, auto = false } = {}) {
             await transact(() => {
                 const before = st.mem;
                 st.mem = next;
-                pushHistory(st, before, next, { kind: 'summary', from: st.lastIndex + 1, to: coverTo });
+                pushHistory(st, before, next, { kind: 'summary', from: st.lastIndex + 1, to: coverTo, run: run.id });
                 st.lastIndex = coverTo; st.hashes = run.hashes.slice(0, coverTo + 1);
-                st.lastRecord = { at: Date.now(), from: start, to: coverTo, kind: auto ? 'checkpoint' : 'quicksave' };
+                st.lastRecord = { at: Date.now(), from: start, to: coverTo, kind: auto ? 'checkpoint' : close ? 'sceneclear' : 'quicksave', run: run.id, partial: !last };
                 st.undo = undoPoint;
                 settleAutoFail(st);
                 lootFailed += settleLoot(st, marked, next, data.lootWhy, counted);
@@ -1907,12 +1909,22 @@ async function confirmBox(text) {
 }
 const fmtDate = ts => { try { return new Date(ts).toLocaleString(); } catch { return ''; } };
 const showKo = () => !!settings().showKo;
+function langButton(st, busy) {
+    const missing = st && hasMemory(st.mem) ? translationTargets(st.mem).length : 0;
+    if (!showKo()) return btn('lang', '', '🌐 번역', '한국어 보기로 바꿔요 (번역이 없는 항목은 번역해요)', busy ? 'sp-disabled' : '');
+    if (missing) return btn('translate', '', `🌐 번역 ${missing}`, `한국어 보기가 없는 ${missing}개 항목을 번역해요`, busy ? 'sp-disabled' : '');
+    return btn('lang', '', '🌐 원문', '영어 원문 보기로 바꿔요');
+}
 const T = (en, ko) => (showKo() && ko ? ko : en);
 
 // ───────── UI ─────────
 
 function openWindow() {
     if (!$('#sp_overlay').length) $('body').append('<div id="sp_overlay" class="sp-overlay"><div class="sp-window"></div></div>');
+    // The chosen first tab applies the first time the window opens for a room in this session;
+    // afterwards the window comes back to the tab (and scroll) it was left on.
+    ui.openedRooms ||= new Set();
+    if (hasChat() && !ui.openedRooms.has(roomKey())) { ui.openedRooms.add(roomKey()); ui.tab = settings().firstTab in FIRST_TABS ? settings().firstTab : 'main'; }
     ui.open = true;
     $('#sp_overlay').css('display', 'flex');
     render(true);
@@ -2135,6 +2147,95 @@ function sceneTimeGaps(s) {
     return s.segs.filter(g => g.time).flatMap(g => [...(g.time.start?.certainty === 'unconfirmed' ? [{ g, edge: 'start' }] : []),
         ...(g.time.end?.certainty === 'unconfirmed' && g.time.start?.certainty !== 'unconfirmed' ? [{ g, edge: 'end' }] : [])]);
 }
+// ───────── 💠 메인 (STATUS) ─────────
+// A screen-only summary of what is already saved: nothing is injected or collected from here.
+// Everything is "as of the last record", which the first line says.
+const firstSentenceKo = t => (String(t || '').match(/^.*?[.!?。](\s|$)/)?.[0] || String(t || '')).trim();
+function recentChanges(st) {
+    const lr = st.lastRecord;
+    if (!lr?.run) return null;
+    const runs = (st.history || []).filter(h => h.run === lr.run);
+    if (!runs.length) return null;
+    const first = new Map(), last = new Map();
+    for (const h of runs) for (const c of h.diff.changes) { const k = `${c.kind}:${c.id}`; if (!first.has(k)) first.set(k, c.before); last.set(k, c.after); }
+    const mem = st.mem, lines = [];
+    const rec = r => `${r.type === 'quest' ? (KIND_KO[r.kind] || '퀘스트') + ' ' : r.type === 'item' ? (entityName(mem, r.entity) || '아이템') + ': ' : r.type === 'party' ? (entityName(mem, r.entity) || '') + ' ' + (r.aspect === 'condition' ? '상태' : '관계') + ': ' : ''}${T(r.text, r.ko)}`;
+    for (const [k, after] of last) {
+        const before = first.get(k), kind = k.split(':')[0];
+        if (kind === 'scenes') {
+            if (!before && after) lines.push(['add', `새 장면 ${T(after.title, after.koTitle)}`]);
+            else if (after) lines.push(['mod', `장면 이어 기록 ${T(after.title, after.koTitle)}`]);
+        } else if (kind === 'entities') {
+            if (!before && after?.type === 'person') lines.push(['add', `새 인물 ${after.name}`]);
+        } else if (kind === 'records') {
+            if (!before && after) lines.push(['add', rec(after)]);
+            else if (before && !after) lines.push(['del', rec(before)]);
+            else if (after?.type === 'item' && after.gone && !before.gone) lines.push(['del', `${entityName(mem, after.entity) || '아이템'} (${T(after.text, after.ko)} → 📦)`]);
+            else if (after?.type === 'quest' && after.status !== before.status) lines.push([after.status === 'open' ? 'mod' : 'done', `${KIND_KO[after.kind] || '퀘스트'} ${after.status === 'done' ? '완료' : after.status === 'failed' ? '실패' : '다시 진행'}: ${T(after.text, after.ko)}`]);
+            else if (after) lines.push(['mod', rec(after)]);
+        }
+    }
+    return { lr, lines };
+}
+function mainHtml(st) {
+    const mem = st.mem;
+    const pending = pendingCount();
+    const time = storyTimeContext(mem, 'ko');
+    const go = (tab, label) => `<button class="sp-st-more" data-act="tab" data-id="${tab}">${label} ›</button>`;
+    const head = (title, tab, label, extra = '') => `<div class="sp-st-h"><span>${title}</span>${extra}${tab ? go(tab, label) : ''}</div>`;
+    const basis = `<div class="sp-st-title">STATUS</div><div class="sp-st-basis">마지막 기록 기준 <b>#${st.lastIndex}</b>${time ? ` · 이야기 시간 ${esc(time)}` : ''}${pending ? ` · 미기록 <b>${pending}</b>개 — 그 뒤 대화는 아직 반영 전이에요` : ' · 미기록 없음'}</div>`;
+    // Alerts: only what needs a decision.
+    const queue = st.lootQueue || [];
+    const returns = returnNotices(st);
+    const alerts = [
+        queue.length ? `<details class="sp-st-alert ${queue.some(x => x.error) ? 'warn' : ''}" data-group="main-queue" ${ui.savesOpen.get('main-queue') || ui.focus === 'main-queue' ? 'open' : ''}><summary>${queue.some(x => x.error) ? '<span class="sp-st-dot"></span>' : ''}<span class="grow"><b>⏳ 대기열 ${queue.length}</b> · 다음 세이브에 반영</span><span class="sp-dim">▾</span></summary>${queueHtml(st)}</details>` : '',
+        ...returns.map(r => `<div class="sp-st-alert"><span>📦</span><span class="grow"><b>${esc(entityName(mem, r.entity) || '?')}</b> — ${esc(T(r.text, r.ko))}</span>${btn('item-unstore', r.id, '꺼내기')}${btn('item-keep', r.id, '그대로 두기')}</div>`),
+    ].filter(Boolean);
+    // Scene: the last recorded one.
+    const sc = openScene(mem) || mem.scenes.at(-1);
+    let scene = '';
+    if (sc) {
+        const no = mem.scenes.indexOf(sc) + 1, segs = sc.segs.filter(g => g.outline);
+        const firstS = segs[0] ? firstSentenceKo(T(segs[0].outline, segs[0].koOutline)) : '';
+        const lastS = segs.length > 1 ? firstSentenceKo(T(segs.at(-1).outline, segs.at(-1).koOutline)) : '';
+        const short = [firstS, lastS && lastS !== firstS ? lastS : ''].filter(Boolean).join(' … ');
+        const range = sceneTimeRange(sc, mem.timeAnchors, 'ko');
+        scene = `<div class="sp-st-hero" data-act="tl-goto" data-id="${esc(`${sc.id}|${sc.segs.at(-1)?.id || ''}`)}" title="저널에서 보기"><div class="k">SCENE ${String(no).padStart(2, '0')} · ${sc.status === 'open' ? '진행 중' : '끝남'}</div>
+            <div class="t">${esc(T(sc.title, sc.koTitle))}</div>
+            <div class="m">${sc.where ? `<span>📍 ${esc(sc.where)}</span>` : ''}${range ? `<span>📅 ${esc(range)}</span>` : ''}</div>
+            ${short ? `<div class="sp-st-out">${esc(short)}</div>` : ''}</div>`;
+    }
+    // Open threads, the most pressing first.
+    const rank = q => { const d = dueStatus(mem, q); return d?.kind === 'past' ? 0 : d?.kind === 'today' ? 1 : d?.kind === 'left' ? 2 + (d.left || 0) / 1000 : 3; };
+    const open = mem.records.filter(r => r.type === 'quest' && r.status === 'open').sort((a, b) => rank(a) - rank(b));
+    const quests = open.length ? head(`❗ 진행 중 ${open.length}`, 'quests', '퀘스트') + open.slice(0, 5).map(q => {
+        const d = dueStatus(mem, q), hot = d && ['past', 'today'].includes(d.kind);
+        return `<div class="sp-st-q ${hot ? 'urgent' : ''}" data-act="tl-quest" data-id="${esc(q.id)}"><span class="kind">${KIND_KO[q.kind] || q.kind}</span><span class="txt">${esc(T(q.text, q.ko))}</span>${q.due ? `<span class="due ${hot ? 'hot' : ''}">${esc(formatDue(mem, q, 'ko'))}</span>` : ''}</div>`;
+    }).join('') + (open.length > 5 ? `<div class="sp-st-sub">${open.length - 5}개 더</div>` : '') : '';
+    // People in the last recorded scene (and the open one), excluding nobody: standby is about injection.
+    const present = [...new Set([...(openScene(mem)?.who || []), ...(sc?.who || [])])].map(id => mem.entities.find(e => e.id === id)).filter(e => e?.type === 'person');
+    const newest = (id, aspect) => mem.records.filter(r => r.type === 'party' && r.entity === id && r.aspect === aspect).at(-1);
+    const people = present.length ? head('👥 현재 파티', 'party', '파티') + `<div class="sp-st-grid">${present.map(e => {
+        const c = newest(e.id, 'condition'), r = newest(e.id, 'relation');
+        const more = mem.records.filter(x => x.type === 'party' && x.entity === e.id).length - (c ? 1 : 0) - (r ? 1 : 0);
+        return `<div class="sp-st-p"><div class="n"><span class="av">${esc((e.name || '?').slice(0, 1))}</span>${esc(e.name)}${e.standby ? ` <span class="sp-badge">${e.standby === 'standby' ? '대기' : '주입 제외'}</span>` : ''}</div>
+            ${c ? `<div class="c">${esc(T(c.text, c.ko))}</div>` : ''}${r ? `<div class="r">${esc(T(r.text, r.ko))}</div>` : ''}${more > 0 ? `<div class="sp-st-sub">+${more}</div>` : ''}${!c && !r ? '<div class="r">기록된 변화 없음</div>' : ''}</div>`;
+    }).join('')}</div>` + (() => { const b = mem.entities.filter(e => e.type === 'person' && e.standby); return b.length ? `<div class="sp-st-sub">대기 ${b.filter(e => e.standby === 'standby').length}명 · 주입 제외 ${b.filter(e => e.standby === 'exclude').length}명</div>` : ''; })() : '';
+    // Items held by the people above, and items left at the scene's place.
+    const live = mem.records.filter(r => r.type === 'item' && !r.stored);
+    const rows = present.map(e => [e.name, live.filter(r => r.holder === e.id)]).filter(([, l]) => l.length);
+    const where = String(sc?.where || '').toLowerCase();
+    const places = mem.entities.filter(e => e.type === 'place' && where && [e.name, ...(e.aliases || [])].some(n => n && where.includes(String(n).toLowerCase())));
+    rows.push(...places.map(p => [`📍 ${p.name}`, live.filter(r => r.holder === p.id)]).filter(([, l]) => l.length));
+    const items = rows.length ? head('🎒 아이템', 'items', '인벤토리') + `<div class="sp-st-items">${rows.map(([who, l]) => `<div class="row"><span class="who">${esc(who)}</span>${l.map(r => `<span class="sp-st-chip" title="${esc(T(r.text, r.ko))}">${esc(entityName(mem, r.entity) || '?')}${r.gone ? ' · 사라짐' : ''}</span>`).join('')}</div>`).join('')}</div>` : '';
+    // What the last save changed, folded by default.
+    const ch = recentChanges(st);
+    const kindKo = { checkpoint: '체크포인트', quicksave: '퀵세이브', sceneclear: '장면 클리어', supplement: '루팅 보충' };
+    const changes = ch?.lines.length ? `<details class="sp-st-changes" data-group="main-changes" ${ui.savesOpen.get('main-changes') ? 'open' : ''}><summary class="sp-st-h"><span>🆕 최근 변화 · ${kindKo[ch.lr.kind] || '저장'} #${ch.lr.from}–#${ch.lr.to}${ch.lr.partial ? ' (일부 저장)' : ''} · ${ch.lines.length}개</span><span class="sp-dim">▾</span></summary>
+        <div class="sp-st-log">${ch.lines.slice(0, 14).map(([k, t]) => `<div><i class="${k === 'add' ? 'a' : k === 'del' ? 'd' : 'm'}">${k === 'add' ? '+' : k === 'del' ? '−' : k === 'done' ? '✓' : '~'}</i>${esc(t)}</div>`).join('')}${ch.lines.length > 14 ? `<div class="sp-dim">${ch.lines.length - 14}개 더</div>` : ''}</div></details>` : '';
+    const parts = [alerts.length ? `<div class="sp-st-alerts">${alerts.join('')}</div>` : '', scene, quests && `<div>${quests}</div>`, people && `<div>${people}</div>`, items && `<div>${items}</div>`, changes].filter(Boolean);
+    return basis + (parts.length > 0 ? `<div class="sp-st">${parts.join('')}</div>` : '<div class="sp-empty">세이브하면 지금 장면, 진행 중인 일, 현재 파티와 아이템이 여기에 모여요.</div>');
+}
 function queueHtml(st) {
     const items = st.lootQueue || [];
     if (!items.length) return '<div class="sp-empty">⏳ 대기열이 비었어요.<br>채팅창의 💎로 담아 주세요. 구절을 드래그한 뒤 누르면 그 구절만 담겨요.</div>';
@@ -2186,7 +2287,7 @@ function btn(act, id, label, title = '', extra = '') {
 }
 function rangeOf(s) {
     const local = s.segs.filter(g => !g.external && !g.source);
-    if (!local.length) return '다른 방에서 가져옴';
+    if (!local.length) return '이전 방 기록';
     const a = local[0]?.from, b = local[local.length - 1]?.to;
     return Number.isInteger(a) && Number.isInteger(b) ? `${local.length < s.segs.length ? '이전 방 구간 포함 · ' : ''}#${a}–#${b}` : '';
 }
@@ -2585,7 +2686,7 @@ function hudHtml(st) {
         ${review}
         <div class="sp-hud-more">
         ${storyTimeContext(st?.mem || {}, 'ko') ? `<div class="sp-hud-time">마지막 기록 기준 · ${esc(storyTimeContext(st.mem, 'ko'))}</div>` : ''}
-        <div class="sp-hud-meta"><span>미기록 <b>${pending}</b></span>${btn('tab', 'queue', `⏳ 대기열 ${st?.lootQueue?.length || 0}개`)}${returnNotices(st).length ? btn('tab', 'items', `📦 복귀 확인 ${returnNotices(st).length}`, '보관함 물건이 이야기에서 다시 쓰였어요', 'sp-on') : ''}<span>${esc(injectionStatus)}</span><span>요약 AI: ${esc(profileLabel())}</span>${ui.inj?.pinOverflow ? `<span class="sp-warn">📌 ${ui.inj.pinMissing}개 주입 못 함</span>` : ''}</div>
+        <div class="sp-hud-meta"><span>미기록 <b>${pending}</b></span>${btn('tab', 'queue', `⏳ 대기열 ${st?.lootQueue?.length || 0}개`)}${returnNotices(st).length ? btn('tab', 'main', `📦 복귀 확인 ${returnNotices(st).length}`, '보관함 물건이 이야기에서 다시 쓰였어요', 'sp-on') : ''}<span>${esc(injectionStatus)}</span><span>요약 AI: ${esc(profileLabel())}</span>${ui.inj?.pinOverflow ? `<span class="sp-warn">📌 ${ui.inj.pinMissing}개 주입 못 함</span>` : ''}</div>
         <div class="sp-hud-meta sp-auto-line">${autoLine}${autoLast}${lastRecord}</div>
         ${interrupted && !busy ? `<div class="sp-hud-meta"><span class="sp-warn">⚠ 지난 저장이 방을 옮기면서 중간에 멈췄어요 (#${interrupted.from}부터 미기록)</span>${btn('run', '', '퀵세이브로 이어서')}</div>` : ''}
         ${autoFailHtml(st)}
@@ -2598,7 +2699,7 @@ function hudHtml(st) {
             ${btn('run', '', '⏺ 퀵세이브', '마지막 메시지까지 바로 기록하고, 끝나지 않은 장면은 열어 둬요', 'sp-primary' + (busy ? ' sp-disabled' : ''))}
             ${btn('run-close', '', '■ 장면 클리어', '마지막 메시지까지 기록하고 진행 중인 장면을 닫아요', busy ? 'sp-disabled' : '')}
             ${btn('undo', '', '⏪ 리와인드', '마지막 작업(기록·편집·불러오기·비우기) 전으로', st?.undo && !busy ? '' : 'sp-disabled')}
-            ${btn('translate', '', '🌐 번역', '한국어 보기가 없는 항목을 번역해요', busy ? 'sp-disabled' : '')}
+            ${langButton(st, busy)}
             ${busy ? btn('stop', '', '중지', '', 'sp-danger') : ''}
         </div>
         ${ui.copyText ? `<div class="sp-copybox"><textarea readonly rows="8">${esc(ui.copyText)}</textarea>${btn('copy-close', '', '닫기')}</div>` : ''}
@@ -2677,18 +2778,21 @@ function render(force = false) {
     } : {};
     // The save tab counts this room's QUICK + AUTO + FILE, like every other tab counts this room.
     if (hasChat()) counts.saves = listSaves().filter(x => x.room === roomKey()).length;
-    const tabs = TABS.map(([k, icon, label]) => `<button class="sp-tab ${ui.tab === k ? 'sp-active' : ''}" data-act="tab" data-id="${k}"><span class="sp-ti">${icon}</span><span>${label}</span>${counts[k] ? `<em>${counts[k]}</em>` : ''}</button>`).join('');
+    // 💠 메인 shows how many things wait for a decision (queued loot, boxed items back in use).
+    if (st) counts.main = (st.lootQueue?.length || 0) + returnNotices(st).length;
+    const tabs = TABS.map(([k, icon, label]) => `<button class="sp-tab ${ui.tab === k ? 'sp-active' : ''}" data-act="tab" data-id="${k}"><span class="sp-ti">${icon}</span><span>${label}</span>${counts[k] ? `<em${k === 'main' ? ' class="sp-em-alert"' : ''}>${counts[k]}</em>` : ''}</button>`).join('');
     let body;
     if (!hasChat()) body = '<div class="sp-empty">채팅방을 열면 그 방의 기억이 여기에 보여요.</div>';
     else {
         const view = st || { mem: emptyMem() };
-        body = { queue: queueHtml, journal: journalHtml, timeline: timelineHtml, quests: questsHtml, party: partyHtml, items: itemsHtml, world: worldHtml, saves: savesHtml, inject: injectHtml }[ui.tab](view);
+        body = { main: mainHtml, queue: queueHtml, journal: journalHtml, timeline: timelineHtml, quests: questsHtml, party: partyHtml, items: itemsHtml, world: worldHtml, saves: savesHtml, inject: injectHtml }[ui.tab](view);
     }
     win.html(`<div class="sp-top">
             <div class="sp-logo"><span class="sp-logo-icon">◆</span> SAVE POINT <span class="sp-ver">v${VERSION}</span></div>
             <div class="sp-top-r"><span class="sp-room">${esc(charInfo()?.name || '')}</span>
-                <button class="sp-btn sp-mini ${showKo() ? 'sp-on' : ''}" data-act="ko" title="한국어 보기">${showKo() ? '한' : 'EN'}</button>
+                <button class="sp-btn sp-mini ${ui.qs ? 'sp-on' : ''}" data-act="qs" title="빠른 설정">⚙</button>
                 <button class="sp-btn sp-mini" data-act="close" title="닫기">✕</button></div></div>
+        ${ui.qs ? quickSettingsHtml() : ''}
         ${hasChat() ? hudHtml(st) : ''}
         <div class="sp-tab-nav"><button type="button" class="sp-tab-arrow" data-tab-scroll="prev" aria-label="이전 탭 보기" title="이전 탭 보기">‹</button><div class="sp-tabs">${tabs}</div><button type="button" class="sp-tab-arrow" data-tab-scroll="next" aria-label="다음 탭 보기" title="다음 탭 보기">›</button></div>
         <div class="sp-body" data-scroll-key="${esc(scrollKey)}">${body}</div>`);
@@ -2803,7 +2907,12 @@ async function handle(act, id) {
     switch (act) {
         case 'close': return closeWindow();
         case 'hud-toggle': settings().hudOpen = !hudOpen(); ui.revealFailure = false; saveSettings(); return render(true);
-        case 'tab': ui.tab = id; ui.edit = null; if (id === 'inject') refreshInjection(); return render(true);
+        case 'tab':
+            // The loot queue moved into 💠 메인; old shortcuts open it there.
+            if (id === 'queue') { ui.tab = 'main'; ui.savesOpen.set('main-queue', true); ui.edit = null; return render(true); }
+            // A tab chosen before the window first opens in this room wins over the "first tab" setting.
+            ui.openedRooms ||= new Set(); if (hasChat()) ui.openedRooms.add(roomKey());
+            ui.tab = id; ui.edit = null; if (id === 'inject') refreshInjection(); return render(true);
         case 'loot-retry': return retryLoot(id);
         case 'loot-delete':
             if (ui.run) return;
@@ -2814,6 +2923,13 @@ async function handle(act, id) {
         case 'stop': cancelRun(); return;
         case 'undo': return undo();
         case 'translate': return translate();
+        // One button for the language: 원문 ↔ 번역; in Korean view, untranslated items show as "번역 N".
+        case 'lang': {
+            if (!showKo()) { settings().showKo = true; saveSettings(); fillSettings(); if (st && translationTargets(st.mem).length) return translate(); return render(true); }
+            settings().showKo = false; saveSettings(); fillSettings(); return render(true);
+        }
+        case 'qs': ui.qs = !ui.qs; return render(true);
+        case 'qs-full': { ui.qs = false; closeWindow(); openFullSettings(); return; }
         case 'test-connection': return testConnection();
         case 'review-accept': return acceptCurrentSource();
         case 'edit-cancel': ui.edit = null; return render(true);
@@ -2924,6 +3040,58 @@ function settingSection(key, content) {
         <div class="sp-setting-fields">${content}<div class="sp-set-row sp-group-reset"><button type="button" class="menu_button" data-reset-group="${key}">↺ 이 묶음 되돌리기</button></div></div>
     </details>`;
 }
+// ───────── ⚙ quick settings ─────────
+// A short panel in the window for the settings changed most often; they are the same values as the
+// extension settings panel. Settings that a running save reads (summarizer, box mode) wait for the
+// next save so one save never mixes two models or rules.
+const QS_DEFERRED = ['profileId', 'boxMode'];
+function applyPendingSettings() {
+    const p = ui.pendingSettings;
+    if (!p) return;
+    ui.pendingSettings = null;
+    Object.assign(settings(), p); saveSettings(); fillSettings(); refreshInjection();
+}
+function quickSettingsHtml() {
+    const s = { ...settings(), ...(ui.pendingSettings || {}) };
+    const opt = (list, cur) => list.map(([v, l]) => `<option value="${esc(v)}" ${String(cur) === String(v) ? 'selected' : ''}>${esc(l)}</option>`).join('');
+    const marks = exclusionRules().length;
+    return `<div class="sp-qs"><div class="sp-qs-h"><b>⚙ 빠른 설정</b>${btn('qs', '', '✕', '닫기')}</div>
+        <label class="sp-f"><span>스킨</span><select data-qs="theme">${opt(Object.entries(THEMES), s.theme)}</select></label>
+        <label class="sp-f"><span>주입 상한 (토큰)</span><input type="number" data-qs="budget" min="300" max="100000" value="${esc(s.budget)}"></label>
+        <label class="sp-qs-check"><input type="checkbox" data-qs="auto" ${s.auto ? 'checked' : ''}> 체크포인트 (자동 퀵세이브)</label>
+        ${s.auto ? `<label class="sp-f"><span>체크포인트 간격 (새 메시지 수)</span><input type="number" data-qs="autoEvery" min="5" max="500" value="${esc(s.autoEvery)}"></label>` : ''}
+        <label class="sp-f"><span>요약 AI</span><select data-qs="profileId">${opt([['', '메인 API'], ...profiles().map(p => [p.id, p.name])], s.profileId)}</select></label>
+        <details class="sp-more" data-group="qs-more" ${ui.savesOpen.get('qs-more') ? 'open' : ''}><summary>더 보기</summary>
+            <label class="sp-f"><span>최근 장면 수</span><input type="number" data-qs="recentScenes" min="0" max="20" value="${esc(s.recentScenes)}"></label>
+            <label class="sp-f"><span>보관함 방식</span><select data-qs="boxMode">${opt([['manual', '직접 관리'], ['notify', '알림 받고 결정'], ['auto', '자동 관리']], s.boxMode)}</select></label>
+            <div class="sp-f"><span>기록에서 뺄 부분</span><div class="sp-row">${marks ? `<span>${marks}개 적용 중</span>` : '<span class="sp-dim">없음</span>'}${btn('qs-full', '', '편집 ↗', '전체 설정에서 편집해요')}</div></div>
+        </details>
+        ${ui.run ? '<div class="sp-set-note">저장 중이에요. 요약 AI와 보관함 방식은 다음 저장부터 적용돼요.</div>' : ''}
+        <div class="sp-row sp-qs-foot">${btn('qs-full', '', '전체 설정 열기 ↗', '실리태번 확장 설정의 SavePoint를 열어요')}</div></div>`;
+}
+function setQuick(key, raw, el) {
+    const s = settings();
+    const value = el?.type === 'checkbox' ? el.checked : el?.type === 'number' ? Number(raw) : raw;
+    if (el?.type === 'number' && !Number.isFinite(value)) return;
+    if (ui.run && QS_DEFERRED.includes(key)) { (ui.pendingSettings ||= {})[key] = value; toastr.info('저장이 끝난 뒤 적용할게요.', 'SavePoint'); render(); return; }
+    s[key] = value; saveSettings(); fillSettings();
+    if (['budget', 'recentScenes'].includes(key)) refreshInjection();
+    render(true);
+}
+// Opens SillyTavern's extension settings and scrolls to SavePoint (best effort: the panel's markup
+// belongs to SillyTavern).
+function openFullSettings() {
+    const drawer = document.querySelector('#extensions-settings-button .drawer-toggle');
+    const content = document.querySelector('#rm_extensions_block');
+    if (drawer && content && !content.classList.contains('openDrawer')) drawer.click();
+    setTimeout(() => {
+        const box = document.getElementById('sp_settings');
+        const inner = box?.querySelector('.inline-drawer-content');
+        if (inner && getComputedStyle(inner).display === 'none') box.querySelector('.inline-drawer-toggle')?.click();
+        box?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+        if (!box) toastr.info('실리태번 확장 설정(블록 아이콘)에서 ◆ SavePoint를 열어 주세요.', 'SavePoint');
+    }, 250);
+}
 function settingsHtml() {
     return `<div id="sp_settings" class="sp-settings"><div class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header"><b>◆ SavePoint</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div>
@@ -2978,6 +3146,7 @@ function settingsHtml() {
             `)}
             ${settingSection('appearance', `
                 <label>스킨 <select data-set="theme">${Object.entries(THEMES).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
+                <label>처음 여는 탭 <select data-set="firstTab">${Object.entries(FIRST_TABS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
                 <label class="checkbox_label"><input type="checkbox" data-set="showKo"> 한국어 보기</label>
             `)}
         </div></div></div>`;
@@ -3246,7 +3415,7 @@ function offerResume(open = false) {
         <span class="sp-resume-t">${saveTitle(sv) ? `🎬 ${esc(saveTitle(sv))}` : esc(sv.name)}</span><span class="sp-resume-m">🗝️ ${esc(roomLabel(sv.room))} · ${fmtDate(sv.updated)}</span></button>`;
     el.innerHTML = `<div class="sp-resume-h"><b>이어서 할까요?</b><span class="sp-dim">${esc(charInfo()?.name || '이 캐릭터')}의 다른 방에 세이브가 있어요.</span></div>
         ${open ? `<div class="sp-resume-list">${choices.map(row).join('')}</div>` : ''}
-        <div class="sp-resume-btns">${open ? '' : '<button class="sp-btn sp-primary interactable" data-resume-act="open">▶ 이어하기</button>'}<button class="sp-btn interactable" data-resume-act="fresh">✦ 새로 하기</button><button class="sp-btn interactable" data-resume-act="later" title="닫기 (다음에 이 방을 열면 다시 물어요)">✕</button></div>`;
+        <div class="sp-resume-btns">${open ? '' : '<button class="sp-btn sp-primary interactable" data-resume-act="open">▶ 불러오기</button>'}<button class="sp-btn interactable" data-resume-act="fresh">✦ 새로 하기</button><button class="sp-btn interactable" data-resume-act="later" title="닫기 (다음에 이 방을 열면 다시 물어요)">✕</button></div>`;
     el.hidden = false;
     el.onclick = async e => {
         const pick = e.target.closest('[data-resume]'), act = e.target.closest('[data-resume-act]')?.dataset.resumeAct;
@@ -3295,6 +3464,7 @@ jQuery(() => {
         handle(this.dataset.act, this.dataset.id).catch(reportError);
     });
     $(document).on('input change', '#sp_overlay [data-edit]', function () { if (ui.edit) ui.edit.values[this.dataset.edit] = this.value; });
+    $(document).on('change', '#sp_overlay [data-qs]', function () { setQuick(this.dataset.qs, this.value, this); });
     document.addEventListener('toggle', e => { const d = e.target; if (d?.matches?.('#sp_overlay details[data-group]')) ui.savesOpen.set(d.dataset.group, d.open); }, true);
     $(document).on('click', '#sp_overlay', e => { if (e.target.id === 'sp_overlay') closeWindow(); });
     $(document).on('keydown.savePoint', e => { if (e.key === 'Escape' && ui.open && !document.querySelector('dialog[open]')) closeWindow(); });

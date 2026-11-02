@@ -105,7 +105,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(id => { toastr.log.length = 0; M.add(2); M.addChanges = () => ({ changes: [{ op: 'update', id, text: 'Wearing the borrowed coat again.', back: true, msgs: [M.chat.length - 2] }] }); }, coatId);
     await ev(() => __savePoint.handle('run'));
     await page.waitForTimeout(1200);
-    r = await ev(() => ({ toasts: toastr.log.map(x => x[1]).filter(t => t.includes('📦 보관함 물건')), chip: $('.sp-hud [data-act="tab"][data-id="items"]').text(), rec: __savePoint.state().mem.records.find(r => r.text.includes('coat')) }));
+    r = await ev(() => ({ toasts: toastr.log.map(x => x[1]).filter(t => t.includes('📦 보관함 물건')), chip: $('.sp-hud [data-act="tab"][data-id="main"]').text(), rec: __savePoint.state().mem.records.find(r => r.text.includes('coat')) }));
     ok(r.toasts.length === 1 && r.chip.includes('📦 복귀 확인 1') && r.rec.stored?.by === 'user' && r.rec.returnNotice, `7. 저장 뒤 알림 한 번 + 상태창 복귀 확인, 보관함에는 그대로 (${r.chip})`);
     await ev(() => { M.add(2); });
     await ev(() => __savePoint.handle('run'));

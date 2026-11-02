@@ -32,6 +32,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const browser = await chromium.launch();
     const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: SHOTS ? 2 : 1 });
     page.on('pageerror', e => { console.log('PAGE ERROR', e.message); failures++; });
+    // Every setting at its default (the shared mock opens other suites on the journal).
+    await page.addInitScript(() => { window.__presetSettings = { savePoint: { firstTab: 'main' } }; });
     await page.goto(`http://localhost:${srv.address().port}/`);
     await page.waitForFunction(() => !!globalThis.__savePoint);
     const ev = (fn, arg) => page.evaluate(fn, arg);

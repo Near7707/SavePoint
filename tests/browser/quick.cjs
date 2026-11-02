@@ -148,7 +148,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(g => M.switchChat('chatResume', g, {}), greet());
     await page.waitForTimeout(1000);
     r = await ev(() => { const el = document.getElementById('sp_resume'); return { shown: !!el && !el.hidden, text: el?.textContent || '' }; });
-    ok(r.shown && r.text.includes('이어서 할까요?') && r.text.includes('이어하기') && r.text.includes('새로 하기'), '8. 새 채팅에 이어하기·새로 하기 선택 칸');
+    ok(r.shown && r.text.includes('이어서 할까요?') && r.text.includes('불러오기') && r.text.includes('새로 하기'), '8. 새 채팅에 불러오기·새로 하기 선택 칸');
     await page.click('#sp_resume [data-resume-act="open"]');
     r = await ev(() => [...document.querySelectorAll('#sp_resume [data-resume]')].map(b => b.querySelector('.sp-slot').textContent));
     ok(r.length >= 2 && r[0] === 'QUICK', `8. 이어하기를 누르면 고를 목록 (QUICK 먼저: ${r.join(',')})`);

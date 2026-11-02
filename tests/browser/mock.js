@@ -11,6 +11,10 @@ const event_types = {
 };
 const M = window.M = { files: new Map(Object.entries(window.__presetFiles || {})), fileLog: [], serverDown: !!window.__presetServerDown, chatId: 'chatA', chat: [], meta: {}, settings: window.__presetSettings || {}, prompts: {}, calls: [], popupInput: 'Save', confirm: 1, eventSource, event_types, chatSaves: 0 };
 
+// Older suites expect the window to open on the journal; 💠 메인 as the first tab is tested on its own.
+M.settings.savePoint ||= {};
+if (!('firstTab' in M.settings.savePoint)) M.settings.savePoint.firstTab = 'journal';
+
 function fake(prompt) {
     if (prompt.startsWith('Supplement the English journal') && M.supplementLinks) {
         // Link every requested excerpt to one point that cites its message.

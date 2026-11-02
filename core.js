@@ -874,7 +874,7 @@ export function applyDiff(mem, diff, backwards = false) {
 // st: { mem, lastIndex, history, floor }
 export function pushHistory(st, before, after, meta = {}) {
     st.history ||= [];
-    st.history.push({ kind: meta.kind || 'edit', from: meta.from ?? null, to: meta.to ?? null, at: meta.at || Date.now(), diff: memDiff(before, after) });
+    st.history.push({ kind: meta.kind || 'edit', from: meta.from ?? null, to: meta.to ?? null, at: meta.at || Date.now(), ...(meta.run ? { run: meta.run } : {}), diff: memDiff(before, after) });
     while (st.history.length > 1 && JSON.stringify(st.history).length > HISTORY_BYTES) {
         const old = st.history.shift();
         if (old.kind === 'summary') st.floor = Math.max(st.floor ?? -1, old.to);
