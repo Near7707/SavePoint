@@ -111,7 +111,7 @@ window.SillyTavern = {
         characters: [{ avatar: 'ari.png', name: 'Ari', description: 'Ari is a courier with green hair.' }], characterId: 0, groups: [],
         name1: 'Me', name2: 'Ari',
         get chat() { return M.chat; }, get chatMetadata() { return M.meta; },
-        async saveMetadata() { if (M.metaDelay) await new Promise(r => setTimeout(r, M.metaDelay)); if (M.failMeta) throw new Error('disk full'); if (M.swallowMeta) { M.swallowed = (M.swallowed || 0) + 1; return; } M.saves = (M.saves || 0) + 1; M.writeServerChat(); },
+        async saveMetadata() { if (M.metaDelay) await new Promise(r => setTimeout(r, M.metaDelay)); if (M.failMeta) throw new Error('disk full'); if (M.failOnce) { M.failOnce = false; throw new Error('disk full once'); } if (M.swallowMeta) { M.swallowed = (M.swallowed || 0) + 1; return; } M.saves = (M.saves || 0) + 1; M.writeServerChat(); },
         async saveChat() { M.chatSaves++; M.writeServerChat(); },
         getRequestHeaders: () => ({ 'Content-Type': 'application/json', 'X-CSRF-Token': 'test' }),
         setExtensionPrompt(k, v, p, d, s, r) { M.prompts[k] = { v, p, d, r }; },

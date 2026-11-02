@@ -148,6 +148,21 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.on.includes('대기'), `10. 저장이 끝나기 전에 화면에 선택 반영 (${r.on.join(',')})`);
     r = await ev(() => $('.sp-party-mode').first().find('.sp-on').length);
     ok(r === 1, '10. 한 사람에 선택 표시는 하나');
+
+    // 11. (v0.6.44) an earlier write that fails late never undoes a later choice that was written
+    const qid11 = await ev(() => __savePoint.state().mem.records.find(r => r.type === 'quest').id);
+    const ent11 = await ev(() => __savePoint.state().mem.entities.find(e => e.name === 'Ari').id);
+    await ev(() => { __savePoint.handle('tab', 'quests'); M.metaDelay = 600; M.failOnce = true; });
+    const first = ev(id => __savePoint.handle('person-mode', id + '|exclude').then(() => 'ok', e => 'fail:' + e.message), ent11);   // fails late
+    await page.waitForTimeout(100);
+    const second = ev(id => __savePoint.handle('pin-rec', id).then(() => 'ok', e => 'fail:' + e.message), qid11);              // written after
+    const [a, b2] = [await first, await second];
+    await ev(() => { M.metaDelay = 0; });
+    r = await ev(([q, e]) => { const st = __savePoint.state(); const saved = JSON.parse(JSON.stringify(M.meta.savePoint));
+        return { pin: st.mem.records.find(x => x.id === q).pin, mode: st.mem.entities.find(x => x.id === e).standby, savedPin: saved.mem.records.find(x => x.id === q).pin, savedMode: saved.mem.entities.find(x => x.id === e).standby }; }, [qid11, ent11]);
+    ok(r.pin === true && r.mode !== 'exclude', `11. 앞 저장 실패: 그 변경만 취소, 뒤의 📌는 남음 (${JSON.stringify(r)} · ${a} · ${b2})`);
+    r = await ev(([q, e]) => { const f = M.serverChat?.[0]?.chat_metadata?.savePoint; return f ? { pin: f.mem.records.find(x => x.id === q).pin, mode: f.mem.entities.find(x => x.id === e).standby } : null; }, [qid11, ent11]);
+    ok(r && r.pin === true && r.mode !== 'exclude', `11. 파일과 화면이 같음 (${JSON.stringify(r)})`);
     if (SHOTS) await page.locator('#sp_overlay .sp-window').screenshot({ path: path.join(OUT, 'quests-main.png') });
 
     await page.close();

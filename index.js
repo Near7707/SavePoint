@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.43';
+const VERSION = '0.6.44';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -160,46 +160,92 @@ async function persist() { if (hasChat()) await ctx().saveMetadata(); }
 // saved" and returns normally). That case cannot be detected here: the change stays in the page and
 // is written together with the next successful chat save.
 // The automatic save file lives in the settings file and is only a convenience copy.
-async function transact(change, { undoable = true, autosave: doAutosave = true, rehide = false } = {}) {
-    const meta = ctx().chatMetadata, key = roomKey(), epoch = roomEpoch;
-    const prev = meta[MODULE] ? clone(meta[MODULE]) : undefined;
+async function transact(change, { undoable = true, autosave: doAutosave = true, rehide = false, replay = false } = {}) {
+    const entry = { change, undoable, autosave: doAutosave, rehide, replay, key: roomKey(), epoch: roomEpoch };
+    if (applyEntry(entry) === false) return false;
+    const queue = saveQueue(entry.key, entry.epoch);
+    queue.pending.push(entry);
+    const done = queue.chain.then(() => writeEntry(queue, entry));
+    queue.chain = done.catch(() => {});
+    return done;
+}
+// v0.6.44: changes show at once and are written in order, one room queue at a time. When a write
+// fails, that change and everything after it are taken back to the state before it, then the later
+// changes that can safely run again (edits made with buttons, `replay`) are applied again on top and
+// written by their own turn in the queue; the rest are cancelled with the same error. So a failed
+// earlier write never undoes a later choice that is still shown, and the file and the screen agree.
+const saveQueues = new Map();
+function saveQueue(key, epoch) {
+    const id = `${key}|${epoch}`;
+    if (!saveQueues.has(id)) saveQueues.set(id, { chain: Promise.resolve(), pending: [] });
+    return saveQueues.get(id);
+}
+// Applies one change to the page (memory, hide flags, injection, screen). false = nothing changed.
+function applyEntry(entry) {
+    const meta = entry.meta = ctx().chatMetadata;   // this room's metadata, even if the room changes later
+    entry.prev = meta[MODULE] ? clone(meta[MODULE]) : undefined;
     // A save-time rescan may retire a previous manual visibility exception.
     // Keep those flags as well as visibility so a failed disk write restores
     // the exact pre-save state, including messages the user had opened.
-    const visibility = rehide ? chat().map(m => ({ m, system: m.is_system,
+    entry.visibility = entry.rehide ? chat().map(m => ({ m, system: m.is_system,
         hadSystem: Object.hasOwn(m, 'is_system'), hadExtra: Object.hasOwn(m, 'extra'), extra: m.extra,
         hadHidden: !!m.extra && Object.hasOwn(m.extra, HIDE_KEY), hidden: m.extra?.[HIDE_KEY],
         hadVisible: !!m.extra && Object.hasOwn(m.extra, VISIBLE_KEY), visible: m.extra?.[VISIBLE_KEY] })) : null;
-    if (change() === false) return false;
+    if (entry.change() === false) return false;
     const st = state();
     if (st) {
-        if (undoable && prev) { const { undo: _u, ...rest } = prev; st.undo = clone(rest); }
-        st.rev = (prev?.rev || 0) + 1;
+        if (entry.undoable && entry.prev) { const { undo: _u, ...rest } = entry.prev; st.undo = clone(rest); }
+        st.rev = (entry.prev?.rev || 0) + 1;
     }
-    syncHide({ rehide }); refreshInjection();
-    // v0.6.43: show the change at once; the chat file is written after. A failed write puts
-    // everything back below (and redraws), as before.
-    if (roomKey() === key && roomEpoch === epoch) render();
+    syncHide({ rehide: entry.rehide }); refreshInjection();
+    // v0.6.43: show the change at once; the chat file is written after.
+    if (roomKey() === entry.key && roomEpoch === entry.epoch) render();
+    return true;
+}
+// Puts the page back to the state before `entry` (memory and, for a rescan, the hide flags).
+function restoreEntry(entry) {
+    const meta = entry.meta;
+    if (entry.prev === undefined) delete meta[MODULE]; else meta[MODULE] = entry.prev;
+    const here = roomKey() === entry.key && roomEpoch === entry.epoch;
+    if (entry.visibility) entry.visibility.forEach((v, i) => {
+        if (here) setHidden(v.m, i, !!v.system);
+        if (v.hadSystem) v.m.is_system = v.system; else delete v.m.is_system;
+        if (v.hadExtra) v.m.extra = v.extra; else delete v.m.extra;
+        if (v.m.extra) {
+            if (v.hadHidden) v.m.extra[HIDE_KEY] = v.hidden; else delete v.m.extra[HIDE_KEY];
+            if (v.hadVisible) v.m.extra[VISIBLE_KEY] = v.visible; else delete v.m.extra[VISIBLE_KEY];
+        }
+    });
+    return here;
+}
+async function writeEntry(queue, entry) {
+    if (entry.cancelled) throw entry.cancelled;
     try { await persist(); }
     catch (e) {
-        if (prev === undefined) delete meta[MODULE]; else meta[MODULE] = prev;
-        const here = roomKey() === key && roomEpoch === epoch;
-        if (visibility) visibility.forEach((v, i) => {
-            if (here) setHidden(v.m, i, !!v.system);
-            if (v.hadSystem) v.m.is_system = v.system; else delete v.m.is_system;
-            if (v.hadExtra) v.m.extra = v.extra; else delete v.m.extra;
-            if (v.m.extra) {
-                if (v.hadHidden) v.m.extra[HIDE_KEY] = v.hidden; else delete v.m.extra[HIDE_KEY];
-                if (v.hadVisible) v.m.extra[VISIBLE_KEY] = v.visible; else delete v.m.extra[VISIBLE_KEY];
-            }
-        });
+        const error = new Error(`채팅 파일에 저장하지 못해서 이번 변경을 취소했어요. (${e?.message || e})`);
+        const at = queue.pending.indexOf(entry), later = queue.pending.slice(at + 1);
+        queue.pending.splice(at);
+        // Back to before this change: later changes go too (in reverse, each to its own "before").
+        let here = false;
+        for (const x of [...later].reverse()) here = restoreEntry(x) || here;
+        here = restoreEntry(entry) || here;
+        // Edits made with buttons are applied again on top; they keep their place in the queue.
+        let replayed = 0;
+        for (const x of later) {
+            let ok = false;
+            if (x.replay && roomKey() === x.key && roomEpoch === x.epoch) { try { ok = applyEntry(x) !== false; } catch { ok = false; } }
+            if (ok) { queue.pending.push(x); replayed++; }
+            else x.cancelled = new Error(`앞선 변경을 채팅 파일에 저장하지 못해서 이 변경도 취소했어요. (${e?.message || e})`);
+        }
         if (here) {
-            if (!visibility) syncHide(); else ctx().swipe?.refresh?.();
+            if (!entry.visibility && !later.some(x => x.visibility)) syncHide(); else ctx().swipe?.refresh?.();
             refreshInjection(); render();
         }
-        throw new Error(`채팅 파일에 저장하지 못해서 이번 변경을 취소했어요. (${e?.message || e})`);
+        if (replayed) error.message += ` 그 뒤에 한 변경 ${replayed}개는 다시 적용해 저장해요.`;
+        throw error;
     }
-    if (roomKey() === key && roomEpoch === epoch) { if (doAutosave) autosave(state()); render(); }
+    queue.pending.splice(queue.pending.indexOf(entry), 1);
+    if (roomKey() === entry.key && roomEpoch === entry.epoch) { if (entry.autosave) autosave(state()); render(); }
     return true;
 }
 function persistSoon() {
@@ -1498,7 +1544,7 @@ async function commitEdit(mutate, { undoable = true } = {}) {
         normalizeRecordNames(next);
         refreshProvisionalOutlines(next);
         st.mem = next; pushHistory(st, before, next, { kind: 'edit' });
-    }, { undoable });
+    }, { undoable, replay: true });
 }
 async function undo() {
     const st = state();
