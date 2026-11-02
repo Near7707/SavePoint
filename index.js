@@ -19,13 +19,13 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.35';
+const VERSION = '0.6.36';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
 
 const DEFAULTS = {
-    enabled: true, check: true, auto: true, autoEvery: 20, autoReserve: 2, profileId: '', responseLength: 8000, inputChars: 60000, timeoutSec: 300, timeoutTotalMin: 20, sourceChars: 12000, excludeMarks: '', askResume: true, resumeDismissed: {},
+    enabled: true, check: true, auto: true, autoEvery: 20, autoReserve: 2, profileId: '', responseLength: 8000, inputChars: 60000, timeoutSec: 300, timeoutTotalMin: 20, sourceChars: 12000, excludeMarks: '', askResume: true, resumeDismissed: {}, boxMode: 'notify',
     requestStream: true, reasoningEffort: '',
     budget: 6000, titleCap: 600, recentScenes: 3, recall: true, rawRecall: false,
     hide: true, keepRecent: 10, position: 1, depth: 4, role: 0,
@@ -35,7 +35,7 @@ const SETTING_GROUPS = {
     connection: { title: '연결·AI 요청', keys: ['profileId', 'requestStream', 'reasoningEffort', 'responseLength', 'inputChars', 'sourceChars', 'timeoutSec', 'timeoutTotalMin'] },
     recording: { title: '체크포인트·기록 확인', keys: ['check', 'auto', 'autoEvery', 'autoReserve', 'excludeMarks', 'guide'] },
     injection: { title: '기억 주입', keys: ['budget', 'titleCap', 'recentScenes', 'recall', 'rawRecall', 'position', 'depth', 'role'] },
-    storage: { title: '하이드·보관', keys: ['hide', 'keepRecent', 'autoKeep', 'askResume'] },
+    storage: { title: '하이드·보관', keys: ['hide', 'keepRecent', 'autoKeep', 'boxMode', 'askResume'] },
     appearance: { title: '화면', keys: ['theme', 'showKo'] },
 };
 const THEMES = { jrpg: '클래식 JRPG', neon: '네온 아케이드', glass: '글래스 사이버', archive: '다크 아카이브', pastel: '파스텔 드림', terminal: '터미널', eggpet: '딸기우유', dualwhite: '듀얼 화이트', ink: '먹과 한지', cream: '크림 라테', consolenight: '스토리 콘솔', cranelemon: '레몬 인형뽑기', gingerbread: '진저브레드 하우스', xmasknit: '크리스마스 니트', lilac: '라일락 미드나잇', st: '실리태번 테마 따라가기' };
@@ -65,6 +65,9 @@ function settings() {
     const es = ctx().extensionSettings;
     if (!es[MODULE] || typeof es[MODULE] !== 'object') es[MODULE] = clone(DEFAULTS);
     const s = es[MODULE];
+    // v0.6.36: someone already using SavePoint keeps the box working as before (manual); the
+    // "notify" default is for a new install.
+    if (!('boxMode' in s) && 'theme' in s) s.boxMode = 'manual';
     for (const k of Object.keys(DEFAULTS)) if (!(k in s)) s[k] = clone(DEFAULTS[k]);
     if (OLD_GUIDE_HASHES.includes(guideHash(s.guide))) s.guide = DEFAULT_GUIDE;
     if (RETIRED_THEMES[s.theme]) s.theme = RETIRED_THEMES[s.theme];
@@ -919,7 +922,7 @@ async function summarize({ close = false, auto = false } = {}) {
             const data = await extractChunk(st.mem, chunk, run);
             const coverTo = last ? end : chunk.to;
             assertValid(run, coverTo);
-            const { mem: next } = applyResult(st.mem, data, chunk, { room: run.key, close: close && last });
+            const { mem: next } = applyResult(st.mem, data, chunk, { room: run.key, close: close && last, boxMode: settings().boxMode });
             // Memory, position and hiding change together; a failed save puts all of it back.
             stage = 'save';
             // Failure counts made inside a write that is rolled back must not stick.
@@ -992,7 +995,7 @@ async function summarize({ close = false, auto = false } = {}) {
     } finally {
         if (lootFailed && run.key === roomKey() && state()) toastr.warning(`⚠ 루팅한 내용 ${lootFailed}개가 반영되지 않았어요.${lootFailNote(state())} 다음 세이브 때 다시 시도해요. 자세한 이유는 ⏳ 대기열에서 볼 수 있어요.`, 'SavePoint', { timeOut: 10000 });
         endRun(run);
-        if (done && run.key === roomKey()) { autosave(state()); if (state() === st) queueCheck(st, memBefore, { auto }); }
+        if (done && run.key === roomKey()) { autosave(state()); if (state() === st) { queueCheck(st, memBefore, { auto }); announceReturns(st); } }
         // A partial, failed or cancelled run keeps the previous QUICK; what it saved is in AUTO.
         if (complete && !auto && run.key === roomKey() && state() === st) await quickSave(st).catch(reportError);
     }
@@ -1614,6 +1617,18 @@ function autosave(st) {
         const rh = roomHash(key);
         storeSave(saveRecord(cur, `오토세이브 · ${charInfo()?.name || ''}`, `auto_${rh}_${Date.now().toString(36)}`, true));
     }, 1200);
+}
+// 📦 Items the user boxed that the story used again (box mode "notify"). Each return is announced
+// once, after the save that recorded it; the notice stays on the card and in the status line.
+const returnNotices = st => (st?.mem?.records || []).filter(r => r.type === 'item' && r.stored?.by === 'user' && r.returnNotice);
+function announceReturns(st) {
+    if (!st || roomKey() !== st.roomKey) return;
+    const told = new Set(st.returnTold || []);
+    const fresh = returnNotices(st).filter(r => !told.has(`${r.id}:${r.returnNotice.at}`));
+    if (!fresh.length) return;
+    toastr.info(`📦 보관함 물건 ${fresh.length}개가 이야기에서 다시 쓰였어요: ${fresh.map(r => entityName(st.mem, r.entity) || '?').join(', ')}. 인벤토리 보관함에서 꺼낼지 정해 주세요.`, 'SavePoint', { timeOut: 9000 });
+    st.returnTold = [...told, ...fresh.map(r => `${r.id}:${r.returnNotice.at}`)].slice(-200);
+    persistSoon();
 }
 // QUICK: one per room, replaced only after a manual quicksave or scene clear finished completely.
 async function quickSave(st) {
@@ -2331,14 +2346,21 @@ function entityHead(st, e) {
 function partyHtml(st) {
     const mem = st.mem;
     const people = mem.entities.filter(e => e.type === 'person');
-    const cards = people.map(e => {
+    // v0.6.36: 활성 / 대기 / 관계·상태 주입 제외 per person. Recording goes on in every mode.
+    const modeBtns = e => `<div class="sp-row sp-party-mode">${[['', '활성', '관계·상태를 일반 주입 후보로'], ['standby', '대기', '평소엔 빼고, 다시 등장하면 전부 · 최근 대화에 이름만 나오면 최신 기록 한 줄만'], ['exclude', '주입 제외', '관련돼도 이 인물의 관계·상태 기록은 주입하지 않아요 (저널·퀘스트·캐릭터 시트는 그대로)']]
+        .map(([m, label, tip]) => btn('person-mode', `${e.id}|${m}`, label, tip, (e.standby || '') === m ? 'sp-on' : '')).join('')}</div>`;
+    const card = e => {
         const recs = mem.records.filter(r => r.type === 'party' && r.entity === e.id);
         const rows = a => recs.filter(r => r.aspect === a).map(r => recordRow(st, r)).join('');
         const rel = rows('relation'), cond = rows('condition');
-        return `<div class="sp-card sp-person">${entityHead(st, e)}
+        return `<div class="sp-card sp-person ${e.standby ? 'sp-person-' + e.standby : ''}">${entityHead(st, e)}${modeBtns(e)}
             ${rel ? `<div class="sp-aspect">관계</div>${rel}` : ''}${cond ? `<div class="sp-aspect">상태</div>${cond}` : ''}
             ${!rel && !cond ? '<div class="sp-dim">기록된 변화 없음</div>' : ''}</div>`;
-    }).join('');
+    };
+    const resting = people.filter(e => e.standby);
+    const cards = people.filter(e => !e.standby).map(card).join('') + (resting.length
+        ? `<details class="sp-more sp-bench" data-group="bench" ${ui.savesOpen.get('bench') ? 'open' : ''}><summary>🪑 대기 ${resting.filter(e => e.standby === 'standby').length} · 주입 제외 ${resting.filter(e => e.standby === 'exclude').length}</summary>
+            <div class="sp-dim">대기·제외여도 대화에서 생긴 변화는 계속 기록해요. 바뀌는 건 본편 주입뿐이에요.</div>${resting.map(card).join('')}</details>` : '');
     const orphan = mem.records.filter(r => r.type === 'party' && !people.some(p => p.id === r.entity)).map(r => recordRow(st, r)).join('');
     return addBar('party') + (cards || orphan ? cards + orphan : '<div class="sp-empty">인물의 관계 변화와 상태가 여기에 쌓여요.</div>');
 }
@@ -2355,8 +2377,12 @@ function itemsHtml(st) {
         if (isEditing('record', r.id)) return `<div class="sp-card">${editForm()}</div>`;
         const last = r.msgs?.length ? Math.max(...r.msgs.filter(Number.isInteger)) : null, sc = sceneOfMsg(mem, last);
         const badges = [r.stored ? `<span class="sp-badge">${r.stored.by === 'user' ? '보관' : '사라짐'}</span>` : '', r.gone && !r.stored ? '<span class="sp-badge">사라짐</span>' : '',
-            r.storedUpdated ? '<span class="sp-badge sp-badge-on" title="보관함에 있는 동안 이야기에서 다시 언급돼 기록이 갱신됐어요">보관 중 갱신됨</span>' : ''].join('');
+            r.storedUpdated ? '<span class="sp-badge sp-badge-on" title="보관함에 있는 동안 이야기에서 다시 언급돼 기록이 갱신됐어요">보관 중 갱신됨</span>' : '',
+            r.returnNotice ? '<span class="sp-badge sp-badge-warn" title="이야기에서 다시 쓰이거나 지니게 됐어요. 꺼낼지 정해 주세요">복귀 확인</span>' : '',
+            r.stored?.lock ? '<span class="sp-badge" title="직접 보관 유지: 보관함 방식과 상관없이 보관함에 두고 알림도 띄우지 않아요">🔒</span>' : ''].join('');
         const move = r.stored ? btn('item-unstore', r.id, '꺼내기', '현재 상태 주입 대상으로 돌려요. 이야기 속 소지자·위치는 바뀌지 않아요')
+            + (r.returnNotice ? btn('item-keep', r.id, '그대로 두기', '복귀 확인을 닫고 보관함에 둬요') : '')
+            + (r.stored.by === 'user' ? btn('item-lock', r.id, r.stored.lock ? '🔓' : '🔒', r.stored.lock ? '직접 보관 유지 풀기' : '직접 보관 유지 · 보관함 방식과 상관없이 보관함에 두고 알림도 띄우지 않아요') : '')
             : btn('item-store', r.id, '📦', '보관함에 넣기 · 이 물건의 상태 기록을 주입에서 빼요(과거 사건 기록은 유지). 이야기 속 소지자·위치는 바뀌지 않아요');
         return `<div class="sp-card sp-item ${r.stored ? 'sp-stored-item' : ''}"><div class="sp-item-h"><span class="sp-ent-n">${r.stored ? '📦' : '🎒'} ${esc(entityName(mem, r.entity) || '?')}</span>${badges}
             ${r.holder ? `<span class="sp-holder">소지: <b>${esc(entityName(mem, r.holder))}</b></span>` : '<span class="sp-holder sp-dim">소지자 없음</span>'}</div>
@@ -2559,7 +2585,7 @@ function hudHtml(st) {
         ${review}
         <div class="sp-hud-more">
         ${storyTimeContext(st?.mem || {}, 'ko') ? `<div class="sp-hud-time">마지막 기록 기준 · ${esc(storyTimeContext(st.mem, 'ko'))}</div>` : ''}
-        <div class="sp-hud-meta"><span>미기록 <b>${pending}</b></span>${btn('tab', 'queue', `⏳ 대기열 ${st?.lootQueue?.length || 0}개`)}<span>${esc(injectionStatus)}</span><span>요약 AI: ${esc(profileLabel())}</span>${ui.inj?.pinOverflow ? `<span class="sp-warn">📌 ${ui.inj.pinMissing}개 주입 못 함</span>` : ''}</div>
+        <div class="sp-hud-meta"><span>미기록 <b>${pending}</b></span>${btn('tab', 'queue', `⏳ 대기열 ${st?.lootQueue?.length || 0}개`)}${returnNotices(st).length ? btn('tab', 'items', `📦 복귀 확인 ${returnNotices(st).length}`, '보관함 물건이 이야기에서 다시 쓰였어요', 'sp-on') : ''}<span>${esc(injectionStatus)}</span><span>요약 AI: ${esc(profileLabel())}</span>${ui.inj?.pinOverflow ? `<span class="sp-warn">📌 ${ui.inj.pinMissing}개 주입 못 함</span>` : ''}</div>
         <div class="sp-hud-meta sp-auto-line">${autoLine}${autoLast}${lastRecord}</div>
         ${interrupted && !busy ? `<div class="sp-hud-meta"><span class="sp-warn">⚠ 지난 저장이 방을 옮기면서 중간에 멈췄어요 (#${interrupted.from}부터 미기록)</span>${btn('run', '', '퀵세이브로 이어서')}</div>` : ''}
         ${autoFailHtml(st)}
@@ -2837,7 +2863,14 @@ async function handle(act, id) {
         case 'pin': return commitEdit(m => { const s = m.scenes.find(x => x.id === id); if (!s) return false; s.pin = !s.pin; }, { undoable: false });
         // 📦 Storing only changes what the roleplay model is given; the story's holder and place stay.
         case 'item-store': return commitEdit(m => { const r = m.records.find(x => x.id === id); if (!r || r.stored) return false; r.stored = { by: 'user', at: Date.now() }; delete r.storedUpdated; });
-        case 'item-unstore': return commitEdit(m => { const r = m.records.find(x => x.id === id); if (!r?.stored) return false; delete r.stored; delete r.storedUpdated; });
+        case 'item-unstore': return commitEdit(m => { const r = m.records.find(x => x.id === id); if (!r?.stored) return false; delete r.stored; delete r.storedUpdated; delete r.returnNotice; });
+        // 🔒 keeps a boxed item in the box whatever the box mode; "그대로 두기" answers a return notice.
+        case 'item-lock': return commitEdit(m => { const r = m.records.find(x => x.id === id); if (r?.stored?.by !== 'user') return false; r.stored.lock = !r.stored.lock; if (r.stored.lock) delete r.returnNotice; else delete r.stored.lock; });
+        case 'person-mode': {
+            const [eid, mode] = id.split('|');
+            return commitEdit(m => { const e = m.entities.find(x => x.id === eid); if (!e || (e.standby || '') === mode) return false; if (mode) e.standby = mode; else delete e.standby; });
+        }
+        case 'item-keep': return commitEdit(m => { const r = m.records.find(x => x.id === id); if (!r?.returnNotice) return false; delete r.returnNotice; });
         case 'pin-rec': return commitEdit(m => { const r = m.records.find(x => x.id === id); if (!r) return false; r.pin = !r.pin; }, { undoable: false });
         case 'quest-done': case 'quest-fail': case 'quest-open':
             return commitEdit(m => { const r = m.records.find(x => x.id === id); if (!r) return false; setQuestStatus(r, act === 'quest-done' ? 'done' : act === 'quest-fail' ? 'failed' : 'open'); });
@@ -2939,6 +2972,8 @@ function settingsHtml() {
                 <label>하이드하지 않을 최근 메시지 <input type="number" data-set="keepRecent" min="0" max="200"></label>
                 <div class="sp-set-note">전체 대화에서 숨기지 않을 최근 메시지 수예요. 미기록 메시지는 이 설정과 관계없이 숨기지 않아요.</div>
                 <label>오토세이브를 보관할 방 수 (방마다 최근 3개) <input type="number" data-set="autoKeep" min="1" max="500"></label>
+                <label>보관함 방식 (직접 보관한 물건이 다시 쓰일 때) <select data-set="boxMode"><option value="manual">직접 관리 · 상태만 갱신하고 보관함에 둠</option><option value="notify">알림 받고 결정 · 보관함에 두고 꺼내기 안내</option><option value="auto">자동 관리 · 인벤토리로 꺼냄</option></select></label>
+                <div class="sp-set-note">이야기가 넣은 물건(다 쓰거나 잃어버린 것)은 되찾으면 방식과 상관없이 돌아와요. 🔒를 건 물건은 항상 보관함에 두고 알림도 띄우지 않아요. 방식을 바꿔도 이미 보관함에 있는 물건을 한꺼번에 꺼내지 않아요.</div>
                 <label class="checkbox_label"><input type="checkbox" data-set="askResume"> 새 채팅에서 이어하기 물어보기 (같은 캐릭터의 다른 방에 세이브가 있을 때)</label>
             `)}
             ${settingSection('appearance', `

@@ -1,3 +1,21 @@
+# v0.6.36 · 보관함 방식, 파티 대기 멤버 (1차)
+
+기준: v0.6.35 `ed28ceb`. 2차(메인 탭·빠른 설정 등)는 이어서.
+
+## 보관함 방식 (`settings.boxMode`)
+- `manual` / `notify` / `auto`. 기본값: 새 설치는 `notify`, 기존 설정(`theme` 키가 이미 있음)에 `boxMode`가 없으면 `manual`.
+- `applyResult(..., { boxMode })` → `touchItem(r, back, boxMode)`. `back`이면 `gone` 해제, 이야기가 넣은 보관(`by:'story'`)은 해제. 사용자 보관은 `storedUpdated`; `back`이고 잠금이 아니면 `auto`는 꺼냄, `notify`는 `returnNotice = { at }`. 단순 언급(`back` 없음)은 어떤 방식도 발동 안 함. 방식 변경은 기존 물건에 소급하지 않음.
+- 🔒 `stored.lock`(사용자 보관만): 꺼내지 않고 알림 없음. `item-lock` 토글, `item-keep`(그대로 두기)는 알림만 닫음, `꺼내기`는 알림·잠금도 정리.
+- 알림: `summarize` 끝(`done`이고 같은 방)에서 `announceReturns` — 아직 알리지 않은 `id:at`만 토스트 1회, `st.returnTold`(최근 200개)에 기록. 상태창 `📦 복귀 확인 N` 칩(인벤토리로 이동). `cleanMem`이 `lock`·`returnNotice` 보존.
+
+## 파티 대기 멤버 (`entity.standby`: 'standby' | 'exclude')
+- `buildInjection`: 관계·상태(party) 기록만 대상. `exclude`는 넣지 않음, `standby`는 진행 중·최근 장면 등장(`appear`)이면 전부, 최근 대화 이름 언급(`mentioned`)이면 그 인물의 가장 최근 party 기록 하나만, 아니면 넣지 않음. 📌 기록은 항상. 다른 종류 기록(퀘스트·물건 등)은 영향 없음. 수집 문맥은 그대로 전부.
+- 화면: 인물 카드에 `활성/대기/주입 제외` 버튼(`person-mode`, commitEdit), 대기·제외는 `🪑` 접힘 묶음. `cleanMem`이 보존.
+
+검사: Node 363개(`storage.test` 방식별·잠금·언급·보존, 새 `standby.test`), 브라우저 `box.cjs`에 7~10(알림 1회·칩·그대로 두기·잠금·대기 버튼·기존 사용자 기본값).
+
+재검토할 것: ① 실제 모델이 보관 물건을 다시 쓸 때 `back`을 붙이는지 ② `mentioned`가 이름·별칭 일치라, 흔한 단어 별칭이면 대기 인물이 자주 한 줄씩 들어올 수 있음.
+
 # v0.6.35 · v0.6.34 리뷰 4건 수정
 
 기준: v0.6.34 `9631739`.

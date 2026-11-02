@@ -100,6 +100,42 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r = await ev(() => __savePoint.state().mem.records.find(r => r.text.includes('coat'))?.stored?.by);
     ok(r === 'user' && !(await inj()).includes('borrowed coat'), '6. 다음 세이브를 리와인드해도 직접 보관한 물건은 보관함에 그대로');
 
+    // 7. box mode "notify" (the default for a new install): one notice after the save, a status chip, 그대로 두기
+    ok((await ev(() => __savePoint.settings().boxMode)) === 'notify', '7. 새로 설치하면 보관함 방식 기본값은 알림');
+    await ev(id => { toastr.log.length = 0; M.add(2); M.addChanges = () => ({ changes: [{ op: 'update', id, text: 'Wearing the borrowed coat again.', back: true, msgs: [M.chat.length - 2] }] }); }, coatId);
+    await ev(() => __savePoint.handle('run'));
+    await page.waitForTimeout(1200);
+    r = await ev(() => ({ toasts: toastr.log.map(x => x[1]).filter(t => t.includes('📦 보관함 물건')), chip: $('.sp-hud [data-act="tab"][data-id="items"]').text(), rec: __savePoint.state().mem.records.find(r => r.text.includes('coat')) }));
+    ok(r.toasts.length === 1 && r.chip.includes('📦 복귀 확인 1') && r.rec.stored?.by === 'user' && r.rec.returnNotice, `7. 저장 뒤 알림 한 번 + 상태창 복귀 확인, 보관함에는 그대로 (${r.chip})`);
+    await ev(() => { M.add(2); });
+    await ev(() => __savePoint.handle('run'));
+    await page.waitForTimeout(1200);
+    ok((await ev(() => toastr.log.filter(x => x[1].includes('📦 보관함 물건')).length)) === 1, '7. 다음 세이브에서 같은 알림을 반복하지 않음');
+    await ev(id => __savePoint.handle('item-keep', id), coatId);
+    ok(!(await ev(() => __savePoint.state().mem.records.find(r => r.text.includes('coat')).returnNotice)), '7. 그대로 두기 → 복귀 확인 닫힘');
+
+    // 8. 🔒: even in auto mode the item stays and no notice is raised
+    await ev(id => __savePoint.handle('item-lock', id), coatId);
+    await ev(id => { M.settings.savePoint.boxMode = 'auto'; toastr.log.length = 0; M.add(2); M.addChanges = () => ({ changes: [{ op: 'update', id, text: 'Coat on again.', back: true, msgs: [M.chat.length - 2] }] }); }, coatId);
+    await ev(() => __savePoint.handle('run'));
+    await page.waitForTimeout(1200);
+    r = await ev(() => ({ rec: __savePoint.state().mem.records.find(r => r.text.includes('Coat on again')), toasts: toastr.log.filter(x => x[1].includes('📦')).length }));
+    ok(r.rec.stored?.lock && !r.rec.returnNotice && r.toasts === 0, '8. 🔒 걸면 자동 관리여도 보관함에 두고 알림 없음');
+
+    // 9. party standby buttons; resting people are grouped
+    await ev(() => __savePoint.handle('tab', 'party'));
+    const ari = await ev(() => __savePoint.state().mem.entities.find(e => e.type === 'person').id);
+    await ev(id => __savePoint.handle('person-mode', id + '|standby'), ari);
+    r = await ev(() => ({ bench: $('.sp-bench > summary').text(), on: $('.sp-bench .sp-party-mode .sp-on').text(), mode: __savePoint.state().mem.entities.find(e => e.type === 'person').standby }));
+    ok(r.mode === 'standby' && r.bench.includes('🪑 대기 1') && r.on === '대기', `9. 대기 멤버로 돌리면 아래 묶음으로 (${r.bench.trim()})`);
+    await ev(id => __savePoint.handle('person-mode', id + '|'), ari);
+    ok(!(await ev(() => __savePoint.state().mem.entities.find(e => e.type === 'person').standby)), '9. 다시 활성');
+
+    // 10. someone already using SavePoint keeps the old behaviour (manual) after updating
+    const old = await session({ settings: { savePoint: { theme: 'cream', budget: 6000 } } });
+    ok((await old.evaluate(() => __savePoint.settings().boxMode)) === 'manual', '10. 기존 사용자는 직접 관리 유지');
+    await old.close();
+
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();

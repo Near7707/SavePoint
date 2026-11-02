@@ -845,3 +845,10 @@ label.sp-has-reset { position: relative; padding-right: 30px; }
 .sp-window[data-theme="lilac"] .sp-save.sp-auto .sp-slot { background: #282d47; color: #9e9ab9; }
 .sp-window[data-theme="lilac"] .sp-save-quick .sp-slot { background: transparent; color: #f0b45c; box-shadow: inset 0 0 0 1.5px #f0b45c; }
 .sp-window[data-theme="lilac"] .sp-badge { border-radius: 999px; }
+
+/* v0.6.36: party standby buttons and the bench */
+.sp-party-mode { gap: 4px; margin: 4px 0 2px; }
+.sp-party-mode .sp-btn { font-size: 11.5px; padding: 1px 8px; }
+.sp-bench { margin-top: 10px; }
+.sp-bench > .sp-dim { margin: 4px 0 8px; font-size: 12px; }
+.sp-person-standby, .sp-person-exclude { opacity: .85; }

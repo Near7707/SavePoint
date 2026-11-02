@@ -679,7 +679,7 @@ export function resultLanguageIssues(data) {
 function numEvidence(msgs) {
     return (msgs || []).map(m => (typeof m === 'string' && /^#?\d+$/.test(m.trim()) ? Number(m.replace('#', '')) : m));
 }
-export function applyResult(mem, data, chunk, { close = false, room = null } = {}) {
+export function applyResult(mem, data, chunk, { close = false, room = null, boxMode = 'manual' } = {}) {
     const next = clone(upgradeEvidence(mem));
     const refs = new Map();
     for (const e of data.entities || []) {
@@ -758,7 +758,7 @@ export function applyResult(mem, data, chunk, { close = false, room = null } = {
             const r = next.records.find(x => x.type === 'item' && (x.stored || x.gone) && x.entity === resolve(c.entity));
             if (str(c.text)) { r.text = str(c.text); delete r.ko; }
             if (c.holder !== undefined) r.holder = resolve(c.holder);
-            touchItem(r, true);   // "add" means the item is in the story now
+            touchItem(r, true, boxMode);   // "add" means the item is in the story now
             r.src = uniq([...(r.src || []), src]); r.msgs = uniq([...(r.msgs || []), ...msgs]).slice(-12);
         } else if (c.op === 'add') {
             const r = { id: takeId(next, 'r'), type: c.type, text: str(c.text), src: [src], msgs, pin: false, evidenceVersion: 1 };
@@ -793,7 +793,7 @@ export function applyResult(mem, data, chunk, { close = false, room = null } = {
             if (r.type === 'quest' && TERMS_KINDS.includes(r.kind) && c.terms) { const t = termsOf(c, chunk); if (t) r.terms = t; }
             // A new deadline replaces an AI-read one, never one the user set.
             if (r.type === 'quest' && TERMS_KINDS.includes(r.kind) && c.due && !r.due?.manual) { const due = resolveDueClaim(c.due, { chunk, room, segOf: n => segFor([n]) }); if (due) r.due = due; }
-            if (r.type === 'item') touchItem(r, c.back === true);
+            if (r.type === 'item') touchItem(r, c.back === true, boxMode);
             r.src = uniq([...(r.src || []), src]);
             r.msgs = uniq([...(r.msgs || []), ...msgs]).slice(-12);
         } else if (c.op === 'remove') {
@@ -817,9 +817,16 @@ export function applyResult(mem, data, chunk, { close = false, room = null } = {
 // apart. Only a stated return ("back": found, repaired, given back) ends "gone"; a mere mention only
 // updates the record. An item the story had boxed comes out when it returns; one the user boxed
 // stays in the box until the user takes it out, marked as updated.
-function touchItem(r, back) {
+// v0.6.36: what happens to an item the USER boxed when the story uses it again depends on the box
+// mode: 'manual' only updates it, 'notify' also raises a return notice (shown once after the save),
+// 'auto' takes it out. A locked item (🔒) always stays and never raises a notice.
+function touchItem(r, back, boxMode = 'manual') {
     if (back) { delete r.gone; if (r.stored?.by === 'story') delete r.stored; }
-    if (r.stored?.by === 'user') r.storedUpdated = true;
+    if (r.stored?.by !== 'user') return;
+    r.storedUpdated = true;
+    if (!back || r.stored.lock) return;
+    if (boxMode === 'auto') { delete r.stored; delete r.storedUpdated; delete r.returnNotice; }
+    else if (boxMode === 'notify') r.returnNotice = { at: Date.now() };
 }
 
 // Closing the open scene without new messages.
@@ -1035,7 +1042,21 @@ export function buildInjection(mem, opts = {}) {
         return 6;
     };
     // Items in the 📦 storage box are never given to the roleplay model.
-    for (const r of mem.records) if (!r.stored) items.push({ tier: 'state', pr: recPriority(r), rec: r, pin: !!r.pin, alts: [recordLine(mem, r, false)] });
+    // v0.6.36: a person on standby gives their relation/condition records only when they take part
+    // again (in the open or a recent scene: all of them) or are named in the latest messages (only the
+    // newest one); an excluded person gives none. 📌 pinned records always go in.
+    const appear = new Set([...(open?.who || []), ...recentScenes.flatMap(sc => sc.who)]);
+    const modeOf = id => mem.entities.find(e => e.id === id)?.standby;
+    const newestOf = new Map();
+    for (const r of mem.records) if (r.type === 'party') newestOf.set(r.entity, r);
+    const partyIn = r => {
+        const mode = r.type === 'party' && !r.pin ? modeOf(r.entity) : null;
+        if (!mode) return true;
+        if (mode === 'exclude') return false;
+        if (appear.has(r.entity)) return true;
+        return mentioned.has(r.entity) && newestOf.get(r.entity) === r;
+    };
+    for (const r of mem.records) if (!r.stored && partyIn(r)) items.push({ tier: 'state', pr: recPriority(r), rec: r, pin: !!r.pin, alts: [recordLine(mem, r, false)] });
     const recentIds = new Set(recentScenes.map(sc => sc.id));
     mem.scenes.forEach((sc, idx) => {
         let pr, alts;
@@ -1300,7 +1321,7 @@ export function cleanMem(raw) {
     };
     for (const e of raw.entities) {
         if (!plain(e) || !str(e.name)) throw new Error('인물·물건 항목이 잘못됐어요.');
-        out.entities.push({ id: id(e.id, 'e'), type: ENTITY_TYPES.includes(e.type) ? e.type : 'person', name: str(e.name), aliases: uniq(strList(e.aliases)) });
+        out.entities.push({ id: id(e.id, 'e'), type: ENTITY_TYPES.includes(e.type) ? e.type : 'person', name: str(e.name), aliases: uniq(strList(e.aliases)), ...(['standby', 'exclude'].includes(e.standby) ? { standby: e.standby } : {}) });
     }
     const ent = new Set(out.entities.map(e => e.id));
     const eref = v => (typeof v === 'string' && ent.has(v) ? v : null);
@@ -1335,7 +1356,8 @@ export function cleanMem(raw) {
         if (r.type === 'party') { rec.entity = eref(r.entity); rec.aspect = ASPECTS.includes(r.aspect) ? r.aspect : 'relation'; }
         if (r.type === 'item') {
             rec.entity = eref(r.entity); rec.holder = eref(r.holder);
-            if (plain(r.stored) && ['user', 'story'].includes(r.stored.by)) rec.stored = { by: r.stored.by, at: Number(r.stored.at) || 0 };
+            if (plain(r.stored) && ['user', 'story'].includes(r.stored.by)) rec.stored = { by: r.stored.by, at: Number(r.stored.at) || 0, ...(r.stored.by === 'user' && r.stored.lock === true ? { lock: true } : {}) };
+            if (rec.stored?.by === 'user' && plain(r.returnNotice)) rec.returnNotice = { at: Number(r.returnNotice.at) || 0 };
             if (r.gone === true) rec.gone = true;
             if (rec.stored && r.storedUpdated === true) rec.storedUpdated = true;
         }

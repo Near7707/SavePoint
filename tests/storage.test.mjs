@@ -5,13 +5,13 @@ import assert from 'node:assert/strict';
 import { emptyMem, applyResult, normalizeResult, validateResult, buildInjection, promptContext, cleanMem } from '../core.js';
 
 let n = 0;
-function step(mem, changes, entities = []) {
+function step(mem, changes, entities = [], boxMode = 'manual') {
     const w = `m${n}`, chunk = { from: n, to: n, indices: [n], text: w, texts: { [n]: w } };
     const d = { scenes: [{ scene: mem.scenes.length ? 'continue' : 'new', title: 'Tavern', where: 'Inn', who: [], ended: false, outline: 'They sat at the inn.', notes: '',
         points: [{ text: 'They talked.', kind: 'moment', key: false, msgs: [n] }] }], entities, changes: changes.map(c => ({ msgs: [n], ...c })) };
     normalizeResult(d, { mem, chunk });
     assert.deepEqual(validateResult(d, { mem, chunk }), []);
-    const out = applyResult(mem, d, chunk, { room: 'room-A' }).mem; n++;
+    const out = applyResult(mem, d, chunk, { room: 'room-A', boxMode }).mem; n++;
     return out;
 }
 const base = () => {
@@ -121,4 +121,40 @@ test('"back" is only for items', () => {
         changes: [{ op: 'update', id: rule.id, back: true, msgs: [n] }] };
     normalizeResult(d, { mem, chunk });
     assert(validateResult(d, { mem, chunk }).some(e => e.includes('back is only for items')));
+});
+
+test('box modes decide what happens when the story uses a user-boxed item again; 🔒 always keeps it', () => {
+    const run = (mode, lock = false) => {
+        let mem = base();
+        const coat = mem.records.find(r => r.text.includes('coat'));
+        coat.stored = { by: 'user', at: 1, ...(lock ? { lock: true } : {}) };
+        mem = step(mem, [{ op: 'update', id: coat.id, text: 'Wearing the borrowed coat again.', back: true }], [], mode);
+        return mem.records.find(r => r.id === coat.id);
+    };
+    const manual = run('manual'), notify = run('notify'), auto = run('auto'), locked = run('auto', true), lockedNotify = run('notify', true);
+    assert.deepEqual([manual.stored?.by, !!manual.returnNotice, manual.storedUpdated], ['user', false, true]);
+    assert.deepEqual([notify.stored?.by, !!notify.returnNotice], ['user', true]);
+    assert(!auto.stored && !auto.returnNotice, 'auto takes it out');
+    assert.deepEqual([locked.stored?.by, locked.stored.lock, !!locked.returnNotice], ['user', true, false]);
+    assert(!lockedNotify.returnNotice, 'a locked item raises no notice');
+});
+
+test('a mere mention never triggers the box mode; a story-boxed item returns in every mode', () => {
+    let mem = base();
+    const coat = mem.records.find(r => r.text.includes('coat'));
+    coat.stored = { by: 'user', at: 1 };
+    mem = step(mem, [{ op: 'update', id: coat.id, text: 'Someone talks about the coat.' }], [], 'auto');
+    assert.equal(mem.records.find(r => r.id === coat.id).stored?.by, 'user');
+    const potion = mem.records.find(r => r.text.includes('potion'));
+    mem = step(mem, [{ op: 'remove', id: potion.id, text: 'Lost.' }], [], 'manual');
+    mem = step(mem, [{ op: 'update', id: potion.id, text: 'Found it.', back: true }], [], 'manual');
+    assert(!mem.records.find(r => r.id === potion.id).stored);
+});
+
+test('lock and notice survive save files', () => {
+    let mem = base();
+    const coat = mem.records.find(r => r.text.includes('coat'));
+    coat.stored = { by: 'user', at: 1, lock: true }; coat.returnNotice = { at: 9 };
+    const back = cleanMem(JSON.parse(JSON.stringify(mem))).records.find(r => r.id === coat.id);
+    assert.deepEqual([back.stored.lock, back.returnNotice.at], [true, 9]);
 });

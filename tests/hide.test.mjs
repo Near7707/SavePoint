@@ -25,7 +25,7 @@ function harness({ count = 10, lastIndex = 9, keepRecent = 2 } = {}) {
         clone: structuredClone, roomKey: () => 'room', state: () => meta.savePoint, ctx: () => ({ chatMetadata: meta, swipe: { refresh() {} } }),
         chat: () => chat, settings: () => settings, num: k => settings[k], hasMemory: mem => !!(mem.scenes.length || mem.records.length),
         $(selector) { const index = Number(selector.match(/mesid="(\d+)"/)[1]); return { attr(k, value) { dom.set(index, value); } }; },
-        saveChatSoon() {}, refreshInjection() {}, render() {}, autosave() {}, async quickSave() { return null; },
+        saveChatSoon() {}, refreshInjection() {}, render() {}, autosave() {}, async quickSave() { return null; }, announceReturns() {},
         async persist() { writes.push(structuredClone({ meta, chat })); },
         hasChat: () => true, mainBusy: () => false, ensureState: () => meta.savePoint, reconcile: () => true,
         collect: (a, b) => chat.map((m, index) => ({ index, name: m.name, text: m.mes })).filter(m => m.index >= a && m.index <= b),
