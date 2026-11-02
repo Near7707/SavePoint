@@ -565,8 +565,8 @@ label.sp-has-reset { position: relative; padding-right: 30px; }
 .sp-window[data-theme="consolenight"] .sp-actions [data-act="run-close"]::after { content: 'SCENE CLEAR'; }
 .sp-window[data-theme="consolenight"] .sp-actions [data-act="undo"] { background: linear-gradient(180deg, #c8dcff, #a6c4ff); color: #1d3a7a; }
 .sp-window[data-theme="consolenight"] .sp-actions [data-act="undo"]::after { content: 'REWIND'; }
-.sp-window[data-theme="consolenight"] .sp-actions [data-act="translate"] { background: linear-gradient(180deg, #e2d4ff, #cbb6ff); color: #42267a; }
-.sp-window[data-theme="consolenight"] .sp-actions [data-act="translate"]::after { content: 'TRANSLATE'; }
+.sp-window[data-theme="consolenight"] .sp-actions .sp-langwrap .sp-btn { background: linear-gradient(180deg, #e2d4ff, #cbb6ff); color: #42267a; }
+.sp-window[data-theme="consolenight"] .sp-actions .sp-langwrap .sp-btn::after { content: 'LANGUAGE'; }
 .sp-window[data-theme="consolenight"] .sp-hud .sp-btn:not(.sp-actions .sp-btn) { background: rgba(255,255,255,.18); border-color: rgba(255,255,255,.35); color: #eef1ff; }
 .sp-window[data-theme="consolenight"] .sp-tab-nav { border-bottom: none; margin-top: 10px; }
 .sp-window[data-theme="consolenight"] .sp-tab { margin-right: 4px; border: none; border-radius: 14px 14px 0 0; background: #2a3470; color: #dfe4ff; font-weight: 700; }
@@ -600,7 +600,7 @@ label.sp-has-reset { position: relative; padding-right: 30px; }
 .sp-window[data-theme="cranelemon"] .sp-actions [data-act="run"] { background: #2fa6e8; }
 .sp-window[data-theme="cranelemon"] .sp-actions [data-act="run-close"] { background: #3fc9a8; }
 .sp-window[data-theme="cranelemon"] .sp-actions [data-act="undo"] { background: #2fa6e8; }
-.sp-window[data-theme="cranelemon"] .sp-actions [data-act="translate"] { background: #f5a524; }
+.sp-window[data-theme="cranelemon"] .sp-actions .sp-langwrap .sp-btn { background: #f5a524; }
 .sp-window[data-theme="cranelemon"] .sp-hud .sp-btn:not(.sp-actions .sp-btn) { background: #fff; border-color: #ffe39a; border-radius: 999px; }
 .sp-window[data-theme="cranelemon"] .sp-tab-nav { border-bottom: none; margin-top: 10px; }
 .sp-window[data-theme="cranelemon"] .sp-tab { margin-right: 5px; border: 2px dashed #f5b82e; border-radius: 10px; background: #ffd9e4; color: #5a3a50; font-weight: 700; }
@@ -911,3 +911,10 @@ details.sp-st-alert[open] > summary { margin-bottom: 6px; }
 .sp-qs-check { display: flex; align-items: center; gap: 6px; }
 .sp-qs-foot { justify-content: flex-end; }
 @media (min-width: 561px) { .sp-qs { position: absolute; right: 12px; top: 52px; width: 300px; z-index: 5; background: var(--sp-bg); box-shadow: 0 12px 30px rgba(0,0,0,.35); } #sp_overlay .sp-window { position: relative; } }
+
+/* v0.6.38: 🌐 원문/번역 with an optional small "+N" (fill missing translations) beside it. */
+.sp-langwrap { display: inline-flex; gap: 3px; flex: 1 1 auto; min-width: 0; }
+.sp-langwrap .sp-langbtn { flex: 1 1 auto; }
+.sp-langwrap .sp-langfill { flex: 0 0 auto; padding-left: 7px; padding-right: 7px; }
+.sp-window[data-theme="consolenight"] .sp-actions .sp-langwrap .sp-langfill { padding: 4px 6px; border-radius: 12px; }
+.sp-window[data-theme="consolenight"] .sp-actions .sp-langwrap .sp-langfill::after { content: none; }

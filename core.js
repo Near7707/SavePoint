@@ -679,6 +679,18 @@ export function resultLanguageIssues(data) {
 function numEvidence(msgs) {
     return (msgs || []).map(m => (typeof m === 'string' && /^#?\d+$/.test(m.trim()) ? Number(m.replace('#', '')) : m));
 }
+// v0.6.38: the order records were last added or changed in. `seq` grows with every add/update, so the
+// newest relation/condition of a person is the one changed last, not the one last in the array (an
+// update leaves a record where it was). Records without seq (older saves) count as 0, array order next.
+function stamp(mem, r) { r.seq = mem.records.reduce((m, x) => Math.max(m, x.seq || 0), 0) + 1; }
+export function newestParty(mem, entity, aspect) {
+    let best = null, bi = -1;
+    mem.records.forEach((r, i) => {
+        if (r.type !== 'party' || r.entity !== entity || (aspect && r.aspect !== aspect)) return;
+        if (!best || (r.seq || 0) > (best.seq || 0) || ((r.seq || 0) === (best.seq || 0) && i > bi)) { best = r; bi = i; }
+    });
+    return best;
+}
 export function applyResult(mem, data, chunk, { close = false, room = null, boxMode = 'manual' } = {}) {
     const next = clone(upgradeEvidence(mem));
     const refs = new Map();
@@ -760,6 +772,7 @@ export function applyResult(mem, data, chunk, { close = false, room = null, boxM
             if (c.holder !== undefined) r.holder = resolve(c.holder);
             touchItem(r, true, boxMode);   // "add" means the item is in the story now
             r.src = uniq([...(r.src || []), src]); r.msgs = uniq([...(r.msgs || []), ...msgs]).slice(-12);
+            stamp(next, r);
         } else if (c.op === 'add') {
             const r = { id: takeId(next, 'r'), type: c.type, text: str(c.text), src: [src], msgs, pin: false, evidenceVersion: 1 };
             if (c.type === 'party') { r.entity = resolve(c.entity); r.aspect = c.aspect; }
@@ -774,6 +787,7 @@ export function applyResult(mem, data, chunk, { close = false, room = null, boxM
                 if (due) r.due = due;
             }
             if (c.type === 'world') { r.kind = c.kind; r.knownBy = uniq(strList(c.knownBy).map(resolve).filter(Boolean)); if (c.entity) r.entity = resolve(c.entity); }
+            stamp(next, r);
             next.records.push(r);
         } else if (c.op === 'update') {
             const r = next.records.find(x => x.id === c.id);
@@ -796,6 +810,7 @@ export function applyResult(mem, data, chunk, { close = false, room = null, boxM
             if (r.type === 'item') touchItem(r, c.back === true, boxMode);
             r.src = uniq([...(r.src || []), src]);
             r.msgs = uniq([...(r.msgs || []), ...msgs]).slice(-12);
+            stamp(next, r);
         } else if (c.op === 'remove') {
             const r = next.records.find(x => x.id === c.id);
             if (r?.type === 'item') {
@@ -1048,7 +1063,7 @@ export function buildInjection(mem, opts = {}) {
     const appear = new Set([...(open?.who || []), ...recentScenes.flatMap(sc => sc.who)]);
     const modeOf = id => mem.entities.find(e => e.id === id)?.standby;
     const newestOf = new Map();
-    for (const r of mem.records) if (r.type === 'party') newestOf.set(r.entity, r);
+    for (const r of mem.records) if (r.type === 'party' && !newestOf.has(r.entity)) newestOf.set(r.entity, newestParty(mem, r.entity));
     const partyIn = r => {
         const mode = r.type === 'party' && !r.pin ? modeOf(r.entity) : null;
         if (!mode) return true;
@@ -1352,7 +1367,7 @@ export function cleanMem(raw) {
     }
     for (const r of raw.records) {
         if (!plain(r) || !RECORD_TYPES.includes(r.type) || !str(r.text)) throw new Error('상태 항목이 잘못됐어요.');
-        const rec = { evidenceVersion: r.evidenceVersion === 1 ? 1 : 0, ...(cleanPrior(r.oldEvidence).length ? { oldEvidence: cleanPrior(r.oldEvidence) } : {}), id: id(r.id, 'r'), type: r.type, text: str(r.text), src: strList(r.src), msgs: (Array.isArray(r.msgs) ? r.msgs : []).filter(m => Number.isInteger(m) || isSegRef(m)), pin: !!r.pin };
+        const rec = { evidenceVersion: r.evidenceVersion === 1 ? 1 : 0, ...(cleanPrior(r.oldEvidence).length ? { oldEvidence: cleanPrior(r.oldEvidence) } : {}), id: id(r.id, 'r'), type: r.type, text: str(r.text), src: strList(r.src), msgs: (Array.isArray(r.msgs) ? r.msgs : []).filter(m => Number.isInteger(m) || isSegRef(m)), pin: !!r.pin, ...(Number.isInteger(r.seq) && r.seq > 0 ? { seq: r.seq } : {}) };
         if (r.type === 'party') { rec.entity = eref(r.entity); rec.aspect = ASPECTS.includes(r.aspect) ? r.aspect : 'relation'; }
         if (r.type === 'item') {
             rec.entity = eref(r.entity); rec.holder = eref(r.holder);

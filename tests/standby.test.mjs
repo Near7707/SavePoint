@@ -49,3 +49,28 @@ test('exclude: never, even when named or present; a 📌 record still goes in; t
     assert.match(promptContext(mem, 'Wren').state, /bandaged/, 'recording keeps seeing every record');
     assert.equal(cleanMem(JSON.parse(JSON.stringify(mem))).entities.find(e => e.name === 'Wren').standby, 'exclude');
 });
+
+test('v0.6.38: the newest relation/condition is the one changed last, not the one last in the list', async () => {
+    const { newestParty } = await import('../core.js');
+    let mem = emptyMem(), n = 0;
+    const step = (changes, entities = []) => {
+        const w = `m${n}`, chunk = { from: n, to: n, indices: [n], text: w, texts: { [n]: w } };
+        const d = { scenes: [{ scene: 'new', title: `Scene ${n}`, where: 'Town', who: [], ended: true, outline: `Outline ${n}.`, notes: '',
+            points: [{ text: 'They talked.', kind: 'moment', key: false, msgs: [n] }] }], entities, changes: changes.map(c => ({ msgs: [n], ...c })) };
+        normalizeResult(d, { mem, chunk });
+        assert.deepEqual(validateResult(d, { mem, chunk }), []);
+        mem = applyResult(mem, d, chunk, { room: 'r' }).mem; n++;
+    };
+    step([{ op: 'add', type: 'party', entity: 'p', aspect: 'condition', text: 'Wren sprained an ankle.' }], [{ ref: 'p', type: 'person', name: 'Wren', aliases: [] }]);
+    const id = wren(mem).id;
+    step([{ op: 'add', type: 'party', entity: id, aspect: 'condition', text: 'Wren is hungry.' }]);
+    const ankle = mem.records.find(r => /ankle/.test(r.text)).id;
+    step([{ op: 'update', id: ankle, text: 'Wren’s ankle has fully healed.' }]);
+    assert.match(newestParty(mem, id, 'condition').text, /healed/);
+    // standby + named: the one line given is the healed one
+    wren(mem).standby = 'standby';
+    const t = buildInjection(mem, { budget: 6000, query: 'Is Wren around?' }).text;
+    assert(/healed/.test(t) && !/hungry/.test(t), t);
+    // seq survives a save file round trip
+    assert.match(newestParty(cleanMem(JSON.parse(JSON.stringify(mem))), id, 'condition').text, /healed/);
+});

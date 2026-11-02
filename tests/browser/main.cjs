@@ -100,6 +100,38 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => __savePoint.render(true));
     ok((await ev(() => $('.sp-tab.sp-active').attr('data-id'))) === 'party', '5. 열려 있는 동안에는 보던 탭 유지');
 
+    // 6. (v0.6.38) a failed translation leaves 🌐 원문 usable; filling is a small separate button
+    await ev(() => { for (const r of __savePoint.state().mem.records) delete r.ko; });
+    await ev(() => { M.throwNext = new Error('translator down'); return __savePoint.handle('lang'); }).catch(() => {});
+    await page.waitForTimeout(800);
+    r = await ev(() => ({ ko: __savePoint.settings().showKo, main: $('.sp-actions .sp-langbtn').text().trim(), act: $('.sp-actions .sp-langbtn').attr('data-act'), fill: $('.sp-actions .sp-langfill').text().trim() }));
+    ok(r.ko && r.main === '🌐 원문' && r.act === 'lang', `6. 번역이 실패해도 주 버튼은 🌐 원문 (${r.main})`);
+    ok(/^\+\d+$/.test(r.fill), `6. 빠진 번역은 작은 +N 버튼 (${r.fill})`);
+    await ev(() => __savePoint.handle('lang'));
+    ok(!(await ev(() => __savePoint.settings().showKo)), '6. 원문으로 돌아감');
+
+    // 7. (v0.6.38) each room keeps the tab it was left on
+    const roomA = await ev(() => ({ id: M.chatId, chat: M.chat, meta: M.meta }));
+    await ev(() => __savePoint.handle('tab', 'party'));
+    await ev(() => $('#sp_overlay').length && __savePoint.handle('close'));
+    await ev(() => M.switchChat('roomB', [], {}));
+    await ev(() => $('#sp_wand').trigger('click'));
+    const tabB = await ev(() => $('.sp-tab.sp-active').attr('data-id'));
+    await ev(a => M.switchChat(a.id, a.chat, a.meta), roomA);
+    await ev(() => $('#sp_wand').trigger('click'));
+    r = await ev(() => $('.sp-tab.sp-active').attr('data-id'));
+    ok(tabB === 'main' && r === 'party', `7. B방은 처음이라 메인, A방은 고른 파티 탭 그대로 (B ${tabB}, A ${r})`);
+    await ev(() => __savePoint.handle('tab', 'main'));
+
+    // 8. (v0.6.38) a loot supplement for an older message in the same save keeps 최근 변화 and its range
+    await ev(async () => { const n = 2; M.chat[n].is_user = false; await __savePoint.addLoot(n, M.chat[n].mes.slice(0, 12)); M.supplementLinks = true; M.add(4, i => `Fresh talk ${i}.`); });
+    await ev(() => __savePoint.handle('run'));
+    await page.waitForTimeout(1500);
+    await ev(() => { M.supplementLinks = false; __savePoint.render(true); });
+    r = await ev(() => ({ last: __savePoint.state().lastIndex, lr: __savePoint.state().lastRecord, changes: $('.sp-st-changes > summary').text(), hud: $('.sp-auto-line').text() }));
+    ok(r.lr.run && r.lr.kind === 'quicksave' && r.lr.to === r.last && r.lr.supplement?.from === 2, `8. 마지막 기록은 새 범위 유지, 루팅 보충은 따로 (${JSON.stringify(r.lr)})`);
+    ok(/최근 변화 · 퀵세이브/.test(r.changes), `8. 최근 변화가 사라지지 않음 (${r.changes.trim()})`);
+
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();

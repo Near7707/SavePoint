@@ -7,7 +7,7 @@ import { foldLegacyOutline,
     pointInjected, pointSymbol, rekeyItems, validateRekey, applyRekey, sceneOutlineText, sceneOutlineParts,
     refreshProvisionalOutlines, normalizeResult, validateCheck, checkScope, dupState, pointId,
     recordLine, normalizeRecordNames, entityName, estTokens, QUEST_KINDS, WORLD_KINDS, ENTITY_TYPES,
-    groupErrors, findQuote, mostlyNonEnglish, setQuestStatus,
+    groupErrors, findQuote, mostlyNonEnglish, setQuestStatus, newestParty,
 } from './core.js';
 import { lootStatus, lootWarning, lootInChunk, lootBlock, attachLoot, settleLoot, failLoot, lootTarget, applyLootSupplement, restoreLostLoot } from './loot.js';
 import { Vault, roomHash, quickId } from './vault.js';
@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.37';
+const VERSION = '0.6.38';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -836,10 +836,16 @@ async function supplementLoot(run, items, undoPoint = checkpoint(run.st)) {
             const next = refreshProvisionalOutlines(applyLootSupplement(st.mem, target.seg.id, data, group, linked));
             await transact(() => {
                 const before = st.mem;
-                st.mem = next; pushHistory(st, before, next, { kind: 'edit' });
+                st.mem = next; pushHistory(st, before, next, { kind: 'edit', run: run.id });
                 failed += settleLoot(st, group, next, linked.why, counted);
                 st.undo = undoPoint;
-                st.lastRecord = { at: Date.now(), from: Math.min(...group.map(x => x.msg)), to: Math.max(...group.map(x => x.msg)), kind: 'supplement' };
+                // v0.6.38: the same run may already have recorded new messages; keep that range and its
+                // run id (recent changes on 💠 메인 group by it) and note the older loot range beside it.
+                const lo = Math.min(...group.map(x => x.msg)), hi = Math.max(...group.map(x => x.msg)), lr = st.lastRecord;
+                if (lr?.run === run.id && lr.kind !== 'supplement') {
+                    lr.supplement = { from: Math.min(lr.supplement?.from ?? lo, lo), to: Math.max(lr.supplement?.to ?? hi, hi) };
+                } else if (lr?.run === run.id) { lr.at = Date.now(); lr.from = Math.min(lr.from, lo); lr.to = Math.max(lr.to, hi); }
+                else st.lastRecord = { at: Date.now(), from: lo, to: hi, kind: 'supplement', run: run.id };
             }, { undoable: false, autosave: false, rehide: true });
             run.lootCounted = counted;
             saved++;
@@ -1910,21 +1916,31 @@ async function confirmBox(text) {
 const fmtDate = ts => { try { return new Date(ts).toLocaleString(); } catch { return ''; } };
 const showKo = () => !!settings().showKo;
 function langButton(st, busy) {
-    const missing = st && hasMemory(st.mem) ? translationTargets(st.mem).length : 0;
-    if (!showKo()) return btn('lang', '', '🌐 번역', '한국어 보기로 바꿔요 (번역이 없는 항목은 번역해요)', busy ? 'sp-disabled' : '');
-    if (missing) return btn('translate', '', `🌐 번역 ${missing}`, `한국어 보기가 없는 ${missing}개 항목을 번역해요`, busy ? 'sp-disabled' : '');
-    return btn('lang', '', '🌐 원문', '영어 원문 보기로 바꿔요');
+    // v0.6.38: in Korean view the main button always goes back to the original; filling missing
+    // translations is a small separate button next to it (a failed or partial translation used to
+    // leave only "번역 N", with no way back to the original inside the window).
+    const missing = showKo() && st && hasMemory(st.mem) ? translationTargets(st.mem).length : 0;
+    const main = showKo()
+        ? btn('lang', '', '🌐 원문', '영어 원문 보기로 바꿔요', 'sp-langbtn')
+        : btn('lang', '', '🌐 번역', '한국어 보기로 바꿔요 (번역이 없는 항목은 번역해요)', 'sp-langbtn' + (busy ? ' sp-disabled' : ''));
+    const fill = missing ? btn('translate', '', `+${missing}`, `한국어 보기가 없는 ${missing}개 항목을 번역해요`, 'sp-mini sp-langfill' + (busy ? ' sp-disabled' : '')) : '';
+    return `<span class="sp-langwrap">${main}${fill}</span>`;
 }
 const T = (en, ko) => (showKo() && ko ? ko : en);
 
 // ───────── UI ─────────
 
+// v0.6.38: each room keeps the tab it was left on (in this page session). The "first tab" setting
+// applies only to a room seen for the first time; render() records the tab of the room on screen.
+function restoreRoomTab() {
+    if (!hasChat()) return;
+    ui.roomTabs ||= new Map();
+    ui.tab = ui.roomTabs.get(roomKey()) || (settings().firstTab in FIRST_TABS ? settings().firstTab : 'main');
+    ui.roomTabs.set(roomKey(), ui.tab); ui.tabRoom = roomKey();
+}
 function openWindow() {
     if (!$('#sp_overlay').length) $('body').append('<div id="sp_overlay" class="sp-overlay"><div class="sp-window"></div></div>');
-    // The chosen first tab applies the first time the window opens for a room in this session;
-    // afterwards the window comes back to the tab (and scroll) it was left on.
-    ui.openedRooms ||= new Set();
-    if (hasChat() && !ui.openedRooms.has(roomKey())) { ui.openedRooms.add(roomKey()); ui.tab = settings().firstTab in FIRST_TABS ? settings().firstTab : 'main'; }
+    restoreRoomTab();
     ui.open = true;
     $('#sp_overlay').css('display', 'flex');
     render(true);
@@ -2214,7 +2230,7 @@ function mainHtml(st) {
     }).join('') + (open.length > 5 ? `<div class="sp-st-sub">${open.length - 5}개 더</div>` : '') : '';
     // People in the last recorded scene (and the open one), excluding nobody: standby is about injection.
     const present = [...new Set([...(openScene(mem)?.who || []), ...(sc?.who || [])])].map(id => mem.entities.find(e => e.id === id)).filter(e => e?.type === 'person');
-    const newest = (id, aspect) => mem.records.filter(r => r.type === 'party' && r.entity === id && r.aspect === aspect).at(-1);
+    const newest = (id, aspect) => newestParty(mem, id, aspect);
     const people = present.length ? head('👥 현재 파티', 'party', '파티') + `<div class="sp-st-grid">${present.map(e => {
         const c = newest(e.id, 'condition'), r = newest(e.id, 'relation');
         const more = mem.records.filter(x => x.type === 'party' && x.entity === e.id).length - (c ? 1 : 0) - (r ? 1 : 0);
@@ -2665,7 +2681,7 @@ function hudHtml(st) {
         : `<span>다음 체크포인트까지 <b>${Math.max(0, every - autoCount(st))}</b>개</span>`;
     const attemptAt = st?.autoAttemptAt || st?.autoLast?.at;
     const autoLast = attemptAt ? `<span class="${st.autoFail ? 'sp-warn' : 'sp-dim'}">마지막 자동 저장 시도 ${new Date(attemptAt).toLocaleTimeString()} · ${esc(ui.run?.auto ? '체크포인트 저장 중…' : st.autoAttemptAt && (!st.autoLast || st.autoLast.at < st.autoAttemptAt) ? '이번 시도 결과 없음 또는 중단됨 · 다음 간격에 다시' : st.autoLast?.result || '결과 대기')}</span>` : '';
-    const lastRecord = st?.lastRecord ? `<span class="sp-dim">마지막 실제 기록 ${new Date(st.lastRecord.at).toLocaleTimeString()} · #${st.lastRecord.from}–#${st.lastRecord.to}</span>` : st?.lastIndex >= 0 ? `<span class="sp-dim">마지막 실제 기록 · 시각 정보 없음 · #0–#${st.lastIndex}</span>` : '<span class="sp-dim">마지막 실제 기록 없음</span>';
+    const lastRecord = st?.lastRecord ? `<span class="sp-dim">마지막 실제 기록 ${new Date(st.lastRecord.at).toLocaleTimeString()} · ${st.lastRecord.kind === 'supplement' ? '루팅 보충 ' : ''}#${st.lastRecord.from}–#${st.lastRecord.to}${st.lastRecord.supplement ? ` · 루팅 보충 #${st.lastRecord.supplement.from}–#${st.lastRecord.supplement.to}` : ''}</span>` : st?.lastIndex >= 0 ? `<span class="sp-dim">마지막 실제 기록 · 시각 정보 없음 · #0–#${st.lastIndex}</span>` : '<span class="sp-dim">마지막 실제 기록 없음</span>';
     const err = ui.lastError ? `<details class="sp-err" data-group="hud-err" ${ui.savesOpen.get('hud-err') ? 'open' : ''}><summary>마지막 실패 ${esc(ui.lastError.range)} — 자세히</summary><ul class="sp-scroll">${groupErrors(ui.lastError.detail).map(d => `<li>${esc(d)}</li>`).join('')}</ul></details>` : '';
     // Folded by default on narrow screens: one status line stands for the rest, and turns to a warning
     // colour when something failed or needs checking, so a folded panel never hides a problem.
@@ -2758,6 +2774,8 @@ function render(force = false) {
     // The new-chat question goes away once the room has memory (loaded, saved) or is no longer new.
     if (document.getElementById('sp_resume')?.hidden === false && !resumeChoices().length) hideResume();
     if (!ui.open) return;
+    // ui.tab belongs to ui.tabRoom; a render right after a room switch restores the new room's tab first.
+    if (hasChat()) { if (ui.tabRoom !== roomKey()) restoreRoomTab(); else ui.roomTabs.set(roomKey(), ui.tab); }
     const win = $('#sp_overlay .sp-window');
     if (!win.length) return;
     if (!force && ui.edit && win.find('.sp-edit').length) return; // keep half-typed edits
@@ -2911,7 +2929,7 @@ async function handle(act, id) {
             // The loot queue moved into 💠 메인; old shortcuts open it there.
             if (id === 'queue') { ui.tab = 'main'; ui.savesOpen.set('main-queue', true); ui.edit = null; return render(true); }
             // A tab chosen before the window first opens in this room wins over the "first tab" setting.
-            ui.openedRooms ||= new Set(); if (hasChat()) ui.openedRooms.add(roomKey());
+            ui.roomTabs ||= new Map(); if (hasChat()) { ui.roomTabs.set(roomKey(), id); ui.tabRoom = roomKey(); }
             ui.tab = id; ui.edit = null; if (id === 'inject') refreshInjection(); return render(true);
         case 'loot-retry': return retryLoot(id);
         case 'loot-delete':
@@ -2923,7 +2941,7 @@ async function handle(act, id) {
         case 'stop': cancelRun(); return;
         case 'undo': return undo();
         case 'translate': return translate();
-        // One button for the language: 원문 ↔ 번역; in Korean view, untranslated items show as "번역 N".
+        // One button for the language: 원문 ↔ 번역; in Korean view, untranslated items get a small "+N" button.
         case 'lang': {
             if (!showKo()) { settings().showKo = true; saveSettings(); fillSettings(); if (st && translationTargets(st.mem).length) return translate(); return render(true); }
             settings().showKo = false; saveSettings(); fillSettings(); return render(true);

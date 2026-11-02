@@ -1,3 +1,14 @@
+# v0.6.38 · v0.6.37 리뷰 4건 수정
+
+기준: v0.6.37 `1578907`.
+
+1. [P2] 루팅 보충과 최근 변화: `supplementLoot`의 history에 `run: run.id`. `lastRecord`가 같은 run의 신규 기록이면 덮어쓰지 않고 `lastRecord.supplement = { from, to }`만 붙임(여러 묶음이면 범위 합침). 같은 run의 보충 기록이면 범위를 넓히고, 다른 run(↻ 단독 재반영)이면 `kind: 'supplement', run`으로 새로 씀 → 최근 변화에 그 보충 변화가 보임. 상태 칸 `마지막 실제 기록 … · 루팅 보충 #a–#b`.
+2. [P2] 최신 파티 기록: `applyResult`의 add·update·(보관/사라진 물건의) 같은 entity add마다 `r.seq = 최대 seq + 1`(`stamp`). `newestParty(mem, entity, aspect?)` = seq가 가장 큰 것, 같으면(예전 기록, seq 없음 = 0) 배열 뒤쪽. 메인 파티 요약과 대기 멤버의 "이름 언급 시 한 줄" 모두 이것을 씀. 메시지 번호를 비교하지 않아 다른 방 출처와 무관. `cleanMem`이 `seq` 보존. 사용자가 화면에서 직접 고친 기록은 seq를 올리지 않음(이야기 속 갱신 순서만).
+3. [P2] 번역 버튼: 한국어 보기 중 주 버튼은 항상 `🌐 원문`(act lang, 저장 중에도 누를 수 있음). 빠진 번역이 있으면 옆에 작은 `+N`(act translate, 저장 중 비활성). 스킨 규칙은 `.sp-langwrap .sp-btn`으로 옮김(consolenight 꼬리표 LANGUAGE).
+4. [P3] 방별 탭: `ui.roomTabs`(방 → 탭)와 `ui.tabRoom`(지금 `ui.tab`이 속한 방). `render`가 방이 바뀐 것을 보면 먼저 그 방의 탭을 복원(`restoreRoomTab`), 아니면 현재 탭을 기록. 처음 보는 방만 `firstTab`. `openWindow`도 복원.
+
+검사: Node 364개(`standby.test`에 갱신 순서·대기 멤버 한 줄·저장 파일 왕복), 브라우저 22묶음 통과. `main.cjs`에 6~8(번역 실패 후 원문 버튼과 +N, A→B→A 탭 유지, 같은 저장의 루팅 보충 뒤 최근 변화·범위 유지).
+
 # v0.6.37 · 💠 메인 탭, ⚙ 빠른 설정, 번역 버튼 통합 (2차)
 
 기준: v0.6.36 `75f24a9`. **★는 리뷰를 특히 부탁하는 곳.** 기억·주입 계산은 바뀌지 않음(화면만).
