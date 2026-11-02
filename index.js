@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.44';
+const VERSION = '0.6.45';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -193,6 +193,10 @@ function applyEntry(entry) {
         hadVisible: !!m.extra && Object.hasOwn(m.extra, VISIBLE_KEY), visible: m.extra?.[VISIBLE_KEY] })) : null;
     if (entry.change() === false) return false;
     const st = state();
+    // v0.6.45: a button edit remembers what it changed (paths and their final values), so a replay
+    // sets "● off" again instead of flipping whatever is there, and never brings back the failed
+    // change it was first made on top of.
+    if (entry.replay && !entry.patch) entry.patch = diffPaths(entry.prev?.mem, st?.mem);
     if (st) {
         if (entry.undoable && entry.prev) { const { undo: _u, ...rest } = entry.prev; st.undo = clone(rest); }
         st.rev = (entry.prev?.rev || 0) + 1;
@@ -219,7 +223,18 @@ function restoreEntry(entry) {
     return here;
 }
 async function writeEntry(queue, entry) {
+    if (entry.done) return true;                 // written by an earlier write that already held it
     if (entry.cancelled) throw entry.cancelled;
+    // v0.6.45: a write saves the room that is open; after a move it would save the other room.
+    if (roomKey() !== entry.key || roomEpoch !== entry.epoch) {
+        const left = queue.pending.slice(Math.max(0, queue.pending.indexOf(entry)));
+        queue.pending.length = 0;
+        const error = new Error(`채팅방을 옮겨서 이전 방의 마지막 변경 ${left.length}개는 저장하지 못했을 수 있어요. 그 방을 다시 열어 확인해 주세요.`);
+        for (const x of left) x.cancelled = error;
+        throw error;
+    }
+    // A write saves everything on the page at that moment: every change applied so far is in it.
+    const covered = queue.pending.slice(queue.pending.indexOf(entry));
     try { await persist(); }
     catch (e) {
         const error = new Error(`채팅 파일에 저장하지 못해서 이번 변경을 취소했어요. (${e?.message || e})`);
@@ -229,11 +244,20 @@ async function writeEntry(queue, entry) {
         let here = false;
         for (const x of [...later].reverse()) here = restoreEntry(x) || here;
         here = restoreEntry(entry) || here;
-        // Edits made with buttons are applied again on top; they keep their place in the queue.
+        // Edits made with buttons are applied again on top with their final values; they keep their
+        // place in the queue and are written by their own turn.
         let replayed = 0;
         for (const x of later) {
             let ok = false;
-            if (x.replay && roomKey() === x.key && roomEpoch === x.epoch) { try { ok = applyEntry(x) !== false; } catch { ok = false; } }
+            if (x.replay && x.patch && roomKey() === x.key && roomEpoch === x.epoch) {
+                const patch = x.patch;
+                x.change = () => {
+                    const st = ensureState(), before = st.mem, next = clone(before);
+                    if (!applyPaths(next, patch)) return false;
+                    st.mem = next; pushHistory(st, before, next, { kind: 'edit' });
+                };
+                try { ok = applyEntry(x) !== false; } catch { ok = false; }
+            }
             if (ok) { queue.pending.push(x); replayed++; }
             else x.cancelled = new Error(`앞선 변경을 채팅 파일에 저장하지 못해서 이 변경도 취소했어요. (${e?.message || e})`);
         }
@@ -244,9 +268,38 @@ async function writeEntry(queue, entry) {
         if (replayed) error.message += ` 그 뒤에 한 변경 ${replayed}개는 다시 적용해 저장해요.`;
         throw error;
     }
-    queue.pending.splice(queue.pending.indexOf(entry), 1);
+    // Everything that was on the page when the write began is in the file now.
+    for (const x of covered) { x.done = true; const i = queue.pending.indexOf(x); if (i >= 0) queue.pending.splice(i, 1); }
     if (roomKey() === entry.key && roomEpoch === entry.epoch) { if (entry.autosave) autosave(state()); render(); }
     return true;
+}
+// Leaf-level differences between two JSON values: [{ path, value }] or [{ path, del: true }]. Arrays
+// of the same length are compared item by item; otherwise the whole array is the value.
+function diffPaths(a, b, path = [], out = []) {
+    if (JSON.stringify(a) === JSON.stringify(b)) return out;
+    const obj = v => v && typeof v === 'object' && !Array.isArray(v);
+    if (obj(a) && obj(b)) {
+        for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) {
+            if (!(k in b)) out.push({ path: [...path, k], del: true });
+            else diffPaths(a[k], b[k], [...path, k], out);
+        }
+    } else if (Array.isArray(a) && Array.isArray(b) && a.length === b.length) {
+        a.forEach((x, i) => diffPaths(x, b[i], [...path, i], out));
+    } else out.push({ path, value: clone(b) });
+    return out;
+}
+// Sets those paths; false when nothing changes (already so).
+function applyPaths(target, patch) {
+    let changed = false;
+    for (const { path, value, del } of patch) {
+        if (!path.length) continue;
+        let o = target;
+        for (const k of path.slice(0, -1)) { if (o[k] === null || typeof o[k] !== 'object') o[k] = typeof k === 'number' ? [] : {}; o = o[k]; }
+        const k = path.at(-1);
+        if (del) { if (k in o) { delete o[k]; changed = true; } }
+        else if (JSON.stringify(o[k]) !== JSON.stringify(value)) { o[k] = clone(value); changed = true; }
+    }
+    return changed;
 }
 function persistSoon() {
     clearTimeout(persistTimer);

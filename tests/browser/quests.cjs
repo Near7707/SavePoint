@@ -163,6 +163,46 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.pin === true && r.mode !== 'exclude', `11. 앞 저장 실패: 그 변경만 취소, 뒤의 📌는 남음 (${JSON.stringify(r)} · ${a} · ${b2})`);
     r = await ev(([q, e]) => { const f = M.serverChat?.[0]?.chat_metadata?.savePoint; return f ? { pin: f.mem.records.find(x => x.id === q).pin, mode: f.mem.entities.find(x => x.id === e).standby } : null; }, [qid11, ent11]);
     ok(r && r.pin === true && r.mode !== 'exclude', `11. 파일과 화면이 같음 (${JSON.stringify(r)})`);
+
+    // 12–14. (v0.6.45) review: same toggle twice, a later write that already held the last change, a room move
+    const pt = await ev(() => { const sc = __savePoint.state().mem.scenes[0], g = sc.segs[0]; return { id: `${sc.id}|${g.id}|0`, sid: sc.id }; });
+    const keyOf = () => ev(p => { const [s, g, j] = p.split('|'); const pp = __savePoint.state().mem.scenes.find(x => x.id === s).segs.find(x => x.id === g).points[+j]; return { user: pp.keyUser, key: pp.key }; }, pt.id);
+    const fileKey = () => ev(p => { const [s, g, j] = p.split('|'); const f = M.serverChat?.[0]?.chat_metadata?.savePoint; const pp = f.mem.scenes.find(x => x.id === s).segs.find(x => x.id === g).points[+j]; return { user: pp.keyUser, key: pp.key }; }, pt.id);
+    const k0 = await keyOf();
+    await ev(() => { M.metaDelay = 500; M.failOnce = true; });
+    const t1 = ev(id => __savePoint.handle('key-toggle', id).then(() => 'ok', e => 'fail'), pt.id);
+    await page.waitForTimeout(80);
+    const t2 = ev(id => __savePoint.handle('key-toggle', id).then(() => 'ok', e => 'fail'), pt.id);
+    await t1; await t2; await ev(() => { M.metaDelay = 0; });
+    let k1 = await keyOf(), kf = await fileKey();
+    const on = x => (x.user ?? x.key) === true;
+    ok(on(k1) === on(k0) && on(kf) === on(k0), `12. ○→●→○에서 첫 저장 실패: 마지막 선택(○) 유지, 파일도 같음 (${JSON.stringify([k0, k1, kf])})`);
+
+    await ev(() => { M.metaDelay = 400; });
+    const a1 = ev(id => __savePoint.handle('key-toggle', id), pt.id);
+    await page.waitForTimeout(60);
+    const a2 = ev(id => __savePoint.handle('pin-rec', id), qid11);
+    const a3 = ev(sid => __savePoint.handle('star', sid), pt.sid);
+    await page.waitForTimeout(30);
+    await ev(() => { M.failOnce = true; });   // would hit the write after the one that already held ★
+    await a1.catch(() => {}); await a2.catch(() => {}); await a3.catch(() => {});
+    await ev(() => { M.metaDelay = 0; M.failOnce = false; });
+    r = await ev(([sid, q]) => { const st = __savePoint.state(), f = M.serverChat[0].chat_metadata.savePoint;
+        return { star: !!st.mem.scenes.find(x => x.id === sid).star, fileStar: !!f.mem.scenes.find(x => x.id === sid).star, pin: st.mem.records.find(x => x.id === q).pin, filePin: f.mem.records.find(x => x.id === q).pin }; }, [pt.sid, qid11]);
+    ok(r.star === r.fileStar && r.pin === r.filePin, `13. 연속 ●·📌·★ 뒤 실패가 와도 화면과 파일이 같음 (${JSON.stringify(r)})`);
+
+    const roomA = await ev(() => ({ id: M.chatId, chat: M.chat, meta: M.meta }));
+    await ev(() => { M.metaDelay = 400; M.saveCalls = 0; });
+    const m1 = ev(id => __savePoint.handle('key-toggle', id).then(() => 'ok', e => 'fail'), pt.id);
+    await page.waitForTimeout(60);
+    const m2 = ev(q => __savePoint.handle('pin-rec', q).then(() => 'ok', e => 'fail:' + e.message), qid11);
+    await page.waitForTimeout(30);
+    await ev(() => M.switchChat('roomQ', [], {}));
+    const [o1, o2] = [await m1, await m2];
+    await ev(() => { M.metaDelay = 0; });
+    r = await ev(() => ({ bMeta: JSON.stringify(M.meta) }));
+    ok(o2.startsWith('fail:채팅방을 옮겨서') && !r.bMeta.includes('savePoint'), `14. 방을 옮긴 뒤 이전 방의 대기 저장은 새 방을 저장하지 않고 알림 (${o1} · ${o2.slice(0, 40)})`);
+    await ev(a => M.switchChat(a.id, a.chat, a.meta), roomA);
     if (SHOTS) await page.locator('#sp_overlay .sp-window').screenshot({ path: path.join(OUT, 'quests-main.png') });
 
     await page.close();
