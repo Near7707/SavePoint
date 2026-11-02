@@ -207,7 +207,7 @@ function recordLine(mem, r, withId = true) {
     const id = withId ? `${r.id} ` : '';
     const en = x => entityName(mem, x);
     if (r.type === 'party') return `${id}[${r.aspect}] ${en(r.entity)}: ${r.text}`;
-    if (r.type === 'item') return `${id}[item] ${en(r.entity)}${r.holder ? ` (held by ${en(r.holder)})` : ''}: ${r.text}`;
+    if (r.type === 'item') return `${id}[item${r.gone ? ', gone' : ''}] ${en(r.entity)}${r.holder ? ` (held by ${en(r.holder)})` : ''}: ${r.text}`;
     if (r.type === 'quest') return `${id}[${r.kind}${r.status !== 'open' ? ', ' + r.status : ''}] ${r.text}${r.who?.length ? ` (${r.who.map(en).join(', ')})` : ''}${r.due && TERMS_KINDS.includes(r.kind) ? ` [${formatDue(mem, r, 'en')}]` : ''}`;
     return `${id}[${r.kind}] ${r.text}${r.knownBy?.length ? ` (known by ${r.knownBy.map(en).join(', ')})` : ''}`;
 }
@@ -234,13 +234,18 @@ export function promptContext(mem, chunkText, { stateChars = 12000, entityChars 
     const entities = [...mem.entities].sort((a, b) => (relevant.has(b.id) ? 1 : 0) - (relevant.has(a.id) ? 1 : 0));
     const entityLines = entities.map(e => `${e.id} ${e.type}: ${e.name}${e.aliases?.length ? ` (also: ${e.aliases.join(', ')})` : ''}`);
     const touches = r => recordEntities(r).some(id => relevant.has(id));
+    // Items in the 📦 storage box are not part of the current state, but the collector still needs to
+    // recognise them (id, name, last state) so a returning item is updated instead of added twice.
+    const live = mem.records.filter(r => !r.stored);
     const order = [
         ...quests,
-        ...mem.records.filter(r => r.type !== 'quest' && touches(r)),
-        ...mem.records.filter(r => r.type === 'world' && (r.kind === 'rule' || r.kind === 'secret') && !touches(r)),
-        ...mem.records.filter(r => r.type !== 'quest' && !touches(r) && !(r.type === 'world' && (r.kind === 'rule' || r.kind === 'secret'))),
+        ...live.filter(r => r.type !== 'quest' && touches(r)),
+        ...live.filter(r => r.type === 'world' && (r.kind === 'rule' || r.kind === 'secret') && !touches(r)),
+        ...live.filter(r => r.type !== 'quest' && !touches(r) && !(r.type === 'world' && (r.kind === 'rule' || r.kind === 'secret'))),
     ];
     const stateLines = uniq(order).map(r => recordLine(mem, r));
+    const stored = mem.records.filter(r => r.stored && r.type === 'item').sort((a, b) => (touches(b) ? 1 : 0) - (touches(a) ? 1 : 0));
+    const storedLines = stored.map(r => recordLine(mem, r));
     let openText = '(none)';
     if (open) {
         const { shown, hidden } = openPoints(open);
@@ -252,7 +257,8 @@ export function promptContext(mem, chunkText, { stateChars = 12000, entityChars 
         .map(s => `${s.id} "${s.title}"${s.where ? ` @ ${s.where}` : ''}: ${sceneOutlineText(s)}`);
     return {
         entities: entityLines.length ? capLines(entityLines, entityChars).join('\n') : '(none yet)',
-        state: stateLines.length ? capLines(stateLines, stateChars).join('\n') : '(empty)',
+        state: (stateLines.length ? capLines(stateLines, stateChars).join('\n') : '(empty)')
+            + (storedLines.length ? `\nSTORED ITEMS (kept out of the story's current state; if one appears again, "update" it by id instead of adding it again; "gone" ones were used up, broken or discarded):\n${capLines(storedLines, 3000).join('\n')}` : ''),
         open: openText,
         recent: recent.length ? recent.join('\n') : '(none)',
     };
@@ -746,7 +752,14 @@ export function applyResult(mem, data, chunk, { close = false, room = null } = {
     for (const c of data.changes || []) {
         const msgs = numEvidence(c.msgs);
         const src = segFor(msgs);
-        if (c.op === 'add') {
+        if (c.op === 'add' && c.type === 'item' && resolve(c.entity) && next.records.some(x => x.type === 'item' && x.stored && x.entity === resolve(c.entity))) {
+            // The same item, kept in the storage box: update that record rather than add a second one.
+            const r = next.records.find(x => x.type === 'item' && x.stored && x.entity === resolve(c.entity));
+            if (str(c.text)) { r.text = str(c.text); delete r.ko; }
+            if (c.holder !== undefined) r.holder = resolve(c.holder);
+            touchStored(r);
+            r.src = uniq([...(r.src || []), src]); r.msgs = uniq([...(r.msgs || []), ...msgs]).slice(-12);
+        } else if (c.op === 'add') {
             const r = { id: takeId(next, 'r'), type: c.type, text: str(c.text), src: [src], msgs, pin: false, evidenceVersion: 1 };
             if (c.type === 'party') { r.entity = resolve(c.entity); r.aspect = c.aspect; }
             if (c.type === 'item') { r.entity = resolve(c.entity); r.holder = resolve(c.holder); }
@@ -779,15 +792,30 @@ export function applyResult(mem, data, chunk, { close = false, room = null } = {
             if (r.type === 'quest' && TERMS_KINDS.includes(r.kind) && c.terms) { const t = termsOf(c, chunk); if (t) r.terms = t; }
             // A new deadline replaces an AI-read one, never one the user set.
             if (r.type === 'quest' && TERMS_KINDS.includes(r.kind) && c.due && !r.due?.manual) { const due = resolveDueClaim(c.due, { chunk, room, segOf: n => segFor([n]) }); if (due) r.due = due; }
+            if (r.stored) touchStored(r);
             r.src = uniq([...(r.src || []), src]);
             r.msgs = uniq([...(r.msgs || []), ...msgs]).slice(-12);
         } else if (c.op === 'remove') {
-            next.records = next.records.filter(x => x.id !== c.id);
+            const r = next.records.find(x => x.id === c.id);
+            if (r?.type === 'item') {
+                // An item that leaves the story goes to the storage box with its last known state; it is
+                // never brought back as usable. Without a stated final state it is only marked gone.
+                if (str(c.text)) { r.text = str(c.text); delete r.ko; }
+                r.gone = true; r.stored = { by: 'story', at: Date.now() };
+                r.src = uniq([...(r.src || []), src]); r.msgs = uniq([...(r.msgs || []), ...msgs]).slice(-12);
+            } else next.records = next.records.filter(x => x.id !== c.id);
         }
     }
     normalizeRecordNames(next);
     refreshProvisionalOutlines(next);
     return { mem: next, segIds };
+}
+
+// An item the story mentions again while it is in the storage box: one the story had removed
+// returns to the inventory (it is back in play); one the user put away stays there, marked as updated.
+function touchStored(r) {
+    if (r.stored?.by === 'user') { r.storedUpdated = true; return; }
+    delete r.stored; delete r.gone; delete r.storedUpdated;
 }
 
 // Closing the open scene without new messages.
@@ -1002,7 +1030,8 @@ export function buildInjection(mem, opts = {}) {
         if (r.type === 'quest') return 8;
         return 6;
     };
-    for (const r of mem.records) items.push({ tier: 'state', pr: recPriority(r), rec: r, pin: !!r.pin, alts: [recordLine(mem, r, false)] });
+    // Items in the 📦 storage box are never given to the roleplay model.
+    for (const r of mem.records) if (!r.stored) items.push({ tier: 'state', pr: recPriority(r), rec: r, pin: !!r.pin, alts: [recordLine(mem, r, false)] });
     const recentIds = new Set(recentScenes.map(sc => sc.id));
     mem.scenes.forEach((sc, idx) => {
         let pr, alts;
@@ -1068,7 +1097,7 @@ export function buildInjection(mem, opts = {}) {
     }
     // Raise stepped scenes to a fuller form, newest first, within the limit (and the tier share).
     const upgradeStepped = (limit, respectTier, skip = new Set()) => {
-        for (const it of sorted.filter(x => stepped(x) && chosen.has(x) && !skip.has(x.scene))) {
+        for (const it of sorted.filter(x => stepped(x) && chosen.has(x) && !skip.has(x.scene) && !x.pointsAdded)) {
             const cur = chosen.get(it), curCost = costOf(cur);
             for (const alt of it.alts) {
                 if (alt === cur) break;
@@ -1078,11 +1107,32 @@ export function buildInjection(mem, opts = {}) {
             }
         }
     };
+    // v0.6.34: an older scene written as its outline can also carry its ● points when budget is left,
+    // newest scene first and one point at a time, so a long scene never leaves the rest unused.
+    const pointLines = sc => {
+        const outline = plainText(sceneOutlineText(sc));
+        return injectedPoints(sc).filter(p => !outline.includes(plainText(p.text))).map(p => `  • ${p.text}`);
+    };
+    const addPoints = (limit, skip = new Set()) => {
+        for (const it of [...sorted].filter(x => stepped(x) && chosen.has(x) && !skip.has(x.scene)).sort((a, b) => b.idx - a.idx)) {
+            const cur = chosen.get(it);
+            if (!it.pointsAdded && cur !== it.alts[0]) continue;   // only on top of the outline
+            const lines = it.pointLines ||= pointLines(it.scene);
+            let n = it.pointsAdded || 0, text = cur;
+            while (n < lines.length) {
+                const cost = estTokens(lines[n]) + 1;
+                if (total + cost > limit) break;
+                text += '\n' + lines[n]; used.journal += cost; total += cost; n++;
+            }
+            if (n > (it.pointsAdded || 0)) { chosen.set(it, text); it.pointsAdded = n; }
+        }
+    };
     for (const it of sorted) tryAdd(it, true, limit1);
     for (const it of sorted) tryAdd(it, false, limit1);
     upgradeStepped(limit1, true);
     upgradeStepped(limit1, false);
     upgradePinned(pinned, limit1);
+    addPoints(limit1);
 
     // Phase 2: recall what the journal did not actually carry (including recent scenes), unit by unit,
     // best match first, never repeating text already in the injection, within the recall share.
@@ -1090,6 +1140,8 @@ export function buildInjection(mem, opts = {}) {
         const it = items.find(x => x.scene === sc && !x.point);
         const alt = it && chosen.get(it);
         if (!alt) return 'none';
+        // With some points added, recall still offers the rest (text already injected is filtered out).
+        if (it.pointsAdded) return 'outline';
         const f = it.forms[it.alts.indexOf(alt)];
         return f === 'short' ? 'oneliner' : f;
     };
@@ -1132,6 +1184,7 @@ export function buildInjection(mem, opts = {}) {
     // put the same outline in the journal and in the recall.
     upgradeStepped(budget, false, recalledScenes);
     upgradePinned(pinned, budget);
+    addPoints(budget, recalledScenes);
     // A pinned point is its own item even when its scene is old or reduced to a title.
     // If the selected outline of the same scene already contains it verbatim, show it once.
     const pinnedPointItems = [];
@@ -1185,20 +1238,32 @@ export function buildInjection(mem, opts = {}) {
     return {
         text, tokens: estTokens(text), used, pinOverflow, pinMissing,
         omittedScenes: left.length - titleList.length, omittedBy,
-        // How each scene was written: full / outline / short / title / omitted / recalled (only).
+        // How each scene was written: full / points (outline + some ● points) / outline / short / title /
+        // omitted / recalled (only). An older scene with all its ● points is 'full'.
         levels: Object.fromEntries(mem.scenes.map(sc => {
             const it = items.find(x => x.scene === sc && x.tier === 'journal' && !x.point), alt = it && chosen.get(it);
+            if (alt && it.pointsAdded) return [sc.id, it.pointsAdded >= it.pointLines.length ? 'full' : 'points'];
             return [sc.id, alt ? it.forms[it.alts.indexOf(alt)] : recalledIds.has(sc.id) ? 'recalled' : left.includes(sc) ? (titleList.length && left.indexOf(sc) >= left.length - titleList.length ? 'title' : 'omitted') : 'omitted'];
         })),
+        // Scenes whose ● points are not all in (the second "needed budget" counts these).
+        pointsLeft: items.filter(it => it.tier === 'journal' && !it.point && (stepped(it) || it.pr === 4)).filter(it => {
+            const alt = chosen.get(it), lines = it.pointLines || pointLines(it.scene);
+            if (!lines.length) return false;
+            if (!alt) return true;
+            if (it.pointsAdded) return it.pointsAdded < lines.length;
+            const f = it.forms[it.alts.indexOf(alt)];
+            return f !== 'full';
+        }).length,
         recalled: recallItems.map(it => ({ id: it.recall.scene.id, title: it.recall.scene.title, reasons: it.recall.reasons, form: it.recall.form })),
     };
 }
 
 // The smallest injection limit at which every scene is written at least as its outline, found by
 // running the real injection again (state, pins, header and recall included). null when even the
-// largest allowed limit is not enough. It does not promise that every point and note fits.
-export function neededBudget(mem, opts = {}, max = 100000) {
-    const fits = b => Object.values(buildInjection(mem, { ...opts, budget: b }).levels || {}).every(l => l === 'full' || l === 'outline');
+// largest allowed limit is not enough. With { points: true }: every scene with all its ● points
+// (notes and ○ points are never part of the journal; they can only be recalled).
+export function neededBudget(mem, opts = {}, max = 100000, { points = false } = {}) {
+    const fits = b => { const r = buildInjection(mem, { ...opts, budget: b }); return Object.values(r.levels || {}).every(l => l === 'full' || l === 'outline' || l === 'points') && (!points || !r.pointsLeft); };
     let lo = Math.max(300, opts.budget ?? 6000), hi = lo;
     if (fits(lo)) return lo;
     while (!fits(hi)) { if (hi >= max) return null; lo = hi; hi = Math.min(max, hi * 2); }
@@ -1255,7 +1320,12 @@ export function cleanMem(raw) {
         if (!plain(r) || !RECORD_TYPES.includes(r.type) || !str(r.text)) throw new Error('상태 항목이 잘못됐어요.');
         const rec = { evidenceVersion: r.evidenceVersion === 1 ? 1 : 0, ...(cleanPrior(r.oldEvidence).length ? { oldEvidence: cleanPrior(r.oldEvidence) } : {}), id: id(r.id, 'r'), type: r.type, text: str(r.text), src: strList(r.src), msgs: (Array.isArray(r.msgs) ? r.msgs : []).filter(m => Number.isInteger(m) || isSegRef(m)), pin: !!r.pin };
         if (r.type === 'party') { rec.entity = eref(r.entity); rec.aspect = ASPECTS.includes(r.aspect) ? r.aspect : 'relation'; }
-        if (r.type === 'item') { rec.entity = eref(r.entity); rec.holder = eref(r.holder); }
+        if (r.type === 'item') {
+            rec.entity = eref(r.entity); rec.holder = eref(r.holder);
+            if (plain(r.stored) && ['user', 'story'].includes(r.stored.by)) rec.stored = { by: r.stored.by, at: Number(r.stored.at) || 0 };
+            if (r.gone === true) rec.gone = true;
+            if (rec.stored && r.storedUpdated === true) rec.storedUpdated = true;
+        }
         if (r.type === 'quest') {
             rec.kind = QUEST_KINDS.includes(r.kind) ? r.kind : 'goal'; rec.status = QUEST_STATUS.includes(r.status) ? r.status : 'open'; rec.who = uniq((r.who || []).map(eref).filter(Boolean));
             if (cleanQuestEvents(r.questEvents)) rec.questEvents = cleanQuestEvents(r.questEvents);

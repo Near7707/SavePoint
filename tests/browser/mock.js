@@ -93,6 +93,8 @@ function fake(prompt) {
         for (const sc of scenes) sc.who = ['Ari'];
         for (const c of data.changes) if (c.who) c.who = ['ARI'];
     }
+    // A one-off set of extra entities/changes for the next extraction (tests build items this way).
+    if (M.addChanges) { const x = M.addChanges({ first, known, prompt }); M.addChanges = null; data.entities.push(...(x.entities || [])); data.changes.push(...(x.changes || [])); }
     if (M.itemPerson) data.changes.push({ op: 'add', type: 'item', entity: ariId || 'ari', text: 'Ari carries the key.', msgs: [first] });
     return '<think>hmm</think>\n```json\n' + JSON.stringify(data) + '\n```';
 }

@@ -69,7 +69,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
 
     // 4. manual run again, then add more; multi-chunk with a failing middle chunk
     await ev(() => __savePoint.handle('run'));
-    await ev(() => { M.add(60, i => (i === 50 ? 'SCENEBREAK at the market. PROMISE to meet. ' : '') + `Message ${i} ${'words '.repeat(60)}`); M.settings.savePoint.inputChars = 20400; /* just above the fixed format (v0.6.28) */ M.failAt = 75; });
+    await ev(() => { M.add(60, i => (i === 50 ? 'SCENEBREAK at the market. PROMISE to meet. ' : '') + `Message ${i} ${'words '.repeat(60)}`); M.settings.savePoint.inputChars = 21000; /* just above the fixed format (v0.6.28, v0.6.34) */ M.failAt = 75; });
     const before = await ev(() => M.calls.length);
     await ev(() => __savePoint.handle('run'));
     r = await ev((b0) => { const st = __savePoint.state(); return { last: st.lastIndex, scenes: st.mem.scenes.map(s => [s.title, s.status, s.segs.length]), hid: M.chat.map(m => m.is_system),
@@ -271,7 +271,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
                         const holderAtTop = !header || (Math.abs(holder.top - name.top) <= 1 && holder.left >= name.right + 7 && Math.abs(holder.right - header.getBoundingClientRect().right) <= 1
                             && header.scrollWidth <= header.clientWidth + 1 && text.top >= Math.max(holder.bottom, name.bottom));
                         return holderAtTop && refs.top >= text.bottom - 1 && Math.abs(text.width - row.clientWidth) <= 2 && refs.right <= box.right + 1 && row.scrollWidth <= row.clientWidth + 1
-                            && row.querySelector('.sp-evs').title.includes('이전 방') && row.querySelectorAll('.sp-tools button').length === 3;
+                            && row.querySelector('.sp-evs').title.includes('이전 방') && row.querySelectorAll('.sp-tools button').length === (tab === 'items' ? 4 : 3);   // items also have 📦
                     });
                 }, { theme, tab });
                 if (!result) layoutFailures.push(`${width}/${theme}/${tab}`);

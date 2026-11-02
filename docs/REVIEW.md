@@ -1,3 +1,35 @@
+# v0.6.34 · 남는 예산의 포인트, 📦 보관함, 인벤토리 기준, 새 채팅 이어하기, 라일락 미드나잇
+
+기준: v0.6.33 `315f900`. **★는 리뷰를 특히 부탁하는 곳.**
+
+## 1. 오래된 장면 ● 포인트 (`core.js buildInjection`)
+- 단계식 장면(일반·★)이 개요로 들어갔을 때만 `addPoints`가 남는 한도 안에서 **최신 장면부터, 포인트 하나씩** 덧붙임(`pointLines`: `injectedPoints`에서 개요에 이미 있는 문장 제외). 1단계(회상 몫 뺀 한도) 끝과 3단계(회상 뒤 남은 몫, 회상된 장면 제외) 끝에서 실행.
+- 포인트가 붙은 항목은 `upgradeStepped`가 다시 건드리지 않음(개요로 되돌리는 일 방지). `formOf`는 'outline'으로 보고, 회상 후보에서는 이미 주입된 문장이 기존 `injectedSoFar` 필터로 빠짐.
+- `levels`에 `points`(일부)·`full`(전부) 추가, `pointsLeft` 반환. `neededBudget(..., { points: true })`로 두 번째 필요 상한. 주입 탭 안내 두 줄, ●/○ 설명 문구를 "●=주입 후보 / ○=저장만, 회상 가능"으로.
+- 검사: 넉넉하면 모든 장면 full, 빠듯하면 개요 아래로 줄지 않고 최신부터 포인트, 두 필요 상한, 회상 중복 없음.
+
+## 2. 인벤토리 기준 (`prompts.js OUTPUT_FORMAT` 규칙 4, 고정 부분)
+- "추적할 이유가 있는 물건만, 장면 소품은 저널에만, 장면 종료로 소멸 추정 금지, remove는 끝난 근거가 있을 때만 + 최종 상태를 text로". remove 예시에 `text` 추가. 요청당 약 600자 증가 → `request-flow`·`request-batches` 검사의 빡빡한 한도를 그만큼 올림(의도 동일).
+
+## 3. ★ 📦 보관함 (`core.js`, `index.js itemsHtml`)
+- 기록 필드: `stored: { by: 'user' | 'story', at }`, `gone: true`, `storedUpdated: true`. `cleanMem`이 보존.
+- 본편 주입: `buildInjection`이 `stored` 기록을 넣지 않음. 수집 AI: `promptContext.state` 뒤에 `STORED ITEMS` 줄(id·이름·마지막 상태, `gone` 표시, 3,000자 상한).
+- `applyResult`
+  - 물건 `remove` → 삭제 대신 `stored.by='story'`, `gone`, `text`=최종 상태(없으면 기존 문장 유지 + gone 표시). 다른 종류 remove는 기존처럼 삭제.
+  - 보관 중 물건에 `update` 또는 같은 entity의 `add` → 같은 기록을 갱신(중복 생성 안 함). `by:'story'`면 보관함에서 나와 `gone` 해제(다시 등장), `by:'user'`면 보관함 유지 + `storedUpdated`.
+- 화면: 인벤토리 / `📦 보관함 N`(접힘), 📦·`꺼내기`(commitEdit, 리와인드 가능), 배지 `보관`/`사라짐`/`보관 중 갱신됨`, `마지막 기록: SCENE …`. 탭 숫자는 보관함 제외.
+- 검사(`storage.test`, `box.cjs`): 주입 제외·수집 문맥 포함, 사라진 물건은 꺼내도 gone, 직접 보관은 갱신돼도 유지, 이야기에서 되찾으면 복귀, 세이브·cleanMem 보존, 리와인드(보관 동작 자체 / 이후 세이브) 확인.
+- 판단 필요: 이야기에서 사라진 물건이 `update`되면 자동 복귀시킴(되찾음·수리 가정). AI 오판 가능성.
+
+## 4. 새 채팅 `이어서 할까요?` (`offerResume`)
+- 조건: 사용·설정 `askResume`, 기억 없음, 메시지 0개 또는 캐릭터 첫 메시지 1개, 같은 캐릭터 다른 방 세이브 있음, 이 방에서 `새로 하기`를 고른 적 없음(`settings.resumeDismissed`, 최근 300개 방).
+- 방 바뀐 뒤 0.7초에 위쪽 작은 칸(테마 따라감). `▶ 이어하기` → 목록(QUICK 최신순 → FILE → 방마다 최신 AUTO, 최대 8) → 고르면 기존 `loadSave`(이어하기 질문 포함). `✕`는 이번만 닫기. 기억이 생기면 자동으로 닫힘. SavePoint 창이 열려 있으면 창 뒤에 있음.
+
+## 5. 라일락 미드나잇 스킨 (`lilac`)
+- 남색 #171a2c + 라일락 #b0a4ff + 호박 #f0b45c. 저널 장면 카드는 세로 선·점(진행 중 라일락, ★ 호박).
+
+검사: Node 352개, 브라우저 21묶음(`box.cjs` 새로, `quick.cjs`에 8번). 고정 형식이 길어져 `run.cjs`·`save-banner.cjs`의 빡빡한 입력 한도도 21,000으로, `run.cjs` 레이아웃 검사의 물건 줄 도구 수는 📦 포함 4개로, `keys.cjs` 안내 문구도 맞춤.
+
 # v0.6.33 · 이어하기 저장 확인, 수정된 대화 표시 복원
 
 기준: v0.6.32 `9c56b96`.

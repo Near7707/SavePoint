@@ -142,6 +142,30 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.mes === 'Fresh greeting for the failing room.' && !r.st && !r.tainted && r.toast.includes('되돌렸어요'), `7. 서버 저장이 조용히 실패하면 첫 메시지·기억·수정 표시를 되돌림 (${r.toast.slice(0, 60)})`);
     await ev(() => { M.silentSaveFail = false; });
 
+    // 8. a new chat asks "이어서 할까요?": 이어하기 lists the saves to pick from; 새로 하기 is remembered for the room
+    await ev(() => __savePoint.handle('close'));
+    const greet = () => [{ name: 'Ari', is_user: false, is_system: false, mes: 'A brand new greeting.', swipe_id: 0, swipes: ['A brand new greeting.'], extra: {} }];
+    await ev(g => M.switchChat('chatResume', g, {}), greet());
+    await page.waitForTimeout(1000);
+    r = await ev(() => { const el = document.getElementById('sp_resume'); return { shown: !!el && !el.hidden, text: el?.textContent || '' }; });
+    ok(r.shown && r.text.includes('이어서 할까요?') && r.text.includes('이어하기') && r.text.includes('새로 하기'), '8. 새 채팅에 이어하기·새로 하기 선택 칸');
+    await page.click('#sp_resume [data-resume-act="open"]');
+    r = await ev(() => [...document.querySelectorAll('#sp_resume [data-resume]')].map(b => b.querySelector('.sp-slot').textContent));
+    ok(r.length >= 2 && r[0] === 'QUICK', `8. 이어하기를 누르면 고를 목록 (QUICK 먼저: ${r.join(',')})`);
+    await ev(() => { M.confirm = 1; });
+    await page.click('#sp_resume [data-resume]');
+    await page.waitForTimeout(600);
+    r = await ev(() => ({ hidden: document.getElementById('sp_resume').hidden, mem: !!__savePoint.state()?.mem?.scenes?.length, first: M.chat[0].mes }));
+    ok(r.hidden && r.mem && r.first !== 'A brand new greeting.', '8. 고르면 불러오고 선택 칸은 닫힘');
+    await ev(g => M.switchChat('chatFresh', g, {}), greet());
+    await page.waitForTimeout(1000);
+    await page.click('#sp_resume [data-resume-act="fresh"]');
+    await ev(() => M.switchChat('chatA', M.chatA || [], {}));
+    await ev(g => M.switchChat('chatFresh', g, {}), greet());
+    await page.waitForTimeout(1000);
+    r = await ev(() => { const el = document.getElementById('sp_resume'); return !!el && !el.hidden; });
+    ok(!r && !(await ev(() => __savePoint.state()?.mem?.scenes?.length)), '8. 새로 하기를 고른 방은 다시 묻지 않고 아무것도 바뀌지 않음');
+
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();

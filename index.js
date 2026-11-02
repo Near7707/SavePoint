@@ -19,13 +19,13 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.33';
+const VERSION = '0.6.34';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
 
 const DEFAULTS = {
-    enabled: true, check: true, auto: true, autoEvery: 20, autoReserve: 2, profileId: '', responseLength: 8000, inputChars: 60000, timeoutSec: 300, timeoutTotalMin: 20, sourceChars: 12000, excludeMarks: '',
+    enabled: true, check: true, auto: true, autoEvery: 20, autoReserve: 2, profileId: '', responseLength: 8000, inputChars: 60000, timeoutSec: 300, timeoutTotalMin: 20, sourceChars: 12000, excludeMarks: '', askResume: true, resumeDismissed: {},
     requestStream: true, reasoningEffort: '',
     budget: 6000, titleCap: 600, recentScenes: 3, recall: true, rawRecall: false,
     hide: true, keepRecent: 10, position: 1, depth: 4, role: 0,
@@ -35,10 +35,10 @@ const SETTING_GROUPS = {
     connection: { title: '연결·AI 요청', keys: ['profileId', 'requestStream', 'reasoningEffort', 'responseLength', 'inputChars', 'sourceChars', 'timeoutSec', 'timeoutTotalMin'] },
     recording: { title: '체크포인트·기록 확인', keys: ['check', 'auto', 'autoEvery', 'autoReserve', 'excludeMarks', 'guide'] },
     injection: { title: '기억 주입', keys: ['budget', 'titleCap', 'recentScenes', 'recall', 'rawRecall', 'position', 'depth', 'role'] },
-    storage: { title: '하이드·보관', keys: ['hide', 'keepRecent', 'autoKeep'] },
+    storage: { title: '하이드·보관', keys: ['hide', 'keepRecent', 'autoKeep', 'askResume'] },
     appearance: { title: '화면', keys: ['theme', 'showKo'] },
 };
-const THEMES = { jrpg: '클래식 JRPG', neon: '네온 아케이드', glass: '글래스 사이버', archive: '다크 아카이브', pastel: '파스텔 드림', terminal: '터미널', eggpet: '딸기우유', dualwhite: '듀얼 화이트', ink: '먹과 한지', cream: '크림 라테', consolenight: '스토리 콘솔', cranelemon: '레몬 인형뽑기', gingerbread: '진저브레드 하우스', xmasknit: '크리스마스 니트', st: '실리태번 테마 따라가기' };
+const THEMES = { jrpg: '클래식 JRPG', neon: '네온 아케이드', glass: '글래스 사이버', archive: '다크 아카이브', pastel: '파스텔 드림', terminal: '터미널', eggpet: '딸기우유', dualwhite: '듀얼 화이트', ink: '먹과 한지', cream: '크림 라테', consolenight: '스토리 콘솔', cranelemon: '레몬 인형뽑기', gingerbread: '진저브레드 하우스', xmasknit: '크리스마스 니트', lilac: '라일락 미드나잇', st: '실리태번 테마 따라가기' };
 // Themes that were retired, and the closest one now.
 const RETIRED_THEMES = { parchment: 'cream', colorpocket: 'eggpet', joycon: 'dualwhite', vanilla: 'cream' };
 const TABS = [
@@ -412,7 +412,7 @@ function refreshInjection() {
             ignoreNames: [names().char, names().user, charInfo()?.name].filter(Boolean),
         };
         ui.inj = buildInjection(st.mem, opts);
-        ui.injOpts = opts; ui.injNeed = undefined;   // the needed limit is computed when the tab shows it
+        ui.injOpts = opts; ui.injNeed = undefined; ui.injNeedPoints = undefined;   // the needed limit is computed when the tab shows it
         text = ui.inj.text;
     }
     ctx().setExtensionPrompt(PROMPT_KEY, text, Number(s.position), num('depth', 0, 999), false, Number(s.role));
@@ -2244,7 +2244,7 @@ function journalHtml(st) {
             ${s.who.length ? `<div class="sp-who">${whoChips(mem, s.who)}</div>` : ''}
             <div class="sp-outline">${s.segs.filter(g => g.outline).map(g => `<p>${esc(T(g.outline, g.koOutline))}</p>`).join('')}</div>${outlineText}
             <details class="sp-more" data-group="scene:${esc(s.id)}" ${(ui.edit && String(ui.edit.id).startsWith(s.id + '|')) || ui.savesOpen.get('scene:' + s.id) ? 'open' : ''}><summary>구간 ${s.segs.length} · 포인트 ${pts.length} (주입 ${pts.filter(x => pointInjected(x.p)).length})</summary>
-                <div class="sp-dim sp-keyhelp">● 선택됨 / ○ 선택 안 함 / 📌 우선 주입 고정. 선택한 내용은 기억 주입에 우선 반영해요. ${btn('rekey-scene', s.id, '⟳ 주입 고르기', '개요와 상태 목록에 없는 중요한 포인트만 AI가 다시 골라요 (직접 지정·고정은 유지)')}</div>
+                <div class="sp-dim sp-keyhelp">● 주입 후보 / ○ 저장만 / 📌 우선 주입 고정. ●는 남는 주입 상한 안에서 최신 장면부터 들어가고, ○와 상세 노트는 최근 대화와 관련될 때 회상으로 들어와요. ${btn('rekey-scene', s.id, '⟳ 주입 고르기', '개요와 상태 목록에 없는 중요한 포인트만 AI가 다시 골라요 (직접 지정·고정은 유지)')}</div>
                 ${segHtml}</details></div>`;
     }).join('');
 }
@@ -2342,16 +2342,35 @@ function partyHtml(st) {
     const orphan = mem.records.filter(r => r.type === 'party' && !people.some(p => p.id === r.entity)).map(r => recordRow(st, r)).join('');
     return addBar('party') + (cards || orphan ? cards + orphan : '<div class="sp-empty">인물의 관계 변화와 상태가 여기에 쌓여요.</div>');
 }
+// The scene a message belongs to (for "마지막 기록" on stored items).
+function sceneOfMsg(mem, n) {
+    if (!Number.isInteger(n)) return null;
+    const k = mem.scenes.findIndex(sc => sc.segs.some(g => !g.external && !g.source && n >= g.from && n <= g.to));
+    return k < 0 ? null : { no: k + 1, title: mem.scenes[k].title };
+}
 function itemsHtml(st) {
     const mem = st.mem;
     const recs = mem.records.filter(r => r.type === 'item');
-    const rows = recs.map(r => isEditing('record', r.id) ? `<div class="sp-card">${editForm()}</div>`
-        : `<div class="sp-card sp-item"><div class="sp-item-h"><span class="sp-ent-n">🎒 ${esc(entityName(mem, r.entity) || '?')}</span>
+    const card = r => {
+        if (isEditing('record', r.id)) return `<div class="sp-card">${editForm()}</div>`;
+        const last = r.msgs?.length ? Math.max(...r.msgs.filter(Number.isInteger)) : null, sc = sceneOfMsg(mem, last);
+        const badges = [r.stored ? `<span class="sp-badge">${r.stored.by === 'user' ? '보관' : '사라짐'}</span>` : '', r.gone && !r.stored ? '<span class="sp-badge">사라짐</span>' : '',
+            r.storedUpdated ? '<span class="sp-badge sp-badge-on" title="보관함에 있는 동안 이야기에서 다시 언급돼 기록이 갱신됐어요">보관 중 갱신됨</span>' : ''].join('');
+        const move = r.stored ? btn('item-unstore', r.id, '꺼내기', '현재 상태 주입 대상으로 돌려요. 이야기 속 소지자·위치는 바뀌지 않아요')
+            : btn('item-store', r.id, '📦', '보관함에 넣기 · 본편 AI에게 전달하지 않아요. 이야기 속 소지자·위치는 바뀌지 않아요');
+        return `<div class="sp-card sp-item ${r.stored ? 'sp-stored-item' : ''}"><div class="sp-item-h"><span class="sp-ent-n">${r.stored ? '📦' : '🎒'} ${esc(entityName(mem, r.entity) || '?')}</span>${badges}
             ${r.holder ? `<span class="sp-holder">소지: <b>${esc(entityName(mem, r.holder))}</b></span>` : '<span class="sp-holder sp-dim">소지자 없음</span>'}</div>
-            ${recordRow(st, r)}</div>`).join('');
+            ${r.stored && sc ? `<div class="sp-dim sp-item-last">마지막 기록: SCENE ${String(sc.no).padStart(2, '0')} · ${esc(sc.title)}</div>` : ''}
+            ${recordRow(st, r, [move])}</div>`;
+    };
+    const live = recs.filter(r => !r.stored), boxed = recs.filter(r => r.stored);
+    const box = boxed.length ? `<details class="sp-more sp-box" data-group="itembox" ${ui.savesOpen.get('itembox') ? 'open' : ''}><summary>📦 보관함 ${boxed.length}</summary>
+        <div class="sp-dim">보관함 물건은 본편 AI에게 전달하지 않아요. 기록하는 AI는 같은 물건을 알아보도록 이름과 마지막 상태만 봐요. 꺼내면 현재 상태 주입 대상으로 돌아오고, 이야기 속 소지자·위치는 바뀌지 않아요. 다 썼거나 부서진 물건은 꺼내도 그 상태 그대로예요.</div>
+        ${boxed.map(card).join('')}</details>` : '';
+    const rows = live.map(card).join('');
     const itemEnts = mem.entities.filter(e => e.type === 'item' || e.type === 'place');
     const names = itemEnts.length ? `<details class="sp-more" data-group="itemnames" ${ui.savesOpen.get('itemnames') ? 'open' : ''}><summary>물건·장소 이름 ${itemEnts.length}개 (별칭 편집)</summary>${itemEnts.map(e => `<div class="sp-card">${entityHead(st, e)}</div>`).join('')}</details>` : '';
-    return addBar('item') + (rows || '<div class="sp-empty">누가 무엇을 가지고 있는지, 물건이 어떤 상태인지 여기에 나타나요.</div>') + names;
+    return addBar('item') + (rows || '<div class="sp-empty">누가 무엇을 가지고 있는지, 물건이 어떤 상태인지 여기에 나타나요.</div>') + box + names;
 }
 function worldHtml(st) {
     const recs = st.mem.records.filter(r => r.type === 'world');
@@ -2466,21 +2485,26 @@ function savesHtml(st) {
         + (sameChar.length ? groupBox('char', `${esc(charInfo()?.name || '이 캐릭터')}의 다른 방`, sameChar.length, roomBoxes, false) : '')
         + (others.length ? groupBox('others', '다른 캐릭터', others.length, otherCharsHtml(others, st, order), false) : '');
 }
-const LEVEL_KO = { full: '자세히', outline: '개요', short: '짧은 개요', title: '제목만', omitted: '빠짐', recalled: '회상만' };
+const LEVEL_KO = { full: '자세히', points: '개요+포인트 일부', outline: '개요', short: '짧은 개요', title: '제목만', omitted: '빠짐', recalled: '회상만' };
 function injectLevelsHtml(st, inj) {
     const levels = Object.values(inj.levels || {});
     if (!levels.length) return '';
     const count = k => levels.filter(l => l === k).length;
     const line = Object.keys(LEVEL_KO).filter(k => count(k)).map(k => `${LEVEL_KO[k]} ${count(k)}`).join(' · ');
-    const reduced = levels.some(l => l !== 'full' && l !== 'outline');
+    const reduced = levels.some(l => l !== 'full' && l !== 'outline' && l !== 'points');
     if (reduced && ui.injNeed === undefined && ui.injOpts) ui.injNeed = neededBudget(st.mem, ui.injOpts);
+    // Second figure: what it takes for every scene to carry all its ● points too.
+    if (inj.pointsLeft && ui.injNeedPoints === undefined && ui.injOpts) ui.injNeedPoints = neededBudget(st.mem, ui.injOpts, 100000, { points: true });
     const budget = num('budget', 300, 100000), titleCap = num('titleCap', 0, 20000);
     const why = !inj.omittedScenes ? '' : inj.omittedBy === 'titleCap'
         ? `<div class="sp-warn">‘오래된 장면 제목 목록 상한’(${titleCap.toLocaleString()}토큰) 때문에 제목도 넣지 못한 장면이 ${inj.omittedScenes}개 있어요. 그 상한을 늘리면 제목이 들어가요.</div>`
         : `<div class="sp-warn">주입 상한(${budget.toLocaleString()}토큰)이 차서 제목도 넣지 못한 장면이 ${inj.omittedScenes}개 있어요.</div>`;
-    const need = !reduced ? '' : ui.injNeed
-        ? `<div class="sp-dim">모든 장면의 개요를 포함하려면 주입 상한 약 <b>${ui.injNeed.toLocaleString()}</b>토큰이 필요해요. 선택 포인트·상세 노트까지 모두 포함하는 수치는 아니에요.</div>`
-        : '<div class="sp-dim">주입 상한을 최대로 늘려도 모든 장면의 개요를 넣을 수는 없어요.</div>';
+    const need = (!reduced ? '' : ui.injNeed
+        ? `<div class="sp-dim">모든 장면의 개요까지 넣으려면 주입 상한 약 <b>${ui.injNeed.toLocaleString()}</b>토큰이 필요해요.</div>`
+        : '<div class="sp-dim">주입 상한을 최대로 늘려도 모든 장면의 개요를 넣을 수는 없어요.</div>')
+        + (!inj.pointsLeft ? '' : ui.injNeedPoints
+            ? `<div class="sp-dim">● 포인트까지 모두 넣으려면 약 <b>${ui.injNeedPoints.toLocaleString()}</b>토큰이 필요해요 (지금 ${inj.pointsLeft}개 장면의 포인트가 일부 빠져 있어요). 상세 노트와 ○ 포인트는 회상으로만 들어가요.</div>`
+            : `<div class="sp-dim">● 포인트가 일부 빠진 장면이 ${inj.pointsLeft}개 있어요. 상한을 최대로 늘려도 모두 넣을 수는 없어요.</div>`);
     return `<div class="sp-dim">장면 ${levels.length}개 · ${line}</div>${why}${need}${reduced ? '<div class="sp-dim">줄어든 장면도 저장된 기록·포인트는 그대로예요. 자세한 내용은 최근 대화와 관련될 때 회상 후보가 되지만, 회상은 검색 결과와 회상 몫 안에서 골라요.</div>' : ''}`;
 }
 function injectHtml(st) {
@@ -2604,6 +2628,8 @@ function installTabNavigation(strip, previousScroll) {
 }
 function render(force = false) {
     updateSaveBanner();
+    // The new-chat question goes away once the room has memory (loaded, saved) or is no longer new.
+    if (document.getElementById('sp_resume')?.hidden === false && !resumeChoices().length) hideResume();
     if (!ui.open) return;
     const win = $('#sp_overlay .sp-window');
     if (!win.length) return;
@@ -2620,7 +2646,7 @@ function render(force = false) {
     const tabScroll = win.find('.sp-tabs').scrollLeft() || 0;
     const counts = st ? {
         queue: st.lootQueue?.length || 0, journal: st.mem.scenes.length, quests: st.mem.records.filter(r => r.type === 'quest' && r.status === 'open').length,
-        party: st.mem.entities.filter(e => e.type === 'person').length, items: st.mem.records.filter(r => r.type === 'item').length,
+        party: st.mem.entities.filter(e => e.type === 'person').length, items: st.mem.records.filter(r => r.type === 'item' && !r.stored).length,
         world: st.mem.records.filter(r => r.type === 'world').length,
     } : {};
     // The save tab counts this room's QUICK + AUTO + FILE, like every other tab counts this room.
@@ -2809,6 +2835,9 @@ async function handle(act, id) {
             return render(true);
         case 'star': return commitEdit(m => { const s = m.scenes.find(x => x.id === id); if (!s) return false; s.star = !s.star; }, { undoable: false });
         case 'pin': return commitEdit(m => { const s = m.scenes.find(x => x.id === id); if (!s) return false; s.pin = !s.pin; }, { undoable: false });
+        // 📦 Storing only changes what the roleplay model is given; the story's holder and place stay.
+        case 'item-store': return commitEdit(m => { const r = m.records.find(x => x.id === id); if (!r || r.stored) return false; r.stored = { by: 'user', at: Date.now() }; delete r.storedUpdated; });
+        case 'item-unstore': return commitEdit(m => { const r = m.records.find(x => x.id === id); if (!r?.stored) return false; delete r.stored; delete r.storedUpdated; });
         case 'pin-rec': return commitEdit(m => { const r = m.records.find(x => x.id === id); if (!r) return false; r.pin = !r.pin; }, { undoable: false });
         case 'quest-done': case 'quest-fail': case 'quest-open':
             return commitEdit(m => { const r = m.records.find(x => x.id === id); if (!r) return false; setQuestStatus(r, act === 'quest-done' ? 'done' : act === 'quest-fail' ? 'failed' : 'open'); });
@@ -2910,6 +2939,7 @@ function settingsHtml() {
                 <label>하이드하지 않을 최근 메시지 <input type="number" data-set="keepRecent" min="0" max="200"></label>
                 <div class="sp-set-note">전체 대화에서 숨기지 않을 최근 메시지 수예요. 미기록 메시지는 이 설정과 관계없이 숨기지 않아요.</div>
                 <label>오토세이브를 보관할 방 수 (방마다 최근 3개) <input type="number" data-set="autoKeep" min="1" max="500"></label>
+                <label class="checkbox_label"><input type="checkbox" data-set="askResume"> 새 채팅에서 이어하기 물어보기 (같은 캐릭터의 다른 방에 세이브가 있을 때)</label>
             `)}
             ${settingSection('appearance', `
                 <label>스킨 <select data-set="theme">${Object.entries(THEMES).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
@@ -3147,6 +3177,56 @@ function onChatChanged() {
         if (it) toastr.info(`이 방의 지난 저장이 방을 옮기면서 중간에 멈췄어요 (#${it.from}부터 미기록). SavePoint에서 퀵세이브로 이어서 기록할 수 있어요.`, 'SavePoint', { timeOut: 10000 });
     }
     refreshInjection(); render(true); installLootBar(); updateSaveBanner();
+    hideResume(); clearTimeout(resumeTimer);
+    const epoch = roomEpoch;
+    resumeTimer = setTimeout(() => { if (epoch === roomEpoch) offerResume(); }, 700);
+}
+// ───────── new chat: continue or start fresh ─────────
+// A new chat of a character that has saves in other rooms gets a small choice near the top:
+// 이어하기 (pick one of those saves) or 새로 하기 (nothing changes; not asked again in this room).
+let resumeTimer = null;
+function resumeChoices() {
+    const s = settings();
+    if (!s.enabled || !s.askResume || !hasChat() || ui.run) return [];
+    const room = roomKey();
+    if (s.resumeDismissed?.[room] || hasMemory(state()?.mem)) return [];
+    const list = chat();
+    if (list.length > 1 || (list.length === 1 && list[0].is_user)) return [];
+    const charKey = charInfo()?.key || '';
+    const saves = listSaves().filter(x => x.room !== room && roomChar(x.room) === charKey);
+    // QUICK first (newest), then FILE slots, then the newest AUTO of each room.
+    const seen = new Set();
+    const autos = saves.filter(x => x.auto).sort((a, b) => b.updated - a.updated).filter(x => !seen.has(x.room) && seen.add(x.room));
+    return [...saves.filter(x => x.quick).sort((a, b) => b.updated - a.updated),
+        ...saves.filter(x => !x.auto && !x.quick).sort((a, b) => b.updated - a.updated), ...autos].slice(0, 8);
+}
+function hideResume() { const el = document.getElementById('sp_resume'); if (el) el.hidden = true; }
+function offerResume(open = false) {
+    const choices = resumeChoices();
+    let el = document.getElementById('sp_resume');
+    if (!choices.length) { if (el) el.hidden = true; return; }
+    if (!el) { el = document.createElement('div'); el.id = 'sp_resume'; el.className = 'sp-window sp-resume-prompt'; document.body.appendChild(el); }
+    el.setAttribute('data-theme', settings().theme in THEMES ? settings().theme : 'jrpg');
+    const row = sv => `<button class="sp-resume-pick interactable" data-resume="${esc(sv.id)}"><span class="sp-slot">${slotKind(sv)}</span>
+        <span class="sp-resume-t">${saveTitle(sv) ? `🎬 ${esc(saveTitle(sv))}` : esc(sv.name)}</span><span class="sp-resume-m">🗝️ ${esc(roomLabel(sv.room))} · ${fmtDate(sv.updated)}</span></button>`;
+    el.innerHTML = `<div class="sp-resume-h"><b>이어서 할까요?</b><span class="sp-dim">${esc(charInfo()?.name || '이 캐릭터')}의 다른 방에 세이브가 있어요.</span></div>
+        ${open ? `<div class="sp-resume-list">${choices.map(row).join('')}</div>` : ''}
+        <div class="sp-resume-btns">${open ? '' : '<button class="sp-btn sp-primary interactable" data-resume-act="open">▶ 이어하기</button>'}<button class="sp-btn interactable" data-resume-act="fresh">✦ 새로 하기</button><button class="sp-btn interactable" data-resume-act="later" title="닫기 (다음에 이 방을 열면 다시 물어요)">✕</button></div>`;
+    el.hidden = false;
+    el.onclick = async e => {
+        const pick = e.target.closest('[data-resume]'), act = e.target.closest('[data-resume-act]')?.dataset.resumeAct;
+        if (pick) { hideResume(); await loadSave(pick.dataset.resume); return; }
+        if (act === 'open') return offerResume(true);
+        if (act === 'fresh') {
+            const d = settings().resumeDismissed ||= {};
+            d[roomKey()] = Date.now();
+            // Keep the list short: only the most recent rooms are remembered.
+            const keys = Object.keys(d).sort((a, b) => d[b] - d[a]);
+            for (const k of keys.slice(300)) delete d[k];
+            saveSettings();
+        }
+        hideResume();
+    };
 }
 function onSourceChanged() {
     clearTimeout(sourceTimer);

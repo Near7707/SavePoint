@@ -133,3 +133,47 @@ test('review v0.6.16: a flashback never widens the present date range, and stays
     const short = buildInjection(only, { budget: 6000, recentScenes: 0 }).text;
     assert.match(short, /\[flashback 2026-09-01\]/, 'the head keeps the flashback mark at every level');
 });
+
+// v0.6.34: older scenes carry their ● points when budget is left.
+function scenes(n, pointsEach = 4) {
+    let mem = emptyMem();
+    for (let k = 0; k < n; k++) {
+        const w = `x${k}`, chunk = { from: k, to: k, indices: [k], text: w, texts: { [k]: w } };
+        const d = { scenes: [{ scene: 'new', title: `Scene ${k}`, where: 'Pier', who: [], ended: true, outline: `Outline of scene ${k} with ordinary words.`, notes: '',
+            points: Array.from({ length: pointsEach }, (_, j) => ({ text: `Key detail ${j} of scene ${k} about lanterns and boats`, kind: 'moment', key: true, msgs: [k] })) }], entities: [], changes: [] };
+        normalizeResult(d, { mem, chunk });
+        mem = applyResult(mem, d, chunk, { room: 'room-A' }).mem;
+    }
+    return mem;
+}
+
+test('spare budget adds ● points to older scenes, newest first, one point at a time', () => {
+    const mem = scenes(60, 6);
+    const roomy = buildInjection(mem, { budget: 60000, recall: false });
+    assert(Object.values(roomy.levels).every(l => l === 'full'), 'with room, every scene carries its points');
+    assert.match(roomy.text, /Key detail 5 of scene 0 /);
+    assert.equal(roomy.pointsLeft, 0);
+    // Tighter: every outline first, then points from the newest older scene down.
+    const outlinesOnly = neededBudget(mem, { recall: false });
+    const tight = buildInjection(mem, { budget: outlinesOnly + 120, recall: false });
+    const lv = mem.scenes.map(s => tight.levels[s.id]);
+    assert(lv.every(l => ['full', 'points', 'outline'].includes(l)), `no scene is cut below its outline (${lv.join(',')})`);
+    assert(lv.includes('points') || lv.slice(0, 7).some(l => l === 'full'), 'leftover budget went into points');
+    const firstWithPoints = lv.findIndex(l => l !== 'outline');
+    assert(lv.slice(firstWithPoints).every(l => l !== 'outline'), 'newer older scenes get points before older ones');
+    assert(tight.pointsLeft > 0);
+});
+
+test('two needed budgets: all outlines, and all ● points', () => {
+    const mem = scenes(60, 6);
+    const outlines = neededBudget(mem, {}), points = neededBudget(mem, {}, 100000, { points: true });
+    assert(outlines && points && points > outlines, `${outlines} < ${points}`);
+    assert.equal(buildInjection(mem, { budget: points }).pointsLeft, 0);
+});
+
+test('points already in the journal are not recalled again', () => {
+    const mem = scenes(6);
+    const r = buildInjection(mem, { budget: 20000, query: 'lanterns and boats key detail scene 0' });
+    const recalled = r.text.split('## Recalled details')[1] || '';
+    assert(!/Key detail \d of scene 0/.test(recalled), 'a point already written with its scene is not repeated in recall');
+});

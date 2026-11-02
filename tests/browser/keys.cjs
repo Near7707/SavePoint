@@ -96,7 +96,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
             st.mem.scenes = st.mem.scenes.filter(x => !x.id.startsWith('sx')); M.settings.savePoint.budget = 6000; __savePoint.refreshInjection();
             return t;
         });
-        ok(/장면 \d+개 · .*짧은 개요 \d+/.test(r2) && r2.includes('모든 장면의 개요를 포함하려면 주입 상한 약') && r2.includes('회상 후보'), '주입 탭: 장면별 단계, 필요한 상한, 회상 안내');
+        ok(/장면 \d+개 · .*짧은 개요 \d+/.test(r2) && r2.includes('모든 장면의 개요까지 넣으려면 주입 상한 약') && r2.includes('회상 후보'), '주입 탭: 장면별 단계, 필요한 상한, 회상 안내');
         ok(/주입 상한\(900토큰\)이 차서 제목도 넣지 못한 장면|짧은 개요/.test(r2), '주입 탭: 빠진 이유 표시');
     }
     await page.close();
