@@ -137,6 +137,17 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.stored?.reason === 'retired' && r.badge.includes('자동 보관 · 정리됨'), `9. 정리된 소품은 자동 보관 · 정리됨 (${r.badge})`);
     r = await ev(id => { const st = __savePoint.state(); const q = st.mem.records.find(x => x.id === id); q.to = undefined; delete q.to; q.by = [st.mem.entities.find(e => e.name === 'Ari').id, 'e90']; __savePoint.handle('tab', 'quests'); const a = $('.sp-q-open .sp-role').first().text(); q.mutual = true; __savePoint.render(true); return [a, $('.sp-q-open .sp-role').first().text()]; }, q2);
     ok(r[0] === 'Ari · 나' && r[1] === 'Ari · 나 서로', `9. 여러 명이 지킬 약속은 서로 표시가 있을 때만 서로 (${r.join(' / ')})`);
+
+    // 10. (v0.6.43) a choice shows at once even while the chat file is still being written
+    await ev(() => { __savePoint.handle('tab', 'party'); M.metaDelay = 1200; });
+    const ari = await ev(() => __savePoint.state().mem.entities.find(e => e.name === 'Ari').id);
+    const pending = ev(id => __savePoint.handle('person-mode', id + '|standby'), ari);
+    await page.waitForTimeout(150);
+    r = await ev(() => ({ on: $('.sp-party-mode .sp-on').map((i, e) => e.textContent).get(), saving: M.saves }));
+    await pending; await ev(() => { M.metaDelay = 0; });
+    ok(r.on.includes('대기'), `10. 저장이 끝나기 전에 화면에 선택 반영 (${r.on.join(',')})`);
+    r = await ev(() => $('.sp-party-mode').first().find('.sp-on').length);
+    ok(r === 1, '10. 한 사람에 선택 표시는 하나');
     if (SHOTS) await page.locator('#sp_overlay .sp-window').screenshot({ path: path.join(OUT, 'quests-main.png') });
 
     await page.close();

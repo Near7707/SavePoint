@@ -106,7 +106,8 @@
     border: 2px solid var(--sp-line); border-radius: 6px; padding: 5px 11px; cursor: pointer;
     white-space: nowrap; width: auto; line-height: 1.3;
 }
-.sp-btn:hover { border-color: var(--sp-accent); }
+/* v0.6.43: hover only where there is a real pointer (a tapped button on a phone kept looking selected) */
+@media (hover: hover) { .sp-btn:hover { border-color: var(--sp-accent); } }
 .sp-btn.sp-primary { background: var(--sp-accent); color: var(--sp-accent-fg); border-color: var(--sp-accent); font-weight: 700; }
 .sp-btn.sp-danger { color: var(--sp-danger); border-color: color-mix(in srgb, var(--sp-danger) 50%, transparent); }
 .sp-btn.sp-disabled { opacity: .4; cursor: not-allowed; }
@@ -355,7 +356,7 @@ label.sp-has-reset { position: relative; padding-right: 30px; }
 .sp-window[data-theme="neon"] .sp-card, .sp-window[data-theme="neon"] .sp-quest { border-color: rgba(255, 79, 216, .55); box-shadow: 0 0 10px rgba(255, 79, 216, .25), inset 0 0 12px rgba(92, 225, 255, .06); }
 .sp-window[data-theme="neon"] .sp-card:nth-child(even) { border-color: rgba(92, 225, 255, .55); box-shadow: 0 0 10px rgba(92, 225, 255, .22); }
 .sp-window[data-theme="neon"] .sp-btn.sp-primary { box-shadow: 0 0 12px rgba(255, 79, 216, .7); }
-.sp-window[data-theme="neon"] .sp-btn:hover { border-color: #5ce1ff; box-shadow: 0 0 8px rgba(92, 225, 255, .5); }
+@media (hover: hover) { .sp-window[data-theme="neon"] .sp-btn:hover { border-color: #5ce1ff; box-shadow: 0 0 8px rgba(92, 225, 255, .5); } }
 .sp-window[data-theme="neon"] .sp-tab.sp-active { border-color: #ff4fd8; box-shadow: 0 0 10px rgba(255, 79, 216, .45); }
 .sp-window[data-theme="neon"] .sp-ent-n, .sp-window[data-theme="neon"] .sp-title { color: #9ff0ff; text-shadow: 0 0 6px rgba(92, 225, 255, .55); font-family: var(--sp-head); letter-spacing: .03em; }
 .sp-window[data-theme="neon"] .sp-holder { border: 1px solid rgba(255, 79, 216, .6); border-radius: 4px; padding: 0 6px; }
@@ -942,3 +943,57 @@ details.sp-st-alert[open] > summary { margin-bottom: 6px; }
 .sp-qcand .sp-row { gap: 6px; }
 .sp-q-declined { opacity: .7; }
 .sp-role { font-size: 12px; font-weight: 800; color: var(--sp-accent); white-space: nowrap; }
+
+/* ───────── v0.6.43: calmer, clearer sections ───────── */
+/* Folds: a slim bar with a chevron; opened content hangs off a thin accent rail. */
+.sp-more > summary { list-style: none; display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 8px;
+    background: var(--sp-panel2, var(--sp-panel)); background: color-mix(in srgb, var(--sp-accent) 8%, var(--sp-panel));
+    border: 1px solid var(--sp-line); border-color: color-mix(in srgb, var(--sp-accent) 24%, var(--sp-line));
+    color: var(--sp-fg); font-size: 12px; font-weight: 700; overflow-wrap: anywhere; }
+.sp-more > summary::-webkit-details-marker { display: none; }
+.sp-more > summary::after { content: '▾'; margin-left: auto; padding-left: 6px; font-size: 11px; color: var(--sp-accent); transform: rotate(-90deg); transition: transform .15s; }
+.sp-more[open] > summary::after { transform: none; }
+.sp-more[open] > summary { margin-bottom: 6px; }
+.sp-more[open] > :not(summary) { margin-left: 4px; padding-left: 10px; border-left: 2px solid var(--sp-line); border-left-color: color-mix(in srgb, var(--sp-accent) 28%, transparent); }
+
+/* 활성 / 대기 / 주입 제외: one switch, the chosen one filled. */
+.sp-window .sp-party-mode { display: inline-flex; flex-wrap: nowrap; gap: 0; padding: 2px; border-radius: 999px; border: 1px solid var(--sp-line); background: var(--sp-panel2, var(--sp-panel)); }
+.sp-window .sp-party-mode .sp-btn { border: none !important; border-radius: 999px !important; background: transparent !important; box-shadow: none !important; padding: 2px 10px; }
+.sp-window .sp-party-mode .sp-btn.sp-on { background: var(--sp-accent) !important; color: var(--sp-accent-fg) !important; font-weight: 700; }
+/* 관계 / 상태 labels as small chips. */
+.sp-person .sp-aspect { display: table; margin-top: 10px; padding: 1px 9px; border-radius: 999px; background: var(--sp-chip); letter-spacing: .04em; font-size: 10.5px; }
+/* Journal point rows and world cards: the text first, the tools quiet until needed. */
+.sp-pt .sp-tools .sp-mini, .sp-world .sp-tools .sp-mini { opacity: .4; }
+.sp-pt:hover .sp-tools .sp-mini, .sp-world .sp-record-row:hover .sp-tools .sp-mini, .sp-tools .sp-mini.sp-on { opacity: 1; }
+@media (hover: none) { .sp-pt .sp-tools .sp-mini, .sp-world .sp-tools .sp-mini { opacity: .6; } }
+
+/* Timeline: a rail with dots, days as filled pills, times as chips. */
+.sp-tl-ref { margin: 14px 0 8px; padding: 6px 10px; border-radius: 10px; font-size: 12.5px; letter-spacing: .02em;
+    background: var(--sp-panel2); background: color-mix(in srgb, var(--sp-accent) 10%, var(--sp-panel));
+    border: 1px solid var(--sp-line); border-color: color-mix(in srgb, var(--sp-accent) 25%, var(--sp-line)); }
+.sp-tl-day { display: inline-flex; align-items: center; gap: 6px; margin: 12px 0 4px; padding: 2px 10px 2px 8px; border-radius: 999px;
+    background: var(--sp-accent); color: var(--sp-accent-fg); font-size: 12px; }
+.sp-tl-day::before { content: '📅'; font-size: 11px; }
+.sp-tl-scene { margin: 8px 0 2px 14px; font-size: 12.5px; color: var(--sp-fg); }
+.sp-tl-scene::before { content: '▸ '; color: var(--sp-accent); }
+.sp-tl-row { position: relative; margin: 0 0 0 18px; padding: 6px 4px 8px 16px; border-left: 2px solid var(--sp-line); border-left-color: color-mix(in srgb, var(--sp-accent) 30%, var(--sp-line)); }
+.sp-tl-row::before { content: ''; position: absolute; left: -6px; top: 10px; width: 10px; height: 10px; border-radius: 50%;
+    background: var(--sp-bg); border: 2px solid var(--sp-accent); box-sizing: border-box; }
+.sp-tl-time { display: inline-block; padding: 0 7px; border-radius: 6px; background: var(--sp-chip); font-size: 11.5px; }
+.sp-tl-text { color: var(--sp-fg); opacity: .8; }
+.sp-tl-flash { margin-left: 30px; border-left-style: dashed; border-radius: 0 8px 8px 0; background: color-mix(in srgb, var(--sp-accent) 5%, transparent); }
+.sp-tl-flash::before { border-style: dashed; }
+.sp-tl-unknown::before { border-color: var(--sp-danger); }
+.sp-tl-due { margin: 6px 0 0; padding: 4px 8px; border-radius: 8px; background: var(--sp-panel); border: 1px solid var(--sp-line); }
+
+/* World: kind headers with an icon; cards with a coloured edge (mixed toward the text colour, so
+   the same four hues stay readable on light and dark skins). */
+.sp-world .sp-group-h { display: flex; align-items: center; gap: 6px; font-size: 12.5px; padding: 4px 2px; border-bottom: 1px dashed var(--sp-line); margin-bottom: 6px; }
+.sp-world .sp-wicon { font-size: 13px; }
+.sp-world .sp-record-row { padding: 8px 10px; margin: 0 0 6px; border-radius: 10px; background: var(--sp-panel); border: 1px solid var(--sp-line);
+    border-left: 4px solid var(--sp-k, var(--sp-accent)); }
+.sp-world [data-kind="place"] { --sp-k: color-mix(in srgb, #6fa86a 80%, var(--sp-fg)); }
+.sp-world [data-kind="rule"] { --sp-k: color-mix(in srgb, #6a8fd0 80%, var(--sp-fg)); }
+.sp-world [data-kind="name"] { --sp-k: color-mix(in srgb, #d2a442 80%, var(--sp-fg)); }
+.sp-world [data-kind="secret"] { --sp-k: color-mix(in srgb, #b46ab0 80%, var(--sp-fg)); }
+.sp-world .sp-known { display: inline-flex; align-items: center; padding: 0 8px; border-radius: 999px; font-size: 11.5px; background: var(--sp-chip); background: color-mix(in srgb, #b46ab0 18%, var(--sp-panel)); }

@@ -270,7 +270,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
                         const holder = header?.querySelector('.sp-holder').getBoundingClientRect(), name = header?.querySelector('.sp-ent-n').getBoundingClientRect();
                         const holderAtTop = !header || (Math.abs(holder.top - name.top) <= 1 && holder.left >= name.right + 7 && Math.abs(holder.right - header.getBoundingClientRect().right) <= 1
                             && header.scrollWidth <= header.clientWidth + 1 && text.top >= Math.max(holder.bottom, name.bottom));
-                        return holderAtTop && refs.top >= text.bottom - 1 && Math.abs(text.width - row.clientWidth) <= 2 && refs.right <= box.right + 1 && row.scrollWidth <= row.clientWidth + 1
+                        return holderAtTop && refs.top >= text.bottom - 1 && Math.abs(text.width - (row.clientWidth - parseFloat(getComputedStyle(row).paddingLeft) - parseFloat(getComputedStyle(row).paddingRight))) <= 2 && refs.right <= box.right + 1 && row.scrollWidth <= row.clientWidth + 1
                             && row.querySelector('.sp-evs').title.includes('이전 방') && row.querySelectorAll('.sp-tools button').length === (tab === 'items' ? 4 : 3);   // items also have 📦
                     });
                 }, { theme, tab });

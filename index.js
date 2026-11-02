@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.42';
+const VERSION = '0.6.43';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -177,6 +177,9 @@ async function transact(change, { undoable = true, autosave: doAutosave = true, 
         st.rev = (prev?.rev || 0) + 1;
     }
     syncHide({ rehide }); refreshInjection();
+    // v0.6.43: show the change at once; the chat file is written after. A failed write puts
+    // everything back below (and redraws), as before.
+    if (roomKey() === key && roomEpoch === epoch) render();
     try { await persist(); }
     catch (e) {
         if (prev === undefined) delete meta[MODULE]; else meta[MODULE] = prev;
@@ -2596,14 +2599,16 @@ function itemsHtml(st) {
     const names = itemEnts.length ? `<details class="sp-more" data-group="itemnames" ${ui.savesOpen.get('itemnames') ? 'open' : ''}><summary>물건·장소 이름 ${itemEnts.length}개 (별칭 편집)</summary>${itemEnts.map(e => `<div class="sp-card">${entityHead(st, e)}</div>`).join('')}</details>` : '';
     return addBar('item') + (rows || '<div class="sp-empty">누가 무엇을 가지고 있는지, 물건이 어떤 상태인지 여기에 나타나요.</div>') + box + names;
 }
+const WORLD_ICON = { place: '📍', rule: '📜', name: '🏷', secret: '🔒' };
 function worldHtml(st) {
     const recs = st.mem.records.filter(r => r.type === 'world');
+    // v0.6.43: one group per kind with its icon; cards carry the kind for a coloured edge.
     const body = WORLD_KINDS.map(k => {
         const list = recs.filter(r => r.kind === k);
         if (!list.length) return '';
-        return `<div class="sp-group"><div class="sp-group-h">${KIND_KO[k]} <span>${list.length}</span></div>${list.map(r => recordRow(st, r, r.knownBy?.length ? [`<span class="sp-known" title="아는 사람">👁 ${esc(r.knownBy.map(id => entityName(st.mem, id)).join(', '))}</span>`] : [])).join('')}</div>`;
+        return `<div class="sp-group sp-wgroup" data-kind="${k}"><div class="sp-group-h"><span class="sp-wicon">${WORLD_ICON[k] || '•'}</span>${KIND_KO[k]} <span>${list.length}</span></div>${list.map(r => recordRow(st, r, r.knownBy?.length ? [`<span class="sp-known" title="아는 사람">👁 ${esc(r.knownBy.map(id => entityName(st.mem, id)).join(', '))}</span>`] : [])).join('')}</div>`;
     }).join('');
-    return addBar('world') + (body || '<div class="sp-empty">장소, 규칙, 별명, 비밀이 여기에 모여요.</div>');
+    return addBar('world') + (body ? `<div class="sp-world">${body}</div>` : '<div class="sp-empty">장소, 규칙, 별명, 비밀이 여기에 모여요.</div>');
 }
 function vaultLine() {
     if (!vault.ready) return '<div class="sp-dim">서버 백업 확인 중…</div>';
