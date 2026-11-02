@@ -208,7 +208,7 @@ function recordLine(mem, r, withId = true) {
     const en = x => entityName(mem, x);
     if (r.type === 'party') return `${id}[${r.aspect}] ${en(r.entity)}: ${r.text}`;
     if (r.type === 'item') return `${id}[item${r.gone ? ', gone' : ''}] ${en(r.entity)}${r.holder ? ` (held by ${en(r.holder)})` : ''}: ${r.text}`;
-    if (r.type === 'quest') return `${id}[${r.kind}${r.status !== 'open' ? ', ' + r.status : ''}] ${r.text}${r.who?.length ? ` (${r.who.map(en).join(', ')})` : ''}${r.due && TERMS_KINDS.includes(r.kind) ? ` [${formatDue(mem, r, 'en')}]` : ''}`;
+    if (r.type === 'quest') return `${id}[${r.kind}${r.status !== 'open' ? ', ' + r.status : ''}] ${r.text}${r.who?.length ? ` (${r.who.map(en).join(', ')})` : ''}${r.by?.length ? ` {${r.by.map(en).join(', ')}${r.to?.length ? ' -> ' + r.to.map(en).join(', ') : r.by.length > 1 ? ', to each other' : ''}}` : ''}${r.due && TERMS_KINDS.includes(r.kind) ? ` [${formatDue(mem, r, 'en')}]` : ''}`;
     return `${id}[${r.kind}] ${r.text}${r.knownBy?.length ? ` (known by ${r.knownBy.map(en).join(', ')})` : ''}`;
 }
 export { recordLine };
@@ -229,7 +229,7 @@ export function promptContext(mem, chunkText, { stateChars = 12000, entityChars 
     const open = openScene(mem);
     const relevant = new Set(mentionedEntities(mem, chunkText).keys());
     for (const id of open?.who || []) relevant.add(id);
-    const quests = mem.records.filter(r => r.type === 'quest' && r.status === 'open');
+    const quests = mem.records.filter(r => r.type === 'quest' && r.status === 'open' && r.track !== 'declined');
     for (const q of quests) for (const id of recordEntities(q)) relevant.add(id);
     const entities = [...mem.entities].sort((a, b) => (relevant.has(b.id) ? 1 : 0) - (relevant.has(a.id) ? 1 : 0));
     const entityLines = entities.map(e => `${e.id} ${e.type}: ${e.name}${e.aliases?.length ? ` (also: ${e.aliases.join(', ')})` : ''}`);
@@ -246,6 +246,9 @@ export function promptContext(mem, chunkText, { stateChars = 12000, entityChars 
     const stateLines = uniq(order).map(r => recordLine(mem, r));
     const stored = mem.records.filter(r => r.stored && r.type === 'item').sort((a, b) => (touches(b) ? 1 : 0) - (touches(a) ? 1 : 0));
     const storedLines = stored.map(r => recordLine(mem, r));
+    // v0.6.39: untracked quests are not sent as a whole list; only open ones about the people and
+    // places in play, so the collector updates them by id instead of finding them again.
+    const untrackedLines = mem.records.filter(r => r.type === 'quest' && r.track === 'declined' && r.status === 'open' && touches(r)).map(r => recordLine(mem, r));
     let openText = '(none)';
     if (open) {
         const { shown, hidden } = openPoints(open);
@@ -258,6 +261,7 @@ export function promptContext(mem, chunkText, { stateChars = 12000, entityChars 
     return {
         entities: entityLines.length ? capLines(entityLines, entityChars).join('\n') : '(none yet)',
         state: (stateLines.length ? capLines(stateLines, stateChars).join('\n') : '(empty)')
+            + (untrackedLines.length ? `\nUNTRACKED THREADS (still true in the story; the user only chose not to list them as quests. If the messages continue one, "update" it by id; never "add" it again):\n${capLines(untrackedLines, 1500).join('\n')}` : '')
             + (storedLines.length ? `\nSTORED ITEMS (kept out of the story's current state; if one appears again, "update" it by id instead of adding it again; "gone" ones were used up, broken, lost or discarded and come back only with "back": true):\n${capLines(storedLines, 3000).join('\n')}` : ''),
         open: openText,
         recent: recent.length ? recent.join('\n') : '(none)',
@@ -430,6 +434,11 @@ export function normalizeResult(data, { mem, chunk } = {}) {
         if (c.entity !== undefined) c.entity = fix(c.entity);
         if (c.holder !== undefined) c.holder = fix(c.holder);
         if (c.who !== undefined) c.who = fixList(c.who);
+        // by/to belong to promises and debts only; elsewhere (or null) they are dropped, not an error.
+        const qKind = c.op === 'add' ? (c.type === 'quest' ? c.kind : null) : mem?.records?.find(r => r.id === c.id && r.type === 'quest')?.kind;
+        for (const k of ['by', 'to']) if (c[k] !== undefined && (c[k] === null || !TERMS_KINDS.includes(qKind))) delete c[k];
+        if (c.by !== undefined) c.by = fixList(c.by);
+        if (c.to !== undefined) c.to = fixList(c.to);
         if (c.knownBy !== undefined) c.knownBy = fixList(c.knownBy);
     }
     if (fixed.size) notes.push(`Names used as ids were linked: ${[...fixed].map(([n, id]) => `"${n}" -> ${id}`).join(', ')}.`);
@@ -532,6 +541,16 @@ export function validateResult(data, { mem, chunk, expectContinue }) {
         if (!Array.isArray(list)) { errors.push(`${where} must be an array.`); return; }
         list.forEach((r, k) => ref(r, `${where}[${k}]`, types, hint));
     };
+    // v0.6.39: who keeps a promise or pays a debt (by) and who it is owed to (to), only when the
+    // messages show it. Lists of people; "to" may be empty (a vow, or a promise made to each other).
+    const roles = (c, kind, w) => {
+        if (c.by === undefined && c.to === undefined) return;
+        if (!TERMS_KINDS.includes(kind)) { errors.push(`${w}.by/.to are only for promises and debts; leave them out for ${kind}.`); return; }
+        for (const k of ['by', 'to']) if (c[k] !== undefined && c[k] !== null) {
+            if (!Array.isArray(c[k])) errors.push(`${w}.${k} must be a list of person ids (it may be empty).`);
+            else refList(c[k], `${w}.${k}`, ['person'], HINT.people);
+        }
+    };
     if (!Array.isArray(data.scenes) || !data.scenes.length) errors.push('"scenes" must contain at least one scene.');
     let prevStart = chunk.from;
     (Array.isArray(data.scenes) ? data.scenes : []).forEach((s, i) => {
@@ -593,7 +612,9 @@ export function validateResult(data, { mem, chunk, expectContinue }) {
                 if (c.status !== undefined && !QUEST_STATUS.includes(c.status)) errors.push(`${w}.status must be open, done or failed.`);
                 refList(c.who, `${w}.who`, ['person'], HINT.people);
                 if (TERMS_KINDS.includes(c.kind)) checkTerms(c, w, true);
+                roles(c, c.kind, w);
             }
+            if (c.type !== 'quest' && (c.by !== undefined || c.to !== undefined)) errors.push(`${w}.by/.to are only for promises and debts.`);
             if (c.type !== 'quest' && c.status !== undefined) errors.push(`${w}.status is only for quests.`);
             if (c.type === 'world') {
                 if (!WORLD_KINDS.includes(c.kind)) errors.push(`${w}.kind must be one of ${WORLD_KINDS.join(', ')}.`);
@@ -612,7 +633,8 @@ export function validateResult(data, { mem, chunk, expectContinue }) {
                 if (c.knownBy !== undefined && rec.type !== 'world') errors.push(`${w}.knownBy is only for world records.`);
                 else refList(c.knownBy, `${w}.knownBy`, ['person'], HINT.people);
                 if (c.back !== undefined && (rec.type !== 'item' || typeof c.back !== 'boolean')) errors.push(`${w}.back is only for items: true or false.`);
-                if (c.text === undefined && c.status === undefined && c.holder === undefined && c.knownBy === undefined && c.terms === undefined && c.due === undefined && c.back === undefined) errors.push(`${w} changes nothing.`);
+                if (c.by !== undefined || c.to !== undefined) { if (rec.type !== 'quest') errors.push(`${w}.by/.to are only for promises and debts.`); else roles(c, rec.kind, w); }
+                if (c.text === undefined && c.status === undefined && c.holder === undefined && c.knownBy === undefined && c.terms === undefined && c.due === undefined && c.back === undefined && c.by === undefined && c.to === undefined) errors.push(`${w} changes nothing.`);
                 if (c.terms !== undefined && c.terms !== null) {
                     if (rec.type !== 'quest' || !TERMS_KINDS.includes(rec.kind)) errors.push(`${w}.terms is only for debts and promises.`);
                     else checkTerms(c, w, false);
@@ -679,9 +701,36 @@ export function resultLanguageIssues(data) {
 function numEvidence(msgs) {
     return (msgs || []).map(m => (typeof m === 'string' && /^#?\d+$/.test(m.trim()) ? Number(m.replace('#', '')) : m));
 }
+// ───────── quest tracking (v0.6.39) ─────────
+// `track`: absent = tracked, 'pending' = found, waiting for the user, 'declined' = the user chose not to
+// track it. This is about the management list only: story status (open/done/failed) keeps updating.
+const QUEST_STOP = new Set('the a an and or to of in on at for with by from is are was be will his her their its they them he she it that this into about after before then than when'.split(' '));
+function questWords(text) {
+    return new Set(String(text || '').toLowerCase().replace(/[^a-z0-9\u00c0-\uffff\s]/g, ' ').split(/\s+/).filter(w => w.length > 2 && !QUEST_STOP.has(w)));
+}
+// The same thread written in other words: same kind, most of the shorter text's words shared.
+export function sameQuest(a, b) {
+    if (a.kind !== b.kind) return false;
+    const x = questWords(a.text), y = questWords(b.text);
+    if (!x.size || !y.size) return false;
+    let shared = 0;
+    for (const w of x) if (y.has(w)) shared++;
+    return shared / Math.min(x.size, y.size) >= 0.75 && shared / Math.max(x.size, y.size) >= 0.5;
+}
+function declinedTwin(mem, r) {
+    return mem.records.find(x => x !== r && x.type === 'quest' && x.track === 'declined' && sameQuest(x, r)) || null;
+}
+export function questTracked(r) { return r.type !== 'quest' || r.track !== 'declined' && r.track !== 'pending'; }
 // v0.6.38: the order records were last added or changed in. `seq` grows with every add/update, so the
 // newest relation/condition of a person is the one changed last, not the one last in the array (an
 // update leaves a record where it was). Records without seq (older saves) count as 0, array order next.
+function setRoles(r, c, resolve) {
+    if (!TERMS_KINDS.includes(r.kind)) return;
+    for (const k of ['by', 'to']) if (Array.isArray(c[k])) {
+        const list = uniq(c[k].map(resolve).filter(Boolean));
+        if (list.length) r[k] = list; else delete r[k];
+    }
+}
 function stamp(mem, r) { r.seq = mem.records.reduce((m, x) => Math.max(m, x.seq || 0), 0) + 1; }
 export function newestParty(mem, entity, aspect) {
     let best = null, bi = -1;
@@ -691,7 +740,7 @@ export function newestParty(mem, entity, aspect) {
     });
     return best;
 }
-export function applyResult(mem, data, chunk, { close = false, room = null, boxMode = 'manual' } = {}) {
+export function applyResult(mem, data, chunk, { close = false, room = null, boxMode = 'manual', questMode = 'auto' } = {}) {
     const next = clone(upgradeEvidence(mem));
     const refs = new Map();
     for (const e of data.entities || []) {
@@ -779,12 +828,18 @@ export function applyResult(mem, data, chunk, { close = false, room = null, boxM
             if (c.type === 'item') { r.entity = resolve(c.entity); r.holder = resolve(c.holder); }
             if (c.type === 'quest') {
                 r.kind = c.kind; r.status = QUEST_STATUS.includes(c.status) ? c.status : 'open'; r.who = uniq(strList(c.who).map(resolve).filter(Boolean));
+                setRoles(r, c, resolve);
                 r.questEvents = { created: questSource(msgs) };
                 if (r.status !== 'open' && r.questEvents.created) r.questEvents.resolved = { ...clone(r.questEvents.created), status: r.status };
                 const t = TERMS_KINDS.includes(c.kind) ? termsOf(c, chunk) : null;
                 if (t) r.terms = t;
                 const due = TERMS_KINDS.includes(c.kind) ? resolveDueClaim(c.due, { chunk, room, segOf: n => segFor([n]) }) : undefined;
                 if (due) r.due = due;
+                // v0.6.39: a quest like one the user chose not to track stays untracked; otherwise in
+                // "confirm" mode a new quest waits for the user. Neither changes the story itself.
+                const twin = declinedTwin(next, r);
+                if (twin) { r.track = 'declined'; r.autoDeclined = twin.id; }
+                else if (questMode === 'confirm') r.track = 'pending';
             }
             if (c.type === 'world') { r.kind = c.kind; r.knownBy = uniq(strList(c.knownBy).map(resolve).filter(Boolean)); if (c.entity) r.entity = resolve(c.entity); }
             stamp(next, r);
@@ -807,6 +862,9 @@ export function applyResult(mem, data, chunk, { close = false, room = null, boxM
             if (r.type === 'quest' && TERMS_KINDS.includes(r.kind) && c.terms) { const t = termsOf(c, chunk); if (t) r.terms = t; }
             // A new deadline replaces an AI-read one, never one the user set.
             if (r.type === 'quest' && TERMS_KINDS.includes(r.kind) && c.due && !r.due?.manual) { const due = resolveDueClaim(c.due, { chunk, room, segOf: n => segFor([n]) }); if (due) r.due = due; }
+            if (r.type === 'quest') setRoles(r, c, resolve);
+            // New terms or a new deadline make an untracked promise or debt a candidate again.
+            if (r.type === 'quest' && r.track === 'declined' && TERMS_KINDS.includes(r.kind) && (c.terms || c.due)) { r.track = 'pending'; delete r.autoDeclined; }
             if (r.type === 'item') touchItem(r, c.back === true, boxMode);
             r.src = uniq([...(r.src || []), src]);
             r.msgs = uniq([...(r.msgs || []), ...msgs]).slice(-12);
@@ -1071,7 +1129,10 @@ export function buildInjection(mem, opts = {}) {
         if (appear.has(r.entity)) return true;
         return mentioned.has(r.entity) && newestOf.get(r.entity) === r;
     };
-    for (const r of mem.records) if (!r.stored && partyIn(r)) items.push({ tier: 'state', pr: recPriority(r), rec: r, pin: !!r.pin, alts: [recordLine(mem, r, false)] });
+    // v0.6.39: a quest the user chose not to track is not injected; a found one (pending) still is,
+    // as in automatic mode, until the user decides.
+    const questIn = r => r.type !== 'quest' || r.track !== 'declined' || r.pin;
+    for (const r of mem.records) if (!r.stored && partyIn(r) && questIn(r)) items.push({ tier: 'state', pr: recPriority(r), rec: r, pin: !!r.pin, alts: [recordLine(mem, r, false)] });
     const recentIds = new Set(recentScenes.map(sc => sc.id));
     mem.scenes.forEach((sc, idx) => {
         let pr, alts;
@@ -1379,6 +1440,9 @@ export function cleanMem(raw) {
         if (r.type === 'quest') {
             rec.kind = QUEST_KINDS.includes(r.kind) ? r.kind : 'goal'; rec.status = QUEST_STATUS.includes(r.status) ? r.status : 'open'; rec.who = uniq((r.who || []).map(eref).filter(Boolean));
             if (cleanQuestEvents(r.questEvents)) rec.questEvents = cleanQuestEvents(r.questEvents);
+            if (TERMS_KINDS.includes(rec.kind)) for (const k of ['by', 'to']) { const l = uniq((Array.isArray(r[k]) ? r[k] : []).map(eref).filter(Boolean)); if (l.length) rec[k] = l; }
+            if (['pending', 'declined'].includes(r.track)) rec.track = r.track;
+            if (rec.track === 'declined' && typeof r.autoDeclined === 'string') rec.autoDeclined = r.autoDeclined;
             if (cleanDue(r.due)) rec.due = cleanDue(r.due);
             if (plain(r.terms) && (Number.isInteger(r.terms.msg) || cleanSource(r.terms.source)) && str(r.terms.quote)) rec.terms = { msg: Number.isInteger(r.terms.msg) ? r.terms.msg : null, quote: str(r.terms.quote), context: str(r.terms.context) || str(r.terms.quote), ...(cleanSource(r.terms.source) ? { source: cleanSource(r.terms.source) } : {}) };
         }

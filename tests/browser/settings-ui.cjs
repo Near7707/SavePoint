@@ -33,7 +33,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: SHOTS ? 2 : 1 });
     page.on('pageerror', e => { console.log('PAGE ERROR', e.message); failures++; });
     // Every setting at its default (the shared mock opens other suites on the journal).
-    await page.addInitScript(() => { window.__presetSettings = { savePoint: { firstTab: 'main' } }; });
+    await page.addInitScript(() => { window.__presetSettings = { savePoint: { firstTab: 'main', questMode: 'confirm' } }; });
     await page.goto(`http://localhost:${srv.address().port}/`);
     await page.waitForFunction(() => !!globalThis.__savePoint);
     const ev = (fn, arg) => page.evaluate(fn, arg);
@@ -68,7 +68,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         await p2.close();
     }
     r = await ev(() => [...document.querySelectorAll('[data-settings-group]')].map(d => [d.dataset.settingsGroup, d.open]));
-    ok(r.length === 5 && r.filter(x => x[1]).map(x => x[0]).join() === 'connection', '첫 화면은 5개 묶음 중 연결만 펼침');
+    ok(r.length === 6 && r.filter(x => x[1]).map(x => x[0]).join() === 'connection', '첫 화면은 6개 묶음 중 연결만 펼침');
     await page.click('[data-settings-group=injection] > summary');
     r = await ev(() => ({ marks: [...document.querySelectorAll('#sp_settings [data-reset-key]')].filter(b => !b.hidden).length, groupBtn: getComputedStyle(document.querySelector('[data-settings-group=injection] .sp-group-reset')).display, badge: document.querySelector('[data-changed-group=injection]').textContent, text: document.getElementById('sp_settings').textContent }));
     ok(r.marks === 0 && r.groupBtn === 'none' && r.badge === '' && !r.text.includes('기본값 '), '바꾼 설정이 없으면 기본값 안내·되돌리기 버튼이 하나도 안 보임');
@@ -79,12 +79,17 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r = await ev(() => ({ budget: M.settings.savePoint.budget, hidden: document.querySelector('[data-reset-key=budget]').hidden, badge: document.querySelector('[data-changed-group=injection]').textContent }));
     ok(r.budget === 6000 && r.hidden && r.badge === '', '↺를 누르면 그 칸만 기본값으로, 표시도 사라짐');
     await page.fill('[data-set=budget]', '9200');
-    await page.click('[data-settings-group=recording] > summary');
+    await page.click('[data-settings-group=advanced] > summary');
     await page.fill('[data-set=guide]', 'Custom guide.');
-    r = await ev(() => ({ shown: !document.querySelector('[data-reset-key=guide]').hidden, title: document.querySelector('[data-reset-key=guide]').title }));
+    r = await ev(() => ({ shown: !document.querySelector('[data-reset-key=guide]').hidden, title: document.querySelector('[data-reset-key=guide]').title, note: $('#sp_guide_note').text(), sum: $('[data-settings-summary=advanced]').text() }));
     ok(r.shown && r.title.includes('기본 지침'), '기록 지침도 바꿨을 때만 ↺ 기본 지침');
+    ok(r.note.includes('직접 고친 지침') && r.sum === '직접 고친 지침', `(v0.6.39) 🛠 고급: 고친 지침 안내 (${r.sum})`);
+    r = await ev(() => { M.settings.savePoint.guideBase = 'older'; __savePoint.fillSettings(); return { note: $('#sp_guide_note').text(), sum: $('[data-settings-summary=advanced]').text() }; });
+    ok(r.sum.includes('새 기본 지침') && r.note.includes('기본 지침이 새로 바뀌었어요'), `(v0.6.39) 고친 뒤 기본 지침이 바뀌면 알림 (${r.sum})`);
     await page.click('[data-reset-key=guide]');
-    await page.click('[data-settings-group=recording] > summary');
+    r = await ev(() => ({ note: $('#sp_guide_note').text(), sum: $('[data-settings-summary=advanced]').text() }));
+    ok(r.sum === '기본 지침' && r.note.includes('자동으로 따라가요'), '(v0.6.39) ↺ 뒤 기본 지침으로');
+    await page.click('[data-settings-group=advanced] > summary');
     await ev(() => __savePoint.handle('run'));
     await ev(() => __savePoint.addLoot(2, M.chat[2].mes, 'keep this note'));
     await ev(() => {

@@ -48,11 +48,11 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
 
     // 1. marked parts never reach the summarizer; the chat keeps them
     await ev(() => {
-        const ta = document.querySelector('#sp_settings [data-set=excludeMarks]'); ta.value = 'Inner_Info\n[속마음] ~ [/속마음]'; $(ta).trigger('input');
-        M.add(6, i => i === 1 ? 'Ari waves from the bridge. <Inner_Info><small>💭 Ari: ZETA-THOUGHT</small></Inner_Info> She walks on.'
-            : i === 3 ? 'Me: let us go. [속마음] OMEGA-THOUGHT [/속마음] Fine.'
-            : i === 4 ? '<inner_info class="x">💭 Ari: ONLY-THOUGHT</inner_info>'
-            : i === 5 ? 'Half [속마음] KEPT-UNCLOSED' : '');
+        const ta = document.querySelector('#sp_settings [data-set=excludeMarks]'); ta.value = 'thoughts\n[생각] ~ [/생각]'; $(ta).trigger('input');
+        M.add(6, i => i === 1 ? 'Ari waves from the bridge. <thoughts><small>💭 Ari: ZETA-THOUGHT</small></thoughts> She walks on.'
+            : i === 3 ? 'Me: let us go. [생각] OMEGA-THOUGHT [/생각] Fine.'
+            : i === 4 ? '<thoughts class="x">💭 Ari: ONLY-THOUGHT</thoughts>'
+            : i === 5 ? 'Half [생각] KEPT-UNCLOSED' : '');
     });
     await ev(() => __savePoint.handle('run'));
     await page.waitForTimeout(900);

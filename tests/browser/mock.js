@@ -14,6 +14,8 @@ const M = window.M = { files: new Map(Object.entries(window.__presetFiles || {})
 // Older suites expect the window to open on the journal; 💠 메인 as the first tab is tested on its own.
 M.settings.savePoint ||= {};
 if (!('firstTab' in M.settings.savePoint)) M.settings.savePoint.firstTab = 'journal';
+// v0.6.39: older checks expect quests listed straight away; quest-confirm checks preset 'confirm'.
+if (!('questMode' in M.settings.savePoint)) M.settings.savePoint.questMode = 'auto';
 
 function fake(prompt) {
     if (prompt.startsWith('Supplement the English journal') && M.supplementLinks) {

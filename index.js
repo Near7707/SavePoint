@@ -19,13 +19,13 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.38';
+const VERSION = '0.6.39';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
 
 const DEFAULTS = {
-    enabled: true, check: true, auto: true, autoEvery: 20, autoReserve: 2, profileId: '', responseLength: 8000, inputChars: 60000, timeoutSec: 300, timeoutTotalMin: 20, sourceChars: 12000, excludeMarks: '', askResume: true, resumeDismissed: {}, boxMode: 'notify', firstTab: 'main',
+    enabled: true, check: true, auto: true, autoEvery: 20, autoReserve: 2, profileId: '', responseLength: 8000, inputChars: 60000, timeoutSec: 300, timeoutTotalMin: 20, sourceChars: 12000, excludeMarks: '', askResume: true, resumeDismissed: {}, boxMode: 'notify', questMode: 'confirm', firstTab: 'main',
     requestStream: true, reasoningEffort: '',
     budget: 6000, titleCap: 600, recentScenes: 3, recall: true, rawRecall: false,
     hide: true, keepRecent: 10, position: 1, depth: 4, role: 0,
@@ -33,11 +33,14 @@ const DEFAULTS = {
 };
 const SETTING_GROUPS = {
     connection: { title: '연결·AI 요청', keys: ['profileId', 'requestStream', 'reasoningEffort', 'responseLength', 'inputChars', 'sourceChars', 'timeoutSec', 'timeoutTotalMin'] },
-    recording: { title: '체크포인트·기록 확인', keys: ['check', 'auto', 'autoEvery', 'autoReserve', 'excludeMarks', 'guide'] },
+    recording: { title: '체크포인트·기록 확인', keys: ['check', 'auto', 'autoEvery', 'autoReserve', 'excludeMarks', 'questMode'] },
     injection: { title: '기억 주입', keys: ['budget', 'titleCap', 'recentScenes', 'recall', 'rawRecall', 'position', 'depth', 'role'] },
     storage: { title: '하이드·보관', keys: ['hide', 'keepRecent', 'autoKeep', 'boxMode', 'askResume'] },
     appearance: { title: '화면', keys: ['theme', 'firstTab', 'showKo'] },
+    // v0.6.39: the recording instructions live under 고급, folded, with what editing them means.
+    advanced: { title: '🛠 고급', keys: ['guide'] },
 };
+const QUEST_MODES = [['auto', '자동 등록 · 바로 진행 중 목록에'], ['confirm', '확인 후 등록 · 후보로 모아 수락·거절']];
 const THEMES = { jrpg: '클래식 JRPG', neon: '네온 아케이드', glass: '글래스 사이버', archive: '다크 아카이브', pastel: '파스텔 드림', terminal: '터미널', eggpet: '딸기우유', dualwhite: '듀얼 화이트', ink: '먹과 한지', cream: '크림 라테', consolenight: '스토리 콘솔', cranelemon: '레몬 인형뽑기', gingerbread: '진저브레드 하우스', xmasknit: '크리스마스 니트', lilac: '라일락 미드나잇', st: '실리태번 테마 따라가기' };
 // Themes that were retired, and the closest one now.
 const RETIRED_THEMES = { parchment: 'cream', colorpocket: 'eggpet', joycon: 'dualwhite', vanilla: 'cream' };
@@ -70,6 +73,8 @@ function settings() {
     // v0.6.36: someone already using SavePoint keeps the box working as before (manual); the
     // "notify" default is for a new install.
     if (!('boxMode' in s) && 'theme' in s) s.boxMode = 'manual';
+    // v0.6.39: likewise, quests keep being listed automatically for someone already using SavePoint.
+    if (!('questMode' in s) && 'theme' in s) s.questMode = 'auto';
     for (const k of Object.keys(DEFAULTS)) if (!(k in s)) s[k] = clone(DEFAULTS[k]);
     if (OLD_GUIDE_HASHES.includes(guideHash(s.guide))) s.guide = DEFAULT_GUIDE;
     if (RETIRED_THEMES[s.theme]) s.theme = RETIRED_THEMES[s.theme];
@@ -255,7 +260,7 @@ function cleanText(t) {
 }
 // v0.6.28: parts the user marks as not-for-the-record (for example an inner-thoughts info box) are
 // removed from every text sent to the summarizer. The chat itself is never changed. One rule per
-// line: a tag name ("Inner_Info" removes <Inner_Info>…</Inner_Info>), or "start ~ end" for any
+// line: a tag name ("thoughts" removes <thoughts>…</thoughts>), or "start ~ end" for any
 // other pair of markers. A start without its end is left as it is rather than cutting the rest.
 function exclusionRules() {
     return String(settings().excludeMarks || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean).map(line => {
@@ -656,8 +661,8 @@ function endRun(run) {
     if (ui.run === run) { ui.run = null; ui.progress = ''; ui.req = null; applyPendingSettings(); }
     render();
     if ((run.notice || run.doneText) && run.key === roomKey()) {
-        if (run.notice) flashSaveBanner(run.notice.text, { tone: run.notice.tone });
-        else flashSaveBanner(run.doneText);
+        if (run.notice) flashSaveBanner(run.notice.text, { tone: run.notice.tone, goto: run.goto });
+        else flashSaveBanner(run.doneText, { goto: run.goto });
     }
     else updateSaveBanner();
 }
@@ -930,7 +935,7 @@ async function summarize({ close = false, auto = false } = {}) {
             const data = await extractChunk(st.mem, chunk, run);
             const coverTo = last ? end : chunk.to;
             assertValid(run, coverTo);
-            const { mem: next } = applyResult(st.mem, data, chunk, { room: run.key, close: close && last, boxMode: settings().boxMode });
+            const { mem: next } = applyResult(st.mem, data, chunk, { room: run.key, close: close && last, boxMode: settings().boxMode, questMode: settings().questMode });
             // Memory, position and hiding change together; a failed save puts all of it back.
             stage = 'save';
             // Failure counts made inside a write that is rolled back must not stick.
@@ -960,13 +965,17 @@ async function summarize({ close = false, auto = false } = {}) {
         await markStaleLoot(run, queued.filter(x => !attemptedLoot.has(x.id) && !oldLoot.includes(x)));
         ui.lastError = null;
         if (!auto && (msgs.length || close)) toastr.success(close ? '장면 클리어! 진행 중이던 장면까지 기록하고 닫았어요.' : '퀵세이브 완료. 마지막 메시지까지 기록했어요.', 'SavePoint');
-        if (done) run.doneText = `${close ? '장면 클리어 완료' : '저장 완료'}${st.lastIndex >= run.from ? ` · #${run.from}–#${st.lastIndex}` : ''}`;
+        // v0.6.39: what the save did to quests, shown in the same result banner (no extra pop-up).
+        const qn = done ? questNews(memBefore, st.mem) : null;
+        const qText = qn?.text ? ` · ${qn.text}` : '';
+        if (qn?.found) run.goto = 'main-quests';
+        if (done) run.doneText = `${close ? '장면 클리어 완료' : '저장 완료'}${st.lastIndex >= run.from ? ` · #${run.from}–#${st.lastIndex}` : ''}${qText}`;
         if (auto) {
             const extra = lootFailed ? ` · 루팅 ${lootFailed}개 반영 실패` : '';
             const result = msgs.length ? `체크포인트 완료 · #${start}–#${st.lastIndex} 기록 · 최근 ${held}개 여유분${extra}`
                 : `체크포인트 · 루팅 ${supplement.saved}구간 보충 · 최근 ${held}개 여유분${extra}`;
             noteAuto(st, result, { end: latest, status: lootFailed ? 'partial' : done ? 'saved' : 'empty' });
-            run.notice = { text: result, tone: lootFailed ? 'warning' : done ? 'success' : 'info' };
+            run.notice = { text: result + qText, tone: lootFailed ? 'warning' : done ? 'success' : 'info' };
         }
         clearInterrupted(run.key);
         complete = true;
@@ -1423,7 +1432,7 @@ async function translate() {
             const before = st.mem;
             st.mem = next; pushHistory(st, before, next, { kind: 'edit' });
         });
-        settings().showKo = true; saveSettings();
+        // v0.6.39: the view language stays whatever the user chose last (🌐 원문 during the request wins).
         toastr.success(`${count}개 항목의 한국어 보기를 만들었어요.`);
     } catch (e) {
         if (e instanceof Cancelled) toastr.info(e.message); else reportError(e);
@@ -1629,6 +1638,20 @@ function autosave(st) {
 // 📦 Items the user boxed that the story used again (box mode "notify"). Each return is announced
 // once, after the save that recorded it; the notice stays on the card and in the status line.
 const returnNotices = st => (st?.mem?.records || []).filter(r => r.type === 'item' && r.stored?.by === 'user' && r.returnNotice);
+// Quests a save found, finished or failed (compared with the memory before it).
+function questNews(before, after) {
+    const prev = new Map((before?.records || []).filter(r => r.type === 'quest').map(r => [r.id, r]));
+    let found = 0, added = 0, done = 0, failed = 0;
+    for (const q of after.records) {
+        if (q.type !== 'quest' || q.track === 'declined') continue;
+        const p = prev.get(q.id);
+        if (!p) { if (q.track === 'pending') found++; else added++; continue; }
+        if (p.status === 'open' && q.status === 'done') done++;
+        if (p.status === 'open' && q.status === 'failed') failed++;
+    }
+    const parts = [found ? `❗ 발견한 퀘스트 ${found}` : '', added ? `❗ 새 퀘스트 ${added}` : '', done ? `✔ 완료 ${done}` : '', failed ? `✖ 실패 ${failed}` : ''].filter(Boolean);
+    return { found, added, done, failed, text: parts.join(' · ') };
+}
 function announceReturns(st) {
     if (!st || roomKey() !== st.roomKey) return;
     const told = new Set(st.returnTold || []);
@@ -2203,8 +2226,10 @@ function mainHtml(st) {
     // Alerts: only what needs a decision.
     const queue = st.lootQueue || [];
     const returns = returnNotices(st);
+    const found = foundQuests(mem);
     const alerts = [
         queue.length ? `<details class="sp-st-alert ${queue.some(x => x.error) ? 'warn' : ''}" data-group="main-queue" ${ui.savesOpen.get('main-queue') || ui.focus === 'main-queue' ? 'open' : ''}><summary>${queue.some(x => x.error) ? '<span class="sp-st-dot"></span>' : ''}<span class="grow"><b>⏳ 대기열 ${queue.length}</b> · 다음 세이브에 반영</span><span class="sp-dim">▾</span></summary>${queueHtml(st)}</details>` : '',
+        found.length ? `<details class="sp-st-alert" data-group="main-quests" ${ui.savesOpen.get('main-quests') ? 'open' : ''}><summary><span class="grow"><b>❗ 발견한 퀘스트 ${found.length}</b> · 근거를 보고 수락·거절</span><span class="sp-dim">▾</span></summary><div class="sp-qcands">${found.map(q => questCandidate(st, q)).join('')}</div></details>` : '',
         ...returns.map(r => `<div class="sp-st-alert"><span>📦</span><span class="grow"><b>${esc(entityName(mem, r.entity) || '?')}</b> — ${esc(T(r.text, r.ko))}</span>${btn('item-unstore', r.id, '꺼내기')}${btn('item-keep', r.id, '그대로 두기')}</div>`),
     ].filter(Boolean);
     // Scene: the last recorded one.
@@ -2223,10 +2248,10 @@ function mainHtml(st) {
     }
     // Open threads, the most pressing first.
     const rank = q => { const d = dueStatus(mem, q); return d?.kind === 'past' ? 0 : d?.kind === 'today' ? 1 : d?.kind === 'left' ? 2 + (d.left || 0) / 1000 : 3; };
-    const open = mem.records.filter(r => r.type === 'quest' && r.status === 'open').sort((a, b) => rank(a) - rank(b));
+    const open = mem.records.filter(r => r.type === 'quest' && r.status === 'open' && !r.track).sort((a, b) => rank(a) - rank(b));
     const quests = open.length ? head(`❗ 진행 중 ${open.length}`, 'quests', '퀘스트') + open.slice(0, 5).map(q => {
         const d = dueStatus(mem, q), hot = d && ['past', 'today'].includes(d.kind);
-        return `<div class="sp-st-q ${hot ? 'urgent' : ''}" data-act="tl-quest" data-id="${esc(q.id)}"><span class="kind">${KIND_KO[q.kind] || q.kind}</span><span class="txt">${esc(T(q.text, q.ko))}</span>${q.due ? `<span class="due ${hot ? 'hot' : ''}">${esc(formatDue(mem, q, 'ko'))}</span>` : ''}</div>`;
+        return `<div class="sp-st-q ${hot ? 'urgent' : ''}" data-act="tl-quest" data-id="${esc(q.id)}"><span class="kind">${KIND_KO[q.kind] || q.kind}</span><span class="txt">${roleText(mem, q) ? `<b class="sp-role">${esc(roleText(mem, q))}</b> ` : ''}${esc(T(q.text, q.ko))}</span>${q.due ? `<span class="due ${hot ? 'hot' : ''}">${esc(formatDue(mem, q, 'ko'))}</span>` : ''}</div>`;
     }).join('') + (open.length > 5 ? `<div class="sp-st-sub">${open.length - 5}개 더</div>` : '') : '';
     // People in the last recorded scene (and the open one), excluding nobody: standby is about injection.
     const present = [...new Set([...(openScene(mem)?.who || []), ...(sc?.who || [])])].map(id => mem.entities.find(e => e.id === id)).filter(e => e?.type === 'person');
@@ -2234,7 +2259,9 @@ function mainHtml(st) {
     const people = present.length ? head('👥 현재 파티', 'party', '파티') + `<div class="sp-st-grid">${present.map(e => {
         const c = newest(e.id, 'condition'), r = newest(e.id, 'relation');
         const more = mem.records.filter(x => x.type === 'party' && x.entity === e.id).length - (c ? 1 : 0) - (r ? 1 : 0);
-        return `<div class="sp-st-p"><div class="n"><span class="av">${esc((e.name || '?').slice(0, 1))}</span>${esc(e.name)}${e.standby ? ` <span class="sp-badge">${e.standby === 'standby' ? '대기' : '주입 제외'}</span>` : ''}</div>
+        // v0.6.39: state and relation are clamped; tapping the card shows them in full.
+        const full = ui.savesOpen.get('stp:' + e.id);
+        return `<div class="sp-st-p ${full ? 'full' : ''}" data-act="st-p" data-id="${esc(e.id)}" title="${full ? '접기' : '눌러서 전부 보기'}"><div class="n"><span class="av">${esc((e.name || '?').slice(0, 1))}</span>${esc(e.name)}${e.standby ? ` <span class="sp-badge">${e.standby === 'standby' ? '대기' : '주입 제외'}</span>` : ''}</div>
             ${c ? `<div class="c">${esc(T(c.text, c.ko))}</div>` : ''}${r ? `<div class="r">${esc(T(r.text, r.ko))}</div>` : ''}${more > 0 ? `<div class="sp-st-sub">+${more}</div>` : ''}${!c && !r ? '<div class="r">기록된 변화 없음</div>' : ''}</div>`;
     }).join('')}</div>` + (() => { const b = mem.entities.filter(e => e.type === 'person' && e.standby); return b.length ? `<div class="sp-st-sub">대기 ${b.filter(e => e.standby === 'standby').length}명 · 주입 제외 ${b.filter(e => e.standby === 'exclude').length}명</div>` : ''; })() : '';
     // Items held by the people above, and items left at the scene's place.
@@ -2243,7 +2270,9 @@ function mainHtml(st) {
     const where = String(sc?.where || '').toLowerCase();
     const places = mem.entities.filter(e => e.type === 'place' && where && [e.name, ...(e.aliases || [])].some(n => n && where.includes(String(n).toLowerCase())));
     rows.push(...places.map(p => [`📍 ${p.name}`, live.filter(r => r.holder === p.id)]).filter(([, l]) => l.length));
-    const items = rows.length ? head('🎒 아이템', 'items', '인벤토리') + `<div class="sp-st-items">${rows.map(([who, l]) => `<div class="row"><span class="who">${esc(who)}</span>${l.map(r => `<span class="sp-st-chip" title="${esc(T(r.text, r.ko))}">${esc(entityName(mem, r.entity) || '?')}${r.gone ? ' · 사라짐' : ''}</span>`).join('')}</div>`).join('')}</div>` : '';
+    // v0.6.39: one block per holder (name on top, one item per line with its state) so a long list
+    // never runs into the next person's row.
+    const items = rows.length ? head('🎒 아이템', 'items', '인벤토리') + `<div class="sp-st-items">${rows.map(([who, l]) => `<div class="grp"><div class="who">${esc(who)}<span class="cnt">${l.length}</span></div>${l.map(r => `<div class="it"><b>${esc(entityName(mem, r.entity) || '?')}</b>${r.gone ? '<span class="sp-badge">사라짐</span>' : ''}<span class="st">${esc(T(r.text, r.ko))}</span></div>`).join('')}</div>`).join('')}</div>` : '';
     // What the last save changed, folded by default.
     const ch = recentChanges(st);
     const kindKo = { checkpoint: '체크포인트', quicksave: '퀵세이브', sceneclear: '장면 클리어', supplement: '루팅 보충' };
@@ -2329,6 +2358,9 @@ function editForm() {
         if (t === 'quest') body = select('kind', '종류', QUEST_KINDS.map(k => [k, KIND_KO[k]])) + select('status', '상태', [['open', '진행 중'], ['done', '완료'], ['failed', '실패']]);
         if (t === 'quest' && ['promise', 'debt'].includes(v.kind)) {
             const nowLabel = storyTimeContext(state()?.mem || {}, 'ko');
+            const people = ents('person').slice(1), multi = k => (v[k] || '').includes(',');
+            body += select('by', '지킬 사람', [['', '(모름)'], ...(multi('by') ? [[v.by, '그대로 (여러 명)']] : []), ...people])
+                + select('to', '받는 사람', [['', '(없음·서로·모름)'], ...(multi('to') ? [[v.to, '그대로 (여러 명)']] : []), ...people]);
             body += field('dueExpr', '기한 (원문 표현, 예: 내일·사흘 안에)') +
                 field('dueDay', nowLabel ? `기한 직접 지정 (지금: ${nowLabel} · 실제 날짜면 YYYY-MM-DD, 아니면 같은 기준의 N일째 · 비우면 원문으로 계산)` : '기한 직접 지정 (지금 이야기 시간이 확인되지 않아 지정할 수 없어요)');
         }
@@ -2436,21 +2468,63 @@ function timelineHtml(st) {
     }
     return html;
 }
+// ───────── found quests (v0.6.39) ─────────
+// v0.6.39: "Ari → 나" for a promise or debt whose direction the messages showed. The user persona
+// reads as 나; people promising each other read as "A · B 서로".
+function roleText(mem, q) {
+    if (!q.by?.length) return '';
+    const me = String(ctx().name1 || '').trim().toLowerCase();
+    const nm = id => { const n = entityName(mem, id) || '?'; return me && n.trim().toLowerCase() === me ? '나' : n; };
+    return q.to?.length ? `${q.by.map(nm).join(' · ')} → ${q.to.map(nm).join(' · ')}` : q.by.length > 1 ? `${q.by.map(nm).join(' · ')} 서로` : q.by.map(nm).join(' · ');
+}
+function foundQuests(mem) { return mem.records.filter(r => r.type === 'quest' && r.track === 'pending'); }
+const STATUS_KO = { open: '진행 중', done: '완료', failed: '실패' };
+// Why the quest was picked up: the checked quote of a promise/debt, else the sentence of its first
+// message that shares the most words with it (or the start of that message).
+function questWhy(st, q) {
+    if (q.terms?.quote) return { msg: q.terms.msg, text: q.terms.quote, quote: true };
+    const n = (q.msgs || []).filter(Number.isInteger).sort((a, b) => a - b)[0];
+    const m = Number.isInteger(n) ? chat()[n] : null;
+    if (!m) return Number.isInteger(n) ? { msg: n, text: '' } : null;
+    const body = String(msgText(m) || '').replace(/\s+/g, ' ').trim();
+    const words = new Set(String(q.text).toLowerCase().split(/[^a-z0-9\u00c0-\uffff]+/).filter(w => w.length > 3));
+    const sentences = body.split(/(?<=[.!?。…])\s+|\n/).filter(Boolean);
+    let best = '', score = 0;
+    for (const x of sentences) { const k = x.toLowerCase().split(/[^a-z0-9\u00c0-\uffff]+/).filter(w => words.has(w)).length; if (k > score) { score = k; best = x; } }
+    const text = best || body;
+    return { msg: n, text: text.length > 180 ? text.slice(0, 180) + '…' : text };
+}
+function questCandidate(st, q) {
+    const mem = st.mem, why = questWhy(st, q);
+    const meta = [`<span class="sp-kind">${KIND_KO[q.kind] || q.kind}</span>`, roleText(mem, q) ? `<b class="sp-role">${esc(roleText(mem, q))}</b>` : '', q.due ? `⏰ ${esc(formatDue(mem, q, 'ko'))}` : '',
+        q.status !== 'open' ? `<span class="sp-badge ${q.status === 'failed' ? 'sp-badge-warn' : 'sp-badge-on'}">이미 ${STATUS_KO[q.status]}</span>` : ''].filter(Boolean).join(' · ');
+    return `<div class="sp-qcand" id="sp-quest-${esc(q.id)}"><div class="h"><span class="sp-qi">${QUEST_ICON[q.kind] || '•'}</span><b>${esc(T(q.text, q.ko))}</b></div>
+        <div class="meta">${meta}${q.who?.length && !roleText(mem, q) ? ' ' + whoChips(mem, q.who) : ''}</div>
+        ${why ? `<div class="why"><span class="sp-dim">근거${Number.isInteger(why.msg) ? ` #${why.msg}` : ''}</span> ${why.text ? (why.quote ? `“${esc(why.text)}”` : esc(why.text)) : '<span class="sp-dim">원문을 찾을 수 없어요</span>'}</div>` : ''}
+        <div class="sp-row">${btn('quest-accept', q.id, '수락', '퀘스트 목록에 올려 추적해요', 'sp-primary')}${btn('quest-decline', q.id, '거절', '퀘스트로 관리하지 않아요. 원문과 기존 저널은 유지돼요')}</div></div>`;
+}
 function questsHtml(st) {
-    const qs = st.mem.records.filter(r => r.type === 'quest');
+    const all = st.mem.records.filter(r => r.type === 'quest');
+    const qs = all.filter(q => !q.track);
     const group = (status, label) => {
         const list = qs.filter(q => q.status === status);
         if (!list.length) return '';
         return `<div class="sp-group"><div class="sp-group-h">${label} <span>${list.length}</span></div>${list.map(q => {
             if (isEditing('record', q.id)) return `<div class="sp-quest">${editForm()}</div>`;
-            const flow = status === 'open' ? [btn('quest-done', q.id, '완료'), btn('quest-fail', q.id, '실패')] : [btn('quest-open', q.id, '다시 진행')];
-            return `<div class="sp-quest sp-q-${status}" id="sp-quest-${esc(q.id)}"><span class="sp-qi">${QUEST_ICON[q.kind] || '•'}</span><div class="sp-qb"><div><span class="sp-kind">${KIND_KO[q.kind]}</span> ${esc(T(q.text, q.ko))}</div>
+            const flow = [...(status === 'open' ? [btn('quest-done', q.id, '완료'), btn('quest-fail', q.id, '실패')] : [btn('quest-open', q.id, '다시 진행')]),
+                btn('quest-decline', q.id, '추적 안 함', '퀘스트 목록에서 빼요(주입도 빠져요). 원문과 기존 저널은 유지돼요')];
+            return `<div class="sp-quest sp-q-${status}" id="sp-quest-${esc(q.id)}"><span class="sp-qi">${QUEST_ICON[q.kind] || '•'}</span><div class="sp-qb"><div><span class="sp-kind">${KIND_KO[q.kind]}</span>${roleText(st.mem, q) ? ` <b class="sp-role">${esc(roleText(st.mem, q))}</b>` : ''} ${esc(T(q.text, q.ko))}</div>
                 ${questEventTimes(st.mem, q).map(at => `<div class="sp-sub sp-quest-time">📅 ${esc(at.label)}: ${esc(at.text)}</div>`).join('')}
                 <div class="sp-sub">${whoChips(st.mem, q.who)}${evidenceChips(q.msgs, q.oldEvidence)}</div>${(() => { if (!q.due) return ''; const d = dueStatus(st.mem, q); return `<div class="sp-due sp-due-${d?.kind || 'closed'}">⏰ ${esc(formatDue(st.mem, q, 'ko'))}${q.due.manual ? ' <small class="sp-dim">직접 지정</small>' : ''}</div>`; })()}${q.terms ? `<details class="sp-terms" data-group="terms:${esc(q.id)}" ${ui.savesOpen.get('terms:' + q.id) ? 'open' : ''}><summary>근거 원문 ${esc(priorTermsLabel(q.terms))}</summary><div class="sp-terms-q">“${esc(q.terms.quote)}”</div><div class="sp-excerpt">${esc(q.terms.context)}</div></details>` : ''}</div>${tools([...flow, btn('pin-rec', q.id, '📌', '항상 주입', q.pin ? 'sp-on' : ''), btn('edit-rec', q.id, '✎'), btn('del-rec', q.id, '🗑')])}</div>`;
         }).join('')}</div>`;
     };
+    const found = foundQuests(st.mem), declined = all.filter(q => q.track === 'declined');
+    const foundBox = found.length ? `<div class="sp-group sp-found"><div class="sp-group-h">❗ 발견한 퀘스트 <span>${found.length}</span></div><div class="sp-qcands">${found.map(q => questCandidate(st, q)).join('')}</div></div>` : '';
+    const declinedBox = declined.length ? `<details class="sp-more" data-group="quests-declined" ${ui.savesOpen.get('quests-declined') ? 'open' : ''}><summary>추적하지 않는 퀘스트 ${declined.length}</summary>
+        <div class="sp-dim">퀘스트 목록과 주입에서만 빠져 있어요. 원문과 기존 저널은 유지돼요. 이야기 속 진행은 계속 기록해요.</div>
+        ${declined.map(q => `<div class="sp-quest sp-q-declined"><span class="sp-qi">${QUEST_ICON[q.kind] || '•'}</span><div class="sp-qb"><div><span class="sp-kind">${KIND_KO[q.kind]}</span> ${esc(T(q.text, q.ko))} <span class="sp-dim">· ${STATUS_KO[q.status]}</span></div>${q.autoDeclined ? '<div class="sp-sub sp-dim">거절한 퀘스트와 비슷해서 자동으로 넘겼어요</div>' : ''}</div>${tools([btn('quest-accept', q.id, '다시 추적'), btn('del-rec', q.id, '🗑')])}</div>`).join('')}</details>` : '';
     const body = group('open', '진행 중') + group('done', '완료') + group('failed', '실패');
-    return addBar('quest') + (body || '<div class="sp-empty">약속·목표·빚·수수께끼가 생기면 여기에 나타나요.</div>');
+    return addBar('quest') + foundBox + (body || (found.length ? '' : '<div class="sp-empty">약속·목표·빚·수수께끼가 생기면 여기에 나타나요.</div>')) + declinedBox;
 }
 function addBar(type) {
     return isEditing('record', 'new') && ui.edit.values.type === type ? `<div class="sp-card">${editForm()}</div>`
@@ -2790,14 +2864,14 @@ function render(force = false) {
     const scroll = ui.scrollPositions.get(scrollKey) ?? 0;
     const tabScroll = win.find('.sp-tabs').scrollLeft() || 0;
     const counts = st ? {
-        queue: st.lootQueue?.length || 0, journal: st.mem.scenes.length, quests: st.mem.records.filter(r => r.type === 'quest' && r.status === 'open').length,
+        queue: st.lootQueue?.length || 0, journal: st.mem.scenes.length, quests: st.mem.records.filter(r => r.type === 'quest' && r.status === 'open' && !r.track).length,
         party: st.mem.entities.filter(e => e.type === 'person').length, items: st.mem.records.filter(r => r.type === 'item' && !r.stored).length,
         world: st.mem.records.filter(r => r.type === 'world').length,
     } : {};
     // The save tab counts this room's QUICK + AUTO + FILE, like every other tab counts this room.
     if (hasChat()) counts.saves = listSaves().filter(x => x.room === roomKey()).length;
     // 💠 메인 shows how many things wait for a decision (queued loot, boxed items back in use).
-    if (st) counts.main = (st.lootQueue?.length || 0) + returnNotices(st).length;
+    if (st) counts.main = (st.lootQueue?.length || 0) + returnNotices(st).length + foundQuests(st.mem).length;
     const tabs = TABS.map(([k, icon, label]) => `<button class="sp-tab ${ui.tab === k ? 'sp-active' : ''}" data-act="tab" data-id="${k}"><span class="sp-ti">${icon}</span><span>${label}</span>${counts[k] ? `<em${k === 'main' ? ' class="sp-em-alert"' : ''}>${counts[k]}</em>` : ''}</button>`).join('');
     let body;
     if (!hasChat()) body = '<div class="sp-empty">채팅방을 열면 그 방의 기억이 여기에 보여요.</div>';
@@ -2845,7 +2919,7 @@ function startEdit(kind, id) {
     if (kind === 'entity') { const e = mem.entities.find(x => x.id === id); values = { name: e.name, aliases: (e.aliases || []).join(', '), type: e.type }; }
     if (kind === 'record') {
         const r = mem.records.find(x => x.id === id);
-        values = { type: r.type, text: r.text, entity: r.entity || '', holder: r.holder || '', aspect: r.aspect || 'relation', kind: r.kind || '', status: r.status || 'open',
+        values = { type: r.type, text: r.text, entity: r.entity || '', holder: r.holder || '', aspect: r.aspect || 'relation', kind: r.kind || '', status: r.status || 'open', by: (r.by || []).join(','), to: (r.to || []).join(','),
             dueExpr: r.due?.expr || '', dueDay: r.due?.manual ? (dateAt({ anchor: r.due.manual.anchor, day: r.due.manual.day, certainty: 'manual' }, mem.timeAnchors) || String(r.due.manual.day + 1)) : '' };
     }
     ui.edit = { kind, id, values, orig: { ...values } };
@@ -2915,6 +2989,10 @@ async function saveEdit() {
             if (r.type === 'party') { r.entity = v.entity || null; r.aspect = v.aspect === 'condition' ? 'condition' : 'relation'; }
             if (r.type === 'item') { r.entity = v.entity || null; r.holder = v.holder || null; }
             if (r.type === 'quest') { r.kind = QUEST_KINDS.includes(v.kind) ? v.kind : 'goal'; setQuestStatus(r, ['open', 'done', 'failed'].includes(v.status) ? v.status : 'open'); r.who ||= []; }
+            if (r.type === 'quest') for (const k of ['by', 'to']) {
+                const list = ['promise', 'debt'].includes(r.kind) ? String(v[k] || '').split(',').filter(id => mem.entities.some(x => x.id === id)) : [];
+                if (list.length) r[k] = list; else delete r[k];
+            }
             if (r.type === 'quest' && dueChanged) setManualDue(mem, r, { day: trim(v.dueDay), expr: trim(v.dueExpr) });
             if (r.type === 'world') { r.kind = WORLD_KINDS.includes(v.kind) ? v.kind : 'rule'; r.knownBy ||= []; }
         }
@@ -2946,6 +3024,7 @@ async function handle(act, id) {
             if (!showKo()) { settings().showKo = true; saveSettings(); fillSettings(); if (st && translationTargets(st.mem).length) return translate(); return render(true); }
             settings().showKo = false; saveSettings(); fillSettings(); return render(true);
         }
+        case 'st-p': ui.savesOpen.set('stp:' + id, !ui.savesOpen.get('stp:' + id)); return render(true);
         case 'qs': ui.qs = !ui.qs; return render(true);
         case 'qs-full': { ui.qs = false; closeWindow(); openFullSettings(); return; }
         case 'test-connection': return testConnection();
@@ -3006,6 +3085,8 @@ async function handle(act, id) {
         }
         case 'item-keep': return commitEdit(m => { const r = m.records.find(x => x.id === id); if (!r?.returnNotice) return false; delete r.returnNotice; });
         case 'pin-rec': return commitEdit(m => { const r = m.records.find(x => x.id === id); if (!r) return false; r.pin = !r.pin; }, { undoable: false });
+        case 'quest-accept': case 'quest-decline':
+            return commitEdit(m => { const r = m.records.find(x => x.id === id); if (!r || r.type !== 'quest') return false; delete r.autoDeclined; if (act === 'quest-accept') delete r.track; else r.track = 'declined'; });
         case 'quest-done': case 'quest-fail': case 'quest-open':
             return commitEdit(m => { const r = m.records.find(x => x.id === id); if (!r) return false; setQuestStatus(r, act === 'quest-done' ? 'done' : act === 'quest-fail' ? 'failed' : 'open'); });
         case 'del-scene':
@@ -3062,7 +3143,7 @@ function settingSection(key, content) {
 // A short panel in the window for the settings changed most often; they are the same values as the
 // extension settings panel. Settings that a running save reads (summarizer, box mode) wait for the
 // next save so one save never mixes two models or rules.
-const QS_DEFERRED = ['profileId', 'boxMode'];
+const QS_DEFERRED = ['profileId', 'boxMode', 'questMode'];
 function applyPendingSettings() {
     const p = ui.pendingSettings;
     if (!p) return;
@@ -3082,9 +3163,10 @@ function quickSettingsHtml() {
         <details class="sp-more" data-group="qs-more" ${ui.savesOpen.get('qs-more') ? 'open' : ''}><summary>더 보기</summary>
             <label class="sp-f"><span>최근 장면 수</span><input type="number" data-qs="recentScenes" min="0" max="20" value="${esc(s.recentScenes)}"></label>
             <label class="sp-f"><span>보관함 방식</span><select data-qs="boxMode">${opt([['manual', '직접 관리'], ['notify', '알림 받고 결정'], ['auto', '자동 관리']], s.boxMode)}</select></label>
+            <label class="sp-f"><span>퀘스트 등록</span><select data-qs="questMode">${opt(QUEST_MODES, s.questMode)}</select></label>
             <div class="sp-f"><span>기록에서 뺄 부분</span><div class="sp-row">${marks ? `<span>${marks}개 적용 중</span>` : '<span class="sp-dim">없음</span>'}${btn('qs-full', '', '편집 ↗', '전체 설정에서 편집해요')}</div></div>
         </details>
-        ${ui.run ? '<div class="sp-set-note">저장 중이에요. 요약 AI와 보관함 방식은 다음 저장부터 적용돼요.</div>' : ''}
+        ${ui.run ? '<div class="sp-set-note">저장 중이에요. 요약 AI·보관함 방식·퀘스트 등록은 다음 저장부터 적용돼요.</div>' : ''}
         <div class="sp-row sp-qs-foot">${btn('qs-full', '', '전체 설정 열기 ↗', '실리태번 확장 설정의 SavePoint를 열어요')}</div></div>`;
 }
 function setQuick(key, raw, el) {
@@ -3136,12 +3218,11 @@ function settingsHtml() {
                 <div class="sp-set-note">마지막 시도 뒤 새 메시지가 간격만큼 쌓이면 실행해요. 저장할 내용은 요청마다 최대 20개·원문 분량 설정(기본 12,000자) 안에서 고르게 나눠 처리해요. 일부 실패도 다음 간격에 이어서 처리하며, 퀵세이브로 바로 저장할 수 있어요.</div>
                 <label>체크포인트 여유분 <input type="number" data-set="autoReserve" min="0" max="20"></label>
                 <div class="sp-set-note">체크포인트가 기록하지 않고 남겨 둘 최근 메시지 수예요. 스와이프·수정에 대비해요. 퀵세이브는 마지막 메시지까지 기록해요.</div>
+                <label>퀘스트 등록 <select data-set="questMode">${QUEST_MODES.map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
+                <div class="sp-set-note">확인 후 등록이면 새로 발견한 퀘스트가 💠 메인의 <b>❗ 발견한 퀘스트</b>에 모이고, 근거를 보고 수락·거절해요. 거절은 퀘스트로 관리하지 않는다는 뜻이에요. 원문과 기존 저널은 유지돼요.</div>
                 <label data-reset-host="excludeMarks">기록에서 뺄 부분 (한 줄에 하나)</label>
-                <textarea data-set="excludeMarks" rows="3" class="text_pole" placeholder="Inner_Info&#10;[속마음] ~ [/속마음]"></textarea>
+                <textarea data-set="excludeMarks" rows="3" class="text_pole" placeholder="thoughts&#10;[생각] ~ [/생각]"></textarea>
                 <div class="sp-set-note">태그 이름을 적으면 그 태그 블록을 통째로, <code>시작 ~ 끝</code>으로 적으면 그 사이를 요약 AI에게 보내지 않아요. 채팅 원문은 그대로이고, 적은 뒤 새로 기록하는 것부터 적용돼요.</div>
-                <label data-reset-host="guide">기록 지침 (영어 권장, {{char}} {{user}} 사용 가능)</label>
-                <textarea data-set="guide" rows="10" class="text_pole"></textarea>
-                <div class="sp-set-note">데이터 목록과 응답 형식은 지침 뒤에 자동으로 붙어요.</div>
             `)}
             ${settingSection('injection', `
                 <label>주입 상한 (토큰) <input type="number" data-set="budget" min="300" max="100000"></label>
@@ -3167,16 +3248,34 @@ function settingsHtml() {
                 <label>처음 여는 탭 <select data-set="firstTab">${Object.entries(FIRST_TABS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
                 <label class="checkbox_label"><input type="checkbox" data-set="showKo"> 한국어 보기</label>
             `)}
+            ${settingSection('advanced', `
+                <div class="sp-set-note">요약 AI에게 주는 기록 지침이에요. 데이터 목록과 응답 형식은 지침 뒤에 자동으로 붙어서, 고쳐도 저장 형식은 깨지지 않아요. 다만 <b>한 번 고치면 그 뒤 버전에서 좋아진 기본 지침이 자동으로 적용되지 않아요.</b> 지운 규칙만큼 기록 품질이 달라질 수 있어요.</div>
+                <label data-reset-host="guide">기록 지침 (영어 권장, {{char}} {{user}} 사용 가능)</label>
+                <textarea data-set="guide" rows="10" class="text_pole"></textarea>
+                <div class="sp-set-note" id="sp_guide_note"></div>
+            `)}
         </div></div></div>`;
 }
+// 'default' (follows new versions), 'edited' (edited from the current default), 'stale' (edited from
+// an older default, or before v0.6.39 when the base was not noted).
+function guideState() {
+    const s = settings();
+    if (!s.guide || s.guide === DEFAULT_GUIDE) return 'default';
+    return s.guideBase === guideHash(DEFAULT_GUIDE) ? 'edited' : 'stale';
+}
 function updateSettingsSummaries() {
+    const gs = guideState();
+    $('#sp_guide_note').html(gs === 'default' ? '기본 지침을 쓰는 중이에요. 새 버전에서 기본 지침이 바뀌면 자동으로 따라가요.'
+        : gs === 'edited' ? '직접 고친 지침을 쓰는 중이에요. ↺로 기본 지침으로 돌아갈 수 있어요.'
+        : '<span class="sp-warn">⚠ 직접 고친 지침을 쓰는 동안 기본 지침이 새로 바뀌었어요(또는 고친 시점을 알 수 없어요).</span> ↺를 누르면 새 기본 지침으로 바뀌어요. 고친 내용은 사라지니 필요하면 먼저 복사해 두세요.');
     const s = settings();
     const summaries = {
         connection: `${profileLabel()} · 대기 ${s.timeoutSec}초 · 최대 ${s.timeoutTotalMin}분`,
-        recording: `${s.auto ? s.autoEvery + '개마다 · 여유분 ' + s.autoReserve + '개' : '체크포인트 꺼짐'} · 확인 ${s.check ? '켜짐' : '꺼짐'}${exclusionRules().length ? ` · 뺄 부분 ${exclusionRules().length}개` : ''}`,
+        recording: `${s.auto ? s.autoEvery + '개마다 · 여유분 ' + s.autoReserve + '개' : '체크포인트 꺼짐'} · 확인 ${s.check ? '켜짐' : '꺼짐'}${exclusionRules().length ? ` · 뺄 부분 ${exclusionRules().length}개` : ''} · 퀘스트 ${s.questMode === 'confirm' ? '확인 후' : '자동'}`,
         injection: `${Number(s.budget).toLocaleString()}토큰 · 최근 ${s.recentScenes}장면`,
         storage: `${s.hide ? '최근 ' + s.keepRecent + '개 남김' : '하이드 꺼짐'} · 보관 ${s.autoKeep}개 방`,
         appearance: `${THEMES[s.theme] || THEMES.jrpg} · ${s.showKo ? '한국어' : 'EN'}`,
+        advanced: guideState() === 'default' ? '기본 지침' : guideState() === 'stale' ? '⚠ 새 기본 지침 있음' : '직접 고친 지침',
     };
     $('#sp_settings [data-settings-summary]').each(function () { this.textContent = summaries[this.dataset.settingsSummary]; });
     updateChangeMarks();
@@ -3263,6 +3362,7 @@ function addSettingsUI() {
     $('#sp_settings').on('input change', '[data-set]', function () {
         const k = this.dataset.set, s = settings();
         s[k] = this.type === 'checkbox' ? this.checked : this.type === 'number' || ['position', 'role'].includes(k) ? Number(this.value) : this.value;
+        if (k === 'guide') s.guideBase = guideHash(DEFAULT_GUIDE);   // which default this edit started from
         settingsChanged([k]);
     });
     $('#sp_open').on('click', openWindow);
@@ -3291,6 +3391,8 @@ function saveBanner() {
         el.onclick = () => {
             // A failure notice opens the window with the failure details unfolded, and is then done.
             if (el.dataset.tone === 'warning') { ui.revealFailure = true; ui.savesOpen.set('hud-autofail', true); ui.savesOpen.set('hud-err', true); }
+            // New found quests: open 💠 메인 with the list unfolded.
+            if (el.dataset.flash && el.dataset.goto === 'main-quests' && hasChat()) { (ui.roomTabs ||= new Map()).set(roomKey(), 'main'); ui.savesOpen.set('main-quests', true); }
             if (el.dataset.flash) { clearTimeout(bannerTimer); delete el.dataset.flash; delete el.dataset.flashRoom; el.hidden = true; }
             openWindow();
         };
@@ -3314,7 +3416,7 @@ let pendingBanner = null;
 function showPendingBanner() {
     if (document.hidden || !pendingBanner) return;
     const p = pendingBanner; pendingBanner = null;
-    if (p.room === String(roomKey())) flashSaveBanner(p.text, { tone: p.tone });
+    if (p.room === String(roomKey())) flashSaveBanner(p.text, { tone: p.tone, goto: p.goto });
 }
 function setBanner(el, { icon, title, count = '', sub }) {
     el.querySelector('.sp-sb-icon').className = `sp-sb-icon ${icon}`;
@@ -3337,15 +3439,15 @@ function updateSaveBanner() {
     el.dataset.tone = 'running';
     setBanner(el, { icon: 'sp-sb-spin', title: text[0], count: m ? `${m[1]}/${m[2]}` : '', sub: text[1] });
 }
-function flashSaveBanner(text, { tone = 'success' } = {}) {
+function flashSaveBanner(text, { tone = 'success', goto = '' } = {}) {
     const el = saveBanner();
     if (!el) return;
     clearTimeout(bannerTimer);
     if (ui.open || !settings().enabled) { delete el.dataset.flash; el.hidden = true; return; }
-    if (typeof document !== 'undefined' && document.hidden) { pendingBanner = { text, tone, room: String(roomKey()) }; return; }
+    if (typeof document !== 'undefined' && document.hidden) { pendingBanner = { text, tone, goto, room: String(roomKey()) }; return; }
     const [title, ...rest] = text.split(' · ');
     el.dataset.flash = '1'; el.dataset.flashRoom = String(roomKey());
-    el.dataset.tone = tone;
+    el.dataset.tone = tone; el.dataset.goto = goto || '';
     setBanner(el, { icon: tone === 'warning' ? 'sp-sb-warn' : tone === 'info' ? 'sp-sb-info' : 'sp-sb-done', title,
         sub: [...rest, ...(tone === 'warning' ? ['눌러서 자세히 보기'] : [])].join(' · ') });
     // A failure stays until it is tapped, a new save starts, or the room changes; other results fade.
@@ -3501,4 +3603,4 @@ jQuery(() => {
 });
 
 // Exposed for regression checks only.
-globalThis.__savePoint = { state, settings, summarize, listSaves, vault, migrateLocal, autoCollect, autoBlocked, autoCount, scheduleAuto, undo, loadSave, reconcile, syncHide, refreshInjection, handle, ui, render, estTokens, recordLine, reportText, addLoot, queueHtml, installLootBar, openLootDialog };
+globalThis.__savePoint = { state, settings, summarize, listSaves, vault, migrateLocal, autoCollect, autoBlocked, autoCount, scheduleAuto, undo, loadSave, reconcile, syncHide, refreshInjection, handle, ui, render, estTokens, recordLine, reportText, addLoot, queueHtml, installLootBar, openLootDialog, fillSettings };

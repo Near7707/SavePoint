@@ -1,0 +1,135 @@
+const path = require('path');
+const fs = require('fs');
+const http = require('http');
+const { chromium } = require(require('child_process').execSync('npm root -g').toString().trim() + '/playwright');
+const EXT = process.env.EXT || path.resolve(__dirname, '../..');
+const HERE = __dirname;
+const OUT = path.join(HERE, 'shots'); fs.mkdirSync(OUT, { recursive: true });
+const SHOTS = process.argv.includes('--shots');
+
+function serve() {
+    return new Promise(res => {
+        const srv = http.createServer((req, resp) => {
+            const u = decodeURIComponent(req.url.split('?')[0]);
+            let file;
+            if (u.startsWith('/ext/')) file = path.join(EXT, u.slice(5));
+            else if (u === '/jquery.js') file = '/usr/share/javascript/jquery/jquery.min.js';
+            else file = path.join(HERE, u === '/' ? 'page.html' : u);
+            fs.readFile(file, (err, data) => {
+                if (err) { resp.writeHead(404); resp.end(); return; }
+                const type = file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html';
+                resp.writeHead(200, { 'Content-Type': type + '; charset=utf-8' }); resp.end(data);
+            });
+        });
+        srv.listen(0, () => res(srv));
+    });
+}
+let failures = 0;
+const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!cond) failures++; };
+
+(async () => {
+    const srv = await serve();
+    const browser = await chromium.launch();
+    const URL = `http://localhost:${srv.address().port}/`;
+    // Open a fresh page (a new SillyTavern session) with optional preset settings / server files.
+    async function session({ settings, files, serverDown, width = 390 } = {}) {
+        const page = await browser.newPage({ viewport: { width, height: 844 } });
+        page.on('pageerror', e => { console.log('PAGE ERROR', e.message); failures++; });
+        await page.addInitScript(([s, f, d]) => { if (s) window.__presetSettings = s; if (f) window.__presetFiles = f; if (d) window.__presetServerDown = true; }, [settings || null, files || null, !!serverDown]);
+        await page.goto(URL);
+        await page.waitForFunction(() => !!globalThis.__savePoint && __savePoint.vault.ready);
+        await page.waitForTimeout(300);
+        return page;
+    }
+    // v0.6.39: found quests (confirm), result banner, accept / decline, untracked list, roles, and the
+    // smaller screen fixes of the same version (translation view, party clamp, item groups).
+    const page = await session({ settings: { savePoint: { firstTab: 'main', check: false, questMode: 'confirm' } } });
+    const ev = (fn, arg) => page.evaluate(fn, arg);
+    const banner = () => ev(() => { const b = document.getElementById('sp_save_banner'); return { shown: !b.hidden, text: b.textContent, goto: b.dataset.goto }; });
+
+    // 1. a save finds a quest: the result banner says so; the window is not opened by itself
+    await ev(() => { M.add(8, i => i === 5 ? 'PROMISE: I will bring the lantern back tomorrow.' : ''); });
+    await ev(() => __savePoint.handle('run'));
+    await page.waitForTimeout(1200);
+    let r = await banner();
+    ok(r.shown && r.text.includes('저장 완료') && r.text.includes('❗ 발견한 퀘스트 1') && r.goto === 'main-quests', `1. 저장 결과 배너에 발견한 퀘스트 (${r.text})`);
+    ok(!(await ev(() => __savePoint.ui.open)), '1. 창을 억지로 띄우지 않음');
+
+    // 2. the banner opens 메인 with the found list unfolded: summary, why (quote), accept / decline
+    await page.click('#sp_save_banner');
+    await page.waitForTimeout(300);
+    r = await ev(() => ({ tab: $('.sp-tab.sp-active').attr('data-id'), open: $('details[data-group="main-quests"]').prop('open'), cand: $('.sp-qcand').first().text(), badge: $('.sp-tab[data-id="main"] em').text(), q: $('.sp-st-q').length, qtab: $('.sp-tab[data-id="quests"] em').text() }));
+    ok(r.tab === 'main' && r.open && /근거 #5/.test(r.cand) && r.cand.includes('“PROMISE: I will bring th'), `2. 배너 → 메인, 후보 카드에 근거 원문 (${r.cand.replace(/\s+/g, ' ').trim()})`);
+    ok(r.badge === '1' && r.q === 0 && !r.qtab, '2. 수락 전에는 진행 중 목록·퀘스트 탭 숫자에 없음');
+
+    // 3. while waiting, the story finishes it: the card says so; accepting lists it as done
+    const qid = await ev(() => __savePoint.state().mem.records.find(r => r.type === 'quest').id);
+    await ev(id => { M.add(2); M.addChanges = () => ({ changes: [{ op: 'update', id, status: 'done', msgs: [M.chat.length - 1] }] }); }, qid);
+    await ev(() => __savePoint.handle('run'));
+    await page.waitForTimeout(1200);
+    r = await ev(() => $('.sp-qcand').first().text());
+    ok(r.includes('이미 완료'), '3. 대기 중에 이야기에서 지켜지면 후보도 이미 완료');
+    await ev(id => __savePoint.handle('quest-accept', id), qid);
+    await ev(() => __savePoint.handle('tab', 'quests'));
+    r = await ev(id => ({ track: __savePoint.state().mem.records.find(r => r.id === id).track, done: $('.sp-q-done').text() }), qid);
+    ok(r.track === undefined && r.done.includes('Promise made at 5'), '3. 수락하면 완료 목록에 (진행 중으로 새로 시작하지 않음)');
+
+    // 4. decline = not tracked: out of the list and the injection, kept in a folded list, can come back
+    await ev(() => { const b = M.chat.length; M.add(3, i => i === b + 1 ? 'PROMISE: I will buy you bread.' : ''); });
+    await ev(() => __savePoint.handle('run'));
+    await page.waitForTimeout(1200);
+    const q2 = await ev(() => __savePoint.state().mem.records.filter(r => r.type === 'quest').at(-1).id);
+    await ev(id => __savePoint.handle('quest-decline', id), q2);
+    await ev(() => __savePoint.refreshInjection());
+    r = await ev(id => ({ track: __savePoint.state().mem.records.find(r => r.id === id).track, list: $('details[data-group="quests-declined"] summary').text(), inj: __savePoint.ui.inj?.text || '' }), q2);
+    ok(r.track === 'declined' && r.list.includes('추적하지 않는 퀘스트 1'), '4. 거절 → 추적하지 않는 퀘스트로');
+    ok(!new RegExp(`Promise made at ${await ev(id => __savePoint.state().mem.records.find(r => r.id === id).text.match(/\d+/)[0], q2)}`).test(r.inj), '4. 거절한 퀘스트는 주입에서 빠짐');
+    await ev(id => __savePoint.handle('quest-accept', id), q2);
+    ok((await ev(id => __savePoint.state().mem.records.find(r => r.id === id).track, q2)) === undefined, '4. 다시 추적');
+
+    // 5. roles: "Ari → 나" on the card; editable
+    await ev(id => { const st = __savePoint.state(); const r = st.mem.records.find(x => x.id === id); const ari = st.mem.entities.find(e => e.name === 'Ari'); st.mem.entities.push({ id: 'e90', type: 'person', name: 'Me', aliases: [] }); r.by = [ari.id]; r.to = ['e90']; __savePoint.render(true); }, q2);
+    r = await ev(() => $('.sp-q-open .sp-role').first().text());
+    ok(r === 'Ari → 나', `5. 약속 방향 표시, 사용자 페르소나는 나 (${r})`);
+    await ev(id => __savePoint.handle('edit-rec', id), q2);
+    r = await ev(() => ({ by: $('[data-edit="by"]').val(), to: $('[data-edit="to"]').val() }));
+    ok(r.by && r.to === 'e90', '5. 편집 창에 지킬 사람·받는 사람');
+    await ev(() => __savePoint.handle('edit-cancel'));
+
+    // 6. auto mode lists new quests straight away; the banner says 새 퀘스트
+    await ev(() => { M.settings.savePoint.questMode = 'auto'; const b = M.chat.length; M.add(3, i => i === b + 1 ? 'PROMISE: we meet at dawn.' : ''); $('#sp_overlay .sp-window').length && __savePoint.handle('close'); });
+    await ev(() => __savePoint.handle('run'));
+    await page.waitForTimeout(1200);
+    r = await banner();
+    ok(r.text.includes('❗ 새 퀘스트 1') && !r.goto, `6. 자동 등록: 배너에 새 퀘스트 (${r.text})`);
+
+    // 7. (fix) going back to 원문 during a translation keeps 원문 when it finishes
+    await ev(() => { $('#sp_wand').trigger('click'); for (const r of __savePoint.state().mem.records) delete r.ko; M.delay = 800; });
+    const tr = ev(() => __savePoint.handle('lang'));
+    await page.waitForTimeout(200);
+    await ev(() => __savePoint.handle('lang'));
+    await tr; await ev(() => { M.delay = 0; });
+    ok(!(await ev(() => __savePoint.settings().showKo)), '7. 번역 중 원문으로 바꾸면 끝나도 원문 유지');
+
+    // 8. (fix) 메인: party cards are clamped and open on tap; items are grouped per holder
+    await ev(() => { const st = __savePoint.state(); const ari = st.mem.entities.find(e => e.name === 'Ari');
+        st.mem.records.push({ id: 'r900', type: 'party', entity: ari.id, aspect: 'condition', text: 'A very long condition. '.repeat(12), src: [], msgs: [], pin: false },
+            { id: 'r901', type: 'item', entity: 'e91', holder: ari.id, text: 'A brass key on a red cord.', src: [], msgs: [], pin: false },
+            { id: 'r902', type: 'item', entity: 'e92', holder: ari.id, text: 'A folded map of the harbor.', src: [], msgs: [], pin: false });
+        st.mem.entities.push({ id: 'e91', type: 'item', name: 'Brass key', aliases: [] }, { id: 'e92', type: 'item', name: 'Harbor map', aliases: [] });
+        st.mem.scenes.at(-1).who = [ari.id];
+        __savePoint.handle('tab', 'main'); });
+    r = await ev(() => { const c = $('.sp-st-p .c')[0]; return { clamp: getComputedStyle(c).webkitLineClamp, h: c.clientHeight, sh: c.scrollHeight }; });
+    ok(r.clamp === '3' && r.sh > r.h, `8. 파티 상태는 3줄까지 (${JSON.stringify(r)})`);
+    await page.click('.sp-st-p');
+    r = await ev(() => { const c = $('.sp-st-p .c')[0]; return { full: $('.sp-st-p').hasClass('full'), h: c.clientHeight, sh: c.scrollHeight }; });
+    ok(r.full && r.sh <= r.h + 1, '8. 누르면 전부 보임');
+    r = await ev(() => ({ who: $('.sp-st-items .grp .who').first().text(), items: $('.sp-st-items .grp').first().find('.it').length }));
+    ok(r.who.startsWith('Ari') && r.items === 2, `8. 아이템은 사람마다 묶음, 한 줄에 하나 (${r.who})`);
+    if (SHOTS) await page.locator('#sp_overlay .sp-window').screenshot({ path: path.join(OUT, 'quests-main.png') });
+
+    await page.close();
+    console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
+    await browser.close(); srv.close();
+    process.exit(failures ? 1 : 0);
+})();
