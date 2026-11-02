@@ -66,7 +66,7 @@ function impossibleDate(date) {
     return (/^\d{4}-\d{2}-\d{2}$/.test(s) && isoDay(s) === null) || (!!m && isoDay(m[1]) === null);
 }
 const stampIso = (stamp, anchors) => known(stamp) ? isoDay(dateAt(stamp, anchors)) : null;
-function isoDay(s) {
+export function isoDay(s) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(s || '')) return null;
     const ms = Date.parse(s + 'T00:00:00Z');
     return Number.isFinite(ms) && new Date(ms).toISOString().slice(0, 10) === s ? ms / 86400000 : null;

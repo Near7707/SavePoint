@@ -172,3 +172,22 @@ test('v0.6.41: a fixed date repeated in a later part stays untracked; a differen
     s.step([{ op: 'update', id: q.id, due: { expr: 'by 2026-11-09', date: '2026-11-09', days: null, msg: s.n() } }], [], { say: 'Return it by 2026-11-09.' });
     assert.equal(s.mem.records.find(r => r.id === q.id).track, 'pending', 'moved deadline');
 });
+
+test('v0.6.42: a condition added to the old words is new terms (candidate again, never auto-declined)', () => {
+    const s = story('auto');
+    s.step([lantern(s)]);
+    const q = s.mem.records.find(r => r.type === 'quest'); q.track = 'declined';
+    const say = '"I will bring the lantern back tomorrow if you pay ten coins," Ari added.';
+    s.step([lantern(s, { text: 'Ari will bring the borrowed lantern back tomorrow if paid.', terms: { msg: s.n(), quote: 'I will bring the lantern back tomorrow if you pay ten coins' } })], [], { say });
+    assert.notEqual(s.mem.records.filter(r => r.type === 'quest').at(-1).track, 'declined', 'new add with an added condition: shown');
+    s.step([{ op: 'update', id: q.id, terms: { msg: s.n(), quote: 'I will bring the lantern back tomorrow if you pay ten coins' } }], [], { say });
+    assert.equal(s.mem.records.find(r => r.id === q.id).track, 'pending', 'update with an added condition: candidate again');
+});
+
+test('v0.6.42: a stated calendar date compares as that date whether or not the story day was known', async () => {
+    const { dueKey } = await import('../core.js');
+    const mem = emptyMem();
+    const a = dueKey(mem, { due: { expr: 'by 2026-11-08', date: '2026-11-08', days: null, seg: null } });
+    const b = dueKey({ ...mem, timeAnchors: { 't:1': { baseDay: 1 } } }, { due: { expr: 'by Nov 8 (2026-11-08)', date: '2026-11-08 (Sun)', days: null, seg: 'g3' } });
+    assert.equal(a, b); assert.match(a, /^iso:/);
+});

@@ -1,4 +1,4 @@
-import { cleanTimeAnchors, cleanStoryTime, resolveResultTime, formatSegmentTime, compactSceneTimes, storyTimeContext, cleanDue, resolveDueClaim, formatDue, dueStamp } from './temporal.js';
+import { cleanTimeAnchors, cleanStoryTime, resolveResultTime, formatSegmentTime, compactSceneTimes, storyTimeContext, cleanDue, resolveDueClaim, formatDue, dueStamp, isoDay } from './temporal.js';
 import { cleanLootSources, restoreLostLoot } from './loot.js';
 import { upgradeEvidence, detachEvidence, cleanPrior, cleanSource, cleanQuestEvents } from './provenance.js';
 // SavePoint core: pure data logic (no SillyTavern, no DOM).
@@ -729,20 +729,28 @@ const sameSet = (a, b) => { const x = [...new Set(a || [])].sort(), y = [...new 
 // v0.6.41: what a deadline means, not where it was quoted: the story day it falls on when that can be
 // placed (a calendar date, or a day of the story's time reference), else the date words, else the
 // deadline words. Saying the same date again, or "tomorrow" again on the same day, is no change.
-function dueKey(mem, r) {
+export function dueKey(mem, r) {
     const d = r?.due; if (!d) return '';
+    // v0.6.42: a stated calendar date is that date whether or not the part's story day was known.
+    const ymd = String(d.date || '').match(/\d{4}-\d{2}-\d{2}/)?.[0], fixed = ymd ? isoDay(ymd) : null;
+    if (fixed !== null && !d.manual) return `iso:${fixed}`;
     const at = dueStamp(mem, r);
     if (at) return at.iso !== undefined && at.iso !== null ? `iso:${at.iso}` : `day:${at.anchor}:${at.day}`;
     if (d.date) return `date:${squash(d.date)}`;
     return `words:${squash(d.expr)}:${d.days ?? ''}`;
 }
 const squash = t => String(t || '').toLowerCase().replace(/[\s"'“”‘’.,!?…~·:;()\[\]-]+/g, '');
-// The same terms: the same words, or one quote inside the other (a shorter or longer cut of the same
-// sentence). Moving the quote to another message with the same words is no change either.
+// The same terms: the same words, or a shorter or longer cut of the same sentence. v0.6.42: a cut
+// counts only when the LONGER quote is in both originals (old and new context); words that were
+// not there before ("…if you pay ten coins") are new terms.
 function sameTerms(a, b) {
     if (!a?.quote || !b?.quote) return !a?.quote === !b?.quote;
     const x = squash(a.quote), y = squash(b.quote);
-    return x === y || (!!x && !!y && (x.includes(y) || y.includes(x)) && (a.msg === b.msg || squash(a.context).includes(y) || squash(b.context).includes(x)));
+    if (x === y) return true;
+    if (!x || !y || !(x.includes(y) || y.includes(x))) return false;
+    const long = x.length >= y.length ? x : y;
+    const inA = squash(a.context || a.quote).includes(long), inB = squash(b.context || b.quote).includes(long);
+    return inA && inB;
 }
 function sameThread(mem, a, b) {
     return sameQuest(a, b) && sameSet(a.who, b.who) && sameSet(a.by, b.by) && sameSet(a.to, b.to) && !!a.mutual === !!b.mutual
