@@ -57,11 +57,13 @@ test('an item the user stored stays in the box when the story updates it; the re
     assert.equal(mem.records.find(r => r.id === coats[0].id).stored.by, 'user');
 });
 
-test('an item the story removed returns to the inventory when the story brings it back', () => {
+test('an item the story removed returns to the inventory only when the story brings it back', () => {
     let mem = base();
     const potion = mem.records.find(r => r.text.includes('potion'));
     mem = step(mem, [{ op: 'remove', id: potion.id, text: 'Lost in the river.' }]);
-    mem = step(mem, [{ op: 'update', id: potion.id, text: 'Found again on the riverbank, still sealed.' }]);
+    mem = step(mem, [{ op: 'update', id: potion.id, text: 'Someone remembers the lost potion.' }]);
+    assert(mem.records.find(x => x.id === potion.id).gone, 'a mere mention does not bring it back');
+    mem = step(mem, [{ op: 'update', id: potion.id, text: 'Found again on the riverbank, still sealed.', back: true }]);
     const r = mem.records.find(x => x.id === potion.id);
     assert(!r.stored && !r.gone);
     assert.match(buildInjection(mem, { budget: 6000 }).text, /Found again on the riverbank/);
@@ -78,4 +80,45 @@ test('the box survives save files (cleanMem) and other record types are still de
     const back = cleanMem(JSON.parse(JSON.stringify(mem)));
     const c = back.records.find(r => r.id === coat.id);
     assert.deepEqual([c.stored.by, c.storedUpdated], ['user', true]);
+});
+
+test('the user\'s box choice survives the story removing the item and bringing it back', () => {
+    let mem = base();
+    const coat = mem.records.find(r => r.text.includes('coat'));
+    coat.stored = { by: 'user', at: 1 };
+    mem = step(mem, [{ op: 'remove', id: coat.id, text: 'Lost on the ferry.' }]);
+    let r = mem.records.find(x => x.id === coat.id);
+    assert.deepEqual([r.stored.by, r.gone], ['user', true], 'still the user\'s box; the story state is gone');
+    mem = step(mem, [{ op: 'update', id: coat.id, text: 'Found the coat and wore it again.', back: true }]);
+    r = mem.records.find(x => x.id === coat.id);
+    assert.equal(r.stored.by, 'user'); assert(!r.gone && r.storedUpdated);
+    assert(!buildInjection(mem, { budget: 6000 }).text.includes('wore it again'), 'stays out until the user takes it out');
+});
+
+test('a gone item the user took out is no longer gone once the story brings it back', () => {
+    let mem = base();
+    const coat = mem.records.find(r => r.text.includes('coat'));
+    mem = step(mem, [{ op: 'remove', id: coat.id, text: 'Lost on the ferry.' }]);
+    delete mem.records.find(x => x.id === coat.id).stored;   // 꺼내기
+    assert.match(buildInjection(mem, { budget: 6000 }).text, /\[item, gone\] Borrowed coat: Lost on the ferry\./);
+    mem = step(mem, [{ op: 'update', id: coat.id, text: 'Found the coat and wore it again.', back: true }]);
+    const text = buildInjection(mem, { budget: 6000 }).text;
+    assert.match(text, /\[item\] Borrowed coat: Found the coat and wore it again\./);
+    assert(!text.includes('[item, gone] Borrowed coat'), 'no contradictory gone line');
+    const id = mem.entities.find(e => e.name === 'Borrowed coat').id;
+    mem = step(mem, [{ op: 'remove', id: coat.id, text: 'Lost again.' }]);
+    mem = step(mem, [{ op: 'add', type: 'item', entity: id, holder: null, text: 'The coat turned up at the inn.' }]);
+    assert.equal(mem.records.filter(r => r.entity === id).length, 1, 'an add for a gone item updates it');
+    assert(!mem.records.find(r => r.entity === id).gone);
+});
+
+test('"back" is only for items', () => {
+    let mem = base();
+    mem = step(mem, [{ op: 'add', type: 'world', kind: 'rule', knownBy: [], text: 'No fighting inside the inn.' }]);
+    const rule = mem.records.find(r => r.type === 'world');
+    const w = 'm', chunk = { from: n, to: n, indices: [n], text: w, texts: { [n]: w } };
+    const d = { scenes: [{ scene: 'continue', title: 'Tavern', where: 'Inn', who: [], ended: false, outline: 'x.', notes: '', points: [{ text: 'y', kind: 'moment', key: false, msgs: [n] }] }], entities: [],
+        changes: [{ op: 'update', id: rule.id, back: true, msgs: [n] }] };
+    normalizeResult(d, { mem, chunk });
+    assert(validateResult(d, { mem, chunk }).some(e => e.includes('back is only for items')));
 });

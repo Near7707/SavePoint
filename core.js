@@ -258,7 +258,7 @@ export function promptContext(mem, chunkText, { stateChars = 12000, entityChars 
     return {
         entities: entityLines.length ? capLines(entityLines, entityChars).join('\n') : '(none yet)',
         state: (stateLines.length ? capLines(stateLines, stateChars).join('\n') : '(empty)')
-            + (storedLines.length ? `\nSTORED ITEMS (kept out of the story's current state; if one appears again, "update" it by id instead of adding it again; "gone" ones were used up, broken or discarded):\n${capLines(storedLines, 3000).join('\n')}` : ''),
+            + (storedLines.length ? `\nSTORED ITEMS (kept out of the story's current state; if one appears again, "update" it by id instead of adding it again; "gone" ones were used up, broken, lost or discarded and come back only with "back": true):\n${capLines(storedLines, 3000).join('\n')}` : ''),
         open: openText,
         recent: recent.length ? recent.join('\n') : '(none)',
     };
@@ -611,7 +611,8 @@ export function validateResult(data, { mem, chunk, expectContinue }) {
                 else if (hasValue(c.holder)) ref(c.holder, `${w}.holder`, ['person', 'place'], HINT.holder);
                 if (c.knownBy !== undefined && rec.type !== 'world') errors.push(`${w}.knownBy is only for world records.`);
                 else refList(c.knownBy, `${w}.knownBy`, ['person'], HINT.people);
-                if (c.text === undefined && c.status === undefined && c.holder === undefined && c.knownBy === undefined && c.terms === undefined && c.due === undefined) errors.push(`${w} changes nothing.`);
+                if (c.back !== undefined && (rec.type !== 'item' || typeof c.back !== 'boolean')) errors.push(`${w}.back is only for items: true or false.`);
+                if (c.text === undefined && c.status === undefined && c.holder === undefined && c.knownBy === undefined && c.terms === undefined && c.due === undefined && c.back === undefined) errors.push(`${w} changes nothing.`);
                 if (c.terms !== undefined && c.terms !== null) {
                     if (rec.type !== 'quest' || !TERMS_KINDS.includes(rec.kind)) errors.push(`${w}.terms is only for debts and promises.`);
                     else checkTerms(c, w, false);
@@ -752,12 +753,12 @@ export function applyResult(mem, data, chunk, { close = false, room = null } = {
     for (const c of data.changes || []) {
         const msgs = numEvidence(c.msgs);
         const src = segFor(msgs);
-        if (c.op === 'add' && c.type === 'item' && resolve(c.entity) && next.records.some(x => x.type === 'item' && x.stored && x.entity === resolve(c.entity))) {
-            // The same item, kept in the storage box: update that record rather than add a second one.
-            const r = next.records.find(x => x.type === 'item' && x.stored && x.entity === resolve(c.entity));
+        if (c.op === 'add' && c.type === 'item' && resolve(c.entity) && next.records.some(x => x.type === 'item' && (x.stored || x.gone) && x.entity === resolve(c.entity))) {
+            // The same item, in the storage box or gone: update that record rather than add a second one.
+            const r = next.records.find(x => x.type === 'item' && (x.stored || x.gone) && x.entity === resolve(c.entity));
             if (str(c.text)) { r.text = str(c.text); delete r.ko; }
             if (c.holder !== undefined) r.holder = resolve(c.holder);
-            touchStored(r);
+            touchItem(r, true);   // "add" means the item is in the story now
             r.src = uniq([...(r.src || []), src]); r.msgs = uniq([...(r.msgs || []), ...msgs]).slice(-12);
         } else if (c.op === 'add') {
             const r = { id: takeId(next, 'r'), type: c.type, text: str(c.text), src: [src], msgs, pin: false, evidenceVersion: 1 };
@@ -792,7 +793,7 @@ export function applyResult(mem, data, chunk, { close = false, room = null } = {
             if (r.type === 'quest' && TERMS_KINDS.includes(r.kind) && c.terms) { const t = termsOf(c, chunk); if (t) r.terms = t; }
             // A new deadline replaces an AI-read one, never one the user set.
             if (r.type === 'quest' && TERMS_KINDS.includes(r.kind) && c.due && !r.due?.manual) { const due = resolveDueClaim(c.due, { chunk, room, segOf: n => segFor([n]) }); if (due) r.due = due; }
-            if (r.stored) touchStored(r);
+            if (r.type === 'item') touchItem(r, c.back === true);
             r.src = uniq([...(r.src || []), src]);
             r.msgs = uniq([...(r.msgs || []), ...msgs]).slice(-12);
         } else if (c.op === 'remove') {
@@ -801,7 +802,8 @@ export function applyResult(mem, data, chunk, { close = false, room = null } = {
                 // An item that leaves the story goes to the storage box with its last known state; it is
                 // never brought back as usable. Without a stated final state it is only marked gone.
                 if (str(c.text)) { r.text = str(c.text); delete r.ko; }
-                r.gone = true; r.stored = { by: 'story', at: Date.now() };
+                // The user's own choice to keep it in the box is never overwritten by the story.
+                r.gone = true; if (r.stored?.by !== 'user') r.stored = { by: 'story', at: Date.now() };
                 r.src = uniq([...(r.src || []), src]); r.msgs = uniq([...(r.msgs || []), ...msgs]).slice(-12);
             } else next.records = next.records.filter(x => x.id !== c.id);
         }
@@ -811,11 +813,13 @@ export function applyResult(mem, data, chunk, { close = false, room = null } = {
     return { mem: next, segIds };
 }
 
-// An item the story mentions again while it is in the storage box: one the story had removed
-// returns to the inventory (it is back in play); one the user put away stays there, marked as updated.
-function touchStored(r) {
-    if (r.stored?.by === 'user') { r.storedUpdated = true; return; }
-    delete r.stored; delete r.gone; delete r.storedUpdated;
+// The box (r.stored: where the user or the story put it) and the item's own state (r.gone) are kept
+// apart. Only a stated return ("back": found, repaired, given back) ends "gone"; a mere mention only
+// updates the record. An item the story had boxed comes out when it returns; one the user boxed
+// stays in the box until the user takes it out, marked as updated.
+function touchItem(r, back) {
+    if (back) { delete r.gone; if (r.stored?.by === 'story') delete r.stored; }
+    if (r.stored?.by === 'user') r.storedUpdated = true;
 }
 
 // Closing the open scene without new messages.
@@ -1077,7 +1081,7 @@ export function buildInjection(mem, opts = {}) {
     };
     const upgradePinned = (pinnedItems, limit) => {
         for (const it of pinnedItems) {
-            if (!chosen.has(it)) continue;
+            if (!chosen.has(it) || it.pointsAdded) continue;   // points already ride on its outline
             const cur = chosen.get(it), curCost = costOf(cur);
             for (const alt of it.alts) {
                 if (alt === cur) break;
@@ -1113,18 +1117,27 @@ export function buildInjection(mem, opts = {}) {
         const outline = plainText(sceneOutlineText(sc));
         return injectedPoints(sc).filter(p => !outline.includes(plainText(p.text))).map(p => `  • ${p.text}`);
     };
+    // Pinned scenes first (their priority holds), then the rest, newest first. A point too long for
+    // what is left is skipped and the shorter ones after it are still tried; the points actually in
+    // are tracked one by one and written in their original order.
+    const pointsTarget = x => x.tier === 'journal' && !x.point && x.forms?.[0] === 'outline' && (stepped(x) || x.pin);
     const addPoints = (limit, skip = new Set()) => {
-        for (const it of [...sorted].filter(x => stepped(x) && chosen.has(x) && !skip.has(x.scene)).sort((a, b) => b.idx - a.idx)) {
-            const cur = chosen.get(it);
-            if (!it.pointsAdded && cur !== it.alts[0]) continue;   // only on top of the outline
+        const list = [...sorted].filter(x => pointsTarget(x) && chosen.has(x) && !skip.has(x.scene))
+            .sort((a, b) => (b.pin ? 1 : 0) - (a.pin ? 1 : 0) || b.idx - a.idx);
+        for (const it of list) {
+            if (!it.pointsIn && chosen.get(it) !== it.alts[0]) continue;   // only on top of the outline
             const lines = it.pointLines ||= pointLines(it.scene);
-            let n = it.pointsAdded || 0, text = cur;
-            while (n < lines.length) {
-                const cost = estTokens(lines[n]) + 1;
-                if (total + cost > limit) break;
-                text += '\n' + lines[n]; used.journal += cost; total += cost; n++;
+            const inSet = it.pointsIn || new Set();
+            let grew = false;
+            for (let k = 0; k < lines.length; k++) {
+                if (inSet.has(k)) continue;
+                const cost = estTokens(lines[k]) + 1;
+                if (total + cost > limit) continue;
+                inSet.add(k); used.journal += cost; total += cost; grew = true;
             }
-            if (n > (it.pointsAdded || 0)) { chosen.set(it, text); it.pointsAdded = n; }
+            if (!grew) continue;
+            it.pointsIn = inSet; it.pointsAdded = inSet.size;
+            chosen.set(it, [it.alts[0], ...lines.filter((_, k) => inSet.has(k))].join('\n'));
         }
     };
     for (const it of sorted) tryAdd(it, true, limit1);
@@ -1246,7 +1259,7 @@ export function buildInjection(mem, opts = {}) {
             return [sc.id, alt ? it.forms[it.alts.indexOf(alt)] : recalledIds.has(sc.id) ? 'recalled' : left.includes(sc) ? (titleList.length && left.indexOf(sc) >= left.length - titleList.length ? 'title' : 'omitted') : 'omitted'];
         })),
         // Scenes whose ● points are not all in (the second "needed budget" counts these).
-        pointsLeft: items.filter(it => it.tier === 'journal' && !it.point && (stepped(it) || it.pr === 4)).filter(it => {
+        pointsLeft: items.filter(it => it.tier === 'journal' && !it.point && (pointsTarget(it) || it.pr === 4)).filter(it => {
             const alt = chosen.get(it), lines = it.pointLines || pointLines(it.scene);
             if (!lines.length) return false;
             if (!alt) return true;

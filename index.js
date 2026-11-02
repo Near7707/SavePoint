@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.34';
+const VERSION = '0.6.35';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -2357,7 +2357,7 @@ function itemsHtml(st) {
         const badges = [r.stored ? `<span class="sp-badge">${r.stored.by === 'user' ? '보관' : '사라짐'}</span>` : '', r.gone && !r.stored ? '<span class="sp-badge">사라짐</span>' : '',
             r.storedUpdated ? '<span class="sp-badge sp-badge-on" title="보관함에 있는 동안 이야기에서 다시 언급돼 기록이 갱신됐어요">보관 중 갱신됨</span>' : ''].join('');
         const move = r.stored ? btn('item-unstore', r.id, '꺼내기', '현재 상태 주입 대상으로 돌려요. 이야기 속 소지자·위치는 바뀌지 않아요')
-            : btn('item-store', r.id, '📦', '보관함에 넣기 · 본편 AI에게 전달하지 않아요. 이야기 속 소지자·위치는 바뀌지 않아요');
+            : btn('item-store', r.id, '📦', '보관함에 넣기 · 이 물건의 상태 기록을 주입에서 빼요(과거 사건 기록은 유지). 이야기 속 소지자·위치는 바뀌지 않아요');
         return `<div class="sp-card sp-item ${r.stored ? 'sp-stored-item' : ''}"><div class="sp-item-h"><span class="sp-ent-n">${r.stored ? '📦' : '🎒'} ${esc(entityName(mem, r.entity) || '?')}</span>${badges}
             ${r.holder ? `<span class="sp-holder">소지: <b>${esc(entityName(mem, r.holder))}</b></span>` : '<span class="sp-holder sp-dim">소지자 없음</span>'}</div>
             ${r.stored && sc ? `<div class="sp-dim sp-item-last">마지막 기록: SCENE ${String(sc.no).padStart(2, '0')} · ${esc(sc.title)}</div>` : ''}
@@ -2365,7 +2365,7 @@ function itemsHtml(st) {
     };
     const live = recs.filter(r => !r.stored), boxed = recs.filter(r => r.stored);
     const box = boxed.length ? `<details class="sp-more sp-box" data-group="itembox" ${ui.savesOpen.get('itembox') ? 'open' : ''}><summary>📦 보관함 ${boxed.length}</summary>
-        <div class="sp-dim">보관함 물건은 본편 AI에게 전달하지 않아요. 기록하는 AI는 같은 물건을 알아보도록 이름과 마지막 상태만 봐요. 꺼내면 현재 상태 주입 대상으로 돌아오고, 이야기 속 소지자·위치는 바뀌지 않아요. 다 썼거나 부서진 물건은 꺼내도 그 상태 그대로예요.</div>
+        <div class="sp-dim">보관한 물건의 상태 기록은 주입에서 제외해요. 그 물건이 나온 과거 사건(저널·포인트)은 그대로 유지돼요. 기록하는 AI는 같은 물건을 알아보도록 이름과 마지막 상태만 봐요. 꺼내면 현재 상태 주입 대상으로 돌아오고, 이야기 속 소지자·위치는 바뀌지 않아요. 다 썼거나 잃어버린 물건은 꺼내도 그 상태 그대로이고, 이야기에서 되찾거나 고쳤다고 기록될 때만 다시 쓸 수 있는 물건이 돼요.</div>
         ${boxed.map(card).join('')}</details>` : '';
     const rows = live.map(card).join('');
     const itemEnts = mem.entities.filter(e => e.type === 'item' || e.type === 'place');

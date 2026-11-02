@@ -77,7 +77,7 @@ export const OUTPUT_FORMAT = `Return ONLY one JSON object, with the fields in th
     { "op": "add", "type": "item", "entity": "<the ITEM itself>", "holder": "<the PERSON or PLACE that has it now, or null>", "text": "the item's current condition / situation", "msgs": [..] },
     { "op": "add", "type": "quest", "kind": "promise" | "goal" | "debt" | "mystery", "status": "open" | "done" | "failed", "who": ["<person ids or refs>"], "text": "...", "terms": {"msg": <number>, "quote": "exact words"}, "due": {"expr": "deadline words copied exactly", "days": <days from when it was said, or null>, "date": "calendar date copied exactly or empty", "msg": <number>}, "msgs": [..] },
     { "op": "add", "type": "world", "kind": "place" | "rule" | "name" | "secret", "knownBy": ["<person ids or refs>"], "text": "...", "msgs": [..] },
-    { "op": "update", "id": "r12", "text": "new full text", "holder": "<items only: the new PERSON or PLACE that has it>", "status": "<quests only: open | done | failed>", "terms": "<debts and promises, only when the terms themselves change>", "due": "<debts and promises, only when the deadline itself changes>", "msgs": [..] },
+    { "op": "update", "id": "r12", "text": "new full text", "holder": "<items only: the new PERSON or PLACE that has it>", "back": "<items only: true when a gone item is found, repaired or given back into use>", "status": "<quests only: open | done | failed>", "terms": "<debts and promises, only when the terms themselves change>", "due": "<debts and promises, only when the deadline itself changes>", "msgs": [..] },
     { "op": "remove", "id": "r12", "text": "<items: the final state that ends it, e.g. \"drunk by Mara\", \"broken in the fight\">", "msgs": [..] }
   ]
 }

@@ -69,7 +69,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
 
     // 4. manual run again, then add more; multi-chunk with a failing middle chunk
     await ev(() => __savePoint.handle('run'));
-    await ev(() => { M.add(60, i => (i === 50 ? 'SCENEBREAK at the market. PROMISE to meet. ' : '') + `Message ${i} ${'words '.repeat(60)}`); M.settings.savePoint.inputChars = 21000; /* just above the fixed format (v0.6.28, v0.6.34) */ M.failAt = 75; });
+    await ev(() => { M.add(60, i => (i === 50 ? 'SCENEBREAK at the market. PROMISE to meet. ' : '') + `Message ${i} ${'words '.repeat(60)}`); M.settings.savePoint.inputChars = 21500; /* just above the fixed format (v0.6.28, v0.6.34, v0.6.35) */ M.failAt = 75; });
     const before = await ev(() => M.calls.length);
     await ev(() => __savePoint.handle('run'));
     r = await ev((b0) => { const st = __savePoint.state(); return { last: st.lastIndex, scenes: st.mem.scenes.map(s => [s.title, s.status, s.segs.length]), hid: M.chat.map(m => m.is_system),

@@ -177,3 +177,25 @@ test('points already in the journal are not recalled again', () => {
     const recalled = r.text.split('## Recalled details')[1] || '';
     assert(!/Key detail \d of scene 0/.test(recalled), 'a point already written with its scene is not repeated in recall');
 });
+
+test('a pinned older scene also gets its ● points, and counts in the second needed budget', () => {
+    const mem = scenes(5, 3);
+    mem.scenes[0].pin = true;
+    const r = buildInjection(mem, { budget: 20000 });
+    assert.equal(r.levels[mem.scenes[0].id], 'full');
+    assert.match(r.text, /Key detail 2 of scene 0 /);
+    const tight = buildInjection(mem, { budget: 900, recall: false });
+    if (tight.levels[mem.scenes[0].id] !== 'full') assert(tight.pointsLeft > 0, 'a pinned scene missing points is counted');
+});
+
+test('one long point does not block the shorter points after it', () => {
+    const mem = scenes(5, 0);
+    const old = mem.scenes[0], g = old.segs[0];
+    g.points.push({ text: 'A very long key detail '.repeat(200).trim(), kind: 'moment', key: true, msgs: [0] },
+        { text: 'Short key detail of scene zero', kind: 'moment', key: true, msgs: [0] });
+    const r = buildInjection(mem, { budget: 1000, recall: false });
+    assert(r.tokens < 900, `budget left (${r.tokens})`);
+    assert.match(r.text, /Short key detail of scene zero/);
+    assert(!r.text.includes('A very long key detail A very long'), 'the long one is skipped');
+    assert.equal(r.levels[old.id], 'points');
+});
