@@ -207,8 +207,8 @@ function recordLine(mem, r, withId = true) {
     const id = withId ? `${r.id} ` : '';
     const en = x => entityName(mem, x);
     if (r.type === 'party') return `${id}[${r.aspect}] ${en(r.entity)}: ${r.text}`;
-    if (r.type === 'item') return `${id}[item${r.gone ? ', gone' : ''}] ${en(r.entity)}${r.holder ? ` (held by ${en(r.holder)})` : ''}: ${r.text}`;
-    if (r.type === 'quest') return `${id}[${r.kind}${r.status !== 'open' ? ', ' + r.status : ''}] ${r.text}${r.who?.length ? ` (${r.who.map(en).join(', ')})` : ''}${r.by?.length ? ` {${r.by.map(en).join(', ')}${r.to?.length ? ' -> ' + r.to.map(en).join(', ') : r.by.length > 1 ? ', to each other' : ''}}` : ''}${r.due && TERMS_KINDS.includes(r.kind) ? ` [${formatDue(mem, r, 'en')}]` : ''}`;
+    if (r.type === 'item') return `${id}[item${r.gone ? ', gone' : r.stored?.reason === 'retired' ? ', retired prop' : ''}] ${en(r.entity)}${r.holder ? ` (held by ${en(r.holder)})` : ''}: ${r.text}`;
+    if (r.type === 'quest') return `${id}[${r.kind}${r.status !== 'open' ? ', ' + r.status : ''}] ${r.text}${r.who?.length ? ` (${r.who.map(en).join(', ')})` : ''}${r.by?.length ? ` {${r.by.map(en).join(', ')}${r.to?.length ? ' -> ' + r.to.map(en).join(', ') : r.mutual ? ', to each other' : ''}}` : ''}${r.due && TERMS_KINDS.includes(r.kind) ? ` [${formatDue(mem, r, 'en')}]` : ''}`;
     return `${id}[${r.kind}] ${r.text}${r.knownBy?.length ? ` (known by ${r.knownBy.map(en).join(', ')})` : ''}`;
 }
 export { recordLine };
@@ -262,7 +262,7 @@ export function promptContext(mem, chunkText, { stateChars = 12000, entityChars 
         entities: entityLines.length ? capLines(entityLines, entityChars).join('\n') : '(none yet)',
         state: (stateLines.length ? capLines(stateLines, stateChars).join('\n') : '(empty)')
             + (untrackedLines.length ? `\nUNTRACKED THREADS (still true in the story; the user only chose not to list them as quests. If the messages continue one, "update" it by id; never "add" it again):\n${capLines(untrackedLines, 1500).join('\n')}` : '')
-            + (storedLines.length ? `\nSTORED ITEMS (kept out of the story's current state; if one appears again, "update" it by id instead of adding it again; "gone" ones were used up, broken, lost or discarded and come back only with "back": true):\n${capLines(storedLines, 3000).join('\n')}` : ''),
+            + (storedLines.length ? `\nSTORED ITEMS (kept out of the story's current state; if one appears again, "update" it by id instead of adding it again; "gone" ones were used up, broken, lost or discarded; "retired prop" ones were scene props that need no more following. Both come back only with "back": true, never for being mentioned or partly used):\n${capLines(storedLines, 3000).join('\n')}` : ''),
         open: openText,
         recent: recent.length ? recent.join('\n') : '(none)',
     };
@@ -437,6 +437,9 @@ export function normalizeResult(data, { mem, chunk } = {}) {
         // by/to belong to promises and debts only; elsewhere (or null) they are dropped, not an error.
         const qKind = c.op === 'add' ? (c.type === 'quest' ? c.kind : null) : mem?.records?.find(r => r.id === c.id && r.type === 'quest')?.kind;
         for (const k of ['by', 'to']) if (c[k] !== undefined && (c[k] === null || !TERMS_KINDS.includes(qKind))) delete c[k];
+        if (c.mutual !== undefined && (c.mutual !== true || !TERMS_KINDS.includes(qKind))) delete c.mutual;
+        // retire belongs to items only and only as true; anything else is dropped, not an error.
+        if (c.retire !== undefined && (c.retire !== true || c.op !== 'update' || mem?.records?.find(r => r.id === c.id)?.type !== 'item')) delete c.retire;
         if (c.by !== undefined) c.by = fixList(c.by);
         if (c.to !== undefined) c.to = fixList(c.to);
         if (c.knownBy !== undefined) c.knownBy = fixList(c.knownBy);
@@ -633,8 +636,10 @@ export function validateResult(data, { mem, chunk, expectContinue }) {
                 if (c.knownBy !== undefined && rec.type !== 'world') errors.push(`${w}.knownBy is only for world records.`);
                 else refList(c.knownBy, `${w}.knownBy`, ['person'], HINT.people);
                 if (c.back !== undefined && (rec.type !== 'item' || typeof c.back !== 'boolean')) errors.push(`${w}.back is only for items: true or false.`);
+                if (c.retire !== undefined && (rec.type !== 'item' || typeof c.retire !== 'boolean')) errors.push(`${w}.retire is only for items: true or false.`);
+                if (c.retire === true && c.back === true) errors.push(`${w}: "retire" and "back" cannot both be true.`);
                 if (c.by !== undefined || c.to !== undefined) { if (rec.type !== 'quest') errors.push(`${w}.by/.to are only for promises and debts.`); else roles(c, rec.kind, w); }
-                if (c.text === undefined && c.status === undefined && c.holder === undefined && c.knownBy === undefined && c.terms === undefined && c.due === undefined && c.back === undefined && c.by === undefined && c.to === undefined) errors.push(`${w} changes nothing.`);
+                if (c.text === undefined && c.status === undefined && c.holder === undefined && c.knownBy === undefined && c.terms === undefined && c.due === undefined && c.back === undefined && c.retire === undefined && c.by === undefined && c.to === undefined && c.mutual === undefined) errors.push(`${w} changes nothing.`);
                 if (c.terms !== undefined && c.terms !== null) {
                     if (rec.type !== 'quest' || !TERMS_KINDS.includes(rec.kind)) errors.push(`${w}.terms is only for debts and promises.`);
                     else checkTerms(c, w, false);
@@ -717,8 +722,18 @@ export function sameQuest(a, b) {
     for (const w of x) if (y.has(w)) shared++;
     return shared / Math.min(x.size, y.size) >= 0.75 && shared / Math.max(x.size, y.size) >= 0.5;
 }
+// v0.6.40: words only find a possible twin. It is the same thread only when nothing else tells them
+// apart: the people, who keeps it / to whom, the quoted terms and the deadline. When unsure, the
+// new one is shown (as found or new) instead of being hidden.
+const sameSet = (a, b) => { const x = [...new Set(a || [])].sort(), y = [...new Set(b || [])].sort(); return x.length === y.length && x.every((v, i) => v === y[i]); };
+// A deadline is the same when the words, the day count and the part they were said in are the same.
+const dueKey = d => (d ? JSON.stringify([d.expr || '', d.date || '', d.days ?? null, d.seg || null, d.manual?.day ?? null]) : '');
+function sameThread(a, b) {
+    return sameQuest(a, b) && sameSet(a.who, b.who) && sameSet(a.by, b.by) && sameSet(a.to, b.to) && !!a.mutual === !!b.mutual
+        && (a.terms?.quote || '') === (b.terms?.quote || '') && dueKey(a.due) === dueKey(b.due);
+}
 function declinedTwin(mem, r) {
-    return mem.records.find(x => x !== r && x.type === 'quest' && x.track === 'declined' && sameQuest(x, r)) || null;
+    return mem.records.find(x => x !== r && x.type === 'quest' && x.track === 'declined' && sameThread(x, r)) || null;
 }
 export function questTracked(r) { return r.type !== 'quest' || r.track !== 'declined' && r.track !== 'pending'; }
 // v0.6.38: the order records were last added or changed in. `seq` grows with every add/update, so the
@@ -726,6 +741,9 @@ export function questTracked(r) { return r.type !== 'quest' || r.track !== 'decl
 // update leaves a record where it was). Records without seq (older saves) count as 0, array order next.
 function setRoles(r, c, resolve) {
     if (!TERMS_KINDS.includes(r.kind)) return;
+    // v0.6.40: "to each other" only when the messages say so (mutual), never from the number of people.
+    if (c.mutual === true) r.mutual = true;
+    else if (c.mutual === false || (Array.isArray(c.to) && c.to.length)) delete r.mutual;
     for (const k of ['by', 'to']) if (Array.isArray(c[k])) {
         const list = uniq(c[k].map(resolve).filter(Boolean));
         if (list.length) r[k] = list; else delete r[k];
@@ -819,7 +837,9 @@ export function applyResult(mem, data, chunk, { close = false, room = null, boxM
             const r = next.records.find(x => x.type === 'item' && (x.stored || x.gone) && x.entity === resolve(c.entity));
             if (str(c.text)) { r.text = str(c.text); delete r.ko; }
             if (c.holder !== undefined) r.holder = resolve(c.holder);
-            touchItem(r, true, boxMode);   // "add" means the item is in the story now
+            // "add" means the item is in the story now, except for a put-away scene prop (v0.6.40):
+            // only "back": true (a new reason to follow it) brings that one back.
+            touchItem(r, r.stored?.reason === 'retired' ? c.back === true : true, boxMode);
             r.src = uniq([...(r.src || []), src]); r.msgs = uniq([...(r.msgs || []), ...msgs]).slice(-12);
             stamp(next, r);
         } else if (c.op === 'add') {
@@ -846,6 +866,7 @@ export function applyResult(mem, data, chunk, { close = false, room = null, boxM
             next.records.push(r);
         } else if (c.op === 'update') {
             const r = next.records.find(x => x.id === c.id);
+            const condBefore = { quote: JSON.stringify(r.terms?.quote || ''), due: dueKey(r.due) };
             if (str(c.text) && str(c.text) !== r.text) { r.text = str(c.text); delete r.ko; }
             if (c.status !== undefined) {
                 if (r.type === 'quest' && r.status !== c.status) {
@@ -863,9 +884,14 @@ export function applyResult(mem, data, chunk, { close = false, room = null, boxM
             // A new deadline replaces an AI-read one, never one the user set.
             if (r.type === 'quest' && TERMS_KINDS.includes(r.kind) && c.due && !r.due?.manual) { const due = resolveDueClaim(c.due, { chunk, room, segOf: n => segFor([n]) }); if (due) r.due = due; }
             if (r.type === 'quest') setRoles(r, c, resolve);
-            // New terms or a new deadline make an untracked promise or debt a candidate again.
-            if (r.type === 'quest' && r.track === 'declined' && TERMS_KINDS.includes(r.kind) && (c.terms || c.due)) { r.track = 'pending'; delete r.autoDeclined; }
+            // Terms or a deadline that really changed make an untracked promise or debt a candidate
+            // again (v0.6.40: compared after they were checked and applied; a re-quote changes nothing).
+            if (r.type === 'quest' && r.track === 'declined' && TERMS_KINDS.includes(r.kind)
+                && (JSON.stringify(r.terms?.quote || '') !== condBefore.quote || dueKey(r.due) !== condBefore.due)) { r.track = 'pending'; delete r.autoDeclined; }
             if (r.type === 'item') touchItem(r, c.back === true, boxMode);
+            // v0.6.40: a scene prop that needs no more following goes to the box as "정리됨" with its last
+            // state. Not for the user's own box, a pinned item or one the user added by hand.
+            if (r.type === 'item' && c.retire === true && c.back !== true && !r.stored && !r.pin && !r.manual) r.stored = { by: 'story', at: Date.now(), reason: 'retired' };
             r.src = uniq([...(r.src || []), src]);
             r.msgs = uniq([...(r.msgs || []), ...msgs]).slice(-12);
             stamp(next, r);
@@ -1088,7 +1114,7 @@ export function sceneFull(s, anchors = {}) {
 export function sceneOutline(s, anchors = {}) { return `- ${sceneHead(s, anchors)}${progress(s)}: ${timedOutline(s, anchors)}`; }
 export function sceneOneLiner(s, anchors = {}) { return `- ${sceneHead(s, anchors)}${progress(s)}: ${shortOutline(s)}`; }
 
-export const INJECT_HEADER = '[SavePoint memory: past records of this story. Do not repeat completed actions; carry forward their results and any ongoing states. The latest messages always take priority.]';
+export const INJECT_HEADER = '[SavePoint memory: past records of this story. Do not repeat completed actions; carry forward their results and any ongoing states. Item states are background for continuity: something being left over is no reason to keep bringing it up, using, eating or tidying it. The latest messages always take priority.]';
 
 export function buildInjection(mem, opts = {}) {
     const budget = Math.max(300, opts.budget ?? 6000);
@@ -1432,7 +1458,7 @@ export function cleanMem(raw) {
         if (r.type === 'party') { rec.entity = eref(r.entity); rec.aspect = ASPECTS.includes(r.aspect) ? r.aspect : 'relation'; }
         if (r.type === 'item') {
             rec.entity = eref(r.entity); rec.holder = eref(r.holder);
-            if (plain(r.stored) && ['user', 'story'].includes(r.stored.by)) rec.stored = { by: r.stored.by, at: Number(r.stored.at) || 0, ...(r.stored.by === 'user' && r.stored.lock === true ? { lock: true } : {}) };
+            if (plain(r.stored) && ['user', 'story'].includes(r.stored.by)) rec.stored = { by: r.stored.by, at: Number(r.stored.at) || 0, ...(r.stored.by === 'user' && r.stored.lock === true ? { lock: true } : {}), ...(r.stored.by === 'story' && r.stored.reason === 'retired' ? { reason: 'retired' } : {}) };
             if (rec.stored?.by === 'user' && plain(r.returnNotice)) rec.returnNotice = { at: Number(r.returnNotice.at) || 0 };
             if (r.gone === true) rec.gone = true;
             if (rec.stored && r.storedUpdated === true) rec.storedUpdated = true;
@@ -1440,6 +1466,7 @@ export function cleanMem(raw) {
         if (r.type === 'quest') {
             rec.kind = QUEST_KINDS.includes(r.kind) ? r.kind : 'goal'; rec.status = QUEST_STATUS.includes(r.status) ? r.status : 'open'; rec.who = uniq((r.who || []).map(eref).filter(Boolean));
             if (cleanQuestEvents(r.questEvents)) rec.questEvents = cleanQuestEvents(r.questEvents);
+            if (TERMS_KINDS.includes(rec.kind) && r.mutual === true) rec.mutual = true;
             if (TERMS_KINDS.includes(rec.kind)) for (const k of ['by', 'to']) { const l = uniq((Array.isArray(r[k]) ? r[k] : []).map(eref).filter(Boolean)); if (l.length) rec[k] = l; }
             if (['pending', 'declined'].includes(r.track)) rec.track = r.track;
             if (rec.track === 'declined' && typeof r.autoDeclined === 'string') rec.autoDeclined = r.autoDeclined;
@@ -1448,6 +1475,7 @@ export function cleanMem(raw) {
         }
         if (r.type === 'world') { rec.kind = WORLD_KINDS.includes(r.kind) ? r.kind : 'rule'; rec.knownBy = uniq((r.knownBy || []).map(eref).filter(Boolean)); if (eref(r.entity)) rec.entity = r.entity; }
         if (str(r.ko)) rec.ko = r.ko;
+        if (r.manual === true) rec.manual = true;
         out.records.push(rec);
     }
     const max = k => Math.max(0, ...[...ids].filter(x => x[0] === k).map(x => Number(x.slice(1))));

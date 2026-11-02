@@ -416,7 +416,7 @@ test('a checkpoint request failure never marks retained-tail selections as faile
 
 test('a failed quicksave batch does not mark a later unsent selection as failed', async () => {
     const h = harness({ messages: Array.from({ length: 40 }, () => 'A participant kept a token. ' + 'x'.repeat(1000)) });
-    h.app.settings().inputChars = 20000;
+    h.app.settings().inputChars = 21500;
     await h.app.addLoot(0, 'kept a token.'); await h.app.addLoot(39, 'kept a token.');
     h.model = async (prompt, run, items) => {
         if (h.calls.length === 2) throw new h.app.RequestTimeout('Second batch timed out');

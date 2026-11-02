@@ -16,16 +16,16 @@ test('manual collection recalculates full prompts as open-scene memory grows; no
     let mem = emptyMem(), cursor = 0;
     const seen = [], sizes = [], counts = [];
     while (cursor < source.length) {
-        const chunk = nextMessageChunk(source.slice(cursor), c => extractPrompt(mem, c), 22000);
+        const chunk = nextMessageChunk(source.slice(cursor), c => extractPrompt(mem, c), 23500);
         const prompt = extractPrompt(mem, chunk);
-        assert(prompt.length <= 22000);
+        assert(prompt.length <= 23500);
         seen.push(...chunk.indices); sizes.push(prompt.length); counts.push(chunk.indices.length);
         // A continuing scene grows while the same manual operation is still running.
         ({ mem } = applyResult(mem, { scenes: [{ scene: openScene(mem) ? 'continue' : 'new', title: 'A walk', who: [],
             points: Array.from({ length: 10 }, () => ({ text: 'A small event happened. '.repeat(5), kind: 'moment', key: false, msgs: [chunk.from] })),
             outline: 'They continued walking and talking. '.repeat(6), notes: 'A walk.', ended: false }], entities: [], changes: [] }, chunk));
         cursor += chunk.indices.length;
-        if (cursor < source.length && extractPrompt(mem, { from: source[cursor].index, to: source[cursor].index, indices: [source[cursor].index], text: `#${source[cursor].index} Speaker: ${source[cursor].text}`, texts: {} }).length > 22000) break;
+        if (cursor < source.length && extractPrompt(mem, { from: source[cursor].index, to: source[cursor].index, indices: [source[cursor].index], text: `#${source[cursor].index} Speaker: ${source[cursor].text}`, texts: {} }).length > 23500) break;
     }
     // The planner must either fit the remaining full message or clearly stop;
     // an unbounded existing outline must never cause an oversized request.
@@ -33,7 +33,7 @@ test('manual collection recalculates full prompts as open-scene memory grows; no
     assert.equal(JSON.stringify(source), original);
     assert(sizes.length > 2);
     assert(counts.some(n => n < counts[0]));
-    if (cursor < source.length) assert.throws(() => nextMessageChunk(source.slice(cursor), c => extractPrompt(mem, c), 22000), InputLimitError);
+    if (cursor < source.length) assert.throws(() => nextMessageChunk(source.slice(cursor), c => extractPrompt(mem, c), 23500), InputLimitError);
 });
 
 test('a generous input setting still uses small complete-message chunks', () => {

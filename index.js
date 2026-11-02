@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.39';
+const VERSION = '0.6.40';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -1646,6 +1646,8 @@ function questNews(before, after) {
         if (q.type !== 'quest' || q.track === 'declined') continue;
         const p = prev.get(q.id);
         if (!p) { if (q.track === 'pending') found++; else added++; continue; }
+        // v0.6.40: an untracked one whose terms or deadline really changed is found again.
+        if (q.track === 'pending' && p.track !== 'pending') found++;
         if (p.status === 'open' && q.status === 'done') done++;
         if (p.status === 'open' && q.status === 'failed') failed++;
     }
@@ -2470,12 +2472,12 @@ function timelineHtml(st) {
 }
 // ───────── found quests (v0.6.39) ─────────
 // v0.6.39: "Ari → 나" for a promise or debt whose direction the messages showed. The user persona
-// reads as 나; people promising each other read as "A · B 서로".
+// reads as 나; "A · B 서로" only for a promise the messages call mutual (v0.6.40).
 function roleText(mem, q) {
     if (!q.by?.length) return '';
     const me = String(ctx().name1 || '').trim().toLowerCase();
     const nm = id => { const n = entityName(mem, id) || '?'; return me && n.trim().toLowerCase() === me ? '나' : n; };
-    return q.to?.length ? `${q.by.map(nm).join(' · ')} → ${q.to.map(nm).join(' · ')}` : q.by.length > 1 ? `${q.by.map(nm).join(' · ')} 서로` : q.by.map(nm).join(' · ');
+    return q.to?.length ? `${q.by.map(nm).join(' · ')} → ${q.to.map(nm).join(' · ')}` : q.mutual ? `${q.by.map(nm).join(' · ')} 서로` : q.by.map(nm).join(' · ');
 }
 function foundQuests(mem) { return mem.records.filter(r => r.type === 'quest' && r.track === 'pending'); }
 const STATUS_KO = { open: '진행 중', done: '완료', failed: '실패' };
@@ -2567,7 +2569,12 @@ function itemsHtml(st) {
     const card = r => {
         if (isEditing('record', r.id)) return `<div class="sp-card">${editForm()}</div>`;
         const last = r.msgs?.length ? Math.max(...r.msgs.filter(Number.isInteger)) : null, sc = sceneOfMsg(mem, last);
-        const badges = [r.stored ? `<span class="sp-badge">${r.stored.by === 'user' ? '보관' : '사라짐'}</span>` : '', r.gone && !r.stored ? '<span class="sp-badge">사라짐</span>' : '',
+        // v0.6.40: what the story put away is one "자동 보관" with its reason: 사라짐 (used up, broken,
+        // lost) or 정리됨 (a scene prop that needs no more following).
+        const auto = r.stored?.by === 'story' ? (r.gone ? '사라짐' : r.stored.reason === 'retired' ? '정리됨' : '사라짐') : '';
+        const badges = [r.stored ? (r.stored.by === 'user' ? '<span class="sp-badge">보관</span>'
+                : `<span class="sp-badge" title="${auto === '정리됨' ? '그 장면에서 쓰고 끝난 물건이라 추적을 끝냈어요. 마지막 상태는 남아 있어요. 새로 챙기거나 쓸 이유가 생기면 돌아와요' : '다 쓰거나 깨지거나 잃어버린 물건이에요. 되찾거나 고치면 돌아와요'}">자동 보관 · ${auto}</span>`) : '',
+            r.gone && !r.stored ? '<span class="sp-badge">사라짐</span>' : '',
             r.storedUpdated ? '<span class="sp-badge sp-badge-on" title="보관함에 있는 동안 이야기에서 다시 언급돼 기록이 갱신됐어요">보관 중 갱신됨</span>' : '',
             r.returnNotice ? '<span class="sp-badge sp-badge-warn" title="이야기에서 다시 쓰이거나 지니게 됐어요. 꺼낼지 정해 주세요">복귀 확인</span>' : '',
             r.stored?.lock ? '<span class="sp-badge" title="직접 보관 유지: 보관함 방식과 상관없이 보관함에 두고 알림도 띄우지 않아요">🔒</span>' : ''].join('');
@@ -2582,7 +2589,7 @@ function itemsHtml(st) {
     };
     const live = recs.filter(r => !r.stored), boxed = recs.filter(r => r.stored);
     const box = boxed.length ? `<details class="sp-more sp-box" data-group="itembox" ${ui.savesOpen.get('itembox') ? 'open' : ''}><summary>📦 보관함 ${boxed.length}</summary>
-        <div class="sp-dim">보관한 물건의 상태 기록은 주입에서 제외해요. 그 물건이 나온 과거 사건(저널·포인트)은 그대로 유지돼요. 기록하는 AI는 같은 물건을 알아보도록 이름과 마지막 상태만 봐요. 꺼내면 현재 상태 주입 대상으로 돌아오고, 이야기 속 소지자·위치는 바뀌지 않아요. 다 썼거나 잃어버린 물건은 꺼내도 그 상태 그대로이고, 이야기에서 되찾거나 고쳤다고 기록될 때만 다시 쓸 수 있는 물건이 돼요.</div>
+        <div class="sp-dim">보관한 물건의 상태 기록은 주입에서 제외해요. 그 물건이 나온 과거 사건(저널·포인트)은 그대로 유지돼요. 기록하는 AI는 같은 물건을 알아보도록 이름과 마지막 상태만 봐요. 꺼내면 현재 상태 주입 대상으로 돌아오고, 이야기 속 소지자·위치는 바뀌지 않아요. '자동 보관'은 이야기가 넣은 것이에요: <b>사라짐</b>(다 쓰거나 깨지거나 잃어버림 · 되찾거나 고치면 돌아옴), <b>정리됨</b>(그 장면에서 쓰고 끝난 소품 · 다시 언급되거나 조금 쓰인 정도로는 돌아오지 않고, 새로 챙기거나 쓸 이유가 생기면 돌아옴).</div>
         ${boxed.map(card).join('')}</details>` : '';
     const rows = live.map(card).join('');
     const itemEnts = mem.entities.filter(e => e.type === 'item' || e.type === 'place');
@@ -2984,7 +2991,7 @@ async function saveEdit() {
         } else if (e.kind === 'record') {
             if (!trim(v.text)) return false;
             let r = mem.records.find(x => x.id === e.id);
-            if (!r) { r = { id: 'r' + (mem.next.r++), type: v.type, text: '', src: [], msgs: [], pin: false, ...(v.type === 'quest' ? { questEvents: { created: null } } : {}) }; mem.records.push(r); }
+            if (!r) { r = { id: 'r' + (mem.next.r++), type: v.type, text: '', src: [], msgs: [], pin: false, manual: true, ...(v.type === 'quest' ? { questEvents: { created: null } } : {}) }; mem.records.push(r); }
             if (r.text !== trim(v.text)) { r.text = trim(v.text); delete r.ko; }
             if (r.type === 'party') { r.entity = v.entity || null; r.aspect = v.aspect === 'condition' ? 'condition' : 'relation'; }
             if (r.type === 'item') { r.entity = v.entity || null; r.holder = v.holder || null; }

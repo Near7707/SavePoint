@@ -27,7 +27,7 @@ const diagnosticsCode = section('function requestLines(', '\nfunction reportText
 class Cancelled extends Error {}
 class RequestTimeout extends Error {}
 
-function harness({ count = 40, chars = 1000, limit = 21000, failAt = Infinity, cancelAt = Infinity } = {}) {
+function harness({ count = 40, chars = 1000, limit = 22500, failAt = Infinity, cancelAt = Infinity } = {}) {
     const chat = Array.from({ length: count }, (_, n) => ({ name: 'Speaker', mes: 'a'.repeat(chars) + ` END${n}`, extra: {} }));
     const st = { mem: core.emptyMem(), lastIndex: -1, hashes: [], history: [], rev: 0 };
     const s = { guide: prompts.DEFAULT_GUIDE, inputChars: limit, profileId: 'fake', responseLength: 8000 };
@@ -109,7 +109,7 @@ test('oversized first message makes no model call and changes no memory or origi
 });
 
 test('review orchestration reads message tails, splits calls and never changes saved memory', async () => {
-    const h = harness({ count: 8, chars: 3000, limit: 16000 });
+    const h = harness({ count: 8, chars: 3000, limit: 17500 });
     h.st.mem.scenes = [{ id: 's1', segs: h.chat.map((_, n) => ({ id: `g${n + 1}`, from: n, to: n, outline: `Event ${n}.`, points: [{ text: 'An event.', msgs: [n] }] })) }];
     const scope = { records: [], segs: h.st.mem.scenes[0].segs.map(g => g.id) };
     const memory = JSON.stringify(h.st.mem);
@@ -132,7 +132,7 @@ test('a promise includes the intervening amendment, not just its endpoint eviden
 });
 
 test('an oversized review target is deferred rather than falsely marked problem-free', async () => {
-    const h = harness({ count: 3, chars: 8000, limit: 16000 });
+    const h = harness({ count: 3, chars: 8000, limit: 17500 });
     h.st.mem.records = [{ id: 'r1', type: 'quest', kind: 'promise', text: 'An agreement.', msgs: [0, 2], src: [], terms: { msg: 0, quote: 'An agreement.', context: 'Full context.' } }];
     await h.runCheck(h.st, { records: ['r1'], segs: [] });
     assert.equal(h.calls.length, 0);
@@ -142,7 +142,7 @@ test('an oversized review target is deferred rather than falsely marked problem-
 });
 
 test('a later review request failing leaves saved memory intact and the whole check incomplete', async () => {
-    const h = harness({ count: 8, chars: 3000, limit: 16000, failAt: 2 });
+    const h = harness({ count: 8, chars: 3000, limit: 17500, failAt: 2 });
     h.st.mem.scenes = [{ id: 's1', segs: h.chat.map((_, n) => ({ id: `g${n + 1}`, from: n, to: n, outline: `Event ${n}.`, points: [] })) }];
     const memory = JSON.stringify(h.st.mem);
     await h.runCheck(h.st, { records: [], segs: h.st.mem.scenes[0].segs.map(g => g.id) });

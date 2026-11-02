@@ -126,6 +126,17 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.full && r.sh <= r.h + 1, '8. 누르면 전부 보임');
     r = await ev(() => ({ who: $('.sp-st-items .grp .who').first().text(), items: $('.sp-st-items .grp').first().find('.it').length }));
     ok(r.who.startsWith('Ari') && r.items === 2, `8. 아이템은 사람마다 묶음, 한 줄에 하나 (${r.who})`);
+
+    // 9. (v0.6.40) a scene prop put away by the story shows as 자동 보관 · 정리됨; two keepers are not "서로"
+    await ev(() => { const st = __savePoint.state(); st.mem.records.push({ id: 'r910', type: 'item', entity: 'e91', holder: null, text: 'Half a teapot left on the table.', src: [], msgs: [], pin: false });
+        const rid = 'r910'; M.add(2); M.addChanges = () => ({ changes: [{ op: 'update', id: rid, text: 'Tea time is over; half a teapot is left.', retire: true, msgs: [M.chat.length - 1] }] }); });
+    await ev(() => __savePoint.handle('run'));
+    await page.waitForTimeout(1200);
+    await ev(() => { __savePoint.ui.savesOpen.set('itembox', true); __savePoint.handle('tab', 'items'); });
+    r = await ev(() => ({ stored: __savePoint.state().mem.records.find(x => x.id === 'r910').stored, badge: $('.sp-box .sp-badge').map((i, e) => e.textContent).get().join('|') }));
+    ok(r.stored?.reason === 'retired' && r.badge.includes('자동 보관 · 정리됨'), `9. 정리된 소품은 자동 보관 · 정리됨 (${r.badge})`);
+    r = await ev(id => { const st = __savePoint.state(); const q = st.mem.records.find(x => x.id === id); q.to = undefined; delete q.to; q.by = [st.mem.entities.find(e => e.name === 'Ari').id, 'e90']; __savePoint.handle('tab', 'quests'); const a = $('.sp-q-open .sp-role').first().text(); q.mutual = true; __savePoint.render(true); return [a, $('.sp-q-open .sp-role').first().text()]; }, q2);
+    ok(r[0] === 'Ari · 나' && r[1] === 'Ari · 나 서로', `9. 여러 명이 지킬 약속은 서로 표시가 있을 때만 서로 (${r.join(' / ')})`);
     if (SHOTS) await page.locator('#sp_overlay .sp-window').screenshot({ path: path.join(OUT, 'quests-main.png') });
 
     await page.close();

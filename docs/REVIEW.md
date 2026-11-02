@@ -1,3 +1,26 @@
+# v0.6.40 · v0.6.39 리뷰 4건 + 일시적 소품 정리
+
+기준: v0.6.39 `e9a5b21`.
+
+## 리뷰 4건
+1. [P2] 자동 거절 범위: `sameQuest`(단어)는 후보 찾기용. `sameThread` = 단어 + 같은 `who`·`by`·`to`·`mutual`·`terms.quote`·`dueKey(due)`일 때만 `declinedTwin`. 하나라도 다르면 confirm은 'pending', auto는 추적.
+2. [P2] 재후보: update 전에 `condBefore`(terms.quote, dueKey) 저장 → 검증·적용 후 실제로 달라졌을 때만 'declined' → 'pending'. `dueKey` = expr·date·days·seg·manual.day(같은 말을 다른 구간에서 다시 하면 새 기한으로 봄). 적용되지 않은(검사 탈락) 기한은 `r.due`가 그대로라 변화 없음.
+3. [P2] 상호 약속: 새 필드 `mutual: true`(약속·빚만, normalize에서 그 밖은 버림). `to`가 비어도 `mutual`이 없으면 `{A, B}` / `A · B`. `to`가 생기면 `mutual` 해제. 형식 예시도 "by both, to [], mutual: true". `cleanMem` 보존.
+4. [P3] 배너: `questNews`가 이번 저장에서 'pending'이 된 기존 항목도 발견으로 셈 → `goto=main-quests`.
+
+## 일시적 소품
+- 형식 ITEMS 규칙: 추적 이유가 "나중에 따라가야 함"(소유·운반·대여·반환·전달·나중을 위해 보관·단서·간직한 선물·도구·약속)일 때만. 남았다·소모될 수 있다는 것만으로는 아님. 표 예시(반 남은 음료 ✗, 내일 줄 도시락 ✓, 그 자리에서 먹은 선물 ✗). 이미 등록된 소품은 update `"retire": true` + 마지막 상태.
+- `retire`: `stored = { by: 'story', reason: 'retired' }`, `gone` 아님. 사용자 보관·📌·직접 추가(`manual: true`, 편집 창 새 기록에 붙임)는 무시. 물건이 아니거나 true가 아니면 normalize가 버림. `retire`와 `back` 동시 true는 오류.
+- 복귀: 정리됨은 같은 entity의 `add`나 언급(update)으로 돌아오지 않고 `back: true`일 때만. `back` 정의를 "되찾음·수리·돌려받음, 또는 새 이유로 다시 챙김(나중을 위해 챙김·누군가에게 주기로 함·단서가 됨); 언급·일부 사용은 아님"으로 넓힘. 사라짐(story 보관, gone)은 기존대로 같은 entity `add`면 복귀.
+- 수집 문맥 STORED ITEMS: `[item, retired prop]` 표시와 "둘 다 back:true로만, 언급·일부 사용으로는 아님".
+- 주입 머리말에 "물건 상태는 연속성 배경 정보, 남았다는 이유로 계속 꺼내 쓰거나 먹게 하지 않음" 한 문장.
+- 화면: story 보관 배지를 `자동 보관 · 사라짐` / `자동 보관 · 정리됨`(설명 툴팁), 보관함 안내 문구.
+- 최근 N장면 미등장 자동 휴식은 넣지 않음(주입 때문에 계속 언급되는 물건엔 안 걸리고, 열쇠·편지 등 놓칠 위험).
+
+검사: Node 371개(`quests.test`에 인물·기한이 다른 닮은 퀘스트, 같은 인용 재전송, mutual, retire 동작·복귀·보호 추가), 브라우저 23묶음 통과(`quests.cjs` 9: 정리됨 배지, 여러 명 약속의 서로 표시). 형식이 길어져 빡빡한 입력 한도 검사값 조정(request-flow 22,500/17,500, request-batches 23,500, loot 21,500, run.cjs 24,000, save-banner 23,500).
+
+재검토할 것: ① 실제 모델이 `retire`를 끝난 식사에만 쓰는지(필요한 물건까지 정리하지 않는지) ② `back` 정의가 넓어져 사라진 물건이 쉽게 되살아나지 않는지 ③ 기존 방에 이미 있는 소품은 다음 저장 때 모델이 retire해야 정리됨(코드가 기존 기록을 일괄 판단하지 않음).
+
 # v0.6.39 · ❗ 퀘스트 등록·추적, 약속·빚 방향, 화면 수정 묶음
 
 기준: v0.6.38 `276f160`. **★는 리뷰를 특히 부탁하는 곳.**

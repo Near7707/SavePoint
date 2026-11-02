@@ -61,7 +61,10 @@ test('the same thread in other words stays untracked; new terms make it a candid
     assert.equal(twin.track, 'declined'); assert.equal(twin.autoDeclined, first.id);
     s.step([lantern(s, { text: 'Ari will buy Bo a loaf of bread.', terms: { msg: s.n(), quote: 'I will bring the lantern back tomorrow' } })]);
     assert.equal(s.mem.records.filter(r => r.type === 'quest').at(-1).track, undefined, 'a different promise is a new quest');
+    // v0.6.40: the same terms quoted again change nothing; really new terms make it a candidate again
     s.step([{ op: 'update', id: first.id, terms: { msg: s.n(), quote: 'I will bring the lantern back tomorrow' } }]);
+    assert.equal(s.mem.records.find(r => r.id === first.id).track, 'declined', 're-quote: still untracked');
+    s.step([{ op: 'update', id: first.id, terms: { msg: s.n(), quote: 'lantern back tomorrow' } }]);
     assert.equal(s.mem.records.find(r => r.id === first.id).track, 'pending');
     assert.equal(sameQuest({ kind: 'goal', text: 'Find the lantern.' }, { kind: 'promise', text: 'Find the lantern.' }), false, 'kinds differ');
 });
@@ -74,10 +77,15 @@ test('by/to: kept for promises and debts, dropped elsewhere, shown to the collec
     assert.deepEqual([p.by, p.to], [[s.ari], [s.bo]]);
     assert.equal(g.by, undefined, 'a goal has no by/to (dropped, not an error)');
     assert.match(recordLine(s.mem, p), /\{Ari -> Bo\}/);
+    // v0.6.40: two people keeping a vow is not "to each other" unless the messages say so (mutual)
     s.step([{ op: 'update', id: p.id, by: [s.ari, s.bo], to: [] }]);
-    const p2 = s.mem.records.find(r => r.id === p.id);
-    assert.deepEqual([p2.by, p2.to], [[s.ari, s.bo], undefined]);
+    let p2 = s.mem.records.find(r => r.id === p.id);
+    assert.deepEqual([p2.by, p2.to, p2.mutual], [[s.ari, s.bo], undefined, undefined]);
+    assert.match(recordLine(s.mem, p2), /\{Ari, Bo\}/);
+    s.step([{ op: 'update', id: p.id, mutual: true }]);
+    p2 = s.mem.records.find(r => r.id === p.id);
     assert.match(recordLine(s.mem, p2), /\{Ari, Bo, to each other\}/);
+    assert.equal(cleanMem(JSON.parse(JSON.stringify(s.mem))).records.find(r => r.id === p.id).mutual, true);
     const back = cleanMem(JSON.parse(JSON.stringify(s.mem))).records.find(r => r.id === p.id);
     assert.deepEqual(back.by, [s.ari, s.bo]);
     const errors = s.step([lantern(s, { by: ['nobody'] })], [], { expectErrors: true });
@@ -91,4 +99,45 @@ test('track survives a save file; unknown values are dropped', () => {
     assert.equal(cleanMem(raw).records.find(r => r.type === 'quest').track, 'pending');
     raw.records.find(r => r.type === 'quest').track = 'weird';
     assert.equal(cleanMem(raw).records.find(r => r.type === 'quest').track, undefined);
+});
+
+test('v0.6.40: a look-alike is hidden only when nothing tells them apart (people, roles, terms, deadline)', () => {
+    const s = story('confirm');
+    s.step([{ op: 'add', type: 'quest', kind: 'goal', who: [s.ari], text: 'Repair the old bridge before winter.' }]);
+    const first = s.mem.records.find(r => r.type === 'quest'); first.track = 'declined';
+    s.step([{ op: 'add', type: 'quest', kind: 'goal', who: [s.bo], text: 'Repair the old bridge before winter.' }]);
+    assert.equal(s.mem.records.filter(r => r.type === 'quest').at(-1).track, 'pending', 'another person: shown as found');
+    s.step([{ op: 'add', type: 'quest', kind: 'goal', who: [s.ari], text: 'Repair the old bridge before the winter.' }]);
+    assert.equal(s.mem.records.filter(r => r.type === 'quest').at(-1).track, 'declined', 'same person, same words: stays untracked');
+    s.step([lantern(s)]);
+    const l = s.mem.records.filter(r => r.type === 'quest').at(-1); l.track = 'declined';
+    s.step([lantern(s, { due: { expr: 'tomorrow', days: 1, msg: s.n() } })]);
+    assert.equal(s.mem.records.filter(r => r.type === 'quest').at(-1).track, 'pending', 'a deadline the old one did not have: shown');
+});
+
+test('v0.6.40: retire puts a scene prop away as 정리됨; mentions and adds do not bring it back, back: true does', () => {
+    const s = story('auto');
+    s.step([{ op: 'add', type: 'item', entity: 'tea', holder: null, text: 'A tea set with a half-full teapot.' }], [{ ref: 'tea', type: 'item', name: 'Tea set', aliases: [] }]);
+    const tea = s.mem.records.find(r => r.type === 'item');
+    s.step([{ op: 'update', id: tea.id, text: 'Tea time is over; half a teapot is left on the table.', retire: true }]);
+    let t = s.mem.records.find(r => r.id === tea.id);
+    assert.deepEqual([t.stored?.by, t.stored?.reason, t.gone], ['story', 'retired', undefined]);
+    assert.doesNotMatch(buildInjection(s.mem, { budget: 6000 }).text, /teapot/);
+    assert.match(promptContext(s.mem, 'x').state, /STORED ITEMS[\s\S]*retired prop/);
+    s.step([{ op: 'update', id: tea.id, text: 'Ari sips from the leftover teapot.' }]);
+    s.step([{ op: 'add', type: 'item', entity: t.entity, holder: null, text: 'The teapot is still on the table.' }]);
+    t = s.mem.records.find(r => r.id === tea.id);
+    assert.equal(t.stored?.reason, 'retired', 'mentioned or used a little: stays put away');
+    assert.equal(s.mem.records.filter(r => r.type === 'item').length, 1, 'no second record');
+    s.step([{ op: 'update', id: tea.id, text: 'Ari pours the rest into a flask to take on the trip.', back: true }]);
+    assert.equal(s.mem.records.find(r => r.id === tea.id).stored, undefined, 'a new reason to follow it: back');
+    // pinned or hand-added items are never retired by the story; retire on a non-item is dropped
+    const r = s.mem.records.find(x => x.id === tea.id); r.pin = true;
+    s.step([{ op: 'update', id: tea.id, text: 'The flask is packed.', retire: true }]);
+    assert.equal(s.mem.records.find(x => x.id === tea.id).stored, undefined);
+    s.step([{ op: 'add', type: 'quest', kind: 'goal', who: [s.ari], text: 'Reach the coast.' }]);
+    const q = s.mem.records.find(x => x.type === 'quest');
+    s.step([{ op: 'update', id: q.id, text: 'Reach the coast soon.', retire: true }]);
+    assert.equal(s.mem.records.find(x => x.id === q.id).stored, undefined);
+    assert.equal(cleanMem(JSON.parse(JSON.stringify(s.mem))).records.find(x => x.id === tea.id).pin, true);
 });

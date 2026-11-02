@@ -64,7 +64,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await sleep(3700);
 
     // 3. leaving the room mid-save: the notice names the room and what was saved; the room is remembered
-    await ev(() => { M.add(60, i => `Long message ${i} ${'words '.repeat(60)}`); M.settings.savePoint.inputChars = 22000;   /* tight on purpose: just above the fixed format (v0.6.34, v0.6.39) */ });
+    await ev(() => { M.add(60, i => `Long message ${i} ${'words '.repeat(60)}`); M.settings.savePoint.inputChars = 23500;   /* tight on purpose: just above the fixed format (v0.6.34, v0.6.39, v0.6.40) */ });
     const roomA = await ev(() => ({ chat: M.chat, meta: M.meta, key: JSON.stringify(['ari.png', M.chatId]) }));
     const p3 = ev(() => __savePoint.handle('run').catch(() => {}));
     await page.waitForFunction(() => __savePoint.state().lastIndex >= 40, null, { timeout: 15000 });
