@@ -166,6 +166,15 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r = await ev(() => { const el = document.getElementById('sp_resume'); return !!el && !el.hidden; });
     ok(!r && !(await ev(() => __savePoint.state()?.mem?.scenes?.length)), '8. 새로 하기를 고른 방은 다시 묻지 않고 아무것도 바뀌지 않음');
 
+    // 9. (v0.6.48) a room that has its own saves is never asked, even if it opens looking empty
+    await ev(() => { const x = __savePoint.listSaves().find(v => v.auto); return x; });
+    const autoRoom = await ev(() => __savePoint.listSaves().find(v => v.auto)?.room);
+    const chatIdOf = await ev(r => JSON.parse(r)[1], autoRoom);
+    await ev(([id, g]) => M.switchChat(id, g, {}), [chatIdOf, greet()]);
+    await page.waitForTimeout(1000);
+    r = await ev(() => { const el = document.getElementById('sp_resume'); return !!el && !el.hidden; });
+    ok(autoRoom && !r, '9. 자기 세이브(AUTO)가 있는 방은 비어 보여도 이어하기를 묻지 않음');
+
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();

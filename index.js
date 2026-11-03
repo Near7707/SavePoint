@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.47';
+const VERSION = '0.6.48';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -3667,8 +3667,12 @@ function resumeChoices() {
     if (s.resumeDismissed?.[room] || hasMemory(state()?.mem)) return [];
     const list = chat();
     if (list.length > 1 || (list.length === 1 && list[0].is_user)) return [];
+    const all = listSaves();
+    // v0.6.48: a room that has its own saves (QUICK, AUTO or FILE) is not a new chat, even when its
+    // messages or memory are not on the page yet (seen while a long chat was still opening).
+    if (all.some(x => x.room === room)) return [];
     const charKey = charInfo()?.key || '';
-    const saves = listSaves().filter(x => x.room !== room && roomChar(x.room) === charKey);
+    const saves = all.filter(x => x.room !== room && roomChar(x.room) === charKey);
     // QUICK first (newest), then FILE slots, then the newest AUTO of each room.
     const seen = new Set();
     const autos = saves.filter(x => x.auto).sort((a, b) => b.updated - a.updated).filter(x => !seen.has(x.room) && seen.add(x.room));
@@ -3689,6 +3693,8 @@ function offerResume(open = false) {
         <div class="sp-resume-btns">${open ? '' : '<button class="sp-btn sp-primary interactable" data-resume-act="open">▶ 불러오기</button>'}<button class="sp-btn interactable" data-resume-act="fresh">✦ 새로 하기</button><button class="sp-btn interactable" data-resume-act="later" title="닫기 (다음에 이 방을 열면 다시 물어요)">✕</button></div>`;
     el.hidden = false;
     el.onclick = async e => {
+        // The room may have finished opening since the question appeared: ask again before acting.
+        if (!resumeChoices().length) { hideResume(); return; }
         const pick = e.target.closest('[data-resume]'), act = e.target.closest('[data-resume-act]')?.dataset.resumeAct;
         if (pick) { hideResume(); await loadSave(pick.dataset.resume); return; }
         if (act === 'open') return offerResume(true);
