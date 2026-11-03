@@ -1,3 +1,13 @@
+# v0.6.47 · 같은 길이·다른 구성의 포인트 목록
+
+기준: v0.6.46 `9fe4026`.
+
+- [P2] id 없는 목록의 경로 조각을 `{ i, len, sig }`로. `sig` = 그 칸 항목의 식별 정보(`text`가 있으면 `[text, msgs, kind]`, 없으면 항목 전체 JSON). 재적용 때 길이와 그 칸의 `sig`가 모두 같아야 진행, 아니면 'stop'(그 변경 취소). B·C·D에서 D에 📌 → 복원된 A·B·C에서 셋째 칸 C의 sig가 달라 취소.
+- 같은 포인트에서 앞선 변경(●)이 실패하고 그 위에 📌를 누른 경우: ●는 `key`/`keyUser`만 바꾸므로 sig(text·msgs·kind)는 같아 📌 재적용됨.
+- 새 `tests/replay.test.mjs`: index.js의 `diffPaths`/`applyPaths` 구역을 떼어 검사(같은 길이·다른 구성 → stop, 같은 칸 → changed/same, 사라진 기록 → stop).
+
+검사: Node 377개, 관련 브라우저 묶음 통과.
+
 # v0.6.46 · v0.6.45 리뷰 P1: 재적용이 배열 위치를 기억하던 문제
 
 기준: v0.6.45 `916b3ce`.

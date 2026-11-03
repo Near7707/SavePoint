@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.46';
+const VERSION = '0.6.47';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -280,8 +280,11 @@ async function writeEntry(queue, entry) {
 // v0.6.46: what a button edit changed, as steps a replay can repeat safely. Items in lists that have
 // ids (scenes, parts, entities, records) are addressed by id, never by position: { id } in a path,
 // { add, after } to insert, { remove } to delete. Lists without ids (points) are addressed by
-// position only while their length is the one the edit saw ({ i, len }); a list that changed
+// position only while their length and the item there are the ones the edit saw ({ i, len, sig }); a list that changed
 // length there cannot be replayed. Anything that cannot be found makes the replay stop.
+// v0.6.47: what an item without an id is (a point: its text and evidence), so a same-length list with
+// other items in it is never taken for the one the edit saw.
+const itemSig = x => JSON.stringify(x && typeof x === 'object' && 'text' in x ? [x.text, x.msgs ?? null, x.kind ?? null] : x);
 const hasIds = l => Array.isArray(l) && l.length > 0 && l.every(x => x && typeof x === 'object' && typeof x.id === 'string');
 function diffPaths(a, b, path = [], out = []) {
     if (JSON.stringify(a) === JSON.stringify(b)) return out;
@@ -299,7 +302,7 @@ function diffPaths(a, b, path = [], out = []) {
             else out.push({ path, add: clone(x), after: i ? b[i - 1].id : null });
         });
     } else if (Array.isArray(a) && Array.isArray(b) && a.length === b.length) {
-        a.forEach((x, i) => diffPaths(x, b[i], [...path, { i, len: a.length }], out));
+        a.forEach((x, i) => diffPaths(x, b[i], [...path, { i, len: a.length, sig: itemSig(x) }], out));
     } else if (Array.isArray(a) || Array.isArray(b)) out.push({ path, unsafe: true });
     else if (path.length && typeof path.at(-1) === 'string') out.push({ path, value: clone(b) });
     else out.push({ path, unsafe: true });
@@ -315,7 +318,7 @@ function applyPaths(target, patch) {
             if (o === null || typeof o !== 'object') return null;
             if (typeof seg === 'string') o = o[seg];
             else if ('id' in seg) o = Array.isArray(o) ? o.find(x => x?.id === seg.id) : undefined;
-            else o = Array.isArray(o) && o.length === seg.len ? o[seg.i] : undefined;
+            else o = Array.isArray(o) && o.length === seg.len && itemSig(o[seg.i]) === seg.sig ? o[seg.i] : undefined;
             if (o === undefined) return null;
         }
         return o;
