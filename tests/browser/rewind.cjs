@@ -102,6 +102,42 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r = await ev(() => document.querySelector('#sp_overlay .sp-hud').textContent);
     ok(r.includes('미저장') && !r.includes('미기록') && r.includes('마지막 저장') && /저장 \d+ \/ \d+/.test(r), '7. 상태칸 용어: 미저장·마지막 저장·저장 N / M');
 
+    // 8. (v0.6.56) a delete question open while the room changes: the other room (same ids) is left alone
+    const ask = () => ev(() => { M.confirm = new Promise(res => { window.__answer = res; }); });
+    await ev(() => { const st = __savePoint.state(); st.mem.records.push({ id: 'rx2', type: 'world', kind: 'rule', text: 'Lamps stay lit.', src: [], msgs: [] }); });
+    const roomA = await ev(() => ({ chat: M.chat, meta: M.meta, id: M.chatId }));
+    const copyB = await ev(() => structuredClone({ chat: M.chat, meta: M.meta }));
+    for (const what of ['rec', 'point']) {
+        await ask();
+        const pid = await ev(() => { const s = __savePoint.state().mem.scenes[0], g = s.segs[0]; return `${s.id}|${g.id}|0`; });
+        const asking = what === 'rec' ? ev(() => __savePoint.handle('del-rec', 'rx2')) : ev(id => __savePoint.handle('del-point', id), pid);
+        await page.waitForTimeout(150);
+        await ev(b => M.switchChat('room-B-' + Math.random(), b.chat, b.meta), copyB);
+        await page.waitForTimeout(150);
+        await ev(() => window.__answer(1)); await asking; await page.waitForTimeout(200);
+        r = await ev(pid => ({ rec: !!__savePoint.state().mem.records.find(x => x.id === 'rx2'), point: (() => { const [sid, gid] = pid.split('|'); return __savePoint.state().mem.scenes.find(x => x.id === sid).segs.find(x => x.id === gid).points.length; })(), toast: toastr.log.at(-1)?.[1] || '' }), pid);
+        const pointsBefore = copyB.meta.savePoint.mem.scenes[0].segs[0].points.length;
+        ok(r.rec && r.point === pointsBefore && r.toast.includes('다시 눌러'), `8. ${what === 'rec' ? '항목' : '포인트'} 삭제 확인 중 방이 바뀌면 새 방의 같은 ID를 지우지 않음 (${JSON.stringify(r)})`);
+        await ev(a => M.switchChat(a.id, a.chat, a.meta), roomA);
+        await page.waitForTimeout(150);
+    }
+    await ev(() => { M.confirm = 1; });
+
+    // 9. (v0.6.56) a checkpoint lands while the rewind question is open: nothing goes back
+    await ev(() => { M.add(2); return __savePoint.handle('run'); });
+    await page.waitForTimeout(900);
+    const before9 = await ev(() => __savePoint.state().lastIndex);
+    await ask();
+    const asking9 = ev(() => __savePoint.handle('undo'));
+    await page.waitForTimeout(150);
+    await ev(() => { M.settings.savePoint.autoEvery = 5; M.settings.savePoint.autoReserve = 0; M.add(6); return __savePoint.autoCollect(); });
+    await page.waitForTimeout(900);
+    const after9 = await ev(() => __savePoint.state().lastIndex);
+    await ev(() => window.__answer(1)); await asking9; await page.waitForTimeout(200);
+    r = { before: before9, saved: after9, now: await ev(() => __savePoint.state().lastIndex), toast: await ev(() => toastr.log.at(-1)?.[1] || '') };
+    ok(r.saved > r.before && r.now === r.saved && r.toast.includes('다시 눌러'), `9. 리와인드 확인 중 새 저장이 끝나면 되돌리지 않고 다시 누르게 함 (${JSON.stringify(r)})`);
+    await ev(() => { M.confirm = 1; });
+
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();

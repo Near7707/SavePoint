@@ -24,7 +24,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.55';
+const VERSION = '0.6.56';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -1745,8 +1745,10 @@ async function undo() {
     if (ui.run) { toastr.info('저장이 끝난 뒤 눌러 주세요.', 'SavePoint'); return; }
     if (!st?.undo) { toastr.info('되돌릴 작업이 없어요. ⏪ 리와인드는 마지막 저장·리셋·세이브 불러오기를 되돌려요.', 'SavePoint'); return; }
     const what = undoLabel(st), edits = st.undoInfo?.edits || 0;
-    if (!(await confirmBox(`⏪ 리와인드: ${what} 전으로 되돌릴까요?${edits ? ` 그 뒤에 한 편집 ${edits}개도 함께 되돌아가요.` : ''}`))) return;
-    if (state() !== st || ui.run || !st.undo) return;
+    // v0.6.56: what the question names is what goes back; a save that lands while it is open cancels it.
+    const target = st.undo, info = JSON.stringify({ kind: st.undoInfo?.kind, run: st.undoInfo?.run, at: st.undoInfo?.at });
+    if (!(await confirmHere(`⏪ 리와인드: ${what} 전으로 되돌릴까요?${edits ? ` 그 뒤에 한 편집 ${edits}개도 함께 되돌아가요.` : ''}`,
+        () => !ui.run && st.undo === target && JSON.stringify({ kind: st.undoInfo?.kind, run: st.undoInfo?.run, at: st.undoInfo?.at }) === info))) return;
     const restored = { ...clone(st.undo), undo: null, undoInfo: null };
     restored.lootQueue = restoreLostLoot(st.lootQueue, st.mem, restored.mem, { room: roomKey(), hashes: st.hashes, fallback: st.undo.lootQueue });
     await transact(() => { ctx().chatMetadata[MODULE] = restored; }, { undoable: false });
@@ -1755,7 +1757,7 @@ async function undo() {
 }
 async function clearRoom() {
     const st = state();
-    if (!st || !(await confirmBox('리셋: 이 방의 기억을 모두 지울까요? 세이브 슬롯은 남아요. (⏪ 리와인드로 되돌릴 수 있어요)'))) return;
+    if (!st || !(await confirmHere('리셋: 이 방의 기억을 모두 지울까요? 세이브 슬롯은 남아요. (⏪ 리와인드로 되돌릴 수 있어요)', () => !ui.run))) return;
     await transact(() => { ctx().chatMetadata[MODULE] = freshState({ autoMark: chat().length - 1, lootQueue: clone(st.lootQueue || []) }); }, { undoable: true, undoKind: 'reset' });
 }
 
@@ -1931,7 +1933,7 @@ async function saveNew() {
 async function overwriteSave(id) {
     const st = state(), old = findSave(id);
     if (!st || !old || old.auto || old.quick || !hasMemory(st.mem)) return;
-    if (!(await confirmBox(`"${old.name}" 슬롯을 지금 기억으로 덮어쓸까요?`))) return;
+    if (!(await confirmHere(`"${old.name}" 슬롯을 지금 기억으로 덮어쓸까요?`))) return;
     const res = await storeSave(saveRecord(st, old.name, id));
     st.linkedSave = id; persistSoon(); render();
     if (res.local) toastr.warning(`설정에만 저장했어요. 서버 백업 실패: ${res.error?.message || ''}`);
@@ -2249,6 +2251,18 @@ async function askText(title, value = '') {
     const c = ctx();
     const r = await c.callGenericPopup(esc(title), c.POPUP_TYPE.INPUT, value);
     return typeof r === 'string' ? r.trim() : '';
+}
+// v0.6.56: a question about this room's memory. `false` when it was declined, or when the room, the
+// room's state or what the question was about (`still()`) changed while it was open — then nothing is
+// done and the person is told to press again.
+async function confirmHere(text, still = () => true) {
+    const at = { key: roomKey(), epoch: roomEpoch, st: state() };
+    if (!(await confirmBox(text))) return false;
+    if (roomKey() !== at.key || roomEpoch !== at.epoch || state() !== at.st || !still()) {
+        toastr.info('확인하는 사이 채팅방이나 기억이 바뀌어서 하지 않았어요. 다시 눌러 주세요.', 'SavePoint');
+        return false;
+    }
+    return true;
 }
 async function confirmBox(text) {
     const c = ctx();
@@ -3508,7 +3522,8 @@ async function handle(act, id) {
         case 'quest-done': case 'quest-fail': case 'quest-open':
             return commitEdit(m => { const r = m.records.find(x => x.id === id); if (!r) return false; setQuestStatus(r, act === 'quest-done' ? 'done' : act === 'quest-fail' ? 'failed' : 'open'); });
         case 'del-scene':
-            if (!(await confirmBox('이 장면을 저널에서 지울까요? 상태 탭의 항목은 그대로 남아요. (리와인드로 되돌릴 수 없어요)'))) return;
+            { const sig = JSON.stringify(st?.mem.scenes.find(x => x.id === id) ?? null);
+              if (!(await confirmHere('이 장면을 저널에서 지울까요? 상태 탭의 항목은 그대로 남아요. (리와인드로 되돌릴 수 없어요)', () => sig !== 'null' && JSON.stringify(state()?.mem.scenes.find(x => x.id === id) ?? null) === sig))) return; }
             return commitEdit(m => { m.scenes = m.scenes.filter(x => x.id !== id); });
         case 'check-ignore': { const x = st?.check?.issues.find(i => i.id === id); if (x) { x.ignored = true; persistSoon(); } return render(true); }
         case 'check-edit': { const x = st?.check?.issues.find(i => i.id === id); return x ? editAbout(x.about) : undefined; }
@@ -3529,10 +3544,12 @@ async function handle(act, id) {
         }, { undoable: false });
         case 'rekey-scene': return rekeyScenes([id]);
         case 'del-point':
-            if (!(await confirmBox('이 포인트를 지울까요? (리와인드로 되돌릴 수 없어요)'))) return;
+            { const pointSig = () => { const f = state() ? findPoint(state().mem, id) : null; return f?.g ? JSON.stringify(f.g.points[f.j] ?? null) : 'null'; }, sig = pointSig();
+              if (!(await confirmHere('이 포인트를 지울까요? (리와인드로 되돌릴 수 없어요)', () => sig !== 'null' && pointSig() === sig))) return; }
             return commitEdit(m => { const { g, j } = findPoint(m, id); if (!g) return false; g.points.splice(j, 1); });
         case 'del-rec':
-            if (!(await confirmBox('이 항목을 지울까요? (리와인드로 되돌릴 수 없어요)'))) return;
+            { const sig = JSON.stringify(st?.mem.records.find(x => x.id === id) ?? null);
+              if (!(await confirmHere('이 항목을 지울까요? (리와인드로 되돌릴 수 없어요)', () => sig !== 'null' && JSON.stringify(state()?.mem.records.find(x => x.id === id) ?? null) === sig))) return; }
             return commitEdit(m => { m.records = m.records.filter(x => x.id !== id); });
         case 'save-new': return saveNew();
         case 'save-over': return overwriteSave(id);
