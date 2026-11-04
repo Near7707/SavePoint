@@ -114,6 +114,13 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r = { hid: await hidden(), to: await ev(() => __savePoint.state().hideManual?.to), tried: await ev(() => M.failOnce === false) };
     ok(r.tried && r.hid.startsWith('HHHHHHHH.') && r.to === 7, `6. 저장 실패 → 숨김과 범위 모두 원래대로 (${JSON.stringify(r)})`);
 
+    // 6b. a message the user hid themselves, then opened again, is not hidden by the next save
+    await ev(() => { const m = M.chat[1]; delete m.extra.savepointHidden; m.is_system = false; __savePoint.syncHide(); M.add(2); return __savePoint.handle('run'); });
+    await page.waitForTimeout(900);
+    r = await hidden();
+    ok(r.slice(0, 8) === 'H.HHHHHH', `6b. 직접 숨겼다 펼친 메시지는 다음 세이브에도 보임 (${r})`);
+    await ev(() => { const m = M.chat[1]; m.is_system = true; m.extra.savepointHidden = 1; __savePoint.syncHide(); });
+
     // 7. the button sits beside the bar on a phone, in every skin, without pushing the panel wider
     r = await ev(() => {
         const w = document.querySelector('#sp_overlay .sp-window'), bad = [];

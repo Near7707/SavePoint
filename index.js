@@ -19,7 +19,9 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.50';
+// v0.6.51: in the manual range but shown for now only because of "keep the latest N" (or a shorter chat).
+const HELD_KEY = 'savepointHeld';
+const VERSION = '0.6.51';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -190,10 +192,13 @@ function applyEntry(entry) {
     // A save-time rescan may retire a previous manual visibility exception.
     // Keep those flags as well as visibility so a failed disk write restores
     // the exact pre-save state, including messages the user had opened.
-    entry.visibility = entry.rehide ? chat().map(m => ({ m, system: m.is_system,
+    // v0.6.51: in manual mode an ordinary sync no longer hides anything new, so a failed write cannot
+    // rebuild the old visibility from the memory alone: every change keeps the snapshot there.
+    entry.visibility = entry.rehide || hideModeOf(settings()) === 'manual' ? chat().map(m => ({ m, system: m.is_system,
         hadSystem: Object.hasOwn(m, 'is_system'), hadExtra: Object.hasOwn(m, 'extra'), extra: m.extra,
         hadHidden: !!m.extra && Object.hasOwn(m.extra, HIDE_KEY), hidden: m.extra?.[HIDE_KEY],
-        hadVisible: !!m.extra && Object.hasOwn(m.extra, VISIBLE_KEY), visible: m.extra?.[VISIBLE_KEY] })) : null;
+        hadVisible: !!m.extra && Object.hasOwn(m.extra, VISIBLE_KEY), visible: m.extra?.[VISIBLE_KEY],
+        hadHeld: !!m.extra && Object.hasOwn(m.extra, HELD_KEY), held: m.extra?.[HELD_KEY] })) : null;
     if (entry.change() === false) return false;
     const st = state();
     // v0.6.45: a button edit remembers what it changed (paths and their final values), so a replay
@@ -221,6 +226,7 @@ function restoreEntry(entry) {
         if (v.m.extra) {
             if (v.hadHidden) v.m.extra[HIDE_KEY] = v.hidden; else delete v.m.extra[HIDE_KEY];
             if (v.hadVisible) v.m.extra[VISIBLE_KEY] = v.visible; else delete v.m.extra[VISIBLE_KEY];
+            if (v.hadHeld) v.m.extra[HELD_KEY] = v.held; else delete v.m.extra[HELD_KEY];
         }
     });
     return here;
@@ -498,7 +504,7 @@ function syncHide({ rehide = false } = {}) {
     const mode = hideModeOf(s);
     const can = s.enabled && mode !== 'off' && st && !st.review && hasMemory(st.mem);
     let cutoff = can ? hideLimit(st, list) : -1;
-    let changed = false;
+    let changed = false, reach = -1;
     if (st && mode === 'manual') {
         // Messages that went back to unrecorded (rewind, a rolled-back record, even all of them) leave
         // the range for good: recorded again, they stay shown until the button is pressed again.
@@ -506,18 +512,21 @@ function syncHide({ rehide = false } = {}) {
         if (freshManual(h, s) && h.to > floor) { h.to = floor; changed = true; }
         if (can) {
             if (!freshManual(st.hideManual, s)) { st.hideManual = { to: Math.min(hiddenNow(list), st.lastIndex), at: Date.now() }; changed = true; }
-            cutoff = Math.min(cutoff, st.hideManual.to);
+            reach = Math.min(st.hideManual.to, st.lastIndex);
+            cutoff = Math.min(cutoff, reach);
         }
     }
     // Off: "opened by the user" marks mean nothing any more; dropped so no later mode reads them.
-    if (mode === 'off' && s.enabled) list.forEach(m => { if (m.extra && Object.hasOwn(m.extra, VISIBLE_KEY)) { delete m.extra[VISIBLE_KEY]; changed = true; } });
+    if (mode === 'off' && s.enabled) list.forEach(m => { for (const k of [VISIBLE_KEY, HELD_KEY]) if (m.extra && Object.hasOwn(m.extra, k)) { delete m.extra[k]; changed = true; } });
     const rescan = rehide && (mode !== 'manual' || rehide === 'button');
+    const dropHeld = m => { if (m.extra && Object.hasOwn(m.extra, HELD_KEY)) { delete m.extra[HELD_KEY]; changed = true; } };
     list.forEach((m, i) => {
         const mark = m.extra?.[HIDE_KEY];
         if (rescan && i <= cutoff) {
             // Recheck from #0 on every saved batch. A manually opened message
             // stays open during ordinary redraws, but joins the next save's hide.
             if (m.extra && Object.hasOwn(m.extra, VISIBLE_KEY)) { delete m.extra[VISIBLE_KEY]; changed = true; }
+            dropHeld(m);
             if (!m.is_system) {
                 m.extra ||= {}; m.extra[HIDE_KEY] = 1; changed = true;
             }
@@ -528,8 +537,19 @@ function syncHide({ rehide = false } = {}) {
         }
         if (mark && !m.is_system) {
             // The user unhid it on purpose; leave it visible until the next save.
-            delete m.extra[HIDE_KEY]; m.extra[VISIBLE_KEY] = true; changed = true; return;
+            delete m.extra[HIDE_KEY]; m.extra[VISIBLE_KEY] = true; dropHeld(m); changed = true; return;
         }
+        if (can && mode === 'manual') {
+            // v0.6.51: manual mode only keeps what the button hid. Nothing new is hidden here, so a
+            // message the user hid and opened again (it carries no SavePoint mark) stays shown. A
+            // message shown only because of "keep the latest N" is held and hidden again when it
+            // falls outside the latest N.
+            if (mark && i > cutoff) { setHidden(m, i, false); delete m.extra[HIDE_KEY]; if (i <= reach) m.extra[HELD_KEY] = 1; changed = true; }
+            else if (m.extra?.[HELD_KEY] && (m.is_system || i > reach)) dropHeld(m);
+            else if (m.extra?.[HELD_KEY] && i <= cutoff) { m.extra[HIDE_KEY] = 1; dropHeld(m); setHidden(m, i, true); changed = true; }
+            return;
+        }
+        dropHeld(m);
         if (mark && i > cutoff) { setHidden(m, i, false); delete m.extra[HIDE_KEY]; changed = true; }
         else if (!mark && i <= cutoff && !m.is_system && !m.extra?.[VISIBLE_KEY]) {
             m.extra ||= {}; m.extra[HIDE_KEY] = 1; setHidden(m, i, true); changed = true;
@@ -1992,7 +2012,7 @@ function putCarried(reply) {
     const m = list[0], before = clone(m);
     m.mes = reply.text; m.swipes = [reply.text]; m.swipe_id = 0; m.swipe_info = [fresh()];
     // Only our own visibility marks are kept; any content-bound data of the old greeting goes.
-    const keep = Object.fromEntries([HIDE_KEY, VISIBLE_KEY].filter(k => m.extra && Object.hasOwn(m.extra, k)).map(k => [k, m.extra[k]]));
+    const keep = Object.fromEntries([HIDE_KEY, VISIBLE_KEY, HELD_KEY].filter(k => m.extra && Object.hasOwn(m.extra, k)).map(k => [k, m.extra[k]]));
     m.extra = keep;
     return () => { for (const k of Object.keys(m)) delete m[k]; Object.assign(m, before); };
 }

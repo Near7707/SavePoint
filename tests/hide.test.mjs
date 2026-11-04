@@ -10,7 +10,7 @@ const hiding = section('function setHidden(', '// ───────── ch
 const transaction = section('async function transact(', '\nfunction persistSoon');
 const summarizeCode = section('async function summarize(', '// ───────── automatic collection');
 const automaticCode = section('async function autoCollect(', '// ───────── record check');
-const HIDE_KEY = 'savepointHidden', VISIBLE_KEY = 'savepointVisible';
+const HIDE_KEY = 'savepointHidden', VISIBLE_KEY = 'savepointVisible', HELD_KEY = 'savepointHeld';
 
 function harness({ count = 10, lastIndex = 9, keepRecent = 2 } = {}) {
     const chat = Array.from({ length: count }, (_, n) => ({ mes: `Message ${n}`, name: 'Speaker', is_system: false, extra: {} }));
@@ -21,7 +21,7 @@ function harness({ count = 10, lastIndex = 9, keepRecent = 2 } = {}) {
     let calls = 0;
     const ui = {};
     const box = { clearInterrupted() {},
-        MODULE: 'savePoint', HIDE_KEY, VISIBLE_KEY, ui, roomEpoch: 0,
+        MODULE: 'savePoint', HIDE_KEY, VISIBLE_KEY, HELD_KEY, ui, roomEpoch: 0,
         clone: structuredClone, roomKey: () => 'room', state: () => meta.savePoint, ctx: () => ({ chatMetadata: meta, swipe: { refresh() {} } }),
         chat: () => chat, settings: () => settings, num: k => settings[k], hasMemory: mem => !!(mem.scenes.length || mem.records.length),
         $(selector) { const index = Number(selector.match(/mesid="(\d+)"/)[1]); return { attr(k, value) { dom.set(index, value); } }; },
@@ -303,5 +303,40 @@ test('manual: a save leaves a message the user opened shown; the next press hide
     await h.transact(() => {}, { rehide: true });
     assert.equal(shown(h), 'HH.HHHHH..');
     await h.transact(() => { h.meta.savePoint.hideManual = { to: 7, at: Date.now() }; }, { rehide: 'button' });
+    assert.equal(shown(h), 'HHHHHHHH..');
+});
+
+// ───────── v0.6.51 ─────────
+test('manual: a message the user hid and opened again is never hidden by a sync', async () => {
+    const h = manual({ count: 12, lastIndex: 11, keepRecent: 4 });
+    h.chat[3].is_system = true;                 // hidden by the user, no SavePoint mark
+    await press(h);
+    assert.equal(shown(h), 'HHHHHHHH....');
+    assert.equal(h.chat[3].extra[HIDE_KEY], undefined);
+    h.chat[3].is_system = false;                // opened again by the user
+    h.syncHide();
+    await h.transact(() => {}, { rehide: true });
+    assert.equal(shown(h), 'HHH.HHHH....');
+});
+
+test('manual: messages shown only for "keep the latest N" are hidden again when N goes back down', async () => {
+    const h = manual({ count: 10, lastIndex: 9, keepRecent: 2 });
+    await press(h);
+    h.settings.keepRecent = 5; h.syncHide();
+    assert.equal(shown(h), 'HHHHH.....');
+    assert(h.chat.slice(5, 8).every(m => m.extra[HELD_KEY] === 1));
+    h.settings.keepRecent = 2; h.syncHide();
+    assert.equal(shown(h), 'HHHHHHHH..');
+    assert(h.chat.every(m => !m.extra[HELD_KEY]));
+});
+
+test('manual: a failed write of a rewind puts the hidden messages back', async () => {
+    const h = manual({ count: 10, lastIndex: 9, keepRecent: 2 });
+    await press(h);
+    const chatBefore = JSON.stringify(h.chat), before = JSON.stringify(h.meta.savePoint);
+    h.box.persist = async () => { throw new Error('disk full'); };
+    await assert.rejects(h.transact(() => { h.meta.savePoint.lastIndex = 4; }), /저장하지 못해서/);
+    assert.equal(JSON.stringify(h.chat), chatBefore);
+    assert.equal(JSON.stringify(h.meta.savePoint), before);
     assert.equal(shown(h), 'HHHHHHHH..');
 });
