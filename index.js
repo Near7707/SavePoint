@@ -21,7 +21,10 @@ const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
 // v0.6.51: in the manual range but shown for now only because of "keep the latest N" (or a shorter chat).
 const HELD_KEY = 'savepointHeld';
-const VERSION = '0.6.51';
+// v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
+// follows the message, its swipes and a branch of the chat).
+const KEEP_KEY = 'savepointKeep';
+const VERSION = '0.6.52';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -42,7 +45,7 @@ const SETTING_GROUPS = {
     // v0.6.39: the recording instructions live under 고급, folded, with what editing them means.
     advanced: { title: '🛠 고급', keys: ['guide'] },
 };
-const HIDE_MODES = [['auto', '자동 · 세이브할 때마다 기록된 원문 숨기기'], ['manual', '수동 · 👻 하이드 버튼을 누를 때만'], ['off', '끔 · 숨기지 않기']];
+const HIDE_MODES = [['auto', '자동 · 세이브할 때마다 기록된 원문 숨기기'], ['manual', '수동 · 👻 하이드 버튼을 누를 때만'], ['off', '끔 · 숨긴 원문 다시 표시']];
 const QUEST_MODES = [['auto', '자동 등록 · 바로 진행 중 목록에'], ['confirm', '확인 후 등록 · 후보로 모아 수락·거절']];
 const THEMES = { jrpg: '클래식 JRPG', neon: '네온 아케이드', glass: '글래스 사이버', archive: '다크 아카이브', pastel: '파스텔 드림', terminal: '터미널', eggpet: '딸기우유', dualwhite: '듀얼 화이트', ink: '먹과 한지', cream: '크림 라테', consolenight: '스토리 콘솔', cranelemon: '레몬 인형뽑기', gingerbread: '진저브레드 하우스', xmasknit: '크리스마스 니트', lilac: '라일락 미드나잇', st: '실리태번 테마 따라가기' };
 // Themes that were retired, and the closest one now.
@@ -165,8 +168,8 @@ async function persist() { if (hasChat()) await ctx().saveMetadata(); }
 // saved" and returns normally). That case cannot be detected here: the change stays in the page and
 // is written together with the next successful chat save.
 // The automatic save file lives in the settings file and is only a convenience copy.
-async function transact(change, { undoable = true, autosave: doAutosave = true, rehide = false, replay = false } = {}) {
-    const entry = { change, undoable, autosave: doAutosave, rehide, replay, key: roomKey(), epoch: roomEpoch };
+async function transact(change, { undoable = true, autosave: doAutosave = true, rehide = false, replay = false, snapshot = false } = {}) {
+    const entry = { change, undoable, autosave: doAutosave, rehide, replay, snapshot, key: roomKey(), epoch: roomEpoch };
     if (applyEntry(entry) === false) return false;
     const queue = saveQueue(entry.key, entry.epoch);
     queue.pending.push(entry);
@@ -194,11 +197,12 @@ function applyEntry(entry) {
     // the exact pre-save state, including messages the user had opened.
     // v0.6.51: in manual mode an ordinary sync no longer hides anything new, so a failed write cannot
     // rebuild the old visibility from the memory alone: every change keeps the snapshot there.
-    entry.visibility = entry.rehide || hideModeOf(settings()) === 'manual' ? chat().map(m => ({ m, system: m.is_system,
+    entry.visibility = entry.rehide || entry.snapshot || hideModeOf(settings()) === 'manual' ? chat().map(m => ({ m, system: m.is_system,
         hadSystem: Object.hasOwn(m, 'is_system'), hadExtra: Object.hasOwn(m, 'extra'), extra: m.extra,
         hadHidden: !!m.extra && Object.hasOwn(m.extra, HIDE_KEY), hidden: m.extra?.[HIDE_KEY],
         hadVisible: !!m.extra && Object.hasOwn(m.extra, VISIBLE_KEY), visible: m.extra?.[VISIBLE_KEY],
-        hadHeld: !!m.extra && Object.hasOwn(m.extra, HELD_KEY), held: m.extra?.[HELD_KEY] })) : null;
+        hadHeld: !!m.extra && Object.hasOwn(m.extra, HELD_KEY), held: m.extra?.[HELD_KEY],
+        hadKeep: !!m.extra && Object.hasOwn(m.extra, KEEP_KEY), keep: m.extra?.[KEEP_KEY] })) : null;
     if (entry.change() === false) return false;
     const st = state();
     // v0.6.45: a button edit remembers what it changed (paths and their final values), so a replay
@@ -227,6 +231,7 @@ function restoreEntry(entry) {
             if (v.hadHidden) v.m.extra[HIDE_KEY] = v.hidden; else delete v.m.extra[HIDE_KEY];
             if (v.hadVisible) v.m.extra[VISIBLE_KEY] = v.visible; else delete v.m.extra[VISIBLE_KEY];
             if (v.hadHeld) v.m.extra[HELD_KEY] = v.held; else delete v.m.extra[HELD_KEY];
+            if (v.hadKeep) v.m.extra[KEEP_KEY] = v.keep; else delete v.m.extra[KEEP_KEY];
         }
     });
     return here;
@@ -485,6 +490,7 @@ function hideLimit(st, list = chat()) { return Math.min(st.lastIndex, list.lengt
 // is seen in manual mode, the range is fixed once from the messages SavePoint actually hides at that
 // moment (v0.6.50: hidden ones only, never "opened by the user" marks) and kept in the room.
 const freshManual = (h, s = settings()) => !!h && Number.isInteger(h.to) && (Number(h.at) || 0) >= (Number(s.hideManualAt) || 0);
+const kept = m => !!m?.extra?.[KEEP_KEY];
 function hiddenNow(list = chat()) {
     let to = -1;
     list.forEach((m, i) => { if (m.is_system && m.extra?.[HIDE_KEY]) to = i; });
@@ -494,7 +500,7 @@ function hiddenNow(list = chat()) {
 function manualHidePlan(st, list = chat()) {
     const to = hideLimit(st, list);
     let count = 0;
-    for (let i = 0; i <= to; i++) if (list[i] && !list[i].is_system) count++;
+    for (let i = 0; i <= to; i++) if (list[i] && !list[i].is_system && !kept(list[i])) count++;
     return { to, count };
 }
 // `rehide`: true for a save (in manual mode it no longer rescans: the range is the button's), 'button'
@@ -522,6 +528,13 @@ function syncHide({ rehide = false } = {}) {
     const dropHeld = m => { if (m.extra && Object.hasOwn(m.extra, HELD_KEY)) { delete m.extra[HELD_KEY]; changed = true; } };
     list.forEach((m, i) => {
         const mark = m.extra?.[HIDE_KEY];
+        // v0.6.52: 🔖 원문 유지 — what SavePoint hid there is shown again; a hide of the user's own
+        // (no SavePoint mark) is left as it is. No other mark is kept on it.
+        if (kept(m)) {
+            if (mark) { if (m.is_system) setHidden(m, i, false); delete m.extra[HIDE_KEY]; changed = true; }
+            for (const k of [VISIBLE_KEY, HELD_KEY]) if (Object.hasOwn(m.extra, k)) { delete m.extra[k]; changed = true; }
+            return;
+        }
         if (rescan && i <= cutoff) {
             // Recheck from #0 on every saved batch. A manually opened message
             // stays open during ordinary redraws, but joins the next save's hide.
@@ -2012,7 +2025,7 @@ function putCarried(reply) {
     const m = list[0], before = clone(m);
     m.mes = reply.text; m.swipes = [reply.text]; m.swipe_id = 0; m.swipe_info = [fresh()];
     // Only our own visibility marks are kept; any content-bound data of the old greeting goes.
-    const keep = Object.fromEntries([HIDE_KEY, VISIBLE_KEY, HELD_KEY].filter(k => m.extra && Object.hasOwn(m.extra, k)).map(k => [k, m.extra[k]]));
+    const keep = Object.fromEntries([HIDE_KEY, VISIBLE_KEY, HELD_KEY, KEEP_KEY].filter(k => m.extra && Object.hasOwn(m.extra, k)).map(k => [k, m.extra[k]]));
     m.extra = keep;
     return () => { for (const k of Object.keys(m)) delete m[k]; Object.assign(m, before); };
 }
@@ -2130,6 +2143,75 @@ async function restoreBackup(file) {
     } catch (e) { reportError(e); }
     render(true);
 }
+
+// ───────── 🔖 원문 유지 (v0.6.52) ─────────
+// A message the user marks in its "…" menu is never hidden by SavePoint, in either hide mode; it is
+// still recorded as usual. The mark sits on the message (and on every swipe of it, so a swipe keeps
+// it), and is written with the chat file; if that write fails, the mark and the hide state go back.
+
+function setKeep(m, on) {
+    m.extra ||= {};
+    if (on) m.extra[KEEP_KEY] = 1; else delete m.extra[KEEP_KEY];
+    for (const x of Array.isArray(m.swipe_info) ? m.swipe_info : []) {
+        if (!x || typeof x !== 'object') continue;
+        if (on) { x.extra ||= {}; x.extra[KEEP_KEY] = 1; } else if (x.extra) delete x.extra[KEEP_KEY];
+    }
+}
+const keptCount = () => chat().filter(kept).length;
+async function toggleKeep(index) {
+    if (!hasChat() || !settings().enabled) return;
+    const m = chat()[index];
+    if (!m) return;
+    const on = !kept(m);
+    const swipes = (Array.isArray(m.swipe_info) ? m.swipe_info : []).map(x => x && typeof x === 'object'
+        ? { x, hadExtra: Object.hasOwn(x, 'extra'), had: !!x.extra && Object.hasOwn(x.extra, KEEP_KEY), v: x.extra?.[KEEP_KEY] } : null);
+    try {
+        await transact(() => { setKeep(m, on); }, { undoable: false, autosave: false, snapshot: true });
+    } catch (e) {
+        // The message's own flags came back with the save's snapshot; its swipes are put back here.
+        for (const w of swipes) {
+            if (!w) continue;
+            if (!w.hadExtra) delete w.x.extra;
+            else if (w.had) w.x.extra[KEEP_KEY] = w.v; else delete w.x.extra?.[KEEP_KEY];
+        }
+        paintKeep(); throw e;
+    }
+    paintKeep();
+    toastr.info(on ? '🔖 원문 유지: 이 메시지는 하이드하지 않아요. 기록은 평소처럼 해요.'
+        : hideModeOf(settings()) === 'manual' ? '🔖 원문 유지를 껐어요. 다음에 👻 하이드를 누를 때 함께 숨겨요.' : '🔖 원문 유지를 껐어요.', 'SavePoint');
+}
+// A swipe (or a new reply in place) brings that swipe's own extra; a kept message gets its mark back.
+function repairKeep(index) {
+    const m = chat()[Number(index)];
+    if (!m || kept(m) || !(Array.isArray(m.swipe_info) && m.swipe_info.some(x => x?.extra?.[KEEP_KEY]))) return false;
+    setKeep(m, true); saveChatSoon(); return true;
+}
+const KEEP_BUTTON = '<div class="mes_button sp-keep-btn interactable" role="button" tabindex="0" title="🔖 원문 유지 (하이드하지 않기)">🔖</div>';
+// The "…" menu button (on the message template for new messages, and on those already shown) and
+// the small 🔖 beside the name of each kept message.
+function paintKeep() {
+    if (typeof document === 'undefined' || !globalThis.$) return;
+    const on = settings().enabled;
+    for (const host of [...document.querySelectorAll('#message_template .extraMesButtons, #chat .mes .extraMesButtons')]) {
+        const b = host.querySelector('.sp-keep-btn');
+        if (!on) { b?.remove(); continue; }
+        if (!b) host.insertAdjacentHTML('afterbegin', KEEP_BUTTON);
+    }
+    const list = chat();
+    for (const el of [...document.querySelectorAll('#chat .mes[mesid]')]) {
+        const m = list[Number(el.getAttribute('mesid'))], k = on && kept(m);
+        const b = el.querySelector('.sp-keep-btn');
+        if (b) { b.classList.toggle('sp-on', k); b.title = k ? '🔖 원문 유지 끄기' : '🔖 원문 유지 (하이드하지 않기)'; }
+        let mark = el.querySelector('.sp-keep-mark');
+        if (k && !mark) {
+            const name = el.querySelector('.name_text') || el.querySelector('.ch_name');
+            mark = document.createElement('span'); mark.className = 'sp-keep-mark'; mark.title = '원문 유지 · SavePoint가 하이드하지 않아요'; mark.textContent = '🔖';
+            if (name) name.insertAdjacentElement('afterend', mark); else el.prepend(mark);
+        } else if (!k && mark) mark.remove();
+    }
+}
+let keepPaintTimer = null;
+function paintKeepSoon() { clearTimeout(keepPaintTimer); keepPaintTimer = setTimeout(paintKeep, 30); }
 
 // ───────── small helpers ─────────
 
@@ -3018,7 +3100,7 @@ function hudHtml(st) {
         ${review}
         <div class="sp-hud-more">
         ${storyTimeContext(st?.mem || {}, 'ko') ? `<div class="sp-hud-time">마지막 기록 기준 · ${esc(storyTimeContext(st.mem, 'ko'))}</div>` : ''}
-        <div class="sp-hud-meta"><span>미기록 <b>${pending}</b></span>${btn('tab', 'queue', `⏳ 대기열 ${st?.lootQueue?.length || 0}개`)}${returnNotices(st).length ? btn('tab', 'main', `📦 복귀 확인 ${returnNotices(st).length}`, '보관함 물건이 이야기에서 다시 쓰였어요', 'sp-on') : ''}<span>${esc(injectionStatus)}</span><span>요약 AI: ${esc(profileLabel())}</span>${ui.inj?.pinOverflow ? `<span class="sp-warn">⚓ ${ui.inj.pinMissing}개 주입 못 함</span>` : ''}</div>
+        <div class="sp-hud-meta"><span>미기록 <b>${pending}</b></span>${btn('tab', 'queue', `⏳ 대기열 ${st?.lootQueue?.length || 0}개`)}${returnNotices(st).length ? btn('tab', 'main', `📦 복귀 확인 ${returnNotices(st).length}`, '보관함 물건이 이야기에서 다시 쓰였어요', 'sp-on') : ''}<span>${esc(injectionStatus)}</span><span>요약 AI: ${esc(profileLabel())}</span>${keptCount() ? `<span title="SavePoint가 하이드하지 않는 메시지 (메시지 … 메뉴의 🔖)">🔖 원문 유지 ${keptCount()}개</span>` : ''}${ui.inj?.pinOverflow ? `<span class="sp-warn">⚓ ${ui.inj.pinMissing}개 주입 못 함</span>` : ''}</div>
         <div class="sp-hud-meta sp-auto-line">${autoLine}${autoLast}${lastRecord}</div>
         ${interrupted && !busy ? `<div class="sp-hud-meta"><span class="sp-warn">⚠ 지난 저장이 방을 옮기면서 중간에 멈췄어요 (#${interrupted.from}부터 미기록)</span>${btn('run', '', '퀵세이브로 이어서')}</div>` : ''}
         ${autoFailHtml(st)}
@@ -3552,7 +3634,7 @@ function settingsChanged(keys) {
     saveSettings();
     if (keys.some(k => ['hideMode', 'keepRecent', 'enabled'].includes(k))) syncHide();
     if (keys.some(k => ['auto', 'autoEvery', 'autoReserve', 'enabled'].includes(k))) scheduleAuto();
-    if (keys.includes('enabled')) installLootBar();
+    if (keys.includes('enabled')) { installLootBar(); paintKeep(); }
     updateSettingsSummaries(); refreshInjection(); render(true);
 }
 
@@ -3843,16 +3925,25 @@ jQuery(() => {
     const { eventSource, event_types: ev } = ctx();
     const on = (t, f) => { if (ev[t]) eventSource.on(ev[t], f); };
     on('CHAT_CHANGED', onChatChanged);
+    // 🔖: before the source checks, so a swipe of a kept message is still kept when they run.
+    for (const t of ['MESSAGE_SWIPED', 'MESSAGE_RECEIVED', 'MESSAGE_UPDATED', 'MESSAGE_EDITED']) on(t, id => { if (repairKeep(id)) syncHide(); paintKeepSoon(); });
+    for (const t of ['CHAT_CHANGED', 'CHARACTER_MESSAGE_RENDERED', 'USER_MESSAGE_RENDERED', 'MESSAGE_DELETED', 'MORE_MESSAGES_LOADED']) on(t, paintKeepSoon);
+    $(document).on('click', '#chat .sp-keep-btn', function (e) {
+        e.preventDefault(); e.stopPropagation();
+        const i = Number($(this).closest('.mes').attr('mesid'));
+        if (Number.isInteger(i)) toggleKeep(i).catch(reportError);
+    });
+    $(document).on('keydown', '#chat .sp-keep-btn', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $(this).trigger('click'); } });
     for (const t of ['MESSAGE_SENT', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_UPDATED', 'MESSAGE_SWIPE_DELETED']) on(t, onSourceChanged);
     globalThis.document?.addEventListener?.('selectionchange', trackSelection);
     installLootBar();
     on('GENERATION_STARTED', onGenerationStarted);
     for (const t of ['GENERATION_ENDED', 'GENERATION_STOPPED']) on(t, onGenerationEnded);
     for (const t of ['CONNECTION_PROFILE_UPDATED', 'CONNECTION_PROFILE_DELETED', 'CONNECTION_PROFILE_CREATED']) on(t, () => { fillProfiles(); updateSettingsSummaries(); });
-    onChatChanged();
+    onChatChanged(); paintKeepSoon();
     // Server-side save slots: the server index is the list; then move any settings-only slots over.
     vault.init(settings().slotCache).then(migrateLocal).catch(e => console.warn('[SavePoint] vault', e)).finally(() => render(true));
 });
 
 // Exposed for regression checks only.
-globalThis.__savePoint = { state, settings, summarize, listSaves, vault, migrateLocal, autoCollect, autoBlocked, autoCount, scheduleAuto, undo, loadSave, reconcile, syncHide, refreshInjection, handle, ui, render, estTokens, recordLine, reportText, addLoot, queueHtml, installLootBar, openLootDialog, fillSettings };
+globalThis.__savePoint = { toggleKeep, paintKeep, repairKeep, state, settings, summarize, listSaves, vault, migrateLocal, autoCollect, autoBlocked, autoCount, scheduleAuto, undo, loadSave, reconcile, syncHide, refreshInjection, handle, ui, render, estTokens, recordLine, reportText, addLoot, queueHtml, installLootBar, openLootDialog, fillSettings };

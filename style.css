@@ -1001,3 +1001,7 @@ details.sp-st-alert[open] > summary { margin-bottom: 6px; }
 .sp-world [data-kind="name"] { --sp-k: color-mix(in srgb, #d2a442 80%, var(--sp-fg)); }
 .sp-world [data-kind="secret"] { --sp-k: color-mix(in srgb, #b46ab0 80%, var(--sp-fg)); }
 .sp-world .sp-known { display: inline-flex; align-items: center; padding: 0 8px; border-radius: 999px; font-size: 11.5px; background: var(--sp-chip); background: color-mix(in srgb, #b46ab0 18%, var(--sp-panel)); }
+
+/* v0.6.52: 🔖 원문 유지 */
+.sp-keep-mark { margin-left: 4px; font-size: .85em; opacity: .85; cursor: default; }
+.sp-keep-btn.sp-on { opacity: 1; filter: drop-shadow(0 0 2px rgba(255, 200, 80, .8)); }

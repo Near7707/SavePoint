@@ -10,7 +10,7 @@ const hiding = section('function setHidden(', '// ───────── ch
 const transaction = section('async function transact(', '\nfunction persistSoon');
 const summarizeCode = section('async function summarize(', '// ───────── automatic collection');
 const automaticCode = section('async function autoCollect(', '// ───────── record check');
-const HIDE_KEY = 'savepointHidden', VISIBLE_KEY = 'savepointVisible', HELD_KEY = 'savepointHeld';
+const HIDE_KEY = 'savepointHidden', VISIBLE_KEY = 'savepointVisible', HELD_KEY = 'savepointHeld', KEEP_KEY = 'savepointKeep';
 
 function harness({ count = 10, lastIndex = 9, keepRecent = 2 } = {}) {
     const chat = Array.from({ length: count }, (_, n) => ({ mes: `Message ${n}`, name: 'Speaker', is_system: false, extra: {} }));
@@ -21,7 +21,7 @@ function harness({ count = 10, lastIndex = 9, keepRecent = 2 } = {}) {
     let calls = 0;
     const ui = {};
     const box = { clearInterrupted() {},
-        MODULE: 'savePoint', HIDE_KEY, VISIBLE_KEY, HELD_KEY, ui, roomEpoch: 0,
+        MODULE: 'savePoint', HIDE_KEY, VISIBLE_KEY, HELD_KEY, KEEP_KEY, ui, roomEpoch: 0,
         clone: structuredClone, roomKey: () => 'room', state: () => meta.savePoint, ctx: () => ({ chatMetadata: meta, swipe: { refresh() {} } }),
         chat: () => chat, settings: () => settings, num: k => settings[k], hasMemory: mem => !!(mem.scenes.length || mem.records.length),
         $(selector) { const index = Number(selector.match(/mesid="(\d+)"/)[1]); return { attr(k, value) { dom.set(index, value); } }; },
@@ -338,5 +338,44 @@ test('manual: a failed write of a rewind puts the hidden messages back', async (
     await assert.rejects(h.transact(() => { h.meta.savePoint.lastIndex = 4; }), /저장하지 못해서/);
     assert.equal(JSON.stringify(h.chat), chatBefore);
     assert.equal(JSON.stringify(h.meta.savePoint), before);
+    assert.equal(shown(h), 'HHHHHHHH..');
+});
+
+// ───────── v0.6.52: 🔖 원문 유지 ─────────
+const keepOn = (h, n, on = true) => { if (on) h.chat[n].extra[KEEP_KEY] = 1; else delete h.chat[n].extra[KEEP_KEY]; };
+
+test('🔖 auto: a kept message is shown again at once and never hidden; a hide of the user stays', async () => {
+    const h = harness({ count: 10, lastIndex: 9, keepRecent: 2 });
+    h.syncHide({ rehide: true });
+    h.chat[1].extra = {}; h.chat[1].is_system = true;         // hidden by the user
+    await h.transact(() => { keepOn(h, 3); keepOn(h, 1); }, { undoable: false, snapshot: true });
+    assert.equal(shown(h), 'HHH.HHHH..');
+    await h.transact(() => {}, { rehide: true });
+    assert.equal(shown(h), 'HHH.HHHH..');
+    assert.equal(h.chat[3].extra[HIDE_KEY], undefined);
+    await h.transact(() => keepOn(h, 3, false), { snapshot: true });
+    assert.equal(shown(h), 'HHHHHHHH..');                       // auto: hidden again at once
+});
+
+test('🔖 manual: kept messages are left out of the 👻 count; turning it off waits for the next press', async () => {
+    const h = manual({ count: 10, lastIndex: 9, keepRecent: 2 });
+    keepOn(h, 2);
+    const plan = await press(h);
+    assert.equal(plan.count, 7);
+    assert.equal(shown(h), 'HH.HHHHH..');
+    await h.transact(() => keepOn(h, 2, false), { snapshot: true });
+    assert.equal(shown(h), 'HH.HHHHH..');
+    assert.equal(h.manualHidePlan(h.meta.savePoint, h.chat).count, 1);
+    await press(h);
+    assert.equal(shown(h), 'HHHHHHHH..');
+});
+
+test('🔖 a failed write puts the mark and the hide back together', async () => {
+    const h = harness({ count: 10, lastIndex: 9, keepRecent: 2 });
+    h.syncHide({ rehide: true });
+    const before = JSON.stringify(h.chat);
+    h.box.persist = async () => { throw new Error('disk full'); };
+    await assert.rejects(h.transact(() => keepOn(h, 4), { snapshot: true }), /저장하지 못해서/);
+    assert.equal(JSON.stringify(h.chat), before);
     assert.equal(shown(h), 'HHHHHHHH..');
 });
