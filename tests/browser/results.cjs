@@ -121,6 +121,35 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.shown && r.tone === 'warning' && r.title === '일부 저장' && r.news === 'NEW🎒 1' && still, `8. 일부 저장: 안내 위, 저장된 변화 아래, 닫을 때까지 유지 (${JSON.stringify(r)})`);
     await page.click('#sp_save_banner .sp-sb-close');
 
+    // 10. (v0.6.54) the chat-file write of a later part fails: the partial notice and what was saved still show
+    await ev(() => { M.add(30); M.addChanges = ({ first }) => ({ changes: [{ op: 'update', id: __savePoint.state().mem.records.find(x => x.text.includes('lamp')).id, text: 'The lamp is cleaned.', msgs: [first] }] }); M.failNth = 2; });
+    await ev(() => __savePoint.handle('run').catch(() => {}));
+    await page.waitForTimeout(1500);
+    r = await banner();
+    await ev(() => { M.failNth = 0; });
+    ok(r.shown && r.tone === 'warning' && r.title === '일부 저장' && r.news === 'NEW🎒 1', `10. 파일 저장 실패로 멈춰도 일부 저장 안내와 변화 줄 (${JSON.stringify(r)})`);
+    await page.click('#sp_save_banner .sp-sb-close');
+    await ev(() => { M.add(1); return __savePoint.handle('run'); }); await page.waitForTimeout(1200); await page.click('#sp_save_banner .sp-sb-close').catch(() => {});
+
+    // 11. (v0.6.54) the same content again is not NEW
+    await ev(() => { const r = __savePoint.state().mem.records.find(x => x.text.includes('coat')); M.add(2); M.addChanges = () => ({ changes: [{ op: 'update', id: r.id, text: r.text, holder: r.holder, msgs: [M.chat.length - 1] }] }); });
+    await ev(() => __savePoint.handle('run'));
+    await page.waitForTimeout(1200);
+    r = await banner();
+    ok(r.shown && !r.news.includes('🎒'), `11. 같은 내용으로 갱신하면 NEW 아님 (${JSON.stringify(r)})`);
+    await page.click('#sp_save_banner .sp-sb-close').catch(() => {});
+
+    // 12. (v0.6.54) window open, page hidden: the result waits and its 6 seconds start when the page is seen again
+    await ev(() => { $('#sp_wand').trigger('click'); Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+        M.add(2); M.addChanges = () => ({ changes: [{ op: 'add', type: 'party', entity: 'ari', aspect: 'condition', text: 'Ari is sleepy.', msgs: [M.chat.length - 1] }] }); return __savePoint.handle('run'); });
+    await page.waitForTimeout(7000);
+    const whileHidden = await ev(() => !!document.querySelector('.sp-hud-result'));
+    await ev(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => false }); document.dispatchEvent(new Event('visibilitychange')); });
+    await page.waitForTimeout(300);
+    const afterBack = await ev(() => document.querySelector('.sp-hud-result')?.textContent || '');
+    ok(!whileHidden && afterBack.includes('NEW👥 1'), `12. 창을 열어 둔 채 다른 앱에 가도, 돌아오면 결과 한 줄 (${afterBack})`);
+    await ev(() => __savePoint.handle('close'));
+
     // 9. phone width: the banner stays inside the screen in every skin
     r = await ev(() => {
         const b = document.getElementById('sp_save_banner'), bad = [];

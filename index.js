@@ -24,7 +24,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.53';
+const VERSION = '0.6.54';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -1230,9 +1230,12 @@ async function summarize({ close = false, auto = false } = {}) {
             }
         }
         // v0.6.53: what a partial save did keep is shown under its notice (a manual one gets the notice too).
-        if (done && run.key === roomKey() && state() === st && !(e instanceof Cancelled)) {
-            run.news = saveNews(st, run.id, questNews(memBefore, st.mem));
-            if (!auto && cursor) run.notice = { text: `일부 저장 · #${start}–#${st.lastIndex} 완료 · #${st.lastIndex + 1}부터 다시 세이브해 주세요`, tone: 'warning' };
+        // v0.6.54: a failed chat-file write puts the room's state back as a copy, so the room is checked
+        // by its key and the saved range and changes are read from the state that is there now.
+        const now = state();
+        if (done && run.key === roomKey() && now && now.roomKey === st.roomKey && !(e instanceof Cancelled)) {
+            run.news = saveNews(now, run.id, questNews(memBefore, now.mem));
+            if (!auto && cursor) run.notice = { text: `일부 저장 · #${start}–#${now.lastIndex} 완료 · #${now.lastIndex + 1}부터 다시 세이브해 주세요`, tone: 'warning' };
         }
     } finally {
         if (lootFailed && run.key === roomKey() && state()) toastr.warning(`⚠ 루팅한 내용 ${lootFailed}개가 반영되지 않았어요.${lootFailNote(state())} 다음 세이브 때 다시 시도해요. 자세한 이유는 ⏳ 대기열에서 볼 수 있어요.`, 'SavePoint', { timeOut: 10000 });
@@ -2492,6 +2495,18 @@ const firstSentenceKo = t => (String(t || '').match(/^.*?[.!?。](\s|$)/)?.[0] |
 // 🎒 = items changed (added, updated, gone, deleted), one per item; 👥 = people whose relation or
 // condition changed, plus new people, one per person; quests = added, or whose status or tracking
 // changed. NEW stays until the next save that records something.
+// v0.6.54: what a record says, without bookkeeping (evidence, order, translation, when it was boxed),
+// so an update that repeats the same thing, or a change undone in the same run, is not NEW.
+const BOOKKEEPING = new Set(['src', 'msgs', 'seq', 'ko', 'koText', 'koOutline', 'oldEvidence', 'storedUpdated', 'questEvents', 'returnNotice']);
+function contentOf(r) {
+    if (!r || typeof r !== 'object') return r ?? null;
+    const out = {};
+    for (const k of Object.keys(r).sort()) {
+        if (BOOKKEEPING.has(k)) continue;
+        out[k] = k === 'stored' && r.stored ? { by: r.stored.by, reason: r.stored.reason ?? null, lock: !!r.stored.lock } : r[k];
+    }
+    return out;
+}
 function runChanges(st, runId = st?.lastRecord?.run) {
     if (!st || !runId) return null;
     const runs = (st.history || []).filter(h => h.run === runId);
@@ -2501,7 +2516,7 @@ function runChanges(st, runId = st?.lastRecord?.run) {
     const items = new Set(), people = new Set(), records = new Set(), quests = new Set();
     for (const [k, after] of last) {
         const before = first.get(k), kind = k.split(':')[0];
-        if (JSON.stringify(before ?? null) === JSON.stringify(after ?? null)) continue;
+        if (JSON.stringify(contentOf(before)) === JSON.stringify(contentOf(after))) continue;
         if (kind === 'entities') { if (!before && after?.type === 'person') people.add(after.id); continue; }
         if (kind !== 'records') continue;
         const r = after || before;
@@ -3535,6 +3550,8 @@ function quickSettingsHtml() {
         <label class="sp-f"><span>주입 상한 (토큰)</span><input type="number" data-qs="budget" min="300" max="100000" value="${esc(s.budget)}"></label>
         <label class="sp-qs-check"><input type="checkbox" data-qs="auto" ${s.auto ? 'checked' : ''}> 체크포인트 (자동 퀵세이브)</label>
         ${s.auto ? `<label class="sp-f"><span>체크포인트 간격 (새 메시지 수)</span><input type="number" data-qs="autoEvery" min="5" max="500" value="${esc(s.autoEvery)}"></label>` : ''}
+        <label class="sp-f"><span>하이드</span><select data-qs="hideMode">${opt([['auto', '자동 · 세이브할 때마다'], ['manual', '수동 · 👻 버튼으로'], ['off', '끔 · 숨긴 원문 다시 표시']], hideModeOf(s))}</select></label>
+        ${hideModeOf(s) !== 'off' ? `<label class="sp-f"><span>하이드하지 않을 최근 메시지</span><input type="number" data-qs="keepRecent" min="0" max="200" value="${esc(s.keepRecent)}"></label>` : ''}
         <label class="sp-f"><span>요약 AI</span><select data-qs="profileId">${opt([['', '메인 API'], ...profiles().map(p => [p.id, p.name])], s.profileId)}</select></label>
         <details class="sp-more" data-group="qs-more" ${ui.savesOpen.get('qs-more') ? 'open' : ''}><summary>더 보기</summary>
             <label class="sp-f"><span>최근 장면 수</span><input type="number" data-qs="recentScenes" min="0" max="20" value="${esc(s.recentScenes)}"></label>
@@ -3550,7 +3567,10 @@ function setQuick(key, raw, el) {
     const value = el?.type === 'checkbox' ? el.checked : el?.type === 'number' ? Number(raw) : raw;
     if (el?.type === 'number' && !Number.isFinite(value)) return;
     if (ui.run && QS_DEFERRED.includes(key)) { (ui.pendingSettings ||= {})[key] = value; toastr.info('저장이 끝난 뒤 적용할게요.', 'SavePoint'); render(); return; }
-    s[key] = value; saveSettings(); fillSettings();
+    s[key] = value; fillSettings();
+    // v0.6.54: hide and checkpoint settings take effect the same way as in the full settings.
+    if (['hideMode', 'keepRecent', 'auto', 'autoEvery'].includes(key)) return settingsChanged([key]);
+    saveSettings();
     if (['budget', 'recentScenes'].includes(key)) refreshInjection();
     render(true);
 }
@@ -3841,9 +3861,10 @@ function flashSaveBanner(text, { tone = 'success', goto = '', news = '' } = {}) 
     if (!el) return;
     clearTimeout(bannerTimer);
     if (!settings().enabled) { delete el.dataset.flash; el.hidden = true; return; }
+    // A result that arrives while the page is not seen waits, and its time starts when it is seen.
+    if (typeof document !== 'undefined' && document.hidden) { pendingBanner = { text, tone, goto, news, room: String(roomKey()) }; return; }
     // v0.6.53: with the window open, the same result is one line at the top of its status panel.
     if (ui.open) { delete el.dataset.flash; el.hidden = true; showHudResult(text, { tone, goto, news }); return; }
-    if (typeof document !== 'undefined' && document.hidden) { pendingBanner = { text, tone, goto, news, room: String(roomKey()) }; return; }
     const [title, ...rest] = text.split(' · ');
     el.dataset.flash = '1'; el.dataset.flashRoom = String(roomKey());
     el.dataset.tone = tone; el.dataset.goto = goto || '';
