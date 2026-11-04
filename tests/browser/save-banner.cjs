@@ -51,7 +51,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await p1; await sleep(100);
     r = await banner();
     ok(r.shown && r.text.includes('저장 완료') && r.text.includes('#0–#29'), `1. 끝나면 저장 완료로 바뀜 (${r.text.trim()})`);
-    await sleep(3700);
+    await sleep(6300);   // v0.6.53: a result with changes (NEW …) stays 6 seconds
     ok(!(await banner()).shown, '1. 잠시 뒤 사라짐');
 
     // 2. the banner stays hidden while the SavePoint window is open (it has its own progress)

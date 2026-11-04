@@ -52,7 +52,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => __savePoint.handle('run'));
     await page.waitForTimeout(1200);
     let r = await banner();
-    ok(r.shown && r.text.includes('저장 완료') && r.text.includes('❗ 발견한 퀘스트 1') && r.goto === 'main-quests', `1. 저장 결과 배너에 발견한 퀘스트 (${r.text})`);
+    ok(r.shown && r.text.includes('저장 완료') && r.text.includes('❗ 수락 대기 1') && r.goto === 'main-quests', `1. 저장 결과 배너에 수락 대기 퀘스트 (${r.text})`);
     ok(!(await ev(() => __savePoint.ui.open)), '1. 창을 억지로 띄우지 않음');
 
     // 2. the banner opens 메인 with the found list unfolded: summary, why (quote), accept / decline
@@ -96,12 +96,12 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.by && r.to === 'e90', '5. 편집 창에 지킬 사람·받는 사람');
     await ev(() => __savePoint.handle('edit-cancel'));
 
-    // 6. auto mode lists new quests straight away; the banner says 새 퀘스트
+    // 6. auto mode lists new quests straight away; the banner says 자동 수락
     await ev(() => { M.settings.savePoint.questMode = 'auto'; const b = M.chat.length; M.add(3, i => i === b + 1 ? 'PROMISE: we meet at dawn.' : ''); $('#sp_overlay .sp-window').length && __savePoint.handle('close'); });
     await ev(() => __savePoint.handle('run'));
     await page.waitForTimeout(1200);
     r = await banner();
-    ok(r.text.includes('❗ 새 퀘스트 1') && !r.goto, `6. 자동 등록: 배너에 새 퀘스트 (${r.text})`);
+    ok(r.text.includes('❗ 자동 수락 1') && r.goto === 'main-changes', `6. 자동 등록: 배너에 자동 수락 (${r.text})`);
 
     // 7. (fix) going back to 원문 during a translation keeps 원문 when it finishes
     await ev(() => { $('#sp_wand').trigger('click'); for (const r of __savePoint.state().mem.records) delete r.ko; M.delay = 800; });

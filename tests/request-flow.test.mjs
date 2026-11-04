@@ -41,6 +41,7 @@ function harness({ count = 40, chars = 1000, limit = 22500, failAt = Infinity, c
         collect: (a, b) => chat.map((m, index) => ({ index, name: m.name, text: m.mes })).filter(m => m.index >= a && m.index <= b),
         speaker: m => m.name, cleanText: s => s, msgText: m => m?.mes ?? "", EXCLUDED_ONLY: "(only excluded content)", eligible: m => !m.is_system,
         render() {}, persistSoon() {}, autosave() {}, async quickSave() { return null; }, announceReturns() {}, reportError() {}, queueCheck() {}, clearInterrupted() {}, roomKey: () => undefined,
+        questNews: () => ({ found: 0, added: 0, done: 0, failed: 0 }), saveNews: () => '',
         toastr: Object.fromEntries(['info', 'error', 'warning', 'success'].map(k => [k, m => notifications.push([k, m])])),
         newRun: () => { const run = { hashes: chat.map(m => m.mes), cancelled: false }; ui.run = run; return run; },
         assertValid: run => { if (run.cancelled) throw new Cancelled('Cancelled'); },

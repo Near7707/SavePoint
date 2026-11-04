@@ -24,7 +24,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.52';
+const VERSION = '0.6.53';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -880,8 +880,8 @@ function endRun(run) {
     if (ui.run === run) { ui.run = null; ui.progress = ''; ui.req = null; applyPendingSettings(); }
     render();
     if ((run.notice || run.doneText) && run.key === roomKey()) {
-        if (run.notice) flashSaveBanner(run.notice.text, { tone: run.notice.tone, goto: run.goto });
-        else flashSaveBanner(run.doneText, { goto: run.goto });
+        if (run.notice) flashSaveBanner(run.notice.text, { tone: run.notice.tone, goto: run.goto, news: run.news });
+        else flashSaveBanner(run.doneText, { goto: run.goto, news: run.news });
     }
     else updateSaveBanner();
 }
@@ -1185,16 +1185,17 @@ async function summarize({ close = false, auto = false } = {}) {
         ui.lastError = null;
         if (!auto && (msgs.length || close)) toastr.success(close ? '장면 클리어! 진행 중이던 장면까지 기록하고 닫았어요.' : '퀵세이브 완료. 마지막 메시지까지 기록했어요.', 'SavePoint');
         // v0.6.39: what the save did to quests, shown in the same result banner (no extra pop-up).
+        // v0.6.53: quests, items and people go on the result's second line (NEW …).
         const qn = done ? questNews(memBefore, st.mem) : null;
-        const qText = qn?.text ? ` · ${qn.text}` : '';
-        if (qn?.found) run.goto = 'main-quests';
-        if (done) run.doneText = `${close ? '장면 클리어 완료' : '저장 완료'}${st.lastIndex >= run.from ? ` · #${run.from}–#${st.lastIndex}` : ''}${qText}`;
+        run.news = done ? saveNews(st, run.id, qn) : '';
+        run.goto = qn?.found ? 'main-quests' : run.news ? 'main-changes' : '';
+        if (done) run.doneText = `${close ? '장면 클리어 완료' : '저장 완료'}${st.lastIndex >= run.from ? ` · #${run.from}–#${st.lastIndex}` : ''}`;
         if (auto) {
             const extra = lootFailed ? ` · 루팅 ${lootFailed}개 반영 실패` : '';
             const result = msgs.length ? `체크포인트 완료 · #${start}–#${st.lastIndex} 기록 · 최근 ${held}개 여유분${extra}`
                 : `체크포인트 · 루팅 ${supplement.saved}구간 보충 · 최근 ${held}개 여유분${extra}`;
             noteAuto(st, result, { end: latest, status: lootFailed ? 'partial' : done ? 'saved' : 'empty' });
-            run.notice = { text: result + qText, tone: lootFailed ? 'warning' : done ? 'success' : 'info' };
+            run.notice = { text: result, tone: lootFailed ? 'warning' : done ? 'success' : 'info' };
         }
         clearInterrupted(run.key);
         complete = true;
@@ -1227,6 +1228,11 @@ async function summarize({ close = false, auto = false } = {}) {
                 noteAuto(cur, result, { end: latest, status: cursor ? 'partial' : cancelled ? 'cancelled' : 'failed' });
                 run.notice = { text: result, tone: 'warning' };
             }
+        }
+        // v0.6.53: what a partial save did keep is shown under its notice (a manual one gets the notice too).
+        if (done && run.key === roomKey() && state() === st && !(e instanceof Cancelled)) {
+            run.news = saveNews(st, run.id, questNews(memBefore, st.mem));
+            if (!auto && cursor) run.notice = { text: `일부 저장 · #${start}–#${st.lastIndex} 완료 · #${st.lastIndex + 1}부터 다시 세이브해 주세요`, tone: 'warning' };
         }
     } finally {
         if (lootFailed && run.key === roomKey() && state()) toastr.warning(`⚠ 루팅한 내용 ${lootFailed}개가 반영되지 않았어요.${lootFailNote(state())} 다음 세이브 때 다시 시도해요. 자세한 이유는 ⏳ 대기열에서 볼 수 있어요.`, 'SavePoint', { timeOut: 10000 });
@@ -2480,6 +2486,42 @@ function sceneTimeGaps(s) {
 // A screen-only summary of what is already saved: nothing is injected or collected from here.
 // Everything is "as of the last record", which the first line says.
 const firstSentenceKo = t => (String(t || '').match(/^.*?[.!?。](\s|$)/)?.[0] || String(t || '')).trim();
+// v0.6.53: what one save run changed, for the result banner and the NEW badges of 💠 메인 (the same
+// numbers in both). From the run's history, first "before" and last "after" per record, so a record
+// changed in several parts of one run counts once, and one changed and changed back not at all.
+// 🎒 = items changed (added, updated, gone, deleted), one per item; 👥 = people whose relation or
+// condition changed, plus new people, one per person; quests = added, or whose status or tracking
+// changed. NEW stays until the next save that records something.
+function runChanges(st, runId = st?.lastRecord?.run) {
+    if (!st || !runId) return null;
+    const runs = (st.history || []).filter(h => h.run === runId);
+    if (!runs.length) return null;
+    const first = new Map(), last = new Map();
+    for (const h of runs) for (const c of h.diff.changes) { const k = `${c.kind}:${c.id}`; if (!first.has(k)) first.set(k, c.before); last.set(k, c.after); }
+    const items = new Set(), people = new Set(), records = new Set(), quests = new Set();
+    for (const [k, after] of last) {
+        const before = first.get(k), kind = k.split(':')[0];
+        if (JSON.stringify(before ?? null) === JSON.stringify(after ?? null)) continue;
+        if (kind === 'entities') { if (!before && after?.type === 'person') people.add(after.id); continue; }
+        if (kind !== 'records') continue;
+        const r = after || before;
+        if (r.type === 'item') { items.add(r.entity || r.id); if (after) records.add(after.id); }
+        else if (r.type === 'party') { people.add(r.entity || r.id); if (after) records.add(after.id); }
+        else if (r.type === 'quest' && after && (!before || before.status !== after.status || before.track !== after.track)) quests.add(after.id);
+    }
+    return { items, people, records, quests };
+}
+// The second line of a save's result: `NEW 🎒 2 · 👥 1 · ❗ 수락 대기 1 · 완료 1`; '' when nothing changed.
+function saveNews(st, runId, qn) {
+    const c = st?.lastRecord?.run === runId ? runChanges(st, runId) : null;
+    const parts = [];
+    if (c?.items.size) parts.push(`🎒 ${c.items.size}`);
+    if (c?.people.size) parts.push(`👥 ${c.people.size}`);
+    const q = qn ? [qn.found && `수락 대기 ${qn.found}`, qn.added && `자동 수락 ${qn.added}`, qn.done && `완료 ${qn.done}`, qn.failed && `실패 ${qn.failed}`].filter(Boolean) : [];
+    if (q.length) parts.push(`❗ ${q.join(' · ')}`);
+    return parts.length ? `NEW ${parts.join(' · ')}` : '';
+}
+const newBadge = '<span class="sp-new" title="마지막 저장에서 새로 생기거나 바뀜">NEW</span>';
 function recentChanges(st) {
     const lr = st.lastRecord;
     if (!lr?.run) return null;
@@ -2508,6 +2550,8 @@ function recentChanges(st) {
 }
 function mainHtml(st) {
     const mem = st.mem;
+    // v0.6.53: NEW on what the last save added or changed (the same set as the result banner).
+    const fresh = runChanges(st) || { items: new Set(), people: new Set(), records: new Set(), quests: new Set() };
     const pending = pendingCount();
     const time = storyTimeContext(mem, 'ko');
     const go = (tab, label) => `<button class="sp-st-more" data-act="tab" data-id="${tab}">${label} ›</button>`;
@@ -2541,7 +2585,7 @@ function mainHtml(st) {
     const open = mem.records.filter(r => r.type === 'quest' && r.status === 'open' && !r.track).sort((a, b) => rank(a) - rank(b));
     const quests = open.length ? head(`❗ 진행 중 ${open.length}`, 'quests', '퀘스트') + open.slice(0, 5).map(q => {
         const d = dueStatus(mem, q), hot = d && ['past', 'today'].includes(d.kind);
-        return `<div class="sp-st-q ${hot ? 'urgent' : ''}" data-act="tl-quest" data-id="${esc(q.id)}"><span class="kind">${KIND_KO[q.kind] || q.kind}</span><span class="txt">${roleText(mem, q) ? `<b class="sp-role">${esc(roleText(mem, q))}</b> ` : ''}${esc(T(q.text, q.ko))}</span>${q.due ? `<span class="due ${hot ? 'hot' : ''}">${esc(formatDue(mem, q, 'ko'))}</span>` : ''}</div>`;
+        return `<div class="sp-st-q ${hot ? 'urgent' : ''}" data-act="tl-quest" data-id="${esc(q.id)}"><span class="kind">${KIND_KO[q.kind] || q.kind}</span>${fresh.quests.has(q.id) ? newBadge : ''}<span class="txt">${roleText(mem, q) ? `<b class="sp-role">${esc(roleText(mem, q))}</b> ` : ''}${esc(T(q.text, q.ko))}</span>${q.due ? `<span class="due ${hot ? 'hot' : ''}">${esc(formatDue(mem, q, 'ko'))}</span>` : ''}</div>`;
     }).join('') + (open.length > 5 ? `<div class="sp-st-sub">${open.length - 5}개 더</div>` : '') : '';
     // People in the last recorded scene (and the open one), excluding nobody: standby is about injection.
     const present = [...new Set([...(openScene(mem)?.who || []), ...(sc?.who || [])])].map(id => mem.entities.find(e => e.id === id)).filter(e => e?.type === 'person');
@@ -2551,7 +2595,7 @@ function mainHtml(st) {
         const more = mem.records.filter(x => x.type === 'party' && x.entity === e.id).length - (c ? 1 : 0) - (r ? 1 : 0);
         // v0.6.39: state and relation are clamped; tapping the card shows them in full.
         const full = ui.savesOpen.get('stp:' + e.id);
-        return `<div class="sp-st-p ${full ? 'full' : ''}" data-act="st-p" data-id="${esc(e.id)}" title="${full ? '접기' : '눌러서 전부 보기'}"><div class="n"><span class="av">${esc((e.name || '?').slice(0, 1))}</span>${esc(e.name)}${e.standby ? ` <span class="sp-badge">${e.standby === 'standby' ? '대기' : '주입 제외'}</span>` : ''}</div>
+        return `<div class="sp-st-p ${full ? 'full' : ''}" data-act="st-p" data-id="${esc(e.id)}" title="${full ? '접기' : '눌러서 전부 보기'}"><div class="n"><span class="av">${esc((e.name || '?').slice(0, 1))}</span>${esc(e.name)}${fresh.people.has(e.id) ? newBadge : ''}${e.standby ? ` <span class="sp-badge">${e.standby === 'standby' ? '대기' : '주입 제외'}</span>` : ''}</div>
             ${c ? `<div class="c">${esc(T(c.text, c.ko))}</div>` : ''}${r ? `<div class="r">${esc(T(r.text, r.ko))}</div>` : ''}${more > 0 ? `<div class="sp-st-sub">+${more}</div>` : ''}${!c && !r ? '<div class="r">기록된 변화 없음</div>' : ''}</div>`;
     }).join('')}</div>` + (() => { const b = mem.entities.filter(e => e.type === 'person' && e.standby); return b.length ? `<div class="sp-st-sub">대기 ${b.filter(e => e.standby === 'standby').length}명 · 주입 제외 ${b.filter(e => e.standby === 'exclude').length}명</div>` : ''; })() : '';
     // Items held by the people above, and items left at the scene's place.
@@ -2562,7 +2606,7 @@ function mainHtml(st) {
     rows.push(...places.map(p => [`📍 ${p.name}`, live.filter(r => r.holder === p.id)]).filter(([, l]) => l.length));
     // v0.6.39: one block per holder (name on top, one item per line with its state) so a long list
     // never runs into the next person's row.
-    const items = rows.length ? head('🎒 아이템', 'items', '인벤토리') + `<div class="sp-st-items">${rows.map(([who, l]) => `<div class="grp"><div class="who">${esc(who)}<span class="cnt">${l.length}</span></div>${l.map(r => `<div class="it"><b>${esc(entityName(mem, r.entity) || '?')}</b>${r.gone ? '<span class="sp-badge">사라짐</span>' : ''}<span class="st">${esc(T(r.text, r.ko))}</span></div>`).join('')}</div>`).join('')}</div>` : '';
+    const items = rows.length ? head('🎒 아이템', 'items', '인벤토리') + `<div class="sp-st-items">${rows.map(([who, l]) => `<div class="grp"><div class="who">${esc(who)}<span class="cnt">${l.length}</span></div>${l.map(r => `<div class="it"><b>${esc(entityName(mem, r.entity) || '?')}</b>${fresh.records.has(r.id) ? newBadge : ''}${r.gone ? '<span class="sp-badge">사라짐</span>' : ''}<span class="st">${esc(T(r.text, r.ko))}</span></div>`).join('')}</div>`).join('')}</div>` : '';
     // What the last save changed, folded by default.
     const ch = recentChanges(st);
     const kindKo = { checkpoint: '체크포인트', quicksave: '퀵세이브', sceneclear: '장면 클리어', supplement: '루팅 보충' };
@@ -3093,7 +3137,7 @@ function hudHtml(st) {
     const chip = [`미기록 ${pending}`, injectionStatus, ...(st?.lootQueue?.length ? [`⏳ ${st.lootQueue.length}`] : []), ...(fails ? [`⚠ 실패 ${fails}`] : []),
         ...(lootFails ? [`💎 반영 실패 ${lootFails}`] : []), ...(issues ? [`확인 필요 ${issues}`] : []), ...(interrupted ? ['저장 중단됨'] : []),
         ...(ui.inj?.pinOverflow ? ['⚓ 주입 못 함'] : [])].join(' · ');
-    return `<div class="sp-hud ${openHud ? 'sp-hud-open' : 'sp-hud-folded'}">
+    return `<div class="sp-hud ${openHud ? 'sp-hud-open' : 'sp-hud-folded'}">${hudResultHtml()}
         <div class="sp-scene-now">${open ? `<span class="sp-cursor">▶</span> <b>${esc(T(open.title, open.koTitle))}</b>${open.where ? ` <span class="sp-dim">@ ${esc(open.where)}</span>` : ''}` : '<span class="sp-dim">▷ 진행 중인 장면 없음</span>'}</div>
         <div class="sp-barline"><div class="sp-bar" title="기록된 메시지 비율"><div class="sp-bar-fill" style="width:${pct}%"></div><span>기록 ${covered} / ${total}</span></div>${hideButton(st, busy)}</div>
         <button type="button" class="sp-hud-chip ${alerting ? 'sp-alerting' : ''}" data-act="hud-toggle" aria-expanded="${openHud}" title="${openHud ? '자세한 상태 접기' : '자세한 상태 펼치기'}"><span>${esc(chip)}</span><span class="sp-hud-caret">${openHud ? '▴' : '▾'}</span></button>
@@ -3343,6 +3387,13 @@ async function handle(act, id) {
         case 'stop': cancelRun(); return;
         case 'undo': return undo();
         case 'hide-now': return hideRecorded();
+        case 'hud-result': {
+            const r = ui.hudResult; ui.hudResult = null; clearTimeout(hudResultTimer);
+            if (r?.tone === 'warning') { ui.revealFailure = true; ui.savesOpen.set('hud-autofail', true); ui.savesOpen.set('hud-err', true); return render(true); }
+            if (r?.goto && hasChat()) { openResult(r.goto); ui.tab = 'main'; ui.edit = null; }
+            return render(true);
+        }
+        case 'hud-result-close': ui.hudResult = null; clearTimeout(hudResultTimer); return render();
         case 'translate': return translate();
         // One button for the language: 원문 ↔ 번역; in Korean view, untranslated items get a small "+N" button.
         case 'lang': {
@@ -3715,12 +3766,14 @@ function saveBanner() {
         el = document.createElement('div');
         el.id = 'sp_save_banner'; el.className = 'sp-window sp-save-banner'; el.hidden = true;
         el.setAttribute('role', 'status'); el.setAttribute('aria-live', 'polite');
-        el.innerHTML = '<span class="sp-sb-icon"></span><div class="sp-sb-text"><div class="sp-sb-title"></div><div class="sp-sb-sub"></div></div>';
+        el.innerHTML = '<span class="sp-sb-icon"></span><div class="sp-sb-text"><div class="sp-sb-title"></div><div class="sp-sb-sub"></div><div class="sp-sb-news" hidden></div></div><button type="button" class="sp-sb-close" aria-label="배너 닫기" title="닫기" hidden>✕</button>';
+        // v0.6.53: ✕ closes a result (not a running save, whose banner is a warning about leaving the room).
+        el.querySelector('.sp-sb-close').onclick = e => { e.stopPropagation(); clearTimeout(bannerTimer); delete el.dataset.flash; delete el.dataset.flashRoom; el.hidden = true; };
         el.onclick = () => {
             // A failure notice opens the window with the failure details unfolded, and is then done.
             if (el.dataset.tone === 'warning') { ui.revealFailure = true; ui.savesOpen.set('hud-autofail', true); ui.savesOpen.set('hud-err', true); }
             // New found quests: open 💠 메인 with the list unfolded.
-            if (el.dataset.flash && el.dataset.goto === 'main-quests' && hasChat()) { (ui.roomTabs ||= new Map()).set(roomKey(), 'main'); ui.savesOpen.set('main-quests', true); }
+            if (el.dataset.flash && el.dataset.goto && hasChat()) openResult(el.dataset.goto);
             if (el.dataset.flash) { clearTimeout(bannerTimer); delete el.dataset.flash; delete el.dataset.flashRoom; el.hidden = true; }
             openWindow();
         };
@@ -3744,12 +3797,15 @@ let pendingBanner = null;
 function showPendingBanner() {
     if (document.hidden || !pendingBanner) return;
     const p = pendingBanner; pendingBanner = null;
-    if (p.room === String(roomKey())) flashSaveBanner(p.text, { tone: p.tone, goto: p.goto });
+    if (p.room === String(roomKey())) flashSaveBanner(p.text, { tone: p.tone, goto: p.goto, news: p.news });
 }
-function setBanner(el, { icon, title, count = '', sub }) {
+function setBanner(el, { icon, title, count = '', sub, news = '', closable = false }) {
     el.querySelector('.sp-sb-icon').className = `sp-sb-icon ${icon}`;
     el.querySelector('.sp-sb-title').innerHTML = `${esc(title)}${count ? ` <b>${esc(count)}</b>` : ''}`;
     el.querySelector('.sp-sb-sub').textContent = sub;
+    el.querySelector('.sp-sb-sub').hidden = !sub;
+    const n = el.querySelector('.sp-sb-news'); n.innerHTML = newsHtml(news); n.hidden = !news;
+    el.querySelector('.sp-sb-close').hidden = !closable;
     el.hidden = false;
     placeSaveBanner(el);
 }
@@ -3767,19 +3823,47 @@ function updateSaveBanner() {
     el.dataset.tone = 'running';
     setBanner(el, { icon: 'sp-sb-spin', title: text[0], count: m ? `${m[1]}/${m[2]}` : '', sub: text[1] });
 }
-function flashSaveBanner(text, { tone = 'success', goto = '' } = {}) {
+// `NEW 🎒 2 · 👥 1 · ❗ …` with the NEW part styled like the badge on 💠 메인.
+function newsHtml(news) {
+    if (!news) return '';
+    const rest = String(news).replace(/^NEW\s*/, '');
+    return `${newBadge}${rest.split(' · ').map(p => `<span class="sp-news-p">${esc(p)}</span>`).join('<span class="sp-dim"> · </span>')}`;
+}
+// A tap on a result: 💠 메인 with the last save's changes unfolded (and found quests, when there are).
+function openResult(goto) {
+    (ui.roomTabs ||= new Map()).set(roomKey(), 'main');
+    ui.savesOpen.set('main-changes', true);
+    if (goto === 'main-quests') ui.savesOpen.set('main-quests', true);
+}
+const RESULT_MS = 6000;
+function flashSaveBanner(text, { tone = 'success', goto = '', news = '' } = {}) {
     const el = saveBanner();
     if (!el) return;
     clearTimeout(bannerTimer);
-    if (ui.open || !settings().enabled) { delete el.dataset.flash; el.hidden = true; return; }
-    if (typeof document !== 'undefined' && document.hidden) { pendingBanner = { text, tone, goto, room: String(roomKey()) }; return; }
+    if (!settings().enabled) { delete el.dataset.flash; el.hidden = true; return; }
+    // v0.6.53: with the window open, the same result is one line at the top of its status panel.
+    if (ui.open) { delete el.dataset.flash; el.hidden = true; showHudResult(text, { tone, goto, news }); return; }
+    if (typeof document !== 'undefined' && document.hidden) { pendingBanner = { text, tone, goto, news, room: String(roomKey()) }; return; }
     const [title, ...rest] = text.split(' · ');
     el.dataset.flash = '1'; el.dataset.flashRoom = String(roomKey());
     el.dataset.tone = tone; el.dataset.goto = goto || '';
-    setBanner(el, { icon: tone === 'warning' ? 'sp-sb-warn' : tone === 'info' ? 'sp-sb-info' : 'sp-sb-done', title,
-        sub: [...rest, ...(tone === 'warning' ? ['눌러서 자세히 보기'] : [])].join(' · ') });
-    // A failure stays until it is tapped, a new save starts, or the room changes; other results fade.
-    if (tone !== 'warning') bannerTimer = setTimeout(() => { delete el.dataset.flash; delete el.dataset.flashRoom; updateSaveBanner(); }, 3500);
+    setBanner(el, { icon: tone === 'warning' ? 'sp-sb-warn' : tone === 'info' ? 'sp-sb-info' : 'sp-sb-done', title, news, closable: true,
+        sub: [...rest, ...(tone === 'warning' ? ['눌러서 자세히 보기'] : news ? ['눌러서 최근 변화 보기'] : [])].join(' · ') });
+    // A failure stays until it is tapped or closed, a new save starts, or the room changes; other results fade.
+    if (tone !== 'warning') bannerTimer = setTimeout(() => { delete el.dataset.flash; delete el.dataset.flashRoom; updateSaveBanner(); }, news ? RESULT_MS : 3500);
+}
+let hudResultTimer = null;
+function showHudResult(text, { tone, goto, news }) {
+    clearTimeout(hudResultTimer);
+    ui.hudResult = { text, tone, goto, news, room: String(roomKey()) };
+    if (tone !== 'warning') hudResultTimer = setTimeout(() => { ui.hudResult = null; if (ui.open) render(); }, news ? RESULT_MS : 3500);
+    render();
+}
+function hudResultHtml() {
+    const r = ui.hudResult;
+    if (!r || r.room !== String(roomKey())) return '';
+    const [title] = r.text.split(' · ');
+    return `<div class="sp-hud-result sp-hud-result-${r.tone === 'warning' ? 'warn' : 'ok'}"><button type="button" class="grow" data-act="hud-result">${r.tone === 'warning' ? '⚠' : '✔'} ${esc(title)}${r.news ? ` <span class="sp-dim">·</span> ${newsHtml(r.news)}` : ''}</button><button type="button" class="x" data-act="hud-result-close" aria-label="닫기" title="닫기">✕</button></div>`;
 }
 // A save cut off by leaving the room is remembered per room until that room saves again.
 function clearInterrupted(room) {

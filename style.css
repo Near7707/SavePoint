@@ -1005,3 +1005,15 @@ details.sp-st-alert[open] > summary { margin-bottom: 6px; }
 /* v0.6.52: 🔖 원문 유지 */
 .sp-keep-mark { margin-left: 4px; font-size: .85em; opacity: .85; cursor: default; }
 .sp-keep-btn.sp-on { opacity: 1; filter: drop-shadow(0 0 2px rgba(255, 200, 80, .8)); }
+
+/* v0.6.53: NEW badge and save results */
+.sp-new { display: inline-block; margin: 0 4px; padding: 0 4px; border-radius: 3px; font-size: 9.5px; font-weight: 800; letter-spacing: .04em; line-height: 13px; vertical-align: 1px; color: var(--sp-accent); border: 1px solid var(--sp-accent); background: transparent; white-space: nowrap; }
+#sp_save_banner .sp-sb-news { font-size: 12px; margin-top: 2px; display: flex; flex-wrap: wrap; align-items: center; gap: 0 2px; }
+#sp_save_banner .sp-sb-news .sp-new { margin-left: 0; }
+#sp_save_banner .sp-news-p { white-space: nowrap; }
+#sp_save_banner .sp-sb-close { flex: 0 0 auto; align-self: flex-start; background: none; border: none; color: var(--sp-dim); font-size: 14px; line-height: 1; padding: 2px 4px; cursor: pointer; }
+.sp-hud-result { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--sp-line); background: color-mix(in srgb, var(--sp-ok) 14%, transparent); font-size: 12.5px; }
+.sp-hud-result-warn { background: color-mix(in srgb, var(--sp-danger) 14%, transparent); }
+.sp-hud-result button { background: none; border: none; color: inherit; font: inherit; padding: 0; cursor: pointer; text-align: left; }
+.sp-hud-result .grow { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 0 4px; }
+.sp-hud-result .x { flex: 0 0 auto; color: var(--sp-dim); padding: 0 2px; }
