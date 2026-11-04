@@ -26,10 +26,10 @@ test('"내일" made on a known day becomes a deadline one day later, and its sta
     m = save(m, { time: same, words: '내일 성문에서 만나자고 약속했다.', changes: [promise('내일 성문에서 만나자고 약속했다', { expr: '내일', days: 1 })] });
     assert.equal(q(m).due.days, 1);
     assert.equal(dueStatus(m, q(m)).kind, 'left'); assert.equal(dueStatus(m, q(m)).left, 1);
-    assert.match(formatDue(m, q(m), 'ko'), /“내일” \(2026-10-25\) · 1일 남음 \(마지막 기록 기준\)/);
+    assert.match(formatDue(m, q(m), 'ko'), /“내일” \(2026-10-25\) · 1일 남음 \(마지막 저장 기준\)/);
     m = next(m); assert.equal(dueStatus(m, q(m)).kind, 'today');
     m = next(m); assert.equal(dueStatus(m, q(m)).kind, 'past');
-    assert.match(formatDue(m, q(m), 'ko'), /기한 지남 \(마지막 기록 기준, 약속을 어겼다는 뜻은 아니에요\)/);
+    assert.match(formatDue(m, q(m), 'ko'), /기한 지남 \(마지막 저장 기준, 약속을 어겼다는 뜻은 아니에요\)/);
     assert.equal(q(m).status, 'open', 'passing a deadline never closes or fails the promise');
     assert.match(recordLine(m, q(m)), /past due by 1 day as of the last record \(not necessarily broken\)/);
     assert.match(buildInjection(m, { budget: 6000 }).text, /past due by 1 day as of the last record/);

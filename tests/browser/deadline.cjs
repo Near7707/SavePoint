@@ -65,8 +65,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => __savePoint.handle('run'));
     await ev(() => { $('#sp_wand').trigger('click'); __savePoint.handle('tab', 'quests'); });
     let r = await ev(() => ({ due: $('.sp-due').text(), cls: $('.sp-due').attr('class') || '', inj: M.prompts.savepoint.v }));
-    ok(r.due.includes('“내일”') && r.due.includes('2026-10-25') && r.due.includes('1일 남음 (마지막 기록 기준)'), `1. 약속 기한과 남은 날 표시 (${r.due})`);
-    ok(r.inj.includes('1 day left as of the last record'), '1. 주입에도 마지막 기록 기준의 기한');
+    ok(r.due.includes('“내일”') && r.due.includes('2026-10-25') && r.due.includes('1일 남음 (마지막 저장 기준)'), `1. 약속 기한과 남은 날 표시 (${r.due})`);
+    ok(r.inj.includes('1 day left as of the last record'), '1. 주입에도 마지막 저장 기준의 기한');
     r = await ev(() => ({ time: $('.sp-quest-time').text(), inj: M.prompts.savepoint.v }));
     ok(r.time.includes('약속한 때: 2026-10-24') && !r.inj.includes('약속한 때'), '1. 약속한 날짜는 카드에만 표시, 주입에 추가하지 않음');
 
@@ -79,6 +79,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
 
     // 3. the user sets the deadline day by hand; a later AI reading does not replace it
     const qid = await ev(() => __savePoint.state().mem.records.find(x => x.type === 'quest').id);
+    await ev(() => { window.__beforeDue = structuredClone(M.meta.savePoint); });
     await ev(id => __savePoint.handle('edit-rec', id), qid);
     r = await ev(() => $('.sp-edit').text());
     ok(r.includes('기한 직접 지정') && r.includes('YYYY-MM-DD') && r.includes('2026-10-26'), '3. 편집 창에 기한 칸과 지금 시간 안내');
@@ -92,9 +93,11 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r = await ev(() => ({ err: window.__dueErr || '', open: !!document.querySelector('.sp-edit'), day: __savePoint.state().mem.records.find(x => x.type === 'quest').due.manual.day }));
     ok(r.err.includes('1 이상의 일 수나') && r.day === 5, `3. 잘못된 기한 일 수는 저장하지 않음 (${r.err})`);
     await ev(() => __savePoint.handle('edit-cancel'));
-    await ev(() => __savePoint.handle('undo'));
+    // v0.6.55: an edit is not a rewind point (⏪ stays on the last save); the test puts the state back itself.
+    ok(await ev(() => !['edit'].includes(__savePoint.state().undoInfo?.kind)), '3. 편집은 리와인드 지점을 바꾸지 않음');
+    await ev(s => { M.meta.savePoint = s; __savePoint.refreshInjection(); __savePoint.render(true); }, await ev(() => window.__beforeDue));
     r = await ev(() => __savePoint.state().mem.records.find(x => x.type === 'quest').due);
-    ok(!r.manual && r.days === 1, '3. 리와인드하면 직접 지정 전으로');
+    ok(!r.manual && r.days === 1, '3. (검사용 복원) 직접 지정 전으로');
 
     // 3b. a promise added by hand keeps the deadline typed into the form
     await ev(() => __savePoint.handle('add-rec', 'quest'));
@@ -104,9 +107,9 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => __savePoint.handle('edit-save'));
     r = await ev(() => { const x = __savePoint.state().mem.records.find(y => y.text === 'Return the borrowed lantern.'); return { expr: x?.due?.expr, manual: !!x?.due?.manual, html: $('.sp-due').text() }; });
     ok(r.expr === '모레' && r.manual && r.html.includes('2026-10-28'), `3. 직접 추가한 약속도 기한 저장 (${r.expr}, ${r.manual})`);
-    await ev(() => __savePoint.handle('undo'));
+    await ev(id => __savePoint.handle('del-rec', id), await ev(() => __savePoint.state().mem.records.find(y => y.text === 'Return the borrowed lantern.').id));
     r = await ev(() => __savePoint.state().mem.records.filter(x => x.type === 'quest').length);
-    ok(r === 1, '3. 되돌리기로 직접 추가한 약속 제거');
+    ok(r === 1, '3. 직접 추가한 약속은 🗑(확인 후)로 지움');
 
     // 4. after a vague time jump the deadline cannot be compared
     await ev(() => { M.step = 'jump'; M.add(2, () => '몇 주 뒤, 다시 성문 앞.'); });
@@ -136,8 +139,10 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => __savePoint.handle('edit-save'));
     r = await ev(() => ({ text: $('.sp-quest-time').text(), event: __savePoint.state().mem.records.find(x => x.id === M.completeQuest).questEvents.resolved }));
     ok(!/완료한 때|실패한 때/.test(r.text) && r.event.manual && r.event.status === 'failed', '6. 편집 창의 직접 상태 변경도 이전 완료 날짜를 재사용하지 않음');
+    // v0.6.55: ⏪ takes back the last save (the completion) together with the edit made after it.
     await ev(() => __savePoint.handle('undo'));
-    ok((await ev(() => $('.sp-quest-time').text())).includes('완료한 때: 2026-10-30'), '6. 리와인드하면 완료 근거와 날짜도 복원');
+    r = await ev(id => ({ q: __savePoint.state().mem.records.find(x => x.id === id), text: $('.sp-quest-time').text() }), await ev(() => M.completeQuest));
+    ok(r.q.status === 'open' && !r.q.questEvents?.resolved && !/완료한 때|실패한 때/.test(r.text), '6. 리와인드는 마지막 저장(완료)과 그 뒤 편집을 함께 되돌림');
 
     await browser.close(); srv.close();
     console.log(failures ? `${failures} FAILED` : 'ALL PASS');

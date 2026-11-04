@@ -73,8 +73,9 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(/수신 중 .*사고 [\d,]+자.*대기 5초 · 출력 중 연장 · 최대 20분/.test(r), `1. 진행 표시에 제한 방식 (${r.trim()})`);
     r = await ev(() => ['eggpet', 'dualwhite', 'pastel', 'gingerbread', 'xmasknit'].map(t => {
         const w = document.querySelector('#sp_overlay .sp-window'); w.setAttribute('data-theme', t);
-        const run = w.querySelector('.sp-actions [data-act="run"]'), stop = w.querySelector('.sp-actions [data-act="stop"]');
-        return [t, stop && Math.abs(stop.getBoundingClientRect().top - run.getBoundingClientRect().top) < 2 && stop.scrollWidth <= stop.clientWidth + 1];
+        // v0.6.55: while a save runs, 중지 takes 퀵세이브's place in the one-row button line.
+        const run = w.querySelector('.sp-actions [data-act="undo"]'), stop = w.querySelector('.sp-actions [data-act="stop"]');
+        return [t, stop && !w.querySelector('.sp-actions [data-act="run"]') && Math.abs(stop.getBoundingClientRect().top - run.getBoundingClientRect().top) < 2 && stop.scrollWidth <= stop.clientWidth + 1];
     }));
     ok(r.every(x => x[1]), `1. 폭 390에서 중지 버튼이 모든 테마에서 같은 줄 끝 (${r.filter(x => !x[1]).map(x => x[0]).join(',') || 'ok'})`);
     await p1;

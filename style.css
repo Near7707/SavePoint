@@ -552,7 +552,7 @@ label.sp-has-reset { position: relative; padding-right: 30px; }
 .sp-window[data-theme="consolenight"] .sp-logo { color: #eef1ff; font-weight: 900; letter-spacing: .14em; }
 .sp-window[data-theme="consolenight"] .sp-logo-icon { color: #ffd36b; }
 .sp-window[data-theme="consolenight"] .sp-top-r { color: #eef1ff; }
-.sp-window[data-theme="consolenight"]:not(#sp_loot_dialog) .sp-hud { position: relative; border-bottom: none; border-radius: 0 0 18px 18px; padding-top: 112px; background: linear-gradient(180deg, rgba(0,0,0,0) 0 104px, #1f2a63 104px), var(--sp-cn-scene) right top / auto 104px no-repeat, linear-gradient(180deg, #1c2660, #23306e); color: #eef1ff; }
+.sp-window[data-theme="consolenight"]:not(#sp_loot_dialog) .sp-hud { position: relative; border-bottom: none; border-radius: 0 0 18px 18px; padding-top: 92px; background: linear-gradient(180deg, rgba(0,0,0,0) 0 84px, #1f2a63 84px), var(--sp-cn-scene) right top / auto 84px no-repeat, linear-gradient(180deg, #1c2660, #23306e); color: #eef1ff; }
 .sp-window[data-theme="consolenight"]:not(#sp_loot_dialog) .sp-scene-now { position: absolute; top: 12px; left: 14px; max-width: 58%; white-space: normal; padding: 6px 10px; border-radius: 10px; background: rgba(15, 22, 60, .55); color: #eef1ff; }
 .sp-window[data-theme="consolenight"] .sp-hud .sp-dim, .sp-window[data-theme="consolenight"] .sp-hud-meta { color: #b9c2ee; }
 .sp-window[data-theme="consolenight"] .sp-hud-meta b { color: #ffd36b; }
@@ -565,8 +565,8 @@ label.sp-has-reset { position: relative; padding-right: 30px; }
 .sp-window[data-theme="consolenight"] .sp-actions .sp-btn::after { font-size: 8.5px; font-weight: 700; letter-spacing: .06em; opacity: .75; }
 .sp-window[data-theme="consolenight"] .sp-actions [data-act="run"] { background: linear-gradient(180deg, #ffc1d4, #ff9fbc); color: #7a1f42; }
 .sp-window[data-theme="consolenight"] .sp-actions [data-act="run"]::after { content: 'QUICK SAVE'; }
-.sp-window[data-theme="consolenight"] .sp-actions [data-act="run-close"] { background: linear-gradient(180deg, #b8f3e4, #8fe6d1); color: #145a4c; }
-.sp-window[data-theme="consolenight"] .sp-actions [data-act="run-close"]::after { content: 'SCENE CLEAR'; }
+.sp-window[data-theme="consolenight"] .sp-actions [data-act="hide-now"] { background: linear-gradient(180deg, #b8f3e4, #8fe6d1); color: #145a4c; }
+.sp-window[data-theme="consolenight"] .sp-actions [data-act="hide-now"]::after { content: 'HIDE'; }
 .sp-window[data-theme="consolenight"] .sp-actions [data-act="undo"] { background: linear-gradient(180deg, #c8dcff, #a6c4ff); color: #1d3a7a; }
 .sp-window[data-theme="consolenight"] .sp-actions [data-act="undo"]::after { content: 'REWIND'; }
 .sp-window[data-theme="consolenight"] .sp-actions .sp-langwrap .sp-btn { background: linear-gradient(180deg, #e2d4ff, #cbb6ff); color: #42267a; }
@@ -601,7 +601,7 @@ label.sp-has-reset { position: relative; padding-right: 30px; }
 .sp-window[data-theme="cranelemon"] .sp-bar span { color: #3a2b3d; font-weight: 900; text-shadow: 0 0 3px #fff, 0 0 3px #fff; }
 .sp-window[data-theme="cranelemon"] .sp-actions .sp-btn { border: 3px solid #fff; border-radius: 999px; font-weight: 800; color: #fff; text-shadow: 0 1px 0 rgba(0,0,0,.2); box-shadow: 0 4px 0 rgba(0,0,0,.18), inset 0 2px 0 rgba(255,255,255,.45); }
 .sp-window[data-theme="cranelemon"] .sp-actions [data-act="run"] { background: #2fa6e8; }
-.sp-window[data-theme="cranelemon"] .sp-actions [data-act="run-close"] { background: #3fc9a8; }
+.sp-window[data-theme="cranelemon"] .sp-actions [data-act="hide-now"] { background: #3fc9a8; }
 .sp-window[data-theme="cranelemon"] .sp-actions [data-act="undo"] { background: #2fa6e8; }
 .sp-window[data-theme="cranelemon"] .sp-actions .sp-langwrap .sp-btn { background: #f5a524; }
 .sp-window[data-theme="cranelemon"] .sp-hud .sp-btn:not(.sp-actions .sp-btn) { background: #fff; border-color: #ffe39a; border-radius: 999px; }
@@ -708,7 +708,7 @@ label.sp-has-reset { position: relative; padding-right: 30px; }
 .sp-window[data-theme="gingerbread"] .sp-bar span { color: #4b2e1c; font-weight: 900; text-shadow: 0 0 3px #fff, 0 0 3px #fff; }
 .sp-window[data-theme="gingerbread"] .sp-actions .sp-btn { border-radius: 999px; font-weight: 800; }
 .sp-window[data-theme="gingerbread"] .sp-actions [data-act="run"] { background: #c4362f; color: #fff; border-color: #c4362f; box-shadow: 0 3px 0 #8f2420; }
-.sp-window[data-theme="gingerbread"] .sp-actions [data-act="run-close"] { background: #2f8a50; color: #fff; border-color: #2f8a50; box-shadow: 0 3px 0 #1f6338; }
+.sp-window[data-theme="gingerbread"] .sp-actions [data-act="hide-now"] { background: #2f8a50; color: #fff; border-color: #2f8a50; box-shadow: 0 3px 0 #1f6338; }
 .sp-window[data-theme="gingerbread"] .sp-tab-nav { border-bottom: none; margin-top: 8px; }
 .sp-window[data-theme="gingerbread"] .sp-tab { margin-right: 5px; border: 2px solid #e8cfae; border-radius: 12px; background: #f8ead6; color: #6b4428; }
 .sp-window[data-theme="gingerbread"] .sp-tab.sp-active { background: #fff; border-color: #c4362f; color: #c4362f; }
@@ -729,7 +729,7 @@ label.sp-has-reset { position: relative; padding-right: 30px; }
 .sp-window[data-theme="xmasknit"] .sp-bar-fill { border-radius: 999px; background: repeating-linear-gradient(90deg, #2e7d4b 0 10px, #3a9a5b 10px 20px); }
 .sp-window[data-theme="xmasknit"] .sp-bar span { color: #3d2320; font-weight: 800; text-shadow: 0 0 3px #fff; }
 .sp-window[data-theme="xmasknit"] .sp-actions [data-act="run"] { background: #b8262f; color: #fff; border-color: #b8262f; }
-.sp-window[data-theme="xmasknit"] .sp-actions [data-act="run-close"] { background: #2e7d4b; color: #fff; border-color: #2e7d4b; }
+.sp-window[data-theme="xmasknit"] .sp-actions [data-act="hide-now"] { background: #2e7d4b; color: #fff; border-color: #2e7d4b; }
 .sp-window[data-theme="xmasknit"] .sp-tab-nav { border-bottom: none; margin-top: 6px; }
 .sp-window[data-theme="xmasknit"] .sp-tab { margin-right: 4px; border: 2px solid #f0d3cb; border-radius: 999px; background: #fff; }
 .sp-window[data-theme="xmasknit"] .sp-tab.sp-active { background: #b8262f; border-color: #b8262f; color: #fff; }
@@ -831,7 +831,7 @@ label.sp-has-reset { position: relative; padding-right: 30px; }
 .sp-window[data-theme="lilac"] .sp-hud-meta b { color: #b0a4ff; }
 .sp-window[data-theme="lilac"] .sp-btn { border: 1px solid #343a5c; border-radius: 10px; background: #282d47; color: #e7e4f4; }
 .sp-window[data-theme="lilac"] .sp-btn.sp-primary { background: #b0a4ff; border-color: #b0a4ff; color: #19153a; }
-.sp-window[data-theme="lilac"] .sp-actions [data-act="run-close"] { border-color: #b0a4ff; color: #b0a4ff; background: transparent; }
+.sp-window[data-theme="lilac"] .sp-actions [data-act="hide-now"] { border-color: #b0a4ff; color: #b0a4ff; background: transparent; }
 .sp-window[data-theme="lilac"] .sp-tab-nav { border-bottom: 1px solid #343a5c; }
 .sp-window[data-theme="lilac"] .sp-tab { border: none; border-radius: 10px 10px 0 0; background: transparent; color: #9e9ab9; box-shadow: none; }
 .sp-window[data-theme="lilac"] .sp-tab.sp-active { color: #e7e4f4; background: transparent; box-shadow: inset 0 -3px 0 #b0a4ff; }
@@ -1026,3 +1026,12 @@ details.sp-st-alert[open] > summary { margin-bottom: 6px; }
 /* v0.6.54: SillyTavern restyles every checkbox (appearance: none); SavePoint's own checkboxes stay native so the tick shows. */
 .sp-window input[type="checkbox"] { -webkit-appearance: checkbox !important; appearance: auto !important; width: 16px; height: 16px; margin: 0; accent-color: var(--sp-accent, #4a8bdc); background: none !important; border: none !important; box-shadow: none !important; flex: 0 0 auto; }
 .sp-window input[type="checkbox"]::before, .sp-window input[type="checkbox"]::after { content: none !important; display: none !important; }
+
+/* v0.6.55: one row of buttons (퀵세이브 · 리와인드 · 👻 하이드 · 번역) at any width; the 👻 count keeps its width. */
+.sp-actions { flex-wrap: nowrap; }
+.sp-actions > .sp-btn, .sp-actions > .sp-langwrap { flex: 1 1 auto; min-width: 0; }
+@media (max-width: 420px) { .sp-window:not(#sp_loot_dialog) .sp-actions { gap: 4px; } .sp-window:not(#sp_loot_dialog) .sp-actions .sp-btn { padding-left: 3px; padding-right: 3px; letter-spacing: -.02em; } }
+.sp-actions .sp-btn { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sp-actions .sp-langwrap .sp-langbtn { width: 100%; }
+.sp-hide-n { display: inline-block; min-width: 3ch; text-align: left; font-variant-numeric: tabular-nums; }
+.sp-scene-close { margin: 6px 0 2px; }

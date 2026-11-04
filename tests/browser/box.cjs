@@ -63,8 +63,10 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(!(await inj()).includes('borrowed coat') && (await inj()).includes('brass lamp'), '1. 보관함 물건은 본편 AI에게 전달하지 않음');
 
     // 2. rewind brings back what was there before, and redo-by-hand works both ways
-    await ev(() => __savePoint.handle('undo'));
-    ok((await ev(() => !__savePoint.state().mem.records.find(r => r.text.includes('coat')).stored)) && (await inj()).includes('borrowed coat'), '2. 리와인드하면 보관 전으로');
+    // v0.6.55: storing is an edit (not a rewind point); taking it out by hand works.
+    await ev(id => __savePoint.handle('item-unstore', id), coatId);
+    await page.waitForTimeout(200);
+    ok((await ev(() => !__savePoint.state().mem.records.find(r => r.text.includes('coat')).stored)) && (await inj()).includes('borrowed coat'), '2. 꺼내면 보관 전으로');
     await ev(id => __savePoint.handle('item-store', id), coatId);
 
     // 3. the story mentions the coat again: the record is updated, it stays in the box (user's choice)
@@ -131,9 +133,9 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(id => __savePoint.handle('person-mode', id + '|'), ari);
     ok(!(await ev(() => __savePoint.state().mem.entities.find(e => e.type === 'person').standby)), '9. 다시 활성');
 
-    // 10. someone already using SavePoint keeps the old behaviour (manual) after updating
+    // 10. v0.6.55: "직접 관리" is gone; someone already using SavePoint gets 알림 받고 결정
     const old = await session({ settings: { savePoint: { theme: 'cream', budget: 6000 } } });
-    ok((await old.evaluate(() => __savePoint.settings().boxMode)) === 'manual', '10. 기존 사용자는 직접 관리 유지');
+    ok((await old.evaluate(() => __savePoint.settings().boxMode)) === 'notify', '10. 기존 사용자는 알림 받고 결정으로');
     await old.close();
 
     await page.close();

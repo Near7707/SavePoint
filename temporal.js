@@ -646,9 +646,9 @@ export function formatDue(mem, r, lang = 'en') {
     if (!st) return head;
     if (st.kind === 'words') return head + (ko ? ' · 날짜로 계산할 수 없어요' : ', not placed on the story timeline');
     if (st.kind === 'check') return head + (ko ? ' · 확인 필요 (지금 시간과 비교할 수 없어요)' : ', cannot be compared with the current story time');
-    if (st.kind === 'left') return head + (ko ? ` · ${st.left}일 남음 (마지막 기록 기준)` : `, ${st.left} day${st.left === 1 ? '' : 's'} left as of the last record`);
-    if (st.kind === 'today') return head + (ko ? ' · 오늘이 기한 (마지막 기록 기준)' : ', due today as of the last record');
-    return head + (ko ? ` · 기한 지남 (마지막 기록 기준, 약속을 어겼다는 뜻은 아니에요)` : `, past due by ${-st.left} day${st.left === -1 ? '' : 's'} as of the last record (not necessarily broken)`);
+    if (st.kind === 'left') return head + (ko ? ` · ${st.left}일 남음 (마지막 저장 기준)` : `, ${st.left} day${st.left === 1 ? '' : 's'} left as of the last record`);
+    if (st.kind === 'today') return head + (ko ? ' · 오늘이 기한 (마지막 저장 기준)' : ', due today as of the last record');
+    return head + (ko ? ` · 기한 지남 (마지막 저장 기준, 약속을 어겼다는 뜻은 아니에요)` : `, past due by ${-st.left} day${st.left === -1 ? '' : 's'} as of the last record (not necessarily broken)`);
 }
 // Manual deadline: a day on the reference of the last recorded story time, or cleared (null).
 export function setManualDue(mem, r, { day, expr } = {}) {

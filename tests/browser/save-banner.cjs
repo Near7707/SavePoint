@@ -81,7 +81,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(async () => { await M.switchChat('chatA', window.__roomA.chat, window.__roomA.meta); });
     await sleep(200);
     r = await ev(() => toastr.log.at(-1)?.[1] || '');
-    ok(r.includes('중간에 멈췄어요') && r.includes(`#${savedTo + 1}부터 미기록`), `4. 돌아오면 이어서 저장하라고 안내 (${r.slice(0, 60)})`);
+    ok(r.includes('중간에 멈췄어요') && r.includes(`#${savedTo + 1}부터 미저장`), `4. 돌아오면 이어서 저장하라고 안내 (${r.slice(0, 60)})`);
     await ev(() => { $('#sp_wand').trigger('click'); __savePoint.render(true); });
     r = await ev(() => $('.sp-hud').text());
     ok(r.includes('지난 저장이 방을 옮기면서 중간에 멈췄어요') && r.includes('퀵세이브로 이어서'), '4. 상태 칸에 이어서 저장 버튼');

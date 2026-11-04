@@ -24,7 +24,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.54';
+const VERSION = '0.6.55';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -78,7 +78,8 @@ function settings() {
     const s = es[MODULE];
     // v0.6.36: someone already using SavePoint keeps the box working as before (manual); the
     // "notify" default is for a new install.
-    if (!('boxMode' in s) && 'theme' in s) s.boxMode = 'manual';
+    // v0.6.55: "직접 관리" is gone; it becomes "알림 받고 결정" (the default).
+    if (!('boxMode' in s) || !['notify', 'auto'].includes(s.boxMode)) s.boxMode = 'notify';
     // v0.6.39: likewise, quests keep being listed automatically for someone already using SavePoint.
     if (!('questMode' in s) && 'theme' in s) s.questMode = 'auto';
     // v0.6.49: the old on/off hide setting becomes a mode (off / auto / manual).
@@ -168,8 +169,10 @@ async function persist() { if (hasChat()) await ctx().saveMetadata(); }
 // saved" and returns normally). That case cannot be detected here: the change stays in the page and
 // is written together with the next successful chat save.
 // The automatic save file lives in the settings file and is only a convenience copy.
-async function transact(change, { undoable = true, autosave: doAutosave = true, rehide = false, replay = false, snapshot = false } = {}) {
-    const entry = { change, undoable, autosave: doAutosave, rehide, replay, snapshot, key: roomKey(), epoch: roomEpoch };
+// v0.6.55: a change is a ⏪ rewind point only when it says so (`undoable` + `undoKind`): saves, a reset
+// and a load. Edits made with buttons no longer take the one rewind step.
+async function transact(change, { undoable = false, undoKind = '', autosave: doAutosave = true, rehide = false, replay = false, snapshot = false } = {}) {
+    const entry = { change, undoable, undoKind, autosave: doAutosave, rehide, replay, snapshot, key: roomKey(), epoch: roomEpoch };
     if (applyEntry(entry) === false) return false;
     const queue = saveQueue(entry.key, entry.epoch);
     queue.pending.push(entry);
@@ -210,7 +213,9 @@ function applyEntry(entry) {
     // change it was first made on top of.
     if (entry.replay && !entry.patch) entry.patch = diffPaths(entry.prev?.mem, st?.mem);
     if (st) {
-        if (entry.undoable && entry.prev) { const { undo: _u, ...rest } = entry.prev; st.undo = clone(rest); }
+        if (entry.undoable && entry.prev) { const { undo: _u, undoInfo: _i, ...rest } = entry.prev; st.undo = clone(rest); st.undoInfo = { kind: entry.undoKind || 'edit', at: Date.now(), edits: 0 }; }
+        // v0.6.55: memory changes made after the rewind point (they go back with it; the question says so).
+        else if (st.undo && st.undoInfo && JSON.stringify(entry.prev?.undoInfo ?? null) === JSON.stringify(st.undoInfo) && JSON.stringify(entry.prev?.mem ?? null) !== JSON.stringify(st.mem)) st.undoInfo.edits = (st.undoInfo.edits || 0) + 1;
         st.rev = (entry.prev?.rev || 0) + 1;
     }
     syncHide({ rehide: entry.rehide }); refreshInjection();
@@ -593,7 +598,7 @@ function reconcile() {
     cancelRun();
     if (rollbackFrom(st, k)) {
         st.hashes = st.hashes.slice(0, st.lastIndex + 1);
-        st.undo = null; st.rev++;
+        st.undo = null; st.undoInfo = null; st.rev++;
         syncHide(); persistSoon();
         toastr.warning(`기록된 원문 #${k}이(가) 바뀌어서 그 구간부터 기록을 되감았어요. 다음 체크포인트나 퀵세이브 때 다시 기록돼요.`, 'SavePoint');
         return true;
@@ -608,7 +613,7 @@ async function acceptCurrentSource() {
         const st = state();
         st.lastIndex = Math.min(st.lastIndex, chat().length - 1);
         st.hashes = hashesTo(st.lastIndex);
-        st.floor = st.lastIndex; st.history = []; st.review = null; st.undo = null;
+        st.floor = st.lastIndex; st.history = []; st.review = null; st.undo = null; st.undoInfo = null;
     }, { undoable: false });
 }
 
@@ -1070,6 +1075,7 @@ async function supplementLoot(run, items, undoPoint = checkpoint(run.st)) {
                     lr.supplement = { from: Math.min(lr.supplement?.from ?? lo, lo), to: Math.max(lr.supplement?.to ?? hi, hi) };
                 } else if (lr?.run === run.id) { lr.at = Date.now(); lr.from = Math.min(lr.from, lo); lr.to = Math.max(lr.to, hi); }
                 else st.lastRecord = { at: Date.now(), from: lo, to: hi, kind: 'supplement', run: run.id };
+                st.undoInfo = { kind: st.lastRecord.kind, run: run.id, at: Date.now(), edits: 0 };
             }, { undoable: false, autosave: false, rehide: true });
             run.lootCounted = counted;
             saved++;
@@ -1116,7 +1122,7 @@ async function summarize({ close = false, auto = false } = {}) {
                 await transact(() => {
                     const cur = state(), before = cur.mem;
                     cur.mem = closeOpenScene(before); pushHistory(cur, before, cur.mem, { kind: 'edit' });
-                }, { rehide: true });
+                }, { rehide: true, undoable: true, undoKind: 'sceneclose' });
                 toastr.success('진행 중이던 장면을 닫았어요.');
             } catch (e) { reportError(e); }
         } else if (settings().enabled && hideModeOf(settings()) !== 'off' && hasMemory(st.mem)) {
@@ -1147,7 +1153,7 @@ async function summarize({ close = false, auto = false } = {}) {
             run.requestRecord = null;
             const chunk = nextMessageChunk(msgs.slice(cursor), c => extractPrompt(st.mem, c), num('inputChars', 5000, 1000000), { sourceLimit: num('sourceChars', 2000, 200000) });
             const last = cursor + chunk.indices.length === msgs.length;
-            ui.progress = `${auto ? '체크포인트' : close ? '장면 클리어' : '퀵세이브'} ${done + 1}구간 #${chunk.from}–#${chunk.to} · ${cursor}/${msgs.length}메시지 완료`;
+            ui.progress = `${auto ? '체크포인트' : close ? '장면 닫기' : '퀵세이브'} ${done + 1}구간 #${chunk.from}–#${chunk.to} · ${cursor}/${msgs.length}메시지 완료`;
             render();
             const marked = lootForChunk(chunk);
             marked.forEach(x => attemptedLoot.add(x.id));
@@ -1165,7 +1171,7 @@ async function summarize({ close = false, auto = false } = {}) {
                 pushHistory(st, before, next, { kind: 'summary', from: st.lastIndex + 1, to: coverTo, run: run.id });
                 st.lastIndex = coverTo; st.hashes = run.hashes.slice(0, coverTo + 1);
                 st.lastRecord = { at: Date.now(), from: start, to: coverTo, kind: auto ? 'checkpoint' : close ? 'sceneclear' : 'quicksave', run: run.id, partial: !last };
-                st.undo = undoPoint;
+                st.undo = undoPoint; st.undoInfo = { kind: st.lastRecord.kind, run: run.id, at: Date.now(), edits: 0 };
                 settleAutoFail(st);
                 lootFailed += settleLoot(st, marked, next, data.lootWhy, counted);
             }, { undoable: false, autosave: false, rehide: true });
@@ -1178,18 +1184,18 @@ async function summarize({ close = false, auto = false } = {}) {
             await transact(() => {}, { undoable: false, autosave: false, rehide: true });
         if (close && !msgs.length && openScene(st.mem)) {
             assertValid(run, end);
-            await transact(() => { const before = st.mem; st.mem = closeOpenScene(before); pushHistory(st, before, st.mem, { kind: 'edit' }); st.undo = undoPoint; }, { undoable: false, autosave: false, rehide: true });
+            await transact(() => { const before = st.mem; st.mem = closeOpenScene(before); pushHistory(st, before, st.mem, { kind: 'edit' }); st.undo = undoPoint; st.undoInfo = { kind: 'sceneclear', run: run.id, at: Date.now(), edits: 0 }; }, { undoable: false, autosave: false, rehide: true });
             done++;
         }
         await markStaleLoot(run, queued.filter(x => !attemptedLoot.has(x.id) && !oldLoot.includes(x)));
         ui.lastError = null;
-        if (!auto && (msgs.length || close)) toastr.success(close ? '장면 클리어! 진행 중이던 장면까지 기록하고 닫았어요.' : '퀵세이브 완료. 마지막 메시지까지 기록했어요.', 'SavePoint');
+        if (!auto && (msgs.length || close)) toastr.success(close ? '진행 중이던 장면까지 기록하고 닫았어요.' : '퀵세이브 완료. 마지막 메시지까지 기록했어요.', 'SavePoint');
         // v0.6.39: what the save did to quests, shown in the same result banner (no extra pop-up).
         // v0.6.53: quests, items and people go on the result's second line (NEW …).
         const qn = done ? questNews(memBefore, st.mem) : null;
         run.news = done ? saveNews(st, run.id, qn) : '';
         run.goto = qn?.found ? 'main-quests' : run.news ? 'main-changes' : '';
-        if (done) run.doneText = `${close ? '장면 클리어 완료' : '저장 완료'}${st.lastIndex >= run.from ? ` · #${run.from}–#${st.lastIndex}` : ''}`;
+        if (done) run.doneText = `${close ? '저장 완료 · 장면 닫음' : '저장 완료'}${st.lastIndex >= run.from ? ` · #${run.from}–#${st.lastIndex}` : ''}`;
         if (auto) {
             const extra = lootFailed ? ` · 루팅 ${lootFailed}개 반영 실패` : '';
             const result = msgs.length ? `체크포인트 완료 · #${start}–#${st.lastIndex} 기록 · 최근 ${held}개 여유분${extra}`
@@ -1714,7 +1720,7 @@ async function rekeyScenes(ids) {
 
 // ───────── edits & undo ─────────
 
-async function commitEdit(mutate, { undoable = true } = {}) {
+async function commitEdit(mutate, { undoable = false } = {}) {
     if (!hasChat()) return false;
     return transact(() => {
         const st = ensureState();
@@ -1725,19 +1731,32 @@ async function commitEdit(mutate, { undoable = true } = {}) {
         st.mem = next; pushHistory(st, before, next, { kind: 'edit' });
     }, { undoable, replay: true });
 }
+// v0.6.55: what ⏪ would take back, in words.
+const UNDO_KIND = { checkpoint: '체크포인트 저장', quicksave: '퀵세이브', sceneclear: '기록하고 장면 닫기', sceneclose: '장면 닫기', supplement: '루팅 보충 저장', reset: '리셋', load: '세이브 불러오기' };
+function undoLabel(st) {
+    const info = st?.undoInfo;
+    if (!info || !UNDO_KIND[info.kind]) return '마지막 작업';
+    const runs = info.run ? (st.history || []).filter(h => h.run === info.run && h.kind === 'summary') : [];
+    const range = runs.length ? ` #${Math.min(...runs.map(h => h.from))}–#${Math.max(...runs.map(h => h.to))}` : st.lastRecord?.run && st.lastRecord.run === info.run ? ` #${st.lastRecord.from}–#${st.lastRecord.to}` : '';
+    return UNDO_KIND[info.kind] + range;
+}
 async function undo() {
     const st = state();
-    if (!st?.undo || ui.run) return;
-    const restored = { ...clone(st.undo), undo: null };
+    if (ui.run) { toastr.info('저장이 끝난 뒤 눌러 주세요.', 'SavePoint'); return; }
+    if (!st?.undo) { toastr.info('되돌릴 작업이 없어요. ⏪ 리와인드는 마지막 저장·리셋·세이브 불러오기를 되돌려요.', 'SavePoint'); return; }
+    const what = undoLabel(st), edits = st.undoInfo?.edits || 0;
+    if (!(await confirmBox(`⏪ 리와인드: ${what} 전으로 되돌릴까요?${edits ? ` 그 뒤에 한 편집 ${edits}개도 함께 되돌아가요.` : ''}`))) return;
+    if (state() !== st || ui.run || !st.undo) return;
+    const restored = { ...clone(st.undo), undo: null, undoInfo: null };
     restored.lootQueue = restoreLostLoot(st.lootQueue, st.mem, restored.mem, { room: roomKey(), hashes: st.hashes, fallback: st.undo.lootQueue });
     await transact(() => { ctx().chatMetadata[MODULE] = restored; }, { undoable: false });
     if (!reconcile()) { render(); return; }
-    toastr.info('⏪ 리와인드: 마지막 작업 전으로 돌아갔어요.');
+    toastr.info(`⏪ 리와인드: ${what} 전으로 돌아갔어요.`);
 }
 async function clearRoom() {
     const st = state();
     if (!st || !(await confirmBox('리셋: 이 방의 기억을 모두 지울까요? 세이브 슬롯은 남아요. (⏪ 리와인드로 되돌릴 수 있어요)'))) return;
-    await transact(() => { ctx().chatMetadata[MODULE] = freshState({ autoMark: chat().length - 1, lootQueue: clone(st.lootQueue || []) }); });
+    await transact(() => { ctx().chatMetadata[MODULE] = freshState({ autoMark: chat().length - 1, lootQueue: clone(st.lootQueue || []) }); }, { undoable: true, undoKind: 'reset' });
 }
 
 // ───────── save slots (server files via vault.js) ─────────
@@ -1974,7 +1993,7 @@ async function loadSave(id) {
             }
             if (cur) st.lootQueue = restoreLostLoot(cur.lootQueue, cur.mem, st.mem, { room: key, hashes: cur.hashes, fallback: cur.undo?.lootQueue });
             ctx().chatMetadata[MODULE] = st;
-        });
+        }, { undoable: true, undoKind: 'load' });
         if (ok === false) return moved();
     } catch (e) {
         if (undoMessage) { undoMessage(); undoTainted(); if (here()) await showCarried(); }
@@ -1996,10 +2015,10 @@ async function loadSave(id) {
     }
     if (insert && here()) await showCarried();
     if (insert && verified === null) toastr.info('채팅 파일에 저장됐는지 확인하지 못했어요. 새로고침한 뒤 첫 메시지가 그대로인지 봐 주세요.', 'SavePoint');
-    toastr.success(exact ? `저장 당시 위치(#${st.lastIndex})로 돌아갔어요. 그 뒤 메시지는 미기록이에요.`
+    toastr.success(exact ? `저장 당시 위치(#${st.lastIndex})로 돌아갔어요. 그 뒤 메시지는 미저장이에요.`
         : carried && reply.recorded ? `이전 방 #${reply.index}에서 이어서 시작해요. #0은 이미 기록된 메시지라 새 기록은 #1부터예요.`
         : carried ? `이전 방 #${reply.index} 메시지로 시작했어요. 이 메시지는 아직 기록 전이라 다음 세이브 때 기록해요.`
-        : `불러왔어요. 원문이 저장 당시와 달라서 기억만 가져왔고, 이 방의 메시지 ${pendingCount()}개는 미기록이에요.`, 'SavePoint');
+        : `불러왔어요. 원문이 저장 당시와 달라서 기억만 가져왔고, 이 방의 메시지 ${pendingCount()}개는 미저장이에요.`, 'SavePoint');
 }
 const validReply = r => (r && typeof r === 'object' && !Array.isArray(r) && Number.isInteger(r.index) && typeof r.text === 'string' && r.text.trim()
     ? { index: r.index, name: String(r.name || ''), text: r.text, recorded: r.recorded === true, after: Number(r.after) || 0, pending: Number(r.pending) || 0 } : null);
@@ -2233,6 +2252,8 @@ async function askText(title, value = '') {
 }
 async function confirmBox(text) {
     const c = ctx();
+    // Without SillyTavern's popup (an old version or a bare page) the browser's own question is used.
+    if (typeof c.callGenericPopup !== 'function' || !c.POPUP_TYPE) return typeof globalThis.confirm === 'function' ? !!globalThis.confirm(text) : true;
     return !!(await c.callGenericPopup(esc(text), c.POPUP_TYPE.CONFIRM));
 }
 const fmtDate = ts => { try { return new Date(ts).toLocaleString(); } catch { return ''; } };
@@ -2241,12 +2262,13 @@ function langButton(st, busy) {
     // v0.6.38: in Korean view the main button always goes back to the original; filling missing
     // translations is a small separate button next to it (a failed or partial translation used to
     // leave only "번역 N", with no way back to the original inside the window).
+    // v0.6.55: no "+N"; the button is lit while the Korean view is on. Missing translations are filled
+    // when the Korean view is turned on (and from the 🧿 / settings as before).
     const missing = showKo() && st && hasMemory(st.mem) ? translationTargets(st.mem).length : 0;
     const main = showKo()
-        ? btn('lang', '', '🌐 원문', '영어 원문 보기로 바꿔요', 'sp-langbtn')
+        ? btn('lang', '', '🌐 원문', `영어 원문 보기로 바꿔요${missing ? ` · 한국어 보기가 없는 항목 ${missing}개는 원문으로 보여요` : ''}`, 'sp-langbtn sp-on')
         : btn('lang', '', '🌐 번역', '한국어 보기로 바꿔요 (번역이 없는 항목은 번역해요)', 'sp-langbtn' + (busy ? ' sp-disabled' : ''));
-    const fill = missing ? btn('translate', '', `+${missing}`, `한국어 보기가 없는 ${missing}개 항목을 번역해요`, 'sp-mini sp-langfill' + (busy ? ' sp-disabled' : '')) : '';
-    return `<span class="sp-langwrap">${main}${fill}</span>`;
+    return `<span class="sp-langwrap">${main}</span>`;
 }
 const T = (en, ko) => (showKo() && ko ? ko : en);
 
@@ -2571,7 +2593,7 @@ function mainHtml(st) {
     const time = storyTimeContext(mem, 'ko');
     const go = (tab, label) => `<button class="sp-st-more" data-act="tab" data-id="${tab}">${label} ›</button>`;
     const head = (title, tab, label, extra = '') => `<div class="sp-st-h"><span>${title}</span>${extra}${tab ? go(tab, label) : ''}</div>`;
-    const basis = `<div class="sp-st-title">STATUS</div><div class="sp-st-basis">마지막 기록 기준 <b>#${st.lastIndex}</b>${time ? ` · 이야기 시간 ${esc(time)}` : ''}${pending ? ` · 미기록 <b>${pending}</b>개 — 그 뒤 대화는 아직 반영 전이에요` : ' · 미기록 없음'}</div>`;
+    const basis = `<div class="sp-st-title">STATUS</div><div class="sp-st-basis">마지막 저장 기준 <b>#${st.lastIndex}</b>${time ? ` · 이야기 시간 ${esc(time)}` : ''}${pending ? ` · 미저장 <b>${pending}</b>개 — 그 뒤 대화는 아직 반영 전이에요` : ' · 미저장 없음'}</div>`;
     // Alerts: only what needs a decision.
     const queue = st.lootQueue || [];
     const returns = returnNotices(st);
@@ -2624,7 +2646,7 @@ function mainHtml(st) {
     const items = rows.length ? head('🎒 아이템', 'items', '인벤토리') + `<div class="sp-st-items">${rows.map(([who, l]) => `<div class="grp"><div class="who">${esc(who)}<span class="cnt">${l.length}</span></div>${l.map(r => `<div class="it"><b>${esc(entityName(mem, r.entity) || '?')}</b>${fresh.records.has(r.id) ? newBadge : ''}${r.gone ? '<span class="sp-badge">사라짐</span>' : ''}<span class="st">${esc(T(r.text, r.ko))}</span></div>`).join('')}</div>`).join('')}</div>` : '';
     // What the last save changed, folded by default.
     const ch = recentChanges(st);
-    const kindKo = { checkpoint: '체크포인트', quicksave: '퀵세이브', sceneclear: '장면 클리어', supplement: '루팅 보충' };
+    const kindKo = { checkpoint: '체크포인트', quicksave: '퀵세이브', sceneclear: '기록하고 장면 닫기', supplement: '루팅 보충' };
     const changes = ch?.lines.length ? `<details class="sp-st-changes" data-group="main-changes" ${ui.savesOpen.get('main-changes') ? 'open' : ''}><summary class="sp-st-h"><span>🆕 최근 변화 · ${kindKo[ch.lr.kind] || '저장'} #${ch.lr.from}–#${ch.lr.to}${ch.lr.partial ? ' (일부 저장)' : ''} · ${ch.lines.length}개</span><span class="sp-dim">▾</span></summary>
         <div class="sp-st-log">${ch.lines.slice(0, 14).map(([k, t]) => `<div><i class="${k === 'add' ? 'a' : k === 'del' ? 'd' : 'm'}">${k === 'add' ? '+' : k === 'del' ? '−' : k === 'done' ? '✓' : '~'}</i>${esc(t)}</div>`).join('')}${ch.lines.length > 14 ? `<div class="sp-dim">${ch.lines.length - 14}개 더</div>` : ''}</div></details>` : '';
     const parts = [alerts.length ? `<div class="sp-st-alerts">${alerts.join('')}</div>` : '', scene, quests && `<div>${quests}</div>`, people && `<div>${people}</div>`, items && `<div>${items}</div>`, changes].filter(Boolean);
@@ -2756,6 +2778,7 @@ function journalHtml(st) {
             ${ui.timeGaps === s.id && !ui.edit ? `<div class="sp-gap-pick"><span class="sp-dim">시간 미확인 구간 ${sceneTimeGaps(s).length}곳 · 고칠 곳을 골라 주세요</span> ${sceneTimeGaps(s).map(x => btn(x.edge === 'start' ? 'edit-segtime-start' : 'edit-segtime', `${s.id}|${x.g.id}`, `${esc(x.g.id)} ${x.edge === 'start' ? '시작' : '끝'} ✎`)).join('')}</div>` : ''}
             ${s.who.length ? `<div class="sp-who">${whoChips(mem, s.who)}</div>` : ''}
             <div class="sp-outline">${s.segs.filter(g => g.outline).map(g => `<p>${esc(T(g.outline, g.koOutline))}</p>`).join('')}</div>${outlineText}
+            ${s.status === 'open' ? `<div class="sp-row sp-scene-close">${btn('run-close', '', '■ 기록하고 장면 닫기', '마지막 메시지까지 기록하고 이 장면을 닫아요. 다음 기록은 새 장면으로 시작해요', ui.run ? 'sp-disabled' : '')}</div>` : ''}
             <details class="sp-more" data-group="scene:${esc(s.id)}" ${(ui.edit && String(ui.edit.id).startsWith(s.id + '|')) || ui.savesOpen.get('scene:' + s.id) ? 'open' : ''}><summary>구간 ${s.segs.length} · 포인트 ${pts.length} (주입 ${pts.filter(x => pointInjected(x.p)).length})</summary>
                 <div class="sp-dim sp-keyhelp">● 주입 후보 / ○ 저장만 / ⚓ 우선 주입 고정. ●는 남는 주입 상한 안에서 최신 장면부터 들어가고, ○와 상세 노트는 최근 대화와 관련될 때 회상으로 들어와요. ${btn('rekey-scene', s.id, '⟳ 주입 고르기', '개요와 상태 목록에 없는 중요한 포인트만 AI가 다시 골라요 (직접 지정·고정은 유지)')}</div>
                 ${segHtml}</details></div>`;
@@ -3099,22 +3122,26 @@ function injectHtml(st) {
 // v0.6.49: the manual hide button, beside the record bar. Shown only in manual mode with something to hide;
 // it waits while a save runs or a change is still being written, so it never hides what the file lacks.
 function writesPending() { return !!saveQueues.get(`${roomKey()}|${roomEpoch}`)?.pending.length; }
+// v0.6.55: in the button row, always there in manual mode; the count has a fixed width so the row
+// never moves, and pressing it with nothing to hide says so.
 function hideButton(st, busy) {
     const s = settings();
-    if (!st || !s.enabled || hideModeOf(s) !== 'manual' || st.review || !hasMemory(st.mem)) return '';
-    const { count } = manualHidePlan(st);
-    if (!count) return '';
+    if (!s.enabled || hideModeOf(s) !== 'manual') return '';
+    const count = st && !st.review && hasMemory(st.mem) ? manualHidePlan(st).count : 0;
     const wait = busy || writesPending();
-    return btn('hide-now', '', `👻 하이드 · ${count}`, wait ? '저장이 끝나면 누를 수 있어요' : `기록된 원문 ${count}개를 숨겨요. 미기록 메시지와 최근 ${num('keepRecent', 0, 200)}개는 남겨요.`, 'sp-hide-btn' + (wait ? ' sp-disabled' : ''));
+    const n = count > 999 ? '999+' : String(count);
+    return `<button class="sp-btn sp-mini sp-hide-btn${wait ? ' sp-disabled' : ''}" data-act="hide-now" data-id="" title="${esc(wait ? '저장이 끝나면 누를 수 있어요' : count ? `저장된 원문 ${count}개를 숨겨요. 미저장 메시지와 최근 ${num('keepRecent', 0, 200)}개는 남겨요.` : '지금 숨길 저장된 원문이 없어요')}">👻 하이드 <span class="sp-hide-n">${n}</span></button>`;
 }
 async function hideRecorded() {
     const st = state();
-    if (!st || ui.run || writesPending() || hideModeOf(settings()) !== 'manual' || st.review || !hasMemory(st.mem)) return;
+    if (hideModeOf(settings()) !== 'manual') return;
+    if (ui.run || writesPending()) { toastr.info('저장이 끝난 뒤 눌러 주세요.', 'SavePoint'); return; }
+    if (!st || st.review || !hasMemory(st.mem) || !manualHidePlan(st).count) { toastr.info('지금 숨길 저장된 원문이 없어요. 다음 세이브 뒤에 숨길 수 있어요.', 'SavePoint'); return; }
     // v0.6.50: what the question names is what gets hidden. If the room, the records or the chat
     // changed while it was open (a checkpoint finished, a message came in), nothing is hidden.
     const asked = { key: roomKey(), epoch: roomEpoch, last: st.lastIndex, len: chat().length, ...manualHidePlan(st) };
     if (!asked.count) return;
-    if (!(await confirmBox(`기록된 원문 ${asked.count}개를 하이드할까요? 미기록 메시지와 최근 ${num('keepRecent', 0, 200)}개는 남겨요. 기억은 그대로 주입돼요.`))) return;
+    if (!(await confirmBox(`저장된 원문 ${asked.count}개를 하이드할까요? 미저장 메시지와 최근 ${num('keepRecent', 0, 200)}개는 남겨요. 기억은 그대로 주입돼요.`))) return;
     const now = state(), plan = now ? manualHidePlan(now) : null;
     if (roomKey() !== asked.key || roomEpoch !== asked.epoch) return;
     if (!now || ui.run || writesPending() || hideModeOf(settings()) !== 'manual' || now.lastIndex !== asked.last || chat().length !== asked.len || plan.to !== asked.to || plan.count !== asked.count) {
@@ -3138,7 +3165,7 @@ function hudHtml(st) {
         : `<span>다음 체크포인트까지 <b>${Math.max(0, every - autoCount(st))}</b>개</span>`;
     const attemptAt = st?.autoAttemptAt || st?.autoLast?.at;
     const autoLast = attemptAt ? `<span class="${st.autoFail ? 'sp-warn' : 'sp-dim'}">마지막 자동 저장 시도 ${new Date(attemptAt).toLocaleTimeString()} · ${esc(ui.run?.auto ? '체크포인트 저장 중…' : st.autoAttemptAt && (!st.autoLast || st.autoLast.at < st.autoAttemptAt) ? '이번 시도 결과 없음 또는 중단됨 · 다음 간격에 다시' : st.autoLast?.result || '결과 대기')}</span>` : '';
-    const lastRecord = st?.lastRecord ? `<span class="sp-dim">마지막 실제 기록 ${new Date(st.lastRecord.at).toLocaleTimeString()} · ${st.lastRecord.kind === 'supplement' ? '루팅 보충 ' : ''}#${st.lastRecord.from}–#${st.lastRecord.to}${st.lastRecord.supplement ? ` · 루팅 보충 #${st.lastRecord.supplement.from}–#${st.lastRecord.supplement.to}` : ''}</span>` : st?.lastIndex >= 0 ? `<span class="sp-dim">마지막 실제 기록 · 시각 정보 없음 · #0–#${st.lastIndex}</span>` : '<span class="sp-dim">마지막 실제 기록 없음</span>';
+    const lastRecord = st?.lastRecord ? `<span class="sp-dim">마지막 저장 ${new Date(st.lastRecord.at).toLocaleTimeString()} · ${st.lastRecord.kind === 'supplement' ? '루팅 보충 ' : ''}#${st.lastRecord.from}–#${st.lastRecord.to}${st.lastRecord.supplement ? ` · 루팅 보충 #${st.lastRecord.supplement.from}–#${st.lastRecord.supplement.to}` : ''}</span>` : st?.lastIndex >= 0 ? `<span class="sp-dim">마지막 저장 · 시각 정보 없음 · #0–#${st.lastIndex}</span>` : '<span class="sp-dim">마지막 저장 없음</span>';
     const err = ui.lastError ? `<details class="sp-err" data-group="hud-err" ${ui.savesOpen.get('hud-err') ? 'open' : ''}><summary>마지막 실패 ${esc(ui.lastError.range)} — 자세히</summary><ul class="sp-scroll">${groupErrors(ui.lastError.detail).map(d => `<li>${esc(d)}</li>`).join('')}</ul></details>` : '';
     // Folded by default on narrow screens: one status line stands for the rest, and turns to a warning
     // colour when something failed or needs checking, so a folded panel never hides a problem.
@@ -3149,19 +3176,19 @@ function hudHtml(st) {
     const issues = st?.check && st.check.status !== 'running' && settings().check ? st.check.status === 'failed' ? 1 : st.check.issues.filter(x => !x.ignored).length : 0;
     const interrupted = interruptedNote(st);
     const alerting = fails || lootFails || issues || ui.inj?.pinOverflow || interrupted;
-    const chip = [`미기록 ${pending}`, injectionStatus, ...(st?.lootQueue?.length ? [`⏳ ${st.lootQueue.length}`] : []), ...(fails ? [`⚠ 실패 ${fails}`] : []),
+    const chip = [`미저장 ${pending}`, injectionStatus, ...(st?.lootQueue?.length ? [`⏳ ${st.lootQueue.length}`] : []), ...(fails ? [`⚠ 실패 ${fails}`] : []),
         ...(lootFails ? [`💎 반영 실패 ${lootFails}`] : []), ...(issues ? [`확인 필요 ${issues}`] : []), ...(interrupted ? ['저장 중단됨'] : []),
         ...(ui.inj?.pinOverflow ? ['⚓ 주입 못 함'] : [])].join(' · ');
     return `<div class="sp-hud ${openHud ? 'sp-hud-open' : 'sp-hud-folded'}">${hudResultHtml()}
         <div class="sp-scene-now">${open ? `<span class="sp-cursor">▶</span> <b>${esc(T(open.title, open.koTitle))}</b>${open.where ? ` <span class="sp-dim">@ ${esc(open.where)}</span>` : ''}` : '<span class="sp-dim">▷ 진행 중인 장면 없음</span>'}</div>
-        <div class="sp-barline"><div class="sp-bar" title="기록된 메시지 비율"><div class="sp-bar-fill" style="width:${pct}%"></div><span>기록 ${covered} / ${total}</span></div>${hideButton(st, busy)}</div>
+        <div class="sp-barline"><div class="sp-bar" title="저장된 메시지 비율"><div class="sp-bar-fill" style="width:${pct}%"></div><span>저장 ${covered} / ${total}</span></div></div>
         <button type="button" class="sp-hud-chip ${alerting ? 'sp-alerting' : ''}" data-act="hud-toggle" aria-expanded="${openHud}" title="${openHud ? '자세한 상태 접기' : '자세한 상태 펼치기'}"><span>${esc(chip)}</span><span class="sp-hud-caret">${openHud ? '▴' : '▾'}</span></button>
         ${review}
         <div class="sp-hud-more">
-        ${storyTimeContext(st?.mem || {}, 'ko') ? `<div class="sp-hud-time">마지막 기록 기준 · ${esc(storyTimeContext(st.mem, 'ko'))}</div>` : ''}
-        <div class="sp-hud-meta"><span>미기록 <b>${pending}</b></span>${btn('tab', 'queue', `⏳ 대기열 ${st?.lootQueue?.length || 0}개`)}${returnNotices(st).length ? btn('tab', 'main', `📦 복귀 확인 ${returnNotices(st).length}`, '보관함 물건이 이야기에서 다시 쓰였어요', 'sp-on') : ''}<span>${esc(injectionStatus)}</span><span>요약 AI: ${esc(profileLabel())}</span>${keptCount() ? `<span title="SavePoint가 하이드하지 않는 메시지 (메시지 … 메뉴의 🔖)">🔖 원문 유지 ${keptCount()}개</span>` : ''}${ui.inj?.pinOverflow ? `<span class="sp-warn">⚓ ${ui.inj.pinMissing}개 주입 못 함</span>` : ''}</div>
+        ${storyTimeContext(st?.mem || {}, 'ko') ? `<div class="sp-hud-time">마지막 저장 기준 · ${esc(storyTimeContext(st.mem, 'ko'))}</div>` : ''}
+        <div class="sp-hud-meta"><span>미저장 <b>${pending}</b></span>${btn('tab', 'queue', `⏳ 대기열 ${st?.lootQueue?.length || 0}개`)}${returnNotices(st).length ? btn('tab', 'main', `📦 복귀 확인 ${returnNotices(st).length}`, '보관함 물건이 이야기에서 다시 쓰였어요', 'sp-on') : ''}<span>${esc(injectionStatus)}</span><span>요약 AI: ${esc(profileLabel())}</span>${keptCount() ? `<span title="SavePoint가 하이드하지 않는 메시지 (메시지 … 메뉴의 🔖)">🔖 원문 유지 ${keptCount()}개</span>` : ''}${ui.inj?.pinOverflow ? `<span class="sp-warn">⚓ ${ui.inj.pinMissing}개 주입 못 함</span>` : ''}</div>
         <div class="sp-hud-meta sp-auto-line">${autoLine}${autoLast}${lastRecord}</div>
-        ${interrupted && !busy ? `<div class="sp-hud-meta"><span class="sp-warn">⚠ 지난 저장이 방을 옮기면서 중간에 멈췄어요 (#${interrupted.from}부터 미기록)</span>${btn('run', '', '퀵세이브로 이어서')}</div>` : ''}
+        ${interrupted && !busy ? `<div class="sp-hud-meta"><span class="sp-warn">⚠ 지난 저장이 방을 옮기면서 중간에 멈췄어요 (#${interrupted.from}부터 미저장)</span>${btn('run', '', '퀵세이브로 이어서')}</div>` : ''}
         ${autoFailHtml(st)}
         ${checkHtml(st)}
         ${ui.lastFix ? `<div class="sp-hud-meta"><span class="sp-dim">자동 보정 ${esc(ui.lastFix.range)}: ${esc(ui.lastFix.text)} · ${new Date(ui.lastFix.at).toLocaleTimeString()}</span></div>` : ''}
@@ -3169,11 +3196,11 @@ function hudHtml(st) {
         ${err}
         </div>
         <div class="sp-row sp-actions">
-            ${btn('run', '', '⏺ 퀵세이브', '마지막 메시지까지 바로 기록하고, 끝나지 않은 장면은 열어 둬요', 'sp-primary' + (busy ? ' sp-disabled' : ''))}
-            ${btn('run-close', '', '■ 장면 클리어', '마지막 메시지까지 기록하고 진행 중인 장면을 닫아요', busy ? 'sp-disabled' : '')}
-            ${btn('undo', '', '⏪ 리와인드', '마지막 작업(기록·편집·불러오기·비우기) 전으로', st?.undo && !busy ? '' : 'sp-disabled')}
+            ${busy ? btn('stop', '', '■ 중지', '저장을 멈춰요 (끝난 구간은 남아요)', 'sp-danger')
+                : btn('run', '', '⏺ 퀵세이브', '마지막 메시지까지 바로 기록하고, 끝나지 않은 장면은 열어 둬요', 'sp-primary')}
+            ${btn('undo', '', '⏪ 리와인드', st?.undo ? `${undoLabel(st)} 전으로 되돌려요` : '되돌릴 작업이 없어요 (마지막 저장·리셋·세이브 불러오기를 되돌려요)', st?.undo && !busy ? '' : 'sp-disabled')}
+            ${hideButton(st, busy)}
             ${langButton(st, busy)}
-            ${busy ? btn('stop', '', '중지', '', 'sp-danger') : ''}
         </div>
         ${ui.copyText ? `<div class="sp-copybox"><textarea readonly rows="8">${esc(ui.copyText)}</textarea>${btn('copy-close', '', '닫기')}</div>` : ''}
         ${busy ? `<div class="sp-progress"><span class="sp-spin">◐</span> ${esc(ui.progress)}${ui.req ? ` · <span class="sp-req">${esc(reqText())}</span>` : ''}</div>` : ''}
@@ -3481,7 +3508,7 @@ async function handle(act, id) {
         case 'quest-done': case 'quest-fail': case 'quest-open':
             return commitEdit(m => { const r = m.records.find(x => x.id === id); if (!r) return false; setQuestStatus(r, act === 'quest-done' ? 'done' : act === 'quest-fail' ? 'failed' : 'open'); });
         case 'del-scene':
-            if (!(await confirmBox('이 장면을 저널에서 지울까요? 상태 탭의 항목은 그대로 남아요. (되돌리기 가능)'))) return;
+            if (!(await confirmBox('이 장면을 저널에서 지울까요? 상태 탭의 항목은 그대로 남아요. (리와인드로 되돌릴 수 없어요)'))) return;
             return commitEdit(m => { m.scenes = m.scenes.filter(x => x.id !== id); });
         case 'check-ignore': { const x = st?.check?.issues.find(i => i.id === id); if (x) { x.ignored = true; persistSoon(); } return render(true); }
         case 'check-edit': { const x = st?.check?.issues.find(i => i.id === id); return x ? editAbout(x.about) : undefined; }
@@ -3501,8 +3528,12 @@ async function handle(act, id) {
             p.pin = !p.pin;
         }, { undoable: false });
         case 'rekey-scene': return rekeyScenes([id]);
-        case 'del-point': return commitEdit(m => { const { g, j } = findPoint(m, id); if (!g) return false; g.points.splice(j, 1); });
-        case 'del-rec': return commitEdit(m => { m.records = m.records.filter(x => x.id !== id); });
+        case 'del-point':
+            if (!(await confirmBox('이 포인트를 지울까요? (리와인드로 되돌릴 수 없어요)'))) return;
+            return commitEdit(m => { const { g, j } = findPoint(m, id); if (!g) return false; g.points.splice(j, 1); });
+        case 'del-rec':
+            if (!(await confirmBox('이 항목을 지울까요? (리와인드로 되돌릴 수 없어요)'))) return;
+            return commitEdit(m => { m.records = m.records.filter(x => x.id !== id); });
         case 'save-new': return saveNew();
         case 'save-over': return overwriteSave(id);
         // 'load-continue' and 'load-copy' were two names for the same load; kept for old callers.
@@ -3555,7 +3586,7 @@ function quickSettingsHtml() {
         <label class="sp-f"><span>요약 AI</span><select data-qs="profileId">${opt([['', '메인 API'], ...profiles().map(p => [p.id, p.name])], s.profileId)}</select></label>
         <details class="sp-more" data-group="qs-more" ${ui.savesOpen.get('qs-more') ? 'open' : ''}><summary>더 보기</summary>
             <label class="sp-f"><span>최근 장면 수</span><input type="number" data-qs="recentScenes" min="0" max="20" value="${esc(s.recentScenes)}"></label>
-            <label class="sp-f"><span>보관함 방식</span><select data-qs="boxMode">${opt([['manual', '직접 관리'], ['notify', '알림 받고 결정'], ['auto', '자동 관리']], s.boxMode)}</select></label>
+            <label class="sp-f"><span>보관함 방식</span><select data-qs="boxMode">${opt([['notify', '알림 받고 결정'], ['auto', '자동 관리']], s.boxMode)}</select></label>
             <label class="sp-f"><span>퀘스트 등록</span><select data-qs="questMode">${opt(QUEST_MODES, s.questMode)}</select></label>
             <div class="sp-f"><span>기록에서 뺄 부분</span><div class="sp-row">${marks ? `<span>${marks}개 적용 중</span>` : '<span class="sp-dim">없음</span>'}${btn('qs-full', '', '편집 ↗', '전체 설정에서 편집해요')}</div></div>
         </details>
@@ -3634,9 +3665,9 @@ function settingsHtml() {
                 <label>하이드 방식 <select data-set="hideMode">${HIDE_MODES.map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
                 <div class="sp-set-note">수동이면 기록은 그대로 하고, 기록된 원문은 위쪽 상태 칸의 <b>👻 하이드</b>를 누를 때만 숨겨요. 누른 뒤 새로 기록한 메시지는 다음에 누를 때까지 보여요. 끄면 SavePoint가 숨긴 메시지만 다시 보여요(직접 숨긴 메시지는 그대로).</div>
                 <label>하이드하지 않을 최근 메시지 <input type="number" data-set="keepRecent" min="0" max="200"></label>
-                <div class="sp-set-note">전체 대화에서 숨기지 않을 최근 메시지 수예요. 자동·수동 모두 지켜요. 미기록 메시지는 이 설정과 관계없이 숨기지 않아요.</div>
+                <div class="sp-set-note">전체 대화에서 숨기지 않을 최근 메시지 수예요. 자동·수동 모두 지켜요. 미저장 메시지는 이 설정과 관계없이 숨기지 않아요.</div>
                 <label>오토세이브를 보관할 방 수 (방마다 최근 3개) <input type="number" data-set="autoKeep" min="1" max="500"></label>
-                <label>보관함 방식 (직접 보관한 물건이 다시 쓰일 때) <select data-set="boxMode"><option value="manual">직접 관리 · 상태만 갱신하고 보관함에 둠</option><option value="notify">알림 받고 결정 · 보관함에 두고 꺼내기 안내</option><option value="auto">자동 관리 · 인벤토리로 꺼냄</option></select></label>
+                <label>보관함 방식 (직접 보관한 물건이 다시 쓰일 때) <select data-set="boxMode"><option value="notify">알림 받고 결정 · 보관함에 두고 꺼내기 안내</option><option value="auto">자동 관리 · 인벤토리로 꺼냄</option></select></label>
                 <div class="sp-set-note">이야기가 넣은 물건(다 쓰거나 잃어버린 것)은 되찾으면 방식과 상관없이 돌아와요. 🔒를 건 물건은 항상 보관함에 두고 알림도 띄우지 않아요. 방식을 바꿔도 이미 보관함에 있는 물건을 한꺼번에 꺼내지 않아요.</div>
                 <label class="checkbox_label"><input type="checkbox" data-set="askResume"> 새 채팅에서 이어하기 물어보기 (같은 캐릭터의 다른 방에 세이브가 있을 때)</label>
             `)}
@@ -3931,7 +3962,7 @@ function onChatChanged() {
         reconcile();
         syncHide();
         const it = interruptedNote(state());
-        if (it) toastr.info(`이 방의 지난 저장이 방을 옮기면서 중간에 멈췄어요 (#${it.from}부터 미기록). SavePoint에서 퀵세이브로 이어서 기록할 수 있어요.`, 'SavePoint', { timeOut: 10000 });
+        if (it) toastr.info(`이 방의 지난 저장이 방을 옮기면서 중간에 멈췄어요 (#${it.from}부터 미저장). SavePoint에서 퀵세이브로 이어서 기록할 수 있어요.`, 'SavePoint', { timeOut: 10000 });
     }
     refreshInjection(); render(true); installLootBar(); updateSaveBanner();
     hideResume(); clearTimeout(resumeTimer);
@@ -4019,7 +4050,8 @@ jQuery(() => {
     $('#sp_file').on('change', function () { const f = this.files?.[0]; this.value = ''; if (f) importFile(f).catch(reportError); });
     $(document).on('click', '#sp_overlay [data-act]', function (e) {
         e.preventDefault(); e.stopPropagation();
-        if (this.classList.contains('sp-disabled')) return;
+        // v0.6.55: ⏪ and 👻 explain why they can't run instead of doing nothing.
+        if (this.classList.contains('sp-disabled') && !['undo', 'hide-now'].includes(this.dataset.act)) return;
         handle(this.dataset.act, this.dataset.id).catch(reportError);
     });
     $(document).on('input change', '#sp_overlay [data-edit]', function () { if (ui.edit) ui.edit.values[this.dataset.edit] = this.value; });

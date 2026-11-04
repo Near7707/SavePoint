@@ -113,9 +113,8 @@ async function storyMemory() {
     r = await ev(() => ({ refs: [...document.querySelectorAll('.sp-tl-ref')].map(x => x.textContent), days: [...document.querySelectorAll('.sp-tl-day')].map(x => x.textContent), inj: (__savePoint.refreshInjection(), M.prompts.savepoint?.v || '') }));
     ok(r.refs.some(x => x.includes('날짜 연결됨')) && r.days.includes('2026-11-20'), `4. 연결하면 그 기준의 날이 날짜로 보임 (${r.days.join(', ')})`);
     ok(r.inj.includes('Last recorded story time: 2026-11-20'), '4. 마지막 기록 시간 주입에도 연결한 날짜');
-    await ev(() => __savePoint.undo());
-    r = await ev(() => { __savePoint.handle('tab', 'timeline'); return [...document.querySelectorAll('.sp-tl-day')].map(x => x.textContent); });
-    ok(!r.includes('2026-11-20'), '4. 리와인드하면 연결 전으로');
+    // v0.6.55: linking a date is an edit, not a rewind point.
+    ok(await ev(() => !__savePoint.state().undo && __savePoint.state().undoInfo?.kind !== 'edit'), '4. 날짜 연결은 리와인드 지점을 만들지 않음');
     if (SHOTS) await page.screenshot({ path: path.join(OUT, 'timeline-link.png'), fullPage: true });
 
     await browser.close(); srv.close();

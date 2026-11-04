@@ -150,14 +150,17 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     }
     r=await ev(()=>({scenes:__savePoint.state().mem.scenes}));
     ok(r.scenes.length===3&&r.scenes.every(s=>s.segs.at(-1).time.end.day===4),'13. 세 장면은 같은 기준의 5일째');
+    const __snap13=await ev(()=>structuredClone(M.meta.savePoint));
     await ev(id=>__savePoint.handle('del-scene',id),r.scenes[0].id);
     const remaining=await ev(()=>JSON.stringify(__savePoint.state().mem));
     const last=r.scenes.at(-1);await ev(id=>__savePoint.handle('edit-segtime',id),last.id+'|'+last.segs[0].id);
     await page.selectOption('[data-edit=period]','night');await page.click('[data-act=edit-save]');
     r=await ev(()=>({scenes:__savePoint.state().mem.scenes,injection:M.prompts.savepoint.v}));
     ok(r.scenes.every(s=>s.segs[0].time.start.day===4&&s.segs.at(-1).time.end.day===4)&&r.injection.includes('Last recorded story time: 2026-10-28'),'13. 앞 장면 삭제 후 끝 시간만 고쳐도 남은 시작·끝 날짜와 일 수 유지');
-    await ev(()=>__savePoint.undo());
-    ok(await ev(json=>JSON.stringify(__savePoint.state().mem)===json,remaining),'13. 시간 수정 리와인드가 남은 장면과 기준을 복원');
+    ok(await ev(()=>__savePoint.state().undoInfo?.kind!=='edit'),'13. 장면 삭제·시간 수정은 리와인드 지점을 바꾸지 않음');
+    await ev(s=>{M.meta.savePoint=s;__savePoint.refreshInjection();__savePoint.render(true);},__snap13);
+    await ev(id=>__savePoint.handle('del-scene',id),await ev(()=>__savePoint.state().mem.scenes[0].id));
+    ok(await ev(json=>JSON.stringify(__savePoint.state().mem.scenes.map(s=>s.id))===JSON.stringify(JSON.parse(json).scenes.map(s=>s.id)),remaining),'13. (검사용 복원 뒤) 삭제만 다시 적용한 상태');
     await ev(()=>{M.timeCase='bad-count';M.add(2,()=> '그날 밤 우리는 다음에 만나자고 했다.');});await ev(()=>__savePoint.handle('run'));
     ok(await ev(()=>__savePoint.state().mem.scenes.at(-1).segs.at(-1).time.end.certainty==='unconfirmed'),'14. 다음이라는 조각만으로 +3일을 확정하지 않음');
     await ev(()=>{const s=__savePoint.state().mem.scenes.at(-1);return __savePoint.handle('edit-segtime',s.id+'|'+s.segs.at(-1).id);});

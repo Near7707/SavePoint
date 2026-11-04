@@ -194,7 +194,7 @@ test('an empty retained tail is shown separately from the last actual saved rang
     h.add(5); await h.app.autoCollect();
     assert.deepEqual(h.app.state().lastRecord, last);
     const html = h.app.hudHtml(h.app.state());
-    assert.match(html, /마지막 자동 저장 시도/); assert.match(html, /마지막 실제 기록/);
+    assert.match(html, /마지막 자동 저장 시도/); assert.match(html, /마지막 저장/);
     assert.match(html, /기록할 메시지 없음/);
 });
 

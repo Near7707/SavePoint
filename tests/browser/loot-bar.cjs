@@ -182,7 +182,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         const view = q => { const div = document.createElement('div'); div.innerHTML = __savePoint.queueHtml({ ...st, lootQueue: [q] }); return div.textContent; };
         return { pending: view({ ...fresh, error: '반영 실패 · AI 응답에서 이 구절의 반영 연결을 찾지 못했어요' }), changed: view({ ...base, id: 'Lc', hash: 'no-longer-matches' }), room: view({ ...base, id: 'Lr', room: 'another-room' }) };
     });
-    ok(r.pending.includes('퀵세이브로 반영') && !r.pending.includes('다시 반영'), '10. 미기록 메시지는 퀵세이브로 반영 안내');
+    ok(r.pending.includes('퀵세이브로 반영') && !r.pending.includes('다시 반영'), '10. 미저장 메시지는 퀵세이브로 반영 안내');
     ok(r.changed.includes('다시 담은 뒤') && !r.changed.includes('다시 시도해요'), '10. 원문이 바뀐 항목은 다시 담기 안내, 자동 재시도 약속 없음');
     ok(r.room.includes('다른 방에서 담은 항목') && !r.room.includes('다시 시도해요'), '10. 다른 방 항목은 반영하지 않는다고 안내');
     // 11. when the chat file itself cannot be written, the item keeps its reason on screen

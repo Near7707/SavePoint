@@ -101,10 +101,10 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => $('#sp_wand').trigger('click'));
     const count = () => ev(() => document.querySelector('#sp_overlay [data-act="hide-now"]')?.textContent || '');
     r = { hid: await hidden(), btn: await count() };
-    ok(r.hid[6] === '.' && r.btn === '', `7. 수동: 켜면 보이고, 숨길 게 없으면 👻 없음 (${JSON.stringify(r)})`);
+    ok(r.hid[6] === '.' && r.btn === '👻 하이드 0', `7. 수동: 켜면 보이고, 숨길 게 없으면 👻 0 (${JSON.stringify(r)})`);
     await click(6); await page.waitForTimeout(300); await ev(() => __savePoint.render(true));
     r = { hid: await hidden(), btn: await count() };
-    ok(r.hid[6] === '.' && r.btn === '👻 하이드 · 1', `7. 수동: 끄면 다음 👻까지 보이고 개수에 들어감 (${JSON.stringify(r)})`);
+    ok(r.hid[6] === '.' && r.btn === '👻 하이드 1', `7. 수동: 끄면 다음 👻까지 보이고 개수에 들어감 (${JSON.stringify(r)})`);
     await ev(() => $('#sp_overlay').hide());
 
     // 8. the off option says what it does

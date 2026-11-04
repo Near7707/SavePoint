@@ -43,9 +43,9 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.calls===1&&r.b===0&&r.st.lastIndex===18,'진행 중 장면도 경계 호출 없이 최근 2개를 빼고 기록');
     ok(r.st.mem.scenes[0].status==='open'&&r.st.autoLast.status==='saved','진행 장면은 열린 상태로 유지');
     ok(r.hidden.length===19&&r.hidden.at(-1)===18,'여유분 2개는 하이드하지 않음');
-    ok(r.text.includes('마지막 자동 저장 시도')&&r.text.includes('마지막 실제 기록')&&r.text.includes('최근 2개 여유분'),'확인 시각과 실제 기록·여유분을 구분');
+    ok(r.text.includes('마지막 자동 저장 시도')&&r.text.includes('마지막 저장')&&r.text.includes('최근 2개 여유분'),'확인 시각과 실제 기록·여유분을 구분');
     const sid=r.st.mem.scenes[0].id;
-    await ev(()=>M.add(4)); await run(); ok((await ev(()=>M.calls.length))===1,'기존 미기록이 있어도 다음 간격 전에는 다시 요청 안 함');
+    await ev(()=>M.add(4)); await run(); ok((await ev(()=>M.calls.length))===1,'기존 미저장이 있어도 다음 간격 전에는 다시 요청 안 함');
     await ev(()=>M.add(16)); await run(); r=await snap();
     ok(r.st.lastIndex===38&&r.st.mem.scenes.length===1&&r.st.mem.scenes[0].id===sid,'다음 간격에 지난 여유분부터 같은 장면에 이어 기록');
     await ev(async()=>{M.chat.at(-1).mes='A different latest answer.'; await M.eventSource.emit('message_swiped',M.chat.length-1);});
@@ -55,10 +55,10 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(()=>{M.settings.savePoint.autoReserve=0;M.add(20);});await run();r=await snap();
     ok(r.st.lastIndex===60,'여유분 0개면 마지막 메시지까지 자동 기록');
     await ev(()=>{M.settings.savePoint.autoEvery=5;M.settings.savePoint.autoReserve=20;M.add(6);});const noCalls=r.calls;await run();r=await snap();
-    ok(r.calls===noCalls&&r.st.autoLast.status==='empty'&&r.st.lastRecord.to===60,'여유분만 있으면 호출 없이 미기록 결과, 마지막 실제 기록 유지');
+    ok(r.calls===noCalls&&r.st.autoLast.status==='empty'&&r.st.lastRecord.to===60,'여유분만 있으면 호출 없이 미저장 결과, 마지막 저장 유지');
     await ev(()=>{M.settings.savePoint.autoEvery=20;M.settings.savePoint.autoReserve=2;M.settings.savePoint.inputChars=60000;M.add(40,i=>'Message '+i+' '+'words '.repeat(160));});
     const before=r.calls;await run();r=await snap();
-    ok(r.calls>before+1&&r.st.lastIndex===104&&!r.st.autoHold,'긴 미기록은 작은 요청으로 분할 저장');
+    ok(r.calls>before+1&&r.st.lastIndex===104&&!r.st.autoHold,'긴 미저장은 작은 요청으로 분할 저장');
     // Wait for the debounced autosave itself rather than a fixed time.
     const autoSaved=await page.waitForFunction(()=>M.settings.savePoint.slotCache.some(s=>s.auto&&s.msgCount===105),null,{timeout:8000}).then(()=>true,()=>false);
     ok(autoSaved,'오토세이브에 실제 기록 위치 반영');

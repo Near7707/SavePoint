@@ -56,20 +56,20 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => __savePoint.handle('run'));
     await page.waitForTimeout(900);
     r = { last: await ev(() => __savePoint.state().lastIndex), hid: await hidden(), btn: await button() };
-    ok(r.last === 11 && r.hid === '............' && r.btn?.text === '👻 하이드 · 8' && !r.btn.off, `1. 수동: 기록만 하고 숨기지 않음, 버튼에 숨길 개수 (${JSON.stringify(r)})`);
+    ok(r.last === 11 && r.hid === '............' && r.btn?.text === '👻 하이드 8' && !r.btn.off, `1. 수동: 기록만 하고 숨기지 않음, 버튼에 숨길 개수 (${JSON.stringify(r)})`);
 
     // 2. pressing it hides the recorded messages outside the latest 4; the file has it
     await ev(() => __savePoint.handle('hide-now'));
     await page.waitForTimeout(300);
     r = { hid: await hidden(), btn: await button(), to: await ev(() => __savePoint.state().hideManual?.to), file: await ev(() => M.meta.savePoint?.hideManual?.to) };
-    ok(r.hid === 'HHHHHHHH....' && r.btn === null && r.to === 7, `2. 👻 → 기록된 원문 8개 하이드, 최근 4개 남김, 버튼 사라짐 (${JSON.stringify(r)})`);
+    ok(r.hid === 'HHHHHHHH....' && r.btn?.text === '👻 하이드 0' && r.to === 7, `2. 👻 → 저장된 원문 8개 하이드, 최근 4개 남김, 버튼은 0으로 남음 (${JSON.stringify(r)})`);
 
     // 3. later saves record but do not grow the range
     await ev(() => M.add(6));
     await ev(() => __savePoint.handle('run'));
     await page.waitForTimeout(900);
     r = { last: await ev(() => __savePoint.state().lastIndex), hid: await hidden(), btn: await button() };
-    ok(r.last === 17 && r.hid === 'HHHHHHHH..........' && r.btn?.text === '👻 하이드 · 6', `3. 다음 저장은 숨김 범위를 늘리지 않음 (${JSON.stringify(r)})`);
+    ok(r.last === 17 && r.hid === 'HHHHHHHH..........' && r.btn?.text === '👻 하이드 6', `3. 다음 저장은 숨김 범위를 늘리지 않음 (${JSON.stringify(r)})`);
 
     // 4. cancelling the question changes nothing
     await ev(() => { M.confirm = 0; });
@@ -98,7 +98,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => window.__answer(1));
     await asking; await page.waitForTimeout(300); await ev(() => { M.confirm = 1; });
     r = { before: beforeQ, after: await hidden(), btn: await button() };
-    ok(r.after.startsWith(r.before.slice(0, 9)) && r.after.split('').filter(c => c === 'H').length === 8 && /· \d+$/.test(r.btn?.text || ''), `5b. 확인 창이 열린 사이 기록이 늘면 하이드하지 않고 다시 누르게 함 (${JSON.stringify(r)})`);
+    ok(r.after.startsWith(r.before.slice(0, 9)) && r.after.split('').filter(c => c === 'H').length === 8 && / \d+$/.test(r.btn?.text || ''), `5b. 확인 창이 열린 사이 기록이 늘면 하이드하지 않고 다시 누르게 함 (${JSON.stringify(r)})`);
 
     // 5c. a message opened by the user stays shown after the next save in manual mode
     await ev(() => { M.chat[2].is_system = false; __savePoint.syncHide(); M.add(2); return __savePoint.handle('run'); });
@@ -121,17 +121,24 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.slice(0, 8) === 'H.HHHHHH', `6b. 직접 숨겼다 펼친 메시지는 다음 세이브에도 보임 (${r})`);
     await ev(() => { const m = M.chat[1]; m.is_system = true; m.extra.savepointHidden = 1; __savePoint.syncHide(); });
 
-    // 7. the button sits beside the bar on a phone, in every skin, without pushing the panel wider
-    r = await ev(() => {
-        const w = document.querySelector('#sp_overlay .sp-window'), bad = [];
-        for (const t of [...document.querySelectorAll('#sp_settings [data-set=theme] option')].map(o => o.value)) {
-            w.setAttribute('data-theme', t);
-            const bar = w.querySelector('.sp-barline .sp-bar').getBoundingClientRect(), b = w.querySelector('[data-act="hide-now"]').getBoundingClientRect(), hud = w.querySelector('.sp-hud');
-            if (Math.abs((bar.top + bar.bottom) / 2 - (b.top + b.bottom) / 2) > 6 || b.right > hud.getBoundingClientRect().right + 1 || hud.scrollWidth > hud.clientWidth + 1 || bar.width < 120) bad.push(t);
-        }
-        return bad;
-    });
-    ok(!r.length, `7. 16개 스킨 × 393px: 진행 바 옆 한 줄, 넘침 없음 (${r.join(',')})`);
+    // 7. (v0.6.55) the button sits in the one-row button line, in every skin, at 393 and 360px, and keeps its width as the count changes
+    for (const w of [393, 360]) {
+        await page.setViewportSize({ width: w, height: 844 });
+        r = await ev(() => {
+            const win = document.querySelector('#sp_overlay .sp-window'), bad = [];
+            for (const t of [...document.querySelectorAll('#sp_settings [data-set=theme] option')].map(o => o.value)) {
+                win.setAttribute('data-theme', t);
+                const row = win.querySelector('.sp-actions'), bs = [...row.children].map(x => x.getBoundingClientRect());
+                const b = win.querySelector('.sp-actions [data-act="hide-now"]'), n = b.querySelector('.sp-hide-n'), width0 = b.getBoundingClientRect().width;
+                const keep = n.textContent; n.textContent = '999'; const width3 = b.getBoundingClientRect().width; n.textContent = keep;
+                const order = [...row.querySelectorAll('[data-act]')].map(x => x.dataset.act).join(',');
+                if (bs.some(x => Math.abs(x.top - bs[0].top) > 2) || row.scrollWidth > row.clientWidth + 1 || Math.abs(width3 - width0) > 0.5 || order !== 'run,undo,hide-now,lang' || b.scrollWidth > b.clientWidth + 1) bad.push(t + ':' + JSON.stringify({ rows: bs.map(x => Math.round(x.top)), sw: row.scrollWidth, cw: row.clientWidth, w0: width0, w3: width3, order, bsw: b.scrollWidth, bcw: b.clientWidth }));
+            }
+            return bad;
+        });
+        ok(!r.length, `7. 16개 스킨 × ${w}px: 퀵세이브·리와인드·하이드·번역 한 줄, 숫자가 바뀌어도 폭 같음 (${r.join(',')})`);
+    }
+    await page.setViewportSize({ width: 390, height: 844 });
 
     // 8. new icons: ⚓ for pinning, 🧿 for the injection tab
     r = await ev(() => ({ tab: [...document.querySelectorAll('#sp_overlay [data-act=tab]')].map(b => b.textContent).join(' '), html: document.querySelector('#sp_overlay').innerHTML }));

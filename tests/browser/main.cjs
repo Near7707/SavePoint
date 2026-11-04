@@ -52,7 +52,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => $('#sp_wand').trigger('click'));
     let r = await ev(() => ({ tab: $('.sp-tab.sp-active').text(), body: $('.sp-body').text(), hero: $('.sp-st-hero').text(), quest: $('.sp-st-q').text(), party: $('.sp-st-p').text(),
         changes: $('.sp-st-changes > summary').text(), open: $('.sp-st-changes').prop('open'), head: $('.sp-top-r').text().replace(/\s+/g, ' ').trim() }));
-    ok(r.tab.includes('메인') && r.body.includes('STATUS') && r.body.includes('마지막 기록 기준 #7'), `1. 처음 여는 탭은 💠 메인, STATUS와 기준 줄 (${r.tab.trim()})`);
+    ok(r.tab.includes('메인') && r.body.includes('STATUS') && r.body.includes('마지막 저장 기준 #7'), `1. 처음 여는 탭은 💠 메인, STATUS와 기준 줄 (${r.tab.trim()})`);
     ok(r.hero.includes('SCENE 01') && r.quest.includes('약속') && r.party.includes('Ari'), '1. 장면·진행 중·현재 파티');
     ok(/최근 변화 · 퀵세이브 #0–#7 · \d+개/.test(r.changes) && !r.open, `1. 최근 변화는 접힌 채 제목과 개수 (${r.changes.trim()})`);
     ok(!/EN/.test(r.head) && r.head.includes('⚙'), `1. 상단은 방 이름 · ⚙ · ✕ (EN 없음: ${r.head})`);
@@ -104,9 +104,9 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => { for (const r of __savePoint.state().mem.records) delete r.ko; });
     await ev(() => { M.throwNext = new Error('translator down'); return __savePoint.handle('lang'); }).catch(() => {});
     await page.waitForTimeout(800);
-    r = await ev(() => ({ ko: __savePoint.settings().showKo, main: $('.sp-actions .sp-langbtn').text().trim(), act: $('.sp-actions .sp-langbtn').attr('data-act'), fill: $('.sp-actions .sp-langfill').text().trim() }));
+    r = await ev(() => ({ ko: __savePoint.settings().showKo, main: $('.sp-actions .sp-langbtn').text().trim(), act: $('.sp-actions .sp-langbtn').attr('data-act'), fill: $('.sp-actions .sp-langfill').text().trim(), lit: $('.sp-actions .sp-langbtn').hasClass('sp-on') }));
     ok(r.ko && r.main === '🌐 원문' && r.act === 'lang', `6. 번역이 실패해도 주 버튼은 🌐 원문 (${r.main})`);
-    ok(/^\+\d+$/.test(r.fill), `6. 빠진 번역은 작은 +N 버튼 (${r.fill})`);
+    ok(r.fill === '' && r.lit, `6. (v0.6.55) +N 숫자 없음, 한국어 보기 중이면 번역 버튼이 켜진 색 (${r.fill})`);
     await ev(() => __savePoint.handle('lang'));
     ok(!(await ev(() => __savePoint.settings().showKo)), '6. 원문으로 돌아감');
 

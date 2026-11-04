@@ -41,13 +41,13 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(()=>M.add(1));await run();r=await snap();ok(r.st.lastIndex===38&&!r.st.autoFail,'다음 간격에 실패 범위부터 재시도해 성공하면 실패 기록 삭제');
     await ev(()=>{M.add(20);M.failMeta=true;});const old=r.st.lastRecord;await run();r=await snap();
     ok(r.st.lastIndex===38&&r.st.autoFail.stage==='save'&&r.st.autoLast.status==='failed','채팅 파일 저장 실패도 결과 기록');
-    ok(r.st.lastRecord.at===old.at&&r.st.lastRecord.to===old.to,'저장 실패로 마지막 실제 기록을 갱신하지 않음');
+    ok(r.st.lastRecord.at===old.at&&r.st.lastRecord.to===old.to,'저장 실패로 마지막 저장을 갱신하지 않음');
     await ev(()=>{M.failMeta=false;M.settings.savePoint.inputChars=30000;M.partialSeen=0;M.failSecond=true;
         const get=SillyTavern.getContext;SillyTavern.getContext=()=>{const c=get();return {...c,generateRaw:async args=>{
             const raw=await c.generateRaw(args);if(!args.prompt.startsWith('You are checking')&&M.failSecond&&++M.partialSeen===2)throw new Error('Second batch failed');return raw;
         }};};M.add(40,i=>'Message '+i+' '+'long words '.repeat(120));});await run();r=await snap();
     ok(r.st.lastIndex>38&&r.st.lastIndex<98&&r.st.autoLast.status==='partial','뒷구간 실패 시 앞의 저장된 구간 유지');
-    ok(r.st.autoFail.from===r.st.lastIndex+1&&r.text.includes('일부 저장'),'미기록 나머지 범위와 일부 저장 결과 표시');
+    ok(r.st.autoFail.from===r.st.lastIndex+1&&r.text.includes('일부 저장'),'미저장 나머지 범위와 일부 저장 결과 표시');
     const count=r.calls;await ev(()=>{M.failSecond=false;M.add(1);});await run();ok((await snap()).calls===count,'일부 실패 직후에는 남은 범위를 바로 재전송하지 않음');
     await ev(()=>{M.settings.savePoint.inputChars=60000;M.add(19);});await run();r=await snap();
     ok(r.st.lastIndex===118&&!r.st.autoFail,'다음 간격에 남은 범위부터 이어 기록');

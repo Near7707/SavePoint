@@ -38,7 +38,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     // 1. the status panel folds on phones; the status line stands for the details
     await ev(() => document.querySelector('#sp_open').click());
     let r = await ev(() => ({ folded: !!document.querySelector('.sp-hud.sp-hud-folded'), chip: $('.sp-hud-chip').text(), more: getComputedStyle(document.querySelector('.sp-hud-more')).display, h: document.querySelector('.sp-hud').offsetHeight }));
-    ok(r.folded && r.more === 'none' && r.chip.includes('미기록') && r.chip.includes('주입 0 / 6,000 토큰'), `1. 휴대폰 폭에서 접힌 요약 줄에 미기록·주입 토큰 표시 (${r.chip.trim()})`);
+    ok(r.folded && r.more === 'none' && r.chip.includes('미저장') && r.chip.includes('주입 0 / 6,000 토큰'), `1. 휴대폰 폭에서 접힌 요약 줄에 미저장·주입 토큰 표시 (${r.chip.trim()})`);
     await page.click('.sp-hud-chip');
     r = await ev(() => ({ open: !!document.querySelector('.sp-hud.sp-hud-open'), saved: M.settings.savePoint.hudOpen, more: getComputedStyle(document.querySelector('.sp-hud-more')).display }));
     ok(r.open && r.saved === true && r.more !== 'none', '1. 요약 줄을 누르면 펼쳐지고 선택을 기억');
