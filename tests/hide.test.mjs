@@ -195,7 +195,7 @@ function manual(opts) {
 }
 async function press(h) {
     const plan = h.manualHidePlan(h.meta.savePoint, h.chat);
-    await h.transact(() => { h.meta.savePoint.hideManual = { to: plan.to, at: Date.now() }; }, { undoable: false, autosave: false, rehide: true });
+    await h.transact(() => { h.meta.savePoint.hideManual = { to: plan.to, at: Date.now() }; }, { undoable: false, autosave: false, rehide: 'button' });
     return plan;
 }
 
@@ -268,4 +268,40 @@ test('manual: a failed write of the button puts every message and the range back
     assert.equal(JSON.stringify(h.meta.savePoint), before);
     assert.equal(JSON.stringify(h.chat), chatBefore);
     h.chat.forEach((m, n) => assert.equal(h.dom.get(n), String(m.is_system)));
+});
+
+// ───────── v0.6.50: review fixes ─────────
+test('manual: a rewind of every record empties the range, so a new save hides nothing', async () => {
+    const h = manual({ count: 10, lastIndex: 9, keepRecent: 2 });
+    await press(h);
+    const mem = h.meta.savePoint.mem;
+    await h.transact(() => { h.meta.savePoint.lastIndex = -1; h.meta.savePoint.mem = { scenes: [], records: [], entities: [] }; });
+    assert.equal(shown(h), '..........');
+    assert.equal(h.meta.savePoint.hideManual.to, -1);
+    await h.transact(() => { h.meta.savePoint.lastIndex = 9; h.meta.savePoint.mem = mem; }, { rehide: true });
+    assert.equal(shown(h), '..........');
+});
+
+test('manual: off -> manual never reads "opened by the user" marks as a hidden range', () => {
+    const h = harness({ count: 10, lastIndex: 9, keepRecent: 2 });
+    h.syncHide({ rehide: true });
+    h.chat[3].is_system = false; h.syncHide();          // the user opens #3
+    assert.equal(h.chat[3].extra[VISIBLE_KEY], true);
+    h.settings.hideMode = 'off'; h.syncHide();
+    assert.equal(shown(h), '..........');
+    assert(h.chat.every(m => !m.extra[VISIBLE_KEY]));
+    h.settings.hideMode = 'manual'; h.settings.hideManualAt = Date.now();
+    h.syncHide();
+    assert.equal(shown(h), '..........');
+    assert.equal(h.meta.savePoint.hideManual.to, -1);
+});
+
+test('manual: a save leaves a message the user opened shown; the next press hides it again', async () => {
+    const h = manual({ count: 10, lastIndex: 9, keepRecent: 2 });
+    await press(h);
+    h.chat[2].is_system = false; h.syncHide();
+    await h.transact(() => {}, { rehide: true });
+    assert.equal(shown(h), 'HH.HHHHH..');
+    await h.transact(() => { h.meta.savePoint.hideManual = { to: 7, at: Date.now() }; }, { rehide: 'button' });
+    assert.equal(shown(h), 'HHHHHHHH..');
 });

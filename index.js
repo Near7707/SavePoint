@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.49';
+const VERSION = '0.6.50';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -474,14 +474,14 @@ function hideModeOf(s) {
 }
 // The newest message the hide may reach now: recorded, and outside the latest N kept as they are.
 function hideLimit(st, list = chat()) { return Math.min(st.lastIndex, list.length - 1 - num('keepRecent', 0, 200)); }
-// In manual mode the hidden range of a room is `st.hideManual` ({ to, at }), set only by the 👻 button.
-// A range set before the latest switch to manual (or none) is read from the messages SavePoint
-// already hid, so switching to manual keeps what is hidden and hides nothing more.
-function manualHideTo(st, list = chat()) {
-    const h = st.hideManual;
-    if (h && Number.isInteger(h.to) && (Number(h.at) || 0) >= (Number(settings().hideManualAt) || 0)) return h.to;
+// In manual mode the hidden range of a room is `st.hideManual` ({ to, at }), set by the 👻 button.
+// A range from before the latest switch to manual (or none) does not count: the first time the room
+// is seen in manual mode, the range is fixed once from the messages SavePoint actually hides at that
+// moment (v0.6.50: hidden ones only, never "opened by the user" marks) and kept in the room.
+const freshManual = (h, s = settings()) => !!h && Number.isInteger(h.to) && (Number(h.at) || 0) >= (Number(s.hideManualAt) || 0);
+function hiddenNow(list = chat()) {
     let to = -1;
-    list.forEach((m, i) => { if (m.extra && (m.extra[HIDE_KEY] || m.extra[VISIBLE_KEY])) to = i; });
+    list.forEach((m, i) => { if (m.is_system && m.extra?.[HIDE_KEY]) to = i; });
     return to;
 }
 // What the 👻 button would hide now: the last index it reaches and how many messages are still shown there.
@@ -491,22 +491,30 @@ function manualHidePlan(st, list = chat()) {
     for (let i = 0; i <= to; i++) if (list[i] && !list[i].is_system) count++;
     return { to, count };
 }
+// `rehide`: true for a save (in manual mode it no longer rescans: the range is the button's), 'button'
+// for the 👻 button (rescans the range, like a save in auto mode).
 function syncHide({ rehide = false } = {}) {
     const st = state(), s = settings(), list = chat();
     const mode = hideModeOf(s);
     const can = s.enabled && mode !== 'off' && st && !st.review && hasMemory(st.mem);
     let cutoff = can ? hideLimit(st, list) : -1;
     let changed = false;
-    if (can && mode === 'manual') {
-        // Messages that went back to unrecorded (rewind, a rolled-back record) leave the range for
-        // good: when they are recorded again they stay shown until the button is pressed again.
-        const h = st.hideManual;
-        if (h && Number.isInteger(h.to) && h.to > st.lastIndex && (Number(h.at) || 0) >= (Number(s.hideManualAt) || 0)) { h.to = st.lastIndex; changed = true; }
-        cutoff = Math.min(cutoff, manualHideTo(st, list));
+    if (st && mode === 'manual') {
+        // Messages that went back to unrecorded (rewind, a rolled-back record, even all of them) leave
+        // the range for good: recorded again, they stay shown until the button is pressed again.
+        const h = st.hideManual, floor = hasMemory(st.mem) ? st.lastIndex : -1;
+        if (freshManual(h, s) && h.to > floor) { h.to = floor; changed = true; }
+        if (can) {
+            if (!freshManual(st.hideManual, s)) { st.hideManual = { to: Math.min(hiddenNow(list), st.lastIndex), at: Date.now() }; changed = true; }
+            cutoff = Math.min(cutoff, st.hideManual.to);
+        }
     }
+    // Off: "opened by the user" marks mean nothing any more; dropped so no later mode reads them.
+    if (mode === 'off' && s.enabled) list.forEach(m => { if (m.extra && Object.hasOwn(m.extra, VISIBLE_KEY)) { delete m.extra[VISIBLE_KEY]; changed = true; } });
+    const rescan = rehide && (mode !== 'manual' || rehide === 'button');
     list.forEach((m, i) => {
         const mark = m.extra?.[HIDE_KEY];
-        if (rehide && i <= cutoff) {
+        if (rescan && i <= cutoff) {
             // Recheck from #0 on every saved batch. A manually opened message
             // stays open during ordinary redraws, but joins the next save's hide.
             if (m.extra && Object.hasOwn(m.extra, VISIBLE_KEY)) { delete m.extra[VISIBLE_KEY]; changed = true; }
@@ -2941,15 +2949,18 @@ function hideButton(st, busy) {
 async function hideRecorded() {
     const st = state();
     if (!st || ui.run || writesPending() || hideModeOf(settings()) !== 'manual' || st.review || !hasMemory(st.mem)) return;
-    const { count } = manualHidePlan(st);
-    if (!count) return;
-    if (!(await confirmBox(`기록된 원문 ${count}개를 하이드할까요? 미기록 메시지와 최근 ${num('keepRecent', 0, 200)}개는 남겨요. 기억은 그대로 주입돼요.`))) return;
-    const now = state();
-    // The room or its records may have changed while the question was open.
-    if (now !== st || ui.run || writesPending() || hideModeOf(settings()) !== 'manual') return;
-    const plan = manualHidePlan(now);
-    if (!plan.count) return;
-    await transact(() => { const cur = state(); if (!cur) return false; cur.hideManual = { to: plan.to, at: Date.now() }; }, { undoable: false, autosave: false, rehide: true });
+    // v0.6.50: what the question names is what gets hidden. If the room, the records or the chat
+    // changed while it was open (a checkpoint finished, a message came in), nothing is hidden.
+    const asked = { key: roomKey(), epoch: roomEpoch, last: st.lastIndex, len: chat().length, ...manualHidePlan(st) };
+    if (!asked.count) return;
+    if (!(await confirmBox(`기록된 원문 ${asked.count}개를 하이드할까요? 미기록 메시지와 최근 ${num('keepRecent', 0, 200)}개는 남겨요. 기억은 그대로 주입돼요.`))) return;
+    const now = state(), plan = now ? manualHidePlan(now) : null;
+    if (roomKey() !== asked.key || roomEpoch !== asked.epoch) return;
+    if (!now || ui.run || writesPending() || hideModeOf(settings()) !== 'manual' || now.lastIndex !== asked.last || chat().length !== asked.len || plan.to !== asked.to || plan.count !== asked.count) {
+        toastr.info('확인하는 사이 기록이나 대화가 바뀌어서 하이드하지 않았어요. 👻 버튼을 다시 눌러 주세요.', 'SavePoint');
+        return render();
+    }
+    await transact(() => { const cur = state(); if (!cur) return false; cur.hideManual = { to: asked.to, at: Date.now() }; }, { undoable: false, autosave: false, rehide: 'button' });
 }
 function hudHtml(st) {
     const open = st ? openScene(st.mem) : null;

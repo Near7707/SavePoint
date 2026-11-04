@@ -88,6 +88,25 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await running; await ev(() => { M.delay = 0; }); await page.waitForTimeout(300);
     ok(r?.off === true && midHid.startsWith('HHHHHHHH.'), `5. 저장 중에는 버튼이 흐리고 눌러도 숨기지 않음 (${JSON.stringify(r)})`);
 
+    // 5b. a checkpoint finishing while the question is open: nothing is hidden, the count is asked again
+    const beforeQ = await hidden();
+    await ev(() => { M.confirm = new Promise(res => { window.__answer = res; }); });
+    const asking = ev(() => __savePoint.handle('hide-now'));
+    await page.waitForTimeout(150);
+    await ev(() => { M.add(6); return __savePoint.handle('run'); });
+    await page.waitForTimeout(900);
+    await ev(() => window.__answer(1));
+    await asking; await page.waitForTimeout(300); await ev(() => { M.confirm = 1; });
+    r = { before: beforeQ, after: await hidden(), btn: await button() };
+    ok(r.after.startsWith(r.before.slice(0, 9)) && r.after.split('').filter(c => c === 'H').length === 8 && /· \d+$/.test(r.btn?.text || ''), `5b. 확인 창이 열린 사이 기록이 늘면 하이드하지 않고 다시 누르게 함 (${JSON.stringify(r)})`);
+
+    // 5c. a message opened by the user stays shown after the next save in manual mode
+    await ev(() => { M.chat[2].is_system = false; __savePoint.syncHide(); M.add(2); return __savePoint.handle('run'); });
+    await page.waitForTimeout(900);
+    r = await hidden();
+    ok(r.slice(0, 8) === 'HH.HHHHH', `5c. 수동: 직접 펼친 메시지는 다음 세이브에도 보임 (${r})`);
+    await ev(() => { const m = M.chat[2]; m.is_system = true; m.extra.savepointHidden = 1; delete m.extra.savepointVisible; __savePoint.syncHide(); });
+
     // 6. a failed write takes the hide back
     await ev(() => { M.failOnce = true; });
     await ev(() => __savePoint.handle('hide-now').catch(() => {}));
@@ -121,7 +140,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     // 10. back to auto: the normal rule applies at once
     await ev(() => { const sel = document.querySelector('#sp_settings [data-set=hideMode]'); sel.value = 'auto'; $(sel).trigger('change'); });
     r = await ev(() => ({ hid: M.chat.map(m => m.is_system ? 'H' : '.').join(''), last: __savePoint.state().lastIndex, n: M.chat.length }));
-    ok(r.hid.slice(0, r.n - 4).split('').every(c => c === 'H') && r.hid.slice(r.n - 4, r.n - 1) === '...' && r.hid[r.n - 1] === 'H', `10. 자동으로 바꾸면 바로 자동 규칙 (${JSON.stringify(r)})`);
+    ok(r.hid.slice(0, r.n - 4).split('').every(c => c === 'H') && r.hid.slice(r.n - 4) === '....', `10. 자동으로 바꾸면 바로 자동 규칙 (${JSON.stringify(r)})`);
 
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
