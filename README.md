@@ -486,3 +486,9 @@ node tests/browser/exclude.cjs # 기록에서 뺄 부분·원문 분량·저장 
 node tests/browser/wait-limit.cjs # 출력 중 대기 연장·새 출력 없음 중단·전체 제한 표시
 node tests/browser/hide-manual.cjs # 하이드 방식·👻 수동 하이드·실패 되돌림·스킨별 버튼 자리·새 아이콘
 ```
+
+## 라이선스
+
+Copyright (C) 2026 Near7707
+
+SavePoint는 [GNU Affero General Public License v3.0](LICENSE)(또는 그 이후 버전)으로 배포돼요. 설치해서 쓰는 데는 아무 제약이 없어요. 고쳐서 다시 배포하거나 서비스로 제공하면, 고친 코드도 같은 라이선스로 공개하고 원작자 표시를 남겨야 해요.
