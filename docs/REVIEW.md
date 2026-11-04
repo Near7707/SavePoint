@@ -1,3 +1,24 @@
+# v0.6.49 · 하이드 방식(끔/자동/수동)과 👻 수동 하이드, 아이콘 변경
+
+기준: v0.6.48 `67c7642`. 주입 계산·기록 흐름은 그대로(주입문은 자동과 같음, 원문·저널 중복 제거는 다음 단계로 보류).
+
+- 설정 `hide`(켬/끔) → `hideMode`: `auto` / `manual` / `off`. 예전 설정은 `hide: false` → `off`, 그 밖 → `auto`(`settings()`에서 이전, `hideModeOf`가 `hide`만 있는 설정도 읽음).
+- 수동: 방의 숨김 범위 `st.hideManual = { to, at }`(채팅 메타데이터, 방마다). `syncHide`의 경계 = `min(lastIndex, 길이-1-keepRecent, 수동 범위)`. 저장 때 `rehide`가 돌아도 수동 범위를 넘지 않음.
+- 👻 버튼(`hide-now` → `hideRecorded`): 확인 후 `transact(…, { undoable: false, autosave: false, rehide: true })`로 `hideManual.to = min(lastIndex, 길이-1-keepRecent)` 저장 → 기억 파일과 숨김 표시를 한 번에 씀, 실패하면 둘 다 되돌림. ⏪ 리와인드 대상은 아님(마지막 기록 리와인드를 덮지 않게).
+- 버튼은 진행 바 옆(`.sp-barline`), 수동이고 새로 숨길 메시지가 있을 때만. 저장 실행 중(`ui.run`)이거나 이 방 저장 대기열에 쓰지 않은 변경이 있으면 흐리게, 눌러도 아무것도 안 함. 확인 창이 열린 사이 방·상태가 바뀌면 중단하고 범위를 다시 계산.
+- 미기록으로 돌아간 메시지: `hideManual.to > lastIndex`면 `lastIndex`로 줄임(syncHide 안, 같은 transact에 포함) → 다시 기록돼도 다음 버튼까지 보임.
+- 자동→수동 전환: 전환 시각 `settings.hideManualAt`. 그보다 오래된 `hideManual`(또는 없음)은 무시하고, SavePoint 표시(`HIDE_KEY`/`VISIBLE_KEY`)가 있는 마지막 메시지까지를 범위로 읽음 → 이미 숨긴 것 유지, 더 숨기지 않음. 다른 방도 같은 규칙. 세이브 불러오기(`freshState`)도 표시 기준.
+- 끔: 기존처럼 SavePoint가 숨긴 것만 다시 보임, 직접 숨긴 메시지 유지.
+- 아이콘: 고정 📌 → ⚓(버튼·기호·CSS·README·검사 문구). 저장 데이터(`pin: true`)와 AI에게 가는 글(`## Pinned points`)에는 기호가 없어 영향 없음. 주입 탭 👁 → 🧿, 월드 비밀의 "아는 사람" 👁는 그대로.
+
+★ 특히 봐 줄 곳
+- ★ `manualHideTo`의 "표시로 범위 읽기": VISIBLE_KEY(직접 풀어 본 메시지)도 범위에 넣음. 수동에서 다음 저장의 `rehide`가 그 메시지를 다시 숨김(자동과 같은 규칙)인데, 수동에서는 "범위 안이면 다시 숨김"이 맞는지.
+- ★ 수동 범위를 `syncHide` 안에서 줄이는 것(상태를 고치는 부수효과). transact 안에서는 이전 상태와 함께 되돌아가고, `reconcile` 되감기 경로는 `persistSoon`으로 저장됨.
+- ★ `keepRecent`를 버튼 뒤에 늘리면 범위 안이라도 최근 N개는 다시 보임(경계에 항상 `keepRecent`를 적용).
+- `settingsChanged`는 select의 input/change 두 번 불려 `hideManualAt`이 두 번 찍힐 수 있음(버튼보다 앞서므로 영향 없음).
+
+검사: Node 384개(`hide.test.mjs` 7개 추가: 설정 이전, 수동은 버튼 전 안 숨김, 버튼 후 범위 고정, 미기록 복귀 후 유지, 자동→수동 유지, 직접 숨김·끔, 버튼 저장 실패 원복), 브라우저 24묶음 통과(새 `hide-manual.cjs` 10단계: 설정 선택·버튼 개수·하이드·다음 저장·취소·저장 중 대기·실패 원복·16개 스킨 393px 자리·⚓/🧿·끔·자동 복귀).
+
 # v0.6.48 · 세이브가 있는 방에 이어하기 질문이 뜨던 문제
 
 기준: v0.6.47 `837ed9f`.

@@ -80,7 +80,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(await ev(text=>M.prompts.savepoint.v.includes(text),firstPoint),'1. ●로 다시 고르면 임시 개요도 즉시 반영');
     await ev(()=>__savePoint.handle('pin-point','s1|g1|0'));
     r=await ev(()=>({outline:__savePoint.state().mem.scenes[0].segs[0].outline,injection:M.prompts.savepoint.v}));
-    ok(!r.outline.includes(firstPoint)&&r.injection.includes('## Pinned points')&&r.injection.split(firstPoint).length===2,'1. 📌은 임시 개요에서 제외하고 고정 영역에 한 번만 주입');
+    ok(!r.outline.includes(firstPoint)&&r.injection.includes('## Pinned points')&&r.injection.split(firstPoint).length===2,'1. ⚓은 임시 개요에서 제외하고 고정 영역에 한 번만 주입');
     await ev(()=>__savePoint.handle('pin-point','s1|g1|0'));
     await ev(()=>__savePoint.handle('edit-scene','s1'));
     await page.fill('[data-edit=where]','Gate');await page.click('[data-act=edit-save]');

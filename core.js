@@ -177,7 +177,7 @@ export function refreshProvisionalOutlines(mem) {
 export const sceneOutlineParts = s => s.segs.map(g => g.outline).filter(Boolean);
 export const sceneOutlineText = s => sceneOutlineParts(s).join(' ') || s.title;
 export const pointInjected = p => p.pin === true || (p.keyUser ?? p.key ?? true);
-export const pointSymbol = p => p.pin === true ? '📌' : pointInjected(p) ? '●' : '○';
+export const pointSymbol = p => p.pin === true ? '⚓' : pointInjected(p) ? '●' : '○';
 // The open scene's points shown to the AI (newest first within limits); the AI re-judges these.
 export function openPoints(open, { maxCount = 60, maxChars = 8000 } = {}) {
     if (!open) return { shown: [], hidden: 0 };
@@ -1167,7 +1167,7 @@ export function buildInjection(mem, opts = {}) {
     // Items in the 📦 storage box are never given to the roleplay model.
     // v0.6.36: a person on standby gives their relation/condition records only when they take part
     // again (in the open or a recent scene: all of them) or are named in the latest messages (only the
-    // newest one); an excluded person gives none. 📌 pinned records always go in.
+    // newest one); an excluded person gives none. ⚓ pinned records always go in.
     const appear = new Set([...(open?.who || []), ...recentScenes.flatMap(sc => sc.who)]);
     const modeOf = id => mem.entities.find(e => e.id === id)?.standby;
     const newestOf = new Map();

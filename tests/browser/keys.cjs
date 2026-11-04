@@ -74,9 +74,9 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => __savePoint.handle('pin-point', 's1|g1|0'));
     r = await ev(() => ({ symbol: document.querySelector('[data-act="key-toggle"][data-id="s1|g1|0"]').textContent,
         pin: __savePoint.state().mem.scenes[0].segs[0].points[0].pin, inj: M.prompts.savepoint.v }));
-    ok(r.pin && r.symbol === '📌' && r.inj.includes('## Pinned points'), '4. 포인트 핀은 📌로 표시하고 별도로 주입');
+    ok(r.pin && r.symbol === '⚓' && r.inj.includes('## Pinned points'), '4. 포인트 핀은 ⚓로 표시하고 별도로 주입');
     await ev(() => __savePoint.handle('key-toggle', 's1|g1|0'));
-    ok((await ev(() => document.querySelector('[data-act="key-toggle"][data-id="s1|g1|0"]').textContent)) === '●', '4. 📌를 누르면 고정 전 직접 선택으로 복귀');
+    ok((await ev(() => document.querySelector('[data-act="key-toggle"][data-id="s1|g1|0"]').textContent)) === '●', '4. ⚓를 누르면 고정 전 직접 선택으로 복귀');
     // reset label
     await ev(() => __savePoint.handle('tab', 'saves'));
     r = await ev(() => $('.sp-body [data-act="clear-room"]').text());

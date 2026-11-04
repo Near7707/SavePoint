@@ -192,7 +192,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         const now = __savePoint.state();
         return { before, after: now.mem.scenes[0].pin, hist: now.history.length === histLen, err: toastr.log.at(-1)[1] };
     });
-    ok(r.after === r.before && r.hist, '편집 저장 실패 → 📌 변경과 이력 원복');
+    ok(r.after === r.before && r.hist, '편집 저장 실패 → ⚓ 변경과 이력 원복');
     r = await ev(async () => {
         const hiddenBefore = M.chat.filter(m => m.is_system).length;
         M.failMeta = true;

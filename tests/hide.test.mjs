@@ -44,7 +44,7 @@ function harness({ count = 10, lastIndex = 9, keepRecent = 2 } = {}) {
         llm: async () => '{}', parseJson: JSON.parse, batchNote: () => '', chunkMessages, fmtSec: () => '0초',
         recordAutoFail() {}, noteAuto() {}, flashSaveBanner() {}, replyKind() { return null; }, isTry: () => false,
     };
-    const api = vm.runInNewContext(transaction + hiding + summarizeCode + automaticCode + ';({syncHide,transact,summarize,autoCollect})', box);
+    const api = vm.runInNewContext(transaction + hiding + summarizeCode + automaticCode + ';({syncHide,transact,summarize,autoCollect,manualHidePlan,hideModeOf})', box);
     return { ...api, box, chat, settings, meta, dom, writes, notifications, calls: () => calls };
 }
 
@@ -185,3 +185,87 @@ test('a failed later quick-save batch hides only the successfully saved prefix',
     assert(h.chat.slice(6).every(m => !m.is_system));
 });
 
+
+// ───────── v0.6.49: manual hide ─────────
+const shown = h => h.chat.map(m => m.is_system ? 'H' : '.').join('');
+function manual(opts) {
+    const h = harness(opts);
+    h.settings.hideMode = 'manual'; h.settings.hideManualAt = 1;
+    return h;
+}
+async function press(h) {
+    const plan = h.manualHidePlan(h.meta.savePoint, h.chat);
+    await h.transact(() => { h.meta.savePoint.hideManual = { to: plan.to, at: Date.now() }; }, { undoable: false, autosave: false, rehide: true });
+    return plan;
+}
+
+test('hide mode: old settings map to off / auto, unknown values fall back', () => {
+    const h = harness();
+    assert.equal(h.hideModeOf({ hide: true }), 'auto');
+    assert.equal(h.hideModeOf({ hide: false }), 'off');
+    assert.equal(h.hideModeOf({ hide: false, hideMode: 'manual' }), 'manual');
+    assert.equal(h.hideModeOf({ hideMode: 'odd' }), 'auto');
+});
+
+test('manual: saves record but hide nothing until the button is pressed', async () => {
+    const h = manual({ lastIndex: 3 });
+    await h.transact(() => { h.meta.savePoint.lastIndex = 9; }, { rehide: true });
+    assert.equal(shown(h), '..........');
+    assert.deepEqual({ ...h.manualHidePlan(h.meta.savePoint, h.chat) }, { to: 7, count: 8 });
+});
+
+test('manual: the button hides recorded messages outside the latest N, and later saves do not grow it', async () => {
+    const h = manual({ count: 10, lastIndex: 9, keepRecent: 2 });
+    const plan = await press(h);
+    assert.equal(plan.count, 8);
+    assert.equal(shown(h), 'HHHHHHHH..');
+    assert.equal(h.writes.length, 1);
+    assert.equal(h.writes[0].meta.savePoint.hideManual.to, 7);
+    for (let n = 10; n < 16; n++) h.chat.push({ mes: `Message ${n}`, name: 'Speaker', is_system: false, extra: {} });
+    await h.transact(() => { h.meta.savePoint.lastIndex = 15; }, { rehide: true });
+    assert.equal(shown(h), 'HHHHHHHH........');
+    assert.equal(h.manualHidePlan(h.meta.savePoint, h.chat).count, 6);
+});
+
+test('manual: messages that go back to unrecorded show again and stay shown when recorded again', async () => {
+    const h = manual({ count: 10, lastIndex: 9, keepRecent: 2 });
+    await press(h);
+    await h.transact(() => { h.meta.savePoint.lastIndex = 4; });   // a rewind / rolled-back record
+    assert.equal(shown(h), 'HHHHH.....');
+    assert.equal(h.meta.savePoint.hideManual.to, 4);
+    await h.transact(() => { h.meta.savePoint.lastIndex = 9; }, { rehide: true });
+    assert.equal(shown(h), 'HHHHH.....');
+});
+
+test('manual: switching from auto keeps what is hidden and hides nothing more', async () => {
+    const h = harness({ count: 10, lastIndex: 9, keepRecent: 2 });
+    h.syncHide({ rehide: true });
+    assert.equal(shown(h), 'HHHHHHHH..');
+    h.meta.savePoint.hideManual = { to: 2, at: 1 };   // an old range from an earlier manual period
+    h.settings.hideMode = 'manual'; h.settings.hideManualAt = 2;
+    h.syncHide();
+    assert.equal(shown(h), 'HHHHHHHH..');
+    for (let n = 10; n < 14; n++) h.chat.push({ mes: `Message ${n}`, name: 'Speaker', is_system: false, extra: {} });
+    await h.transact(() => { h.meta.savePoint.lastIndex = 13; }, { rehide: true });
+    assert.equal(shown(h), 'HHHHHHHH......');
+});
+
+test('manual: a user-hidden message is left alone, and off shows only what SavePoint hid', async () => {
+    const h = manual({ count: 10, lastIndex: 9, keepRecent: 2 });
+    h.chat[9].is_system = true;   // hidden by the user, inside the kept latest N
+    await press(h);
+    assert.equal(shown(h), 'HHHHHHHH.H');
+    h.settings.hideMode = 'off';
+    h.syncHide();
+    assert.equal(shown(h), '.........H');
+});
+
+test('manual: a failed write of the button puts every message and the range back', async () => {
+    const h = manual({ count: 10, lastIndex: 9, keepRecent: 2 });
+    const before = JSON.stringify(h.meta.savePoint), chatBefore = JSON.stringify(h.chat);
+    h.box.persist = async () => { throw new Error('disk full'); };
+    await assert.rejects(press(h), /저장하지 못해서/);
+    assert.equal(JSON.stringify(h.meta.savePoint), before);
+    assert.equal(JSON.stringify(h.chat), chatBefore);
+    h.chat.forEach((m, n) => assert.equal(h.dom.get(n), String(m.is_system)));
+});

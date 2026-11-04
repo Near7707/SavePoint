@@ -160,7 +160,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => { M.metaDelay = 0; });
     r = await ev(([q, e]) => { const st = __savePoint.state(); const saved = JSON.parse(JSON.stringify(M.meta.savePoint));
         return { pin: st.mem.records.find(x => x.id === q).pin, mode: st.mem.entities.find(x => x.id === e).standby, savedPin: saved.mem.records.find(x => x.id === q).pin, savedMode: saved.mem.entities.find(x => x.id === e).standby }; }, [qid11, ent11]);
-    ok(r.pin === true && r.mode !== 'exclude', `11. 앞 저장 실패: 그 변경만 취소, 뒤의 📌는 남음 (${JSON.stringify(r)} · ${a} · ${b2})`);
+    ok(r.pin === true && r.mode !== 'exclude', `11. 앞 저장 실패: 그 변경만 취소, 뒤의 ⚓는 남음 (${JSON.stringify(r)} · ${a} · ${b2})`);
     r = await ev(([q, e]) => { const f = M.serverChat?.[0]?.chat_metadata?.savePoint; return f ? { pin: f.mem.records.find(x => x.id === q).pin, mode: f.mem.entities.find(x => x.id === e).standby } : null; }, [qid11, ent11]);
     ok(r && r.pin === true && r.mode !== 'exclude', `11. 파일과 화면이 같음 (${JSON.stringify(r)})`);
 
@@ -189,7 +189,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => { M.metaDelay = 0; M.failOnce = false; });
     r = await ev(([sid, q]) => { const st = __savePoint.state(), f = M.serverChat[0].chat_metadata.savePoint;
         return { star: !!st.mem.scenes.find(x => x.id === sid).star, fileStar: !!f.mem.scenes.find(x => x.id === sid).star, pin: st.mem.records.find(x => x.id === q).pin, filePin: f.mem.records.find(x => x.id === q).pin }; }, [pt.sid, qid11]);
-    ok(r.star === r.fileStar && r.pin === r.filePin, `13. 연속 ●·📌·★ 뒤 실패가 와도 화면과 파일이 같음 (${JSON.stringify(r)})`);
+    ok(r.star === r.fileStar && r.pin === r.filePin, `13. 연속 ●·⚓·★ 뒤 실패가 와도 화면과 파일이 같음 (${JSON.stringify(r)})`);
 
     const roomA = await ev(() => ({ id: M.chatId, chat: M.chat, meta: M.meta }));
     await ev(() => { M.metaDelay = 400; M.saveCalls = 0; });
@@ -219,13 +219,13 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     let p1 = ev(() => __savePoint.handle('del-rec', 'r950')); await page.waitForTimeout(60);
     let p2 = ev(() => __savePoint.handle('pin-rec', 'r951'));
     await settle(p1, p2); r = await both();
-    ok(r.page === 'on,pin' && r.file === r.page, `15. A 삭제 실패 + B 📌: 📌는 B에, A는 되돌아옴 (${JSON.stringify(r)})`);
+    ok(r.page === 'on,pin' && r.file === r.page, `15. A 삭제 실패 + B ⚓: ⚓는 B에, A는 되돌아옴 (${JSON.stringify(r)})`);
     await setup(); await ev(() => __savePoint.handle('pin-rec', 'r951').then(() => __savePoint.handle('pin-rec', 'r951')));
     await slowFail();
     p1 = ev(() => __savePoint.handle('pin-rec', 'r950')); await page.waitForTimeout(60);
     p2 = ev(() => __savePoint.handle('del-rec', 'r951'));
     await settle(p1, p2); r = await both();
-    ok(r.page === 'on,gone' && r.file === r.page, `16. A 📌 실패 + B 삭제: 실패한 📌는 되살아나지 않음 (${JSON.stringify(r)})`);
+    ok(r.page === 'on,gone' && r.file === r.page, `16. A ⚓ 실패 + B 삭제: 실패한 ⚓는 되살아나지 않음 (${JSON.stringify(r)})`);
     await slowFail();
     p1 = ev(async () => { __savePoint.handle('add-rec', 'quest'); __savePoint.ui.edit.values.text = 'A brand new thread.'; return __savePoint.handle('edit-save'); }); await page.waitForTimeout(60);
     const newId = await ev(() => __savePoint.state().mem.records.find(x => x.text === 'A brand new thread.')?.id);
@@ -233,7 +233,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await settle(p1, p2);
     r = await ev(() => { const f = M.serverChat[0].chat_metadata.savePoint; const bad = f.mem.records.some(x => Array.isArray(x) || !x || !x.type);
         return { bad, pageHas: __savePoint.state().mem.records.some(x => x.text === 'A brand new thread.'), fileHas: f.mem.records.some(x => x.text === 'A brand new thread.') }; });
-    ok(newId && !r.bad && !r.pageHas && !r.fileHas, `17. 추가 실패 + 그 항목 📌: 없는 자리를 만들지 않고 취소, 파일 형식 유지 (${JSON.stringify(r)})`);
+    ok(newId && !r.bad && !r.pageHas && !r.fileHas, `17. 추가 실패 + 그 항목 ⚓: 없는 자리를 만들지 않고 취소, 파일 형식 유지 (${JSON.stringify(r)})`);
     if (SHOTS) await page.locator('#sp_overlay .sp-window').screenshot({ path: path.join(OUT, 'quests-main.png') });
 
     await page.close();

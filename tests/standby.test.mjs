@@ -38,7 +38,7 @@ test('standby: nothing by default, only the newest record when named, everything
     assert(/favour/.test(t) && /bandaged/.test(t), 'back in a scene: all of them');
 });
 
-test('exclude: never, even when named or present; a 📌 record still goes in; the collector still sees them', () => {
+test('exclude: never, even when named or present; a ⚓ record still goes in; the collector still sees them', () => {
     const mem = build(); wren(mem).standby = 'exclude';
     mem.scenes.at(-1).who.push(wren(mem).id);
     let t = buildInjection(mem, { budget: 6000, query: 'Wren waved.' }).text;

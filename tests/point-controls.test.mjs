@@ -41,7 +41,7 @@ test('point controls share a selected symbol, preserve manual choices, and resto
     assert.match(c.html(), /data-act="key-toggle"[^>]*>●<\/button>/);
     await c.app.handle('pin-point', 's1|g1|0');
     assert.equal(c.point().pin, true);
-    assert.match(c.html(), /data-act="key-toggle"[^>]*>📌<\/button>/);
+    assert.match(c.html(), /data-act="key-toggle"[^>]*>⚓<\/button>/);
     assert.doesNotMatch(c.html(), /data-act="pin-point"/, 'the leading pin is the unpin control');
     await c.app.handle('key-toggle', 's1|g1|0');
     assert.equal(c.point().pin, false);

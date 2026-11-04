@@ -79,6 +79,6 @@ test('selected points share one symbol while stored-only and pinned points stay 
     assert.equal(pointSymbol({ key: true, keyUser: true }), '●');
     assert.equal(pointSymbol({ key: false, keyUser: true }), '●');
     assert.equal(pointSymbol({ key: true, keyUser: false }), '○');
-    assert.equal(pointSymbol({ key: false, pin: true }), '📌');
+    assert.equal(pointSymbol({ key: false, pin: true }), '⚓');
 });
 

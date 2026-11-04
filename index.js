@@ -19,7 +19,7 @@ const MODULE = 'savePoint';
 const PROMPT_KEY = 'savepoint';
 const HIDE_KEY = 'savepointHidden';
 const VISIBLE_KEY = 'savepointVisible';
-const VERSION = '0.6.48';
+const VERSION = '0.6.49';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -28,18 +28,19 @@ const DEFAULTS = {
     enabled: true, check: true, auto: true, autoEvery: 20, autoReserve: 2, profileId: '', responseLength: 8000, inputChars: 60000, timeoutSec: 300, timeoutTotalMin: 20, sourceChars: 12000, excludeMarks: '', askResume: true, resumeDismissed: {}, boxMode: 'notify', questMode: 'confirm', firstTab: 'main',
     requestStream: true, reasoningEffort: '',
     budget: 6000, titleCap: 600, recentScenes: 3, recall: true, rawRecall: false,
-    hide: true, keepRecent: 10, position: 1, depth: 4, role: 0,
+    hideMode: 'auto', keepRecent: 10, position: 1, depth: 4, role: 0,
     theme: 'jrpg', showKo: false, autoKeep: 30, guide: DEFAULT_GUIDE, slotCache: [], localSaves: {}, settingsOpen: {}, interrupted: {},
 };
 const SETTING_GROUPS = {
     connection: { title: '연결·AI 요청', keys: ['profileId', 'requestStream', 'reasoningEffort', 'responseLength', 'inputChars', 'sourceChars', 'timeoutSec', 'timeoutTotalMin'] },
     recording: { title: '체크포인트·기록 확인', keys: ['check', 'auto', 'autoEvery', 'autoReserve', 'excludeMarks', 'questMode'] },
     injection: { title: '기억 주입', keys: ['budget', 'titleCap', 'recentScenes', 'recall', 'rawRecall', 'position', 'depth', 'role'] },
-    storage: { title: '하이드·보관', keys: ['hide', 'keepRecent', 'autoKeep', 'boxMode', 'askResume'] },
+    storage: { title: '하이드·보관', keys: ['hideMode', 'keepRecent', 'autoKeep', 'boxMode', 'askResume'] },
     appearance: { title: '화면', keys: ['theme', 'firstTab', 'showKo'] },
     // v0.6.39: the recording instructions live under 고급, folded, with what editing them means.
     advanced: { title: '🛠 고급', keys: ['guide'] },
 };
+const HIDE_MODES = [['auto', '자동 · 세이브할 때마다 기록된 원문 숨기기'], ['manual', '수동 · 👻 하이드 버튼을 누를 때만'], ['off', '끔 · 숨기지 않기']];
 const QUEST_MODES = [['auto', '자동 등록 · 바로 진행 중 목록에'], ['confirm', '확인 후 등록 · 후보로 모아 수락·거절']];
 const THEMES = { jrpg: '클래식 JRPG', neon: '네온 아케이드', glass: '글래스 사이버', archive: '다크 아카이브', pastel: '파스텔 드림', terminal: '터미널', eggpet: '딸기우유', dualwhite: '듀얼 화이트', ink: '먹과 한지', cream: '크림 라테', consolenight: '스토리 콘솔', cranelemon: '레몬 인형뽑기', gingerbread: '진저브레드 하우스', xmasknit: '크리스마스 니트', lilac: '라일락 미드나잇', st: '실리태번 테마 따라가기' };
 // Themes that were retired, and the closest one now.
@@ -47,7 +48,7 @@ const RETIRED_THEMES = { parchment: 'cream', colorpocket: 'eggpet', joycon: 'dua
 // v0.6.37: 💠 메인 (STATUS) first; the loot queue lives in its alert area instead of its own tab.
 const TABS = [
     ['main', '💠', '메인'], ['journal', '📜', '저널'], ['timeline', '📅', '타임라인'], ['quests', '❗', '퀘스트'], ['party', '👥', '파티'],
-    ['items', '🎒', '인벤토리'], ['world', '🗺', '월드'], ['saves', '💾', '세이브'], ['inject', '👁', '주입'],
+    ['items', '🎒', '인벤토리'], ['world', '🗺', '월드'], ['saves', '💾', '세이브'], ['inject', '🧿', '주입'],
 ];
 const FIRST_TABS = { main: '💠 메인', journal: '📜 저널', timeline: '📅 타임라인', quests: '❗ 퀘스트' };
 const KIND_KO = {
@@ -75,6 +76,8 @@ function settings() {
     if (!('boxMode' in s) && 'theme' in s) s.boxMode = 'manual';
     // v0.6.39: likewise, quests keep being listed automatically for someone already using SavePoint.
     if (!('questMode' in s) && 'theme' in s) s.questMode = 'auto';
+    // v0.6.49: the old on/off hide setting becomes a mode (off / auto / manual).
+    if (!('hideMode' in s)) s.hideMode = s.hide === false ? 'off' : 'auto';
     for (const k of Object.keys(DEFAULTS)) if (!(k in s)) s[k] = clone(DEFAULTS[k]);
     if (OLD_GUIDE_HASHES.includes(guideHash(s.guide))) s.guide = DEFAULT_GUIDE;
     if (RETIRED_THEMES[s.theme]) s.theme = RETIRED_THEMES[s.theme];
@@ -463,11 +466,44 @@ function setHidden(m, i, hidden) {
     m.is_system = hidden;
     $(`#chat .mes[mesid="${i}"]`).attr('is_system', String(hidden));
 }
+// v0.6.49: 'off' / 'auto' (every save hides what it recorded) / 'manual' (only the 👻 button does).
+// Settings from before v0.6.49 only have `hide`.
+function hideModeOf(s) {
+    if (['off', 'auto', 'manual'].includes(s.hideMode)) return s.hideMode;
+    return s.hide === false ? 'off' : 'auto';
+}
+// The newest message the hide may reach now: recorded, and outside the latest N kept as they are.
+function hideLimit(st, list = chat()) { return Math.min(st.lastIndex, list.length - 1 - num('keepRecent', 0, 200)); }
+// In manual mode the hidden range of a room is `st.hideManual` ({ to, at }), set only by the 👻 button.
+// A range set before the latest switch to manual (or none) is read from the messages SavePoint
+// already hid, so switching to manual keeps what is hidden and hides nothing more.
+function manualHideTo(st, list = chat()) {
+    const h = st.hideManual;
+    if (h && Number.isInteger(h.to) && (Number(h.at) || 0) >= (Number(settings().hideManualAt) || 0)) return h.to;
+    let to = -1;
+    list.forEach((m, i) => { if (m.extra && (m.extra[HIDE_KEY] || m.extra[VISIBLE_KEY])) to = i; });
+    return to;
+}
+// What the 👻 button would hide now: the last index it reaches and how many messages are still shown there.
+function manualHidePlan(st, list = chat()) {
+    const to = hideLimit(st, list);
+    let count = 0;
+    for (let i = 0; i <= to; i++) if (list[i] && !list[i].is_system) count++;
+    return { to, count };
+}
 function syncHide({ rehide = false } = {}) {
     const st = state(), s = settings(), list = chat();
-    const can = s.enabled && s.hide && st && !st.review && hasMemory(st.mem);
-    const cutoff = can ? Math.min(st.lastIndex, list.length - 1 - num('keepRecent', 0, 200)) : -1;
+    const mode = hideModeOf(s);
+    const can = s.enabled && mode !== 'off' && st && !st.review && hasMemory(st.mem);
+    let cutoff = can ? hideLimit(st, list) : -1;
     let changed = false;
+    if (can && mode === 'manual') {
+        // Messages that went back to unrecorded (rewind, a rolled-back record) leave the range for
+        // good: when they are recorded again they stay shown until the button is pressed again.
+        const h = st.hideManual;
+        if (h && Number.isInteger(h.to) && h.to > st.lastIndex && (Number(h.at) || 0) >= (Number(s.hideManualAt) || 0)) { h.to = st.lastIndex; changed = true; }
+        cutoff = Math.min(cutoff, manualHideTo(st, list));
+    }
     list.forEach((m, i) => {
         const mark = m.extra?.[HIDE_KEY];
         if (rehide && i <= cutoff) {
@@ -1042,7 +1078,7 @@ async function summarize({ close = false, auto = false } = {}) {
                 }, { rehide: true });
                 toastr.success('진행 중이던 장면을 닫았어요.');
             } catch (e) { reportError(e); }
-        } else if (settings().enabled && settings().hide && hasMemory(st.mem)) {
+        } else if (settings().enabled && hideModeOf(settings()) !== 'off' && hasMemory(st.mem)) {
             try {
                 await transact(() => {}, { undoable: false, autosave: false, rehide: true });
                 toastr.info('기록할 새 메시지가 없어요. 하이드 상태를 다시 확인했어요.');
@@ -1097,7 +1133,7 @@ async function summarize({ close = false, auto = false } = {}) {
         }
         const supplement = await supplementLoot(run, oldLoot, undoPoint);
         done += supplement.saved; lootFailed += supplement.failed;
-        if (!msgs.length && !supplement.saved && !close && settings().enabled && settings().hide && hasMemory(st.mem))
+        if (!msgs.length && !supplement.saved && !close && settings().enabled && hideModeOf(settings()) !== 'off' && hasMemory(st.mem))
             await transact(() => {}, { undoable: false, autosave: false, rehide: true });
         if (close && !msgs.length && openScene(st.mem)) {
             assertValid(run, end);
@@ -2522,14 +2558,14 @@ function journalHtml(st) {
         const pts = s.segs.flatMap(g => g.points.map((p, j) => ({ g, p, j })));
         const head = `<div class="sp-scene-head"><span class="sp-no">SCENE ${String(no).padStart(2, '0')}</span><span class="sp-range">${esc(rangeOf(s))}</span>
             ${s.status === 'open' ? '<span class="sp-badge sp-live">진행 중</span>' : ''}
-            ${tools([btn('star', s.id, s.star ? '★' : '☆', '메인 사건 표시', s.star ? 'sp-on' : ''), btn('pin', s.id, '📌', '항상 핵심 한 줄 주입', s.pin ? 'sp-on' : ''),
+            ${tools([btn('star', s.id, s.star ? '★' : '☆', '메인 사건 표시', s.star ? 'sp-on' : ''), btn('pin', s.id, '⚓', '항상 핵심 한 줄 주입', s.pin ? 'sp-on' : ''),
                 btn('edit-scene', s.id, '✎', '제목·장소 편집'), btn('del-scene', s.id, '🗑', '삭제')])}</div>`;
         if (isEditing('scene', s.id)) return `<div class="sp-card sp-scene">${head}${editForm()}</div>`;
         const pointHtml = ({ g, p, j }) => isEditing('point', `${s.id}|${g.id}|${j}`) ? editForm()
             : `<li class="sp-pt sp-${p.kind} ${pointInjected(p) ? 'sp-inj' : 'sp-stored'} ${p.pin ? 'sp-point-pinned' : ''}">${btn('key-toggle', `${s.id}|${g.id}|${j}`, pointSymbol(p),
                 p.pin ? '우선 주입 고정 · 누르면 고정 전 선택으로 돌아가요' : (pointInjected(p) ? '선택됨 · 누르면 선택 해제' : '선택 안 함 · 누르면 선택'), 'sp-key')}<span class="sp-pk" title="${p.kind === 'change' ? '상태 변화' : '기억할 순간'}">${p.kind === 'change' ? '◆' : '◇'}</span>
                 <div class="sp-pt-t">${p.loot?.length ? `<details class="sp-point-detail" data-group="point:${g.id}:${j}" ${ui.savesOpen.get('point:' + g.id + ':' + j) ? 'open' : ''}><summary>${esc(T(p.text, p.ko))}</summary><div class="sp-dim">출처: 루팅</div></details>` : esc(T(p.text, p.ko))}${(() => { const d = pointInjected(p) && !p.pin ? dupState(s, p) : null; return d === 'exact' && p.keyUser !== true ? '<span class="sp-dup" title="개요에 같은 문장이 있어서 이번 주입에서는 빼요 (직접 선택하면 넣어요)">개요와 같음 · 주입 생략</span>' : d === 'near' ? '<span class="sp-dup" title="개요와 많이 겹쳐요. 필요 없으면 ○로 바꿔 주세요">중복 후보</span>' : ''; })()}${evidenceChips(p.msgs, p.oldEvidence)}</div>
-                ${tools([...(p.pin ? [] : [btn('pin-point', `${s.id}|${g.id}|${j}`, '📌', '이 포인트를 고정 주입 (전체 토큰 상한 내에서 우선 유지)')]), btn('edit-point', `${s.id}|${g.id}|${j}`, '✎'), btn('del-point', `${s.id}|${g.id}|${j}`, '🗑')])}</li>`;
+                ${tools([...(p.pin ? [] : [btn('pin-point', `${s.id}|${g.id}|${j}`, '⚓', '이 포인트를 고정 주입 (전체 토큰 상한 내에서 우선 유지)')]), btn('edit-point', `${s.id}|${g.id}|${j}`, '✎'), btn('del-point', `${s.id}|${g.id}|${j}`, '🗑')])}</li>`;
         // One block per part: its own outline (never rewritten later), its points, its notes.
         const segHtml = s.segs.map(g => {
             const list = g.points.map((p, j) => pointHtml({ g, p, j })).join('');
@@ -2552,14 +2588,14 @@ function journalHtml(st) {
             ${s.who.length ? `<div class="sp-who">${whoChips(mem, s.who)}</div>` : ''}
             <div class="sp-outline">${s.segs.filter(g => g.outline).map(g => `<p>${esc(T(g.outline, g.koOutline))}</p>`).join('')}</div>${outlineText}
             <details class="sp-more" data-group="scene:${esc(s.id)}" ${(ui.edit && String(ui.edit.id).startsWith(s.id + '|')) || ui.savesOpen.get('scene:' + s.id) ? 'open' : ''}><summary>구간 ${s.segs.length} · 포인트 ${pts.length} (주입 ${pts.filter(x => pointInjected(x.p)).length})</summary>
-                <div class="sp-dim sp-keyhelp">● 주입 후보 / ○ 저장만 / 📌 우선 주입 고정. ●는 남는 주입 상한 안에서 최신 장면부터 들어가고, ○와 상세 노트는 최근 대화와 관련될 때 회상으로 들어와요. ${btn('rekey-scene', s.id, '⟳ 주입 고르기', '개요와 상태 목록에 없는 중요한 포인트만 AI가 다시 골라요 (직접 지정·고정은 유지)')}</div>
+                <div class="sp-dim sp-keyhelp">● 주입 후보 / ○ 저장만 / ⚓ 우선 주입 고정. ●는 남는 주입 상한 안에서 최신 장면부터 들어가고, ○와 상세 노트는 최근 대화와 관련될 때 회상으로 들어와요. ${btn('rekey-scene', s.id, '⟳ 주입 고르기', '개요와 상태 목록에 없는 중요한 포인트만 AI가 다시 골라요 (직접 지정·고정은 유지)')}</div>
                 ${segHtml}</details></div>`;
     }).join('');
 }
 function recordRow(st, r, extraTools = []) {
     if (isEditing('record', r.id)) return `<div class="sp-rec">${editForm()}</div>`;
     return `<div class="sp-rec sp-record-row ${r.pin ? 'sp-pinned' : ''}"><span class="sp-rec-t">${esc(T(r.text, r.ko))}</span>${evidenceChips(r.msgs, r.oldEvidence)}
-        ${tools([...extraTools, btn('pin-rec', r.id, '📌', '항상 주입', r.pin ? 'sp-on' : ''), btn('edit-rec', r.id, '✎'), btn('del-rec', r.id, '🗑')])}</div>`;
+        ${tools([...extraTools, btn('pin-rec', r.id, '⚓', '항상 주입', r.pin ? 'sp-on' : ''), btn('edit-rec', r.id, '✎'), btn('del-rec', r.id, '🗑')])}</div>`;
 }
 // 📅 Timeline: newest recorded parts first, grouped by time reference, with days, flashbacks,
 // unknown times and the promises made in each part. Screen only: nothing extra is injected.
@@ -2659,7 +2695,7 @@ function questsHtml(st) {
                 btn('quest-decline', q.id, '추적 안 함', '퀘스트 목록에서 빼요(주입도 빠져요). 원문과 기존 저널은 유지돼요')];
             return `<div class="sp-quest sp-q-${status}" id="sp-quest-${esc(q.id)}"><span class="sp-qi">${QUEST_ICON[q.kind] || '•'}</span><div class="sp-qb"><div><span class="sp-kind">${KIND_KO[q.kind]}</span>${roleText(st.mem, q) ? ` <b class="sp-role">${esc(roleText(st.mem, q))}</b>` : ''} ${esc(T(q.text, q.ko))}</div>
                 ${questEventTimes(st.mem, q).map(at => `<div class="sp-sub sp-quest-time">📅 ${esc(at.label)}: ${esc(at.text)}</div>`).join('')}
-                <div class="sp-sub">${whoChips(st.mem, q.who)}${evidenceChips(q.msgs, q.oldEvidence)}</div>${(() => { if (!q.due) return ''; const d = dueStatus(st.mem, q); return `<div class="sp-due sp-due-${d?.kind || 'closed'}">⏰ ${esc(formatDue(st.mem, q, 'ko'))}${q.due.manual ? ' <small class="sp-dim">직접 지정</small>' : ''}</div>`; })()}${q.terms ? `<details class="sp-terms" data-group="terms:${esc(q.id)}" ${ui.savesOpen.get('terms:' + q.id) ? 'open' : ''}><summary>근거 원문 ${esc(priorTermsLabel(q.terms))}</summary><div class="sp-terms-q">“${esc(q.terms.quote)}”</div><div class="sp-excerpt">${esc(q.terms.context)}</div></details>` : ''}</div>${tools([...flow, btn('pin-rec', q.id, '📌', '항상 주입', q.pin ? 'sp-on' : ''), btn('edit-rec', q.id, '✎'), btn('del-rec', q.id, '🗑')])}</div>`;
+                <div class="sp-sub">${whoChips(st.mem, q.who)}${evidenceChips(q.msgs, q.oldEvidence)}</div>${(() => { if (!q.due) return ''; const d = dueStatus(st.mem, q); return `<div class="sp-due sp-due-${d?.kind || 'closed'}">⏰ ${esc(formatDue(st.mem, q, 'ko'))}${q.due.manual ? ' <small class="sp-dim">직접 지정</small>' : ''}</div>`; })()}${q.terms ? `<details class="sp-terms" data-group="terms:${esc(q.id)}" ${ui.savesOpen.get('terms:' + q.id) ? 'open' : ''}><summary>근거 원문 ${esc(priorTermsLabel(q.terms))}</summary><div class="sp-terms-q">“${esc(q.terms.quote)}”</div><div class="sp-excerpt">${esc(q.terms.context)}</div></details>` : ''}</div>${tools([...flow, btn('pin-rec', q.id, '⚓', '항상 주입', q.pin ? 'sp-on' : ''), btn('edit-rec', q.id, '✎'), btn('del-rec', q.id, '🗑')])}</div>`;
         }).join('')}</div>`;
     };
     const found = foundQuests(st.mem), declined = all.filter(q => q.track === 'declined');
@@ -2885,11 +2921,35 @@ function injectHtml(st) {
         <span>전체 <b>${inj.tokens.toLocaleString()}</b> / ${num('budget', 300, 100000).toLocaleString()}</span>
         <span>상태 ${Math.round(u.state)}</span><span>저널 ${Math.round(u.journal)}</span><span>회상 ${Math.round(u.recall)}</span><span>제목 목록 ${Math.round(u.titles)}</span></div>
         ${injectLevelsHtml(st, inj)}
-        ${inj.pinOverflow ? `<div class="sp-warn">📌 고정 항목 ${inj.pinMissing}개가 주입 상한 안에 들어가지 못해 빠졌어요. 고정을 줄이거나 상한을 늘려 주세요.</div>` : ''}
+        ${inj.pinOverflow ? `<div class="sp-warn">⚓ 고정 항목 ${inj.pinMissing}개가 주입 상한 안에 들어가지 못해 빠졌어요. 고정을 줄이거나 상한을 늘려 주세요.</div>` : ''}
         <div class="sp-aspect">회상한 장면과 이유</div>${rec}
         </div>
         <pre class="sp-pre">${esc(inj.text)}</pre>
         <div class="sp-dim">마지막 메시지를 기준으로 계산했어요. 실제 생성 직전에 한 번 더 계산해요.</div>`;
+}
+// v0.6.49: the manual hide button, beside the record bar. Shown only in manual mode with something to hide;
+// it waits while a save runs or a change is still being written, so it never hides what the file lacks.
+function writesPending() { return !!saveQueues.get(`${roomKey()}|${roomEpoch}`)?.pending.length; }
+function hideButton(st, busy) {
+    const s = settings();
+    if (!st || !s.enabled || hideModeOf(s) !== 'manual' || st.review || !hasMemory(st.mem)) return '';
+    const { count } = manualHidePlan(st);
+    if (!count) return '';
+    const wait = busy || writesPending();
+    return btn('hide-now', '', `👻 하이드 · ${count}`, wait ? '저장이 끝나면 누를 수 있어요' : `기록된 원문 ${count}개를 숨겨요. 미기록 메시지와 최근 ${num('keepRecent', 0, 200)}개는 남겨요.`, 'sp-hide-btn' + (wait ? ' sp-disabled' : ''));
+}
+async function hideRecorded() {
+    const st = state();
+    if (!st || ui.run || writesPending() || hideModeOf(settings()) !== 'manual' || st.review || !hasMemory(st.mem)) return;
+    const { count } = manualHidePlan(st);
+    if (!count) return;
+    if (!(await confirmBox(`기록된 원문 ${count}개를 하이드할까요? 미기록 메시지와 최근 ${num('keepRecent', 0, 200)}개는 남겨요. 기억은 그대로 주입돼요.`))) return;
+    const now = state();
+    // The room or its records may have changed while the question was open.
+    if (now !== st || ui.run || writesPending() || hideModeOf(settings()) !== 'manual') return;
+    const plan = manualHidePlan(now);
+    if (!plan.count) return;
+    await transact(() => { const cur = state(); if (!cur) return false; cur.hideManual = { to: plan.to, at: Date.now() }; }, { undoable: false, autosave: false, rehide: true });
 }
 function hudHtml(st) {
     const open = st ? openScene(st.mem) : null;
@@ -2919,15 +2979,15 @@ function hudHtml(st) {
     const alerting = fails || lootFails || issues || ui.inj?.pinOverflow || interrupted;
     const chip = [`미기록 ${pending}`, injectionStatus, ...(st?.lootQueue?.length ? [`⏳ ${st.lootQueue.length}`] : []), ...(fails ? [`⚠ 실패 ${fails}`] : []),
         ...(lootFails ? [`💎 반영 실패 ${lootFails}`] : []), ...(issues ? [`확인 필요 ${issues}`] : []), ...(interrupted ? ['저장 중단됨'] : []),
-        ...(ui.inj?.pinOverflow ? ['📌 주입 못 함'] : [])].join(' · ');
+        ...(ui.inj?.pinOverflow ? ['⚓ 주입 못 함'] : [])].join(' · ');
     return `<div class="sp-hud ${openHud ? 'sp-hud-open' : 'sp-hud-folded'}">
         <div class="sp-scene-now">${open ? `<span class="sp-cursor">▶</span> <b>${esc(T(open.title, open.koTitle))}</b>${open.where ? ` <span class="sp-dim">@ ${esc(open.where)}</span>` : ''}` : '<span class="sp-dim">▷ 진행 중인 장면 없음</span>'}</div>
-        <div class="sp-bar" title="기록된 메시지 비율"><div class="sp-bar-fill" style="width:${pct}%"></div><span>기록 ${covered} / ${total}</span></div>
+        <div class="sp-barline"><div class="sp-bar" title="기록된 메시지 비율"><div class="sp-bar-fill" style="width:${pct}%"></div><span>기록 ${covered} / ${total}</span></div>${hideButton(st, busy)}</div>
         <button type="button" class="sp-hud-chip ${alerting ? 'sp-alerting' : ''}" data-act="hud-toggle" aria-expanded="${openHud}" title="${openHud ? '자세한 상태 접기' : '자세한 상태 펼치기'}"><span>${esc(chip)}</span><span class="sp-hud-caret">${openHud ? '▴' : '▾'}</span></button>
         ${review}
         <div class="sp-hud-more">
         ${storyTimeContext(st?.mem || {}, 'ko') ? `<div class="sp-hud-time">마지막 기록 기준 · ${esc(storyTimeContext(st.mem, 'ko'))}</div>` : ''}
-        <div class="sp-hud-meta"><span>미기록 <b>${pending}</b></span>${btn('tab', 'queue', `⏳ 대기열 ${st?.lootQueue?.length || 0}개`)}${returnNotices(st).length ? btn('tab', 'main', `📦 복귀 확인 ${returnNotices(st).length}`, '보관함 물건이 이야기에서 다시 쓰였어요', 'sp-on') : ''}<span>${esc(injectionStatus)}</span><span>요약 AI: ${esc(profileLabel())}</span>${ui.inj?.pinOverflow ? `<span class="sp-warn">📌 ${ui.inj.pinMissing}개 주입 못 함</span>` : ''}</div>
+        <div class="sp-hud-meta"><span>미기록 <b>${pending}</b></span>${btn('tab', 'queue', `⏳ 대기열 ${st?.lootQueue?.length || 0}개`)}${returnNotices(st).length ? btn('tab', 'main', `📦 복귀 확인 ${returnNotices(st).length}`, '보관함 물건이 이야기에서 다시 쓰였어요', 'sp-on') : ''}<span>${esc(injectionStatus)}</span><span>요약 AI: ${esc(profileLabel())}</span>${ui.inj?.pinOverflow ? `<span class="sp-warn">⚓ ${ui.inj.pinMissing}개 주입 못 함</span>` : ''}</div>
         <div class="sp-hud-meta sp-auto-line">${autoLine}${autoLast}${lastRecord}</div>
         ${interrupted && !busy ? `<div class="sp-hud-meta"><span class="sp-warn">⚠ 지난 저장이 방을 옮기면서 중간에 멈췄어요 (#${interrupted.from}부터 미기록)</span>${btn('run', '', '퀵세이브로 이어서')}</div>` : ''}
         ${autoFailHtml(st)}
@@ -3169,6 +3229,7 @@ async function handle(act, id) {
         case 'run-close': return summarize({ close: true });
         case 'stop': cancelRun(); return;
         case 'undo': return undo();
+        case 'hide-now': return hideRecorded();
         case 'translate': return translate();
         // One button for the language: 원문 ↔ 번역; in Korean view, untranslated items get a small "+N" button.
         case 'lang': {
@@ -3386,9 +3447,10 @@ function settingsHtml() {
                 <label>역할 <select data-set="role"><option value="0">시스템</option><option value="1">사용자</option><option value="2">어시스턴트</option></select></label>
             `)}
             ${settingSection('storage', `
-                <label class="checkbox_label"><input type="checkbox" data-set="hide"> 세이브한 메시지 하이드</label>
+                <label>하이드 방식 <select data-set="hideMode">${HIDE_MODES.map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
+                <div class="sp-set-note">수동이면 기록은 그대로 하고, 기록된 원문은 위쪽 상태 칸의 <b>👻 하이드</b>를 누를 때만 숨겨요. 누른 뒤 새로 기록한 메시지는 다음에 누를 때까지 보여요. 끄면 SavePoint가 숨긴 메시지만 다시 보여요(직접 숨긴 메시지는 그대로).</div>
                 <label>하이드하지 않을 최근 메시지 <input type="number" data-set="keepRecent" min="0" max="200"></label>
-                <div class="sp-set-note">전체 대화에서 숨기지 않을 최근 메시지 수예요. 미기록 메시지는 이 설정과 관계없이 숨기지 않아요.</div>
+                <div class="sp-set-note">전체 대화에서 숨기지 않을 최근 메시지 수예요. 자동·수동 모두 지켜요. 미기록 메시지는 이 설정과 관계없이 숨기지 않아요.</div>
                 <label>오토세이브를 보관할 방 수 (방마다 최근 3개) <input type="number" data-set="autoKeep" min="1" max="500"></label>
                 <label>보관함 방식 (직접 보관한 물건이 다시 쓰일 때) <select data-set="boxMode"><option value="manual">직접 관리 · 상태만 갱신하고 보관함에 둠</option><option value="notify">알림 받고 결정 · 보관함에 두고 꺼내기 안내</option><option value="auto">자동 관리 · 인벤토리로 꺼냄</option></select></label>
                 <div class="sp-set-note">이야기가 넣은 물건(다 쓰거나 잃어버린 것)은 되찾으면 방식과 상관없이 돌아와요. 🔒를 건 물건은 항상 보관함에 두고 알림도 띄우지 않아요. 방식을 바꿔도 이미 보관함에 있는 물건을 한꺼번에 꺼내지 않아요.</div>
@@ -3424,7 +3486,7 @@ function updateSettingsSummaries() {
         connection: `${profileLabel()} · 대기 ${s.timeoutSec}초 · 최대 ${s.timeoutTotalMin}분`,
         recording: `${s.auto ? s.autoEvery + '개마다 · 여유분 ' + s.autoReserve + '개' : '체크포인트 꺼짐'} · 확인 ${s.check ? '켜짐' : '꺼짐'}${exclusionRules().length ? ` · 뺄 부분 ${exclusionRules().length}개` : ''} · 퀘스트 ${s.questMode === 'confirm' ? '확인 후' : '자동'}`,
         injection: `${Number(s.budget).toLocaleString()}토큰 · 최근 ${s.recentScenes}장면`,
-        storage: `${s.hide ? '최근 ' + s.keepRecent + '개 남김' : '하이드 꺼짐'} · 보관 ${s.autoKeep}개 방`,
+        storage: `${hideModeOf(s) === 'off' ? '하이드 꺼짐' : `하이드 ${hideModeOf(s) === 'manual' ? '수동' : '자동'} · 최근 ${s.keepRecent}개 남김`} · 보관 ${s.autoKeep}개 방`,
         appearance: `${THEMES[s.theme] || THEMES.jrpg} · ${s.showKo ? '한국어' : 'EN'}`,
         advanced: guideState() === 'default' ? '기본 지침' : guideState() === 'stale' ? '⚠ 새 기본 지침 있음' : '직접 고친 지침',
     };
@@ -3454,8 +3516,10 @@ function updateChangeMarks() {
     }
 }
 function settingsChanged(keys) {
+    // v0.6.49: a switch to manual starts from what is hidden now (older manual ranges no longer count).
+    if (keys.includes('hideMode') && settings().hideMode === 'manual') settings().hideManualAt = Date.now();
     saveSettings();
-    if (keys.some(k => ['hide', 'keepRecent', 'enabled'].includes(k))) syncHide();
+    if (keys.some(k => ['hideMode', 'keepRecent', 'enabled'].includes(k))) syncHide();
     if (keys.some(k => ['auto', 'autoEvery', 'autoReserve', 'enabled'].includes(k))) scheduleAuto();
     if (keys.includes('enabled')) installLootBar();
     updateSettingsSummaries(); refreshInjection(); render(true);
