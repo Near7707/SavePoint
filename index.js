@@ -11,6 +11,7 @@ import { foldLegacyOutline,
 } from './core.js';
 import { lootStatus, lootWarning, lootInChunk, lootBlock, attachLoot, settleLoot, failLoot, lootTarget, applyLootSupplement, restoreLostLoot } from './loot.js';
 import { Vault, roomHash, quickId } from './vault.js';
+import { snapshot, splitFile, covers, writeResult, samePage } from './guard.js';
 import { upgradeEvidence, segmentPrior, evidenceNumbers } from './provenance.js';
 import { assertPromptFits, nextMessageChunk, planReviewBatches } from './request-batches.js';
 import { DEFAULT_GUIDE, guideHash, OLD_GUIDE_HASHES, buildCheckPrompt, buildRekeyPrompt, buildExtractPrompt, buildExtractPromptParts, PROMPT_PART_LABELS, retryNote, extractionRepairNote, TRANSLATE_PROMPT } from './prompts.js';
@@ -24,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.57';
+const VERSION = '0.6.58';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -171,8 +172,14 @@ async function persist() { if (hasChat()) await ctx().saveMetadata(); }
 // The automatic save file lives in the settings file and is only a convenience copy.
 // v0.6.55: a change is a ⏪ rewind point only when it says so (`undoable` + `undoKind`): saves, a reset
 // and a load. Edits made with buttons no longer take the one rewind step.
-async function transact(change, { undoable = false, undoKind = '', autosave: doAutosave = true, rehide = false, replay = false, snapshot = false } = {}) {
-    const entry = { change, undoable, undoKind, autosave: doAutosave, rehide, replay, snapshot, key: roomKey(), epoch: roomEpoch };
+// v0.6.58: nothing is changed on the page (and so nothing can reach the file) until the room is
+// confirmed against the chat file on the server (roomReady). `verify`: read the file back after the
+// write (saves, a load, a reset, a rewind). `base`: what the change replaces in the messages or chat
+// metadata outside SavePoint's own parts (a load's new #0), for the check before writing.
+async function transact(change, { undoable = false, undoKind = '', autosave: doAutosave = true, rehide = false, replay = false, snapshot = false, verify = false, base = null } = {}) {
+    if (!gateOpen() && !(await roomReady())) throw new RoomBlocked(gateMessage());
+    const entry = { change, undoable, undoKind, autosave: doAutosave, rehide, replay, snapshot, verify, key: roomKey(), epoch: roomEpoch };
+    if (typeof base === 'function') entry.base = base();
     if (applyEntry(entry) === false) return false;
     const queue = saveQueue(entry.key, entry.epoch);
     queue.pending.push(entry);
@@ -241,22 +248,57 @@ function restoreEntry(entry) {
     });
     return here;
 }
+function cancelMoved(queue, entry) {
+    const left = queue.pending.slice(Math.max(0, queue.pending.indexOf(entry)));
+    queue.pending.length = 0;
+    const error = new Error(`채팅방을 옮겨서 이전 방의 마지막 변경 ${left.length}개는 저장하지 못했을 수 있어요. 그 방을 다시 열어 확인해 주세요.`);
+    for (const x of left) x.cancelled = error;
+    return error;
+}
 async function writeEntry(queue, entry) {
+    if (entry.unsure) throw entry.unsure;        // written by an earlier write that could not be confirmed
     if (entry.done) return true;                 // written by an earlier write that already held it
     if (entry.cancelled) throw entry.cancelled;
+    const moved = () => roomKey() !== entry.key || roomEpoch !== entry.epoch;
     // v0.6.45: a write saves the room that is open; after a move it would save the other room.
-    if (roomKey() !== entry.key || roomEpoch !== entry.epoch) {
-        const left = queue.pending.slice(Math.max(0, queue.pending.indexOf(entry)));
-        queue.pending.length = 0;
-        const error = new Error(`채팅방을 옮겨서 이전 방의 마지막 변경 ${left.length}개는 저장하지 못했을 수 있어요. 그 방을 다시 열어 확인해 주세요.`);
-        for (const x of left) x.cancelled = error;
-        throw error;
+    if (moved()) throw cancelMoved(queue, entry);
+    // v0.6.58: an earlier write here could not be confirmed. Until the file is read and has it, nothing
+    // more is written (a save that went on from an unconfirmed position could skip messages).
+    if (gate.unsure) {
+        await confirmUnsure();
+        if (moved()) throw cancelMoved(queue, entry);
+        if (gate.unsure) {
+            const left = queue.pending.slice(Math.max(0, queue.pending.indexOf(entry)));
+            queue.pending.length = 0;
+            const error = new Unconfirmed(gateMessage());
+            for (const x of left) x.unsure = error;
+            throw error;
+        }
     }
     // A write saves everything on the page at that moment: every change applied so far is in it.
     const covered = queue.pending.slice(queue.pending.indexOf(entry));
-    try { await persist(); }
-    catch (e) {
-        const error = new Error(`채팅 파일에 저장하지 못해서 이번 변경을 취소했어요. (${e?.message || e})`);
+    const verify = covered.some(x => x.verify);
+    // v0.6.58: before writing, the file on the server must hold nothing this page lacks (another device
+    // went on, the room is still opening). SavePoint's own changes are compared as they were before it.
+    let pre;
+    try { pre = await serverCovered(() => pageBase(covered)); } catch { pre = { ok: false, why: 'error' }; }
+    if (moved()) throw cancelMoved(queue, entry);
+    let unsure = null;
+    try {
+        if (!pre.ok) { blockRoom(pre.why); throw new RoomBlocked(gateMessage()); }
+        const written = pageSnap(), rev = state()?.rev ?? null;
+        await persist();
+        if (verify) {
+            // SillyTavern reports most failed saves on screen and returns normally: read the file back.
+            const post = moved() ? null : await readServerChat();
+            const result = !post || moved() ? 'moved' : post.ok ? writeResult(written, pre.snap, post.snap, MODULE) : 'unsure';
+            if (result === 'failed') throw new Error('실리태번은 저장을 마쳤다고 했지만 채팅 파일은 그대로예요');
+            if (result === 'moved') unsure = { moved: true };
+            else if (result === 'unsure') unsure = { rev, prevRev: pre.rev, written, before: pre.snap };
+        }
+    } catch (e) {
+        const blocked = e instanceof RoomBlocked;
+        const error = blocked ? new RoomBlocked(`${e.message} 이번 변경은 취소했어요.`) : new Error(`채팅 파일에 저장하지 못해서 이번 변경을 취소했어요. (${e?.message || e})`);
         const at = queue.pending.indexOf(entry), later = queue.pending.slice(at + 1);
         queue.pending.splice(at);
         // Back to before this change: later changes go too (in reverse, each to its own "before").
@@ -264,11 +306,12 @@ async function writeEntry(queue, entry) {
         for (const x of [...later].reverse()) here = restoreEntry(x) || here;
         here = restoreEntry(entry) || here;
         // Edits made with buttons are applied again on top with their final values; they keep their
-        // place in the queue and are written by their own turn.
+        // place in the queue and are written by their own turn. Not when the room is blocked: they
+        // could not be written either.
         let replayed = 0;
         for (const x of later) {
             let ok = false;
-            if (x.replay && x.patch && roomKey() === x.key && roomEpoch === x.epoch) {
+            if (!blocked && x.replay && x.patch && roomKey() === x.key && roomEpoch === x.epoch) {
                 const patch = x.patch;
                 x.change = () => {
                     const st = ensureState(), before = st.mem, next = clone(before);
@@ -282,7 +325,7 @@ async function writeEntry(queue, entry) {
             }
             if (ok === 'same') x.done = true;   // already so: nothing to write, not an error
             else if (ok) { queue.pending.push(x); replayed++; }
-            else x.cancelled = new Error(`앞선 변경을 채팅 파일에 저장하지 못해서 이 변경도 취소했어요. (${e?.message || e})`);
+            else x.cancelled = blocked ? error : new Error(`앞선 변경을 채팅 파일에 저장하지 못해서 이 변경도 취소했어요. (${e?.message || e})`);
         }
         if (here) {
             if (!entry.visibility && !later.some(x => x.visibility)) syncHide(); else ctx().swipe?.refresh?.();
@@ -291,8 +334,16 @@ async function writeEntry(queue, entry) {
         if (replayed) error.message += ` 그 뒤에 한 변경 ${replayed}개는 다시 적용해 저장해요.`;
         throw error;
     }
-    // Everything that was on the page when the write began is in the file now.
+    // Everything that was on the page when the write began is in the file now (or, unconfirmed, may be).
     for (const x of covered) { x.done = true; const i = queue.pending.indexOf(x); if (i >= 0) queue.pending.splice(i, 1); }
+    if (unsure) {
+        // v0.6.58: not taken back automatically: the file may have it, or later edits on top of it.
+        const error = new Unconfirmed(unsure.moved ? '방을 옮겨서 마지막 저장이 채팅 파일에 들어갔는지 확인하지 못했어요. 그 방을 다시 열어 확인해 주세요.'
+            : '저장은 보냈지만 채팅 파일에 들어갔는지 확인하지 못했어요. 확인될 때까지 SavePoint는 새로 저장하지 않아요(자동 저장·QUICK 백업 포함). 잠시 뒤 다시 확인하고, 안 되면 새로고침해서 마지막 기록이 남아 있는지 봐 주세요.');
+        for (const x of covered) if (x !== entry) x.unsure = error;
+        if (!unsure.moved) markUnsure(unsure);
+        throw error;
+    }
     if (roomKey() === entry.key && roomEpoch === entry.epoch) { if (entry.autosave) autosave(state()); render(); }
     return true;
 }
@@ -366,7 +417,7 @@ function persistSoon() {
     persistTimer = setTimeout(function save() {
         if (roomKey() !== key || roomEpoch !== epoch) return;
         if (mainBusy()) { persistTimer = setTimeout(save, 1500); return; }
-        persist().catch(reportError);
+        guardedSave(() => persist());
     }, 300);
 }
 function saveChatSoon() {
@@ -376,8 +427,189 @@ function saveChatSoon() {
         if (roomKey() !== key || roomEpoch !== epoch) return;
         if (mainBusy()) { chatSaveTimer = setTimeout(save, 1500); return; }
         const c = ctx();
-        Promise.resolve((c.saveChatConditional || c.saveChat)?.call(c)).catch(reportError);
+        guardedSave(() => (c.saveChatConditional || c.saveChat)?.call(c));
     }, 500);
+}
+// v0.6.58: the small saves outside the queue (status notes, 🔖 repairs) follow the same rule: only a
+// confirmed room, and only when the file holds nothing the page lacks.
+async function guardedSave(write) {
+    if (!gateOpen()) return;
+    const key = roomKey(), epoch = roomEpoch;
+    const pre = await serverCovered();
+    if (roomKey() !== key || roomEpoch !== epoch || !gateOpen()) return;
+    if (!pre.ok) { blockRoom(pre.why); warnBlocked(); return; }
+    try { await write(); } catch (e) { reportError(e); }
+}
+
+// ───────── room gate (v0.6.58) ─────────
+//
+// SillyTavern saves a room by writing the whole chat file from the page. While a room is opening the
+// page can already carry the new room's id with no messages; a phone and a PC can show the same room
+// at different points; and some failed saves are only reported on screen. So:
+// - CHAT_CHANGED only starts a check. The room counts as open when the chat file read from the server
+//   is covered by the page (guard.js). Until then nothing in it is changed or written.
+// - Every write first reads the file again and stops when it holds something the page does not.
+//   Waiting is only for another read; time passing never allows a write.
+// - Saves, loads, resets and rewinds read the file back after writing: 'ok', 'failed' (the file is as it
+//   was: the change is taken back) or 'unsure' (the room stops saving until a later read confirms it).
+// What remains open: another device may save in the moment between the read and the write; only the
+// SillyTavern server could close that gap.
+const OWN_KEYS = [HIDE_KEY, VISIBLE_KEY, HELD_KEY, KEEP_KEY];
+class RoomBlocked extends Error { constructor(m) { super(m); this.name = 'RoomBlocked'; } }
+class Unconfirmed extends Error { constructor(m) { super(m); this.name = 'Unconfirmed'; } }
+const gate = { key: null, epoch: -1, status: 'idle', check: null, unsure: null, warned: false, readied: false, changedAt: 0 };
+const wait = ms => new Promise(r => setTimeout(r, ms));
+function gateHere() { return hasChat() && gate.key === roomKey() && gate.epoch === roomEpoch; }
+function gateOpen() { return gateHere() && gate.status === 'ready' && !gate.unsure; }
+function pageSnap() { return snapshot(ctx().chatMetadata, chat(), OWN_KEYS); }
+const plainHash = m => snapshot(null, [m], OWN_KEYS).plain[0];
+// The page as it was before the given queued changes touched messages or metadata outside SavePoint's
+// own parts (only a load does: its new #0 and the "edited" mark).
+function pageBase(entries) {
+    const snap = pageSnap();
+    for (const x of [...entries].reverse()) {
+        if (!x.base) continue;
+        if (x.base.msg0 === null) { snap.plain.shift(); snap.full.shift(); }
+        else if (x.base.msg0) snap.plain[0] = x.base.msg0;
+        for (const [k, v] of Object.entries(x.base.meta || {})) { if (!snap.meta) break; if (v === undefined) delete snap.meta[k]; else snap.meta[k] = v; }
+    }
+    return snap;
+}
+function gateMessage() {
+    if (!hasChat()) return '채팅방을 먼저 열어 주세요.';
+    if (gate.unsure) return gate.unsure.missing
+        ? '직전 저장이 채팅 파일에 들어가지 않았어요. 새로고침하면 그 저장 전 상태로 돌아가요. 그때까지 SavePoint는 저장하지 않아요.'
+        : '직전 저장이 채팅 파일에 들어갔는지 아직 확인하지 못했어요. 확인될 때까지 SavePoint는 저장하지 않아요. 잠시 뒤 다시 눌러 보고, 계속되면 새로고침해 주세요.';
+    if (!gateHere() || gate.status === 'checking') return '방이 아직 다 열리지 않았어요. 잠시 뒤 다시 눌러 주세요.';
+    if (gate.status === 'unknown') return '서버에서 이 방의 채팅 파일을 찾지 못해서(새 방인지 읽기 실패인지 알 수 없어요) 저장하지 않았어요. 방을 다시 열어 주세요.';
+    if (gate.status === 'unread') return '서버에서 이 방의 채팅 파일을 읽지 못해서 저장하지 않았어요. 잠시 뒤 다시 하거나 방을 다시 열어 주세요.';
+    return '서버의 채팅 파일에 이 화면에 없는 내용이 있어서 저장하지 않았어요. 다른 기기에서 이어졌거나 방이 덜 열렸을 수 있어요. 방을 다시 열거나 새로고침해 주세요.';
+}
+function blockRoom(why) {
+    if (why === 'moved' || !gateHere()) return;
+    gate.status = why === 'empty' ? 'unknown' : why === 'error' ? 'unread' : 'bad';
+    render();
+}
+function warnBlocked() {
+    if (gate.warned) return;
+    gate.warned = true;
+    toastr.warning(gateMessage(), 'SavePoint', { timeOut: 12000 });
+}
+// The room's chat file as the server has it. { ok, snap, count, rev } or { ok: false, why: 'empty' | 'error' }.
+async function readServerChat() {
+    try {
+        const c = ctx(), file = typeof c.getCurrentChatId === 'function' ? c.getCurrentChatId() : c.chatId;
+        if (file === null || file === undefined || file === '') return { ok: false, why: 'error' };
+        let url, body;
+        if (c.groupId !== undefined && c.groupId !== null && c.groupId !== '') { url = '/api/chats/group/get'; body = { id: file }; }
+        else {
+            const ch = c.characters?.[c.characterId];
+            if (!ch) return { ok: false, why: 'error' };
+            url = '/api/chats/get'; body = { ch_name: ch.name, file_name: file, avatar_url: ch.avatar };
+        }
+        const r = await fetch(url, { method: 'POST', headers: serverHeaders(), body: JSON.stringify(body) });
+        if (!r.ok) return { ok: false, why: 'error' };
+        const parts = splitFile(await r.json());
+        if (!parts) return { ok: false, why: 'empty' };
+        return { ok: true, snap: snapshot(parts.meta, parts.messages, OWN_KEYS), count: parts.messages.length, first: parts.messages[0], rev: parts.meta?.[MODULE]?.rev ?? null };
+    } catch { return { ok: false, why: 'error' }; }
+}
+// Reads the file until the page covers it, a few times while SillyTavern may still be saving.
+async function serverCovered(page = pageSnap, tries = [0, 500, 1500]) {
+    const key = roomKey(), epoch = roomEpoch;
+    const moved = () => roomKey() !== key || roomEpoch !== epoch;
+    let last = { ok: false, why: 'error' };
+    for (const ms of tries) {
+        if (ms) await wait(ms);
+        if (moved()) return { ok: false, why: 'moved' };
+        const r = await readServerChat();
+        if (moved()) return { ok: false, why: 'moved' };
+        if (!r.ok) { last = r; continue; }
+        const c = covers(page(), r.snap, MODULE);
+        if (c.ok) return r;
+        last = { ok: false, why: c.why, at: c.at };
+    }
+    return last;
+}
+function startRoomCheck() {
+    clearTimeout(unsureTimer);
+    Object.assign(gate, { key: roomKey(), epoch: roomEpoch, status: hasChat() ? 'checking' : 'idle', check: null, unsure: null, warned: false, readied: false, changedAt: Date.now() });
+    if (hasChat()) gate.check = verifyRoom();
+}
+async function verifyRoom() {
+    const key = gate.key, epoch = gate.epoch;
+    gate.status = 'checking';
+    const r = await serverCovered();
+    if (gate.key !== key || gate.epoch !== epoch || r.why === 'moved' || !gateHere()) return false;
+    if (r.ok) gate.status = 'ready'; else blockRoom(r.why);
+    if (r.ok && !gate.readied) { gate.readied = true; roomOpened(); }
+    return r.ok;
+}
+// true when this room is confirmed and nothing is unconfirmed (checks again when needed).
+async function roomReady() {
+    if (!gateHere()) return false;             // opening: CHAT_CHANGED has not come for this room yet
+    if (gate.status === 'checking' && gate.check) await gate.check;
+    else if (gate.status !== 'ready') { gate.check = verifyRoom(); await gate.check; }
+    if (gateHere() && gate.unsure) await confirmUnsure();
+    return gateOpen();
+}
+let unsureTimer = null;
+function markUnsure(info) {
+    clearTimeout(unsureTimer);
+    gate.unsure = { ...info, at: Date.now(), tries: 0 };
+    scheduleUnsureCheck();
+    render();
+}
+function scheduleUnsureCheck() {
+    const u = gate.unsure, delays = [3000, 10000, 30000];
+    if (!u || u.missing || u.tries >= delays.length) return;
+    const key = gate.key, epoch = gate.epoch;
+    unsureTimer = setTimeout(async () => {
+        if (gate.unsure !== u || gate.key !== key || gate.epoch !== epoch) return;
+        u.tries++;
+        if (!(await confirmUnsure()) && gate.unsure === u) scheduleUnsureCheck();
+    }, delays[u.tries]);
+}
+// Reads the file for the unconfirmed write: its memory revision there means it landed.
+async function confirmUnsure() {
+    const u = gate.unsure;
+    if (!u) return true;
+    const r = await readServerChat();
+    if (gate.unsure !== u || !gateHere()) return !gate.unsure;
+    if (!r.ok) return false;
+    // rev only moves with a queued change, and none can start while this one is unconfirmed.
+    const landed = u.rev !== null ? r.rev === u.rev : writeResult(u.written, null, r.snap, MODULE) === 'ok';
+    if (landed) {
+        gate.unsure = null; clearTimeout(unsureTimer);
+        toastr.success('직전 저장이 채팅 파일에 들어가 있는 걸 확인했어요. 다시 평소처럼 저장해요.', 'SavePoint');
+        render(); scheduleAuto();
+        return gateOpen();
+    }
+    if (u.rev !== null && r.rev === u.prevRev && u.rev !== u.prevRev && !u.missing) {
+        u.missing = true; clearTimeout(unsureTimer);
+        toastr.warning(gateMessage(), 'SavePoint', { timeOut: 15000 });
+        render();
+    }
+    return false;
+}
+// What was put off until the room was confirmed (formerly done straight on CHAT_CHANGED).
+function roomOpened() {
+    if (!hasChat()) return;
+    const st = state();
+    if (st && st.roomKey !== roomKey()) {
+        // A branch copies chat metadata; the copy becomes this room's own memory.
+        st.roomKey = roomKey(); st.linkedSave = null; persistSoon();
+    }
+    reconcile();
+    syncHide();
+    const it = interruptedNote(state());
+    if (it) toastr.info(`이 방의 지난 저장이 방을 옮기면서 중간에 멈췄어요 (#${it.from}부터 미저장). SavePoint에서 퀵세이브로 이어서 기록할 수 있어요.`, 'SavePoint', { timeOut: 10000 });
+    refreshInjection(); render(true);
+    // The "continue?" offer only for a confirmed room (it used to run on a timer that could fire while
+    // the next room was still opening).
+    clearTimeout(resumeTimer);
+    const epoch = roomEpoch;
+    resumeTimer = setTimeout(() => { if (epoch === roomEpoch && gateOpen()) offerResume(); }, Math.max(0, 700 - (Date.now() - gate.changedAt)));
 }
 
 // ───────── source fingerprints ─────────
@@ -1076,7 +1308,7 @@ async function supplementLoot(run, items, undoPoint = checkpoint(run.st)) {
                 } else if (lr?.run === run.id) { lr.at = Date.now(); lr.from = Math.min(lr.from, lo); lr.to = Math.max(lr.to, hi); }
                 else st.lastRecord = { at: Date.now(), from: lo, to: hi, kind: 'supplement', run: run.id };
                 st.undoInfo = { kind: st.lastRecord.kind, run: run.id, at: Date.now(), edits: 0 };
-            }, { undoable: false, autosave: false, rehide: true });
+            }, { undoable: false, autosave: false, rehide: true, verify: true });
             run.lootCounted = counted;
             saved++;
         } catch (e) {
@@ -1093,6 +1325,9 @@ async function supplementLoot(run, items, undoPoint = checkpoint(run.st)) {
 async function summarize({ close = false, auto = false } = {}) {
     if (ui.run) { toastr.info('이미 기록 중이에요.'); return; }
     if (!hasChat()) { toastr.warning('채팅방을 먼저 열어 주세요.'); return; }
+    // v0.6.58: before any AI call, the room must be confirmed against its chat file.
+    if (!gateOpen() && !(await roomReady())) { if (!auto) toastr.warning(gateMessage(), 'SavePoint', { timeOut: 10000 }); return; }
+    if (ui.run) { toastr.info('이미 기록 중이에요.'); return; }
     if (ui.edit) { toastr.warning('편집 중인 항목을 먼저 저장하거나 취소해 주세요.'); return; }
     if (!settings().profileId && mainBusy()) { toastr.info('본편 생성이 끝난 뒤 눌러 주세요. (연결 프로필을 고르면 생성 중에도 세이브할 수 있어요.)'); return; }
     const st = ensureState();
@@ -1122,7 +1357,7 @@ async function summarize({ close = false, auto = false } = {}) {
                 await transact(() => {
                     const cur = state(), before = cur.mem;
                     cur.mem = closeOpenScene(before); pushHistory(cur, before, cur.mem, { kind: 'edit' });
-                }, { rehide: true, undoable: true, undoKind: 'sceneclose' });
+                }, { rehide: true, undoable: true, undoKind: 'sceneclose', verify: true });
                 toastr.success('진행 중이던 장면을 닫았어요.');
             } catch (e) { reportError(e); }
         } else if (settings().enabled && hideModeOf(settings()) !== 'off' && hasMemory(st.mem)) {
@@ -1174,7 +1409,7 @@ async function summarize({ close = false, auto = false } = {}) {
                 st.undo = undoPoint; st.undoInfo = { kind: st.lastRecord.kind, run: run.id, at: Date.now(), edits: 0 };
                 settleAutoFail(st);
                 lootFailed += settleLoot(st, marked, next, data.lootWhy, counted);
-            }, { undoable: false, autosave: false, rehide: true });
+            }, { undoable: false, autosave: false, rehide: true, verify: true });
             run.lootCounted = counted;
             done++; cursor += chunk.indices.length;
         }
@@ -1184,7 +1419,7 @@ async function summarize({ close = false, auto = false } = {}) {
             await transact(() => {}, { undoable: false, autosave: false, rehide: true });
         if (close && !msgs.length && openScene(st.mem)) {
             assertValid(run, end);
-            await transact(() => { const before = st.mem; st.mem = closeOpenScene(before); pushHistory(st, before, st.mem, { kind: 'edit' }); st.undo = undoPoint; st.undoInfo = { kind: 'sceneclear', run: run.id, at: Date.now(), edits: 0 }; }, { undoable: false, autosave: false, rehide: true });
+            await transact(() => { const before = st.mem; st.mem = closeOpenScene(before); pushHistory(st, before, st.mem, { kind: 'edit' }); st.undo = undoPoint; st.undoInfo = { kind: 'sceneclear', run: run.id, at: Date.now(), edits: 0 }; }, { undoable: false, autosave: false, rehide: true, verify: true });
             done++;
         }
         await markStaleLoot(run, queued.filter(x => !attemptedLoot.has(x.id) && !oldLoot.includes(x)));
@@ -1209,29 +1444,33 @@ async function summarize({ close = false, auto = false } = {}) {
         if (queued.length && !(e instanceof Cancelled) && run.key === roomKey()) {
             try { lootFailed += await failPendingLoot(run, queued, e); } catch { /* a failed disk write leaves the queue intact */ }
         }
-        const failureId = !(e instanceof Cancelled) ? newId() : null;
-        if (!(e instanceof Cancelled)) {
+        // v0.6.58: a save that could not be confirmed is not a failure of the AI request: nothing is taken back.
+        const unconfirmed = e instanceof Unconfirmed;
+        const failureId = !(e instanceof Cancelled) && !unconfirmed ? newId() : null;
+        if (!(e instanceof Cancelled) && !unconfirmed) {
             if (!e.detail || !ui.lastError) ui.lastError = { at: Date.now(), range: `#${msgs[cursor]?.index ?? start}–#${end}`, detail: [errorText(e)] };
             ui.lastError.failureId = failureId;
             ui.lastError.request = requestLines(run.requestRecord);
             ui.lastError.requestOk = run.requestRecord?.status === 'received';
             if (!run.requestRecord && e?.name === 'InputLimitError') ui.lastError.requestNote = '요청 전 입력 검사에서 중단 · AI 호출 없음';
         }
-        const where = done ? ` ${done}개 구간(${cursor}개 메시지)은 저장했고, 남은 ${msgs.length - cursor}개 메시지의 원문은 그대로 남겨 뒀어요.` : ' 기억과 원문은 바뀌지 않았어요.';
+        const where = unconfirmed ? (done ? ` 그 앞 ${done}개 구간은 저장을 확인했어요.` : '')
+            : done ? ` ${done}개 구간(${cursor}개 메시지)은 저장했고, 남은 ${msgs.length - cursor}개 메시지의 원문은 그대로 남겨 뒀어요.` : ' 기억과 원문은 바뀌지 않았어요.';
         // Leaving the room has its own notice (onChatChanged); don't repeat it in the new room.
         if (e instanceof Cancelled) { if (run.key === roomKey()) toastr.info(e.message + where, 'SavePoint'); }
+        else if (unconfirmed) { console.warn('[SavePoint]', e); toastr.warning(e.message + where, 'SavePoint', { timeOut: 15000 }); }
         else { console.error('[SavePoint]', e, e.detail || ''); if (!auto) toastr.error(e.message + where, 'SavePoint', { timeOut: 12000 }); }
         if (auto && run.key === roomKey() && run.epoch === roomEpoch) {
             const cur = state();
             if (cur) {
                 const cancelled = e instanceof Cancelled;
                 const detail = Array.isArray(e.detail) ? e.detail : [];
-                if (!cancelled) recordAutoFail(cur, { stage, from: msgs[cursor]?.index ?? start, to: end, error: e, failureId, requestRecord: run.requestRecord,
+                if (!cancelled && !unconfirmed) recordAutoFail(cur, { stage, from: msgs[cursor]?.index ?? start, to: end, error: e, failureId, requestRecord: run.requestRecord,
                     tries: detail.filter(isTry), detail: detail.filter(x => !isTry(x)) });
-                const result = cursor ? `체크포인트 일부 저장 · #${start}–#${cur.lastIndex} 완료 · #${cur.lastIndex + 1}부터 다음에 다시`
+                const result = unconfirmed ? '체크포인트 저장 확인 못함 · 확인될 때까지 자동 저장 멈춤' : cursor ? `체크포인트 일부 저장 · #${start}–#${cur.lastIndex} 완료 · #${cur.lastIndex + 1}부터 다음에 다시`
                     : cancelled ? '체크포인트 취소 · 원문 유지 · 다음 간격에 다시'
                     : '체크포인트 실패 · 원문 유지';
-                noteAuto(cur, result, { end: latest, status: cursor ? 'partial' : cancelled ? 'cancelled' : 'failed' });
+                noteAuto(cur, result, { end: latest, status: unconfirmed ? 'unsure' : cursor ? 'partial' : cancelled ? 'cancelled' : 'failed' });
                 run.notice = { text: result, tone: 'warning' };
             }
         }
@@ -1243,6 +1482,7 @@ async function summarize({ close = false, auto = false } = {}) {
             run.news = saveNews(now, run.id, questNews(memBefore, now.mem));
             if (!auto && cursor) run.notice = { text: `일부 저장 · #${start}–#${now.lastIndex} 완료 · #${now.lastIndex + 1}부터 다시 세이브해 주세요`, tone: 'warning' };
         }
+        if (unconfirmed && !auto && run.key === roomKey()) run.notice = { text: '저장 확인 못함 · 확인될 때까지 SavePoint 저장 멈춤', tone: 'warning' };
     } finally {
         if (lootFailed && run.key === roomKey() && state()) toastr.warning(`⚠ 루팅한 내용 ${lootFailed}개가 반영되지 않았어요.${lootFailNote(state())} 다음 세이브 때 다시 시도해요. 자세한 이유는 ⏳ 대기열에서 볼 수 있어요.`, 'SavePoint', { timeOut: 10000 });
         endRun(run);
@@ -1265,6 +1505,9 @@ function autoBlocked() {
     const s = settings(), st = state();
     if (!s.enabled || !s.auto || !hasChat()) return 'off';
     if (ui.run || ui.edit || mainBusy()) return 'busy';
+    // v0.6.58: not before the room is confirmed, and never on top of an unconfirmed save.
+    if (gate.unsure) return 'unsure';
+    if (!gateOpen()) return 'room';
     if (st?.review) return 'hold';
     const last = chat()[chat().length - 1];
     if (!last || last.is_user) return 'waiting';
@@ -1275,8 +1518,11 @@ function scheduleAuto(delay = 1200) {
     const epoch = roomEpoch;
     autoTimer = setTimeout(() => {
         if (epoch !== roomEpoch) return;
-        if (autoBlocked() === 'busy') { scheduleAuto(3000); return; }
-        if (!autoBlocked()) autoCollect().catch(reportError);
+        const why = autoBlocked();
+        if (why === 'busy') { scheduleAuto(3000); return; }
+        // A room that failed its check is read again now and then; a confirmed one goes on.
+        if (why === 'room') { autoTimer = setTimeout(() => { if (epoch === roomEpoch) roomReady().then(ok => { if (ok && epoch === roomEpoch) scheduleAuto(0); }); }, 30000); return; }
+        if (!why) autoCollect().catch(reportError);
     }, delay);
 }
 function noteAuto(st, result, { moveMark = true, end = chat().length - 1, status = '' } = {}) {
@@ -1772,14 +2018,14 @@ async function undo() {
         () => !ui.run && st.undo === target && JSON.stringify({ kind: st.undoInfo?.kind, run: st.undoInfo?.run, at: st.undoInfo?.at }) === info))) return;
     const restored = { ...clone(st.undo), undo: null, undoInfo: null };
     restored.lootQueue = restoreLostLoot(st.lootQueue, st.mem, restored.mem, { room: roomKey(), hashes: st.hashes, fallback: st.undo.lootQueue });
-    await transact(() => { ctx().chatMetadata[MODULE] = restored; }, { undoable: false });
+    await transact(() => { ctx().chatMetadata[MODULE] = restored; }, { undoable: false, verify: true });
     if (!reconcile()) { render(); return; }
     toastr.info(`⏪ 리와인드: ${what} 전으로 돌아갔어요.`);
 }
 async function clearRoom() {
     const st = state();
     if (!st || !(await confirmHere('리셋: 이 방의 기억을 모두 지울까요? 세이브 슬롯은 남아요. (⏪ 리와인드로 되돌릴 수 있어요)', () => !ui.run))) return;
-    await transact(() => { ctx().chatMetadata[MODULE] = freshState({ autoMark: chat().length - 1, lootQueue: clone(st.lootQueue || []) }); }, { undoable: true, undoKind: 'reset' });
+    await transact(() => { ctx().chatMetadata[MODULE] = freshState({ autoMark: chat().length - 1, lootQueue: clone(st.lootQueue || []) }); }, { undoable: true, undoKind: 'reset', verify: true });
 }
 
 // ───────── save slots (server files via vault.js) ─────────
@@ -1894,13 +2140,13 @@ async function migrateLocal() {
 }
 let autosaveTimer = null;
 function autosave(st) {
-    if (!st || !hasMemory(st.mem) || roomKey() !== st.roomKey) return;
+    if (!st || !hasMemory(st.mem) || roomKey() !== st.roomKey || gate.unsure) return;
     clearTimeout(autosaveTimer);
     const key = st.roomKey;
     // Bursts (several edits in a row) become one autosave.
     autosaveTimer = setTimeout(() => {
         const cur = state();
-        if (!cur || cur.roomKey !== key || roomKey() !== key || !hasMemory(cur.mem)) return;
+        if (!cur || cur.roomKey !== key || roomKey() !== key || !hasMemory(cur.mem) || gate.unsure) return;
         const rh = roomHash(key);
         storeSave(saveRecord(cur, `오토세이브 · ${charInfo()?.name || ''}`, `auto_${rh}_${Date.now().toString(36)}`, true));
     }, 1200);
@@ -1935,7 +2181,8 @@ function announceReturns(st) {
 }
 // QUICK: one per room, replaced only after a manual quicksave or scene clear finished completely.
 async function quickSave(st) {
-    if (!st || !hasMemory(st.mem) || roomKey() !== st.roomKey) return null;
+    // v0.6.58: QUICK keeps a confirmed save only.
+    if (!st || !hasMemory(st.mem) || roomKey() !== st.roomKey || gate.unsure) return null;
     const res = await storeSave(saveRecord(st, `퀵세이브 · ${charInfo()?.name || ''}`, quickId(roomHash(st.roomKey)), false, { quick: true }));
     if (res.local) toastr.warning(`기록 완료 · QUICK 백업 실패 (설정에만 보관): ${res.error?.message || ''}`, 'SavePoint');
     render();
@@ -1964,6 +2211,8 @@ async function loadSave(id) {
     if (ui.run) return;
     const save = findSave(id);
     if (!save || !hasChat()) return;
+    // v0.6.58: only into a room confirmed against its chat file (never one that is still opening).
+    if (!gateOpen() && !(await roomReady())) { toastr.warning(gateMessage(), 'SavePoint', { timeOut: 10000 }); return; }
     // Everything below belongs to the room the load was started in. Each wait (file read, questions)
     // can outlast a room change; then nothing is changed anywhere.
     const key = roomKey(), epoch = roomEpoch;
@@ -1978,6 +2227,9 @@ async function loadSave(id) {
     } catch (e) { reportError(e); return; }
     if (!here()) return moved();
     const cur = state();
+    // v0.6.58: the whole room as the questions see it (every message with its swipes and data, and the
+    // chat metadata). After the answers it must still be exactly this, or nothing is changed.
+    const asked = pageSnap();
     // A new room can start from the save's last character message (see carryPlan).
     const plan = sourceRoom !== key ? carryPlan(reply) : null;
     const replaces = cur && hasMemory(cur.mem) ? ' 이 방의 지금 기억은 이 세이브로 바뀌어요(⏪ 리와인드 가능).' : '';
@@ -1990,13 +2242,27 @@ async function loadSave(id) {
     } else if (cur && hasMemory(cur.mem) && !(await confirmBox('이 방의 지금 기억을 이 세이브 슬롯으로 바꿀까요? (⏪ 리와인드로 되돌릴 수 있어요)'))) return;
     if (!here()) return moved();
     const insert = plan?.kind === 'insert' && plan.use;
+    // v0.6.58: after the answers — the room is still confirmed, the page is exactly what was asked about,
+    // and the chat file on the server holds nothing the page lacks. A new #0 also needs the file to have
+    // exactly the messages on the page (none, or the one greeting the question showed).
+    const changedNote = '확인하는 사이 대화가 바뀌어서 아무것도 바꾸지 않았어요. 다시 불러와 주세요.';
+    if (!gateOpen() || !samePage(asked, pageSnap(), MODULE)) { toastr.info(gateOpen() ? changedNote : gateMessage(), 'SavePoint', { timeOut: 10000 }); return; }
+    const server = await serverCovered(pageSnap, [0]);
+    if (!here()) return moved();
+    if (!server.ok) { blockRoom(server.why); toastr.warning(`${gateMessage()} 이 방은 바꾸지 않았어요.`, 'SavePoint', { timeOut: 12000 }); return; }
+    if (!gateOpen() || !samePage(asked, pageSnap(), MODULE)) { toastr.info(gateOpen() ? changedNote : gateMessage(), 'SavePoint', { timeOut: 10000 }); return; }
+    if (insert && (server.count !== chat().length || chat().length > 1 || (chat().length === 1 && !(plan.greeting && sameText(chat()[0].mes, plan.greeting) && sameText(server.first?.mes, plan.greeting))))) {
+        toastr.warning('서버의 채팅 파일에 이 방의 메시지가 더 있거나 첫 메시지가 달라서 이어하기를 하지 않았어요. 방을 다시 열어 주세요.', 'SavePoint', { timeOut: 12000 });
+        return;
+    }
     let undoMessage = null, st = null, exact = false, carried = false;
     // The edited-chat mark is put back too if the load is undone (it must not outlive a cancelled load).
     const meta0 = ctx().chatMetadata, hadTainted = Object.hasOwn(meta0, 'tainted'), oldTainted = meta0.tainted;
-    const prevModule = meta0[MODULE] === undefined ? undefined : clone(meta0[MODULE]);
     const undoTainted = () => { const m = ctx().chatMetadata; if (hadTainted) m.tainted = oldTainted; else delete m.tainted; };
+    // What the load replaces outside SavePoint's own parts, for the check before the write.
+    const base = insert ? () => ({ msg0: chat().length ? plainHash(chat()[0]) : null, meta: { tainted: hadTainted ? snapshot({ t: oldTainted }, [], OWN_KEYS).meta.t : undefined } }) : null;
     // The new #0, the room's memory and the chat's "edited" mark are written by the same chat-file save,
-    // so they are kept together or dropped together.
+    // so they are kept together or dropped together. The file is read back after the write (verify).
     try {
         const ok = await transact(() => {
             if (!here()) return false;
@@ -2016,28 +2282,21 @@ async function loadSave(id) {
             }
             if (cur) st.lootQueue = restoreLostLoot(cur.lootQueue, cur.mem, st.mem, { room: key, hashes: cur.hashes, fallback: cur.undo?.lootQueue });
             ctx().chatMetadata[MODULE] = st;
-        }, { undoable: true, undoKind: 'load' });
+        }, { undoable: true, undoKind: 'load', verify: true, base });
         if (ok === false) return moved();
     } catch (e) {
-        if (undoMessage) { undoMessage(); undoTainted(); if (here()) await showCarried(); }
-        reportError(e); return;
-    }
-    // SillyTavern's save handles most server errors itself and returns normally, so a finished call
-    // does not prove the file changed. The new #0 is the one change that must not exist only in the
-    // page: read the saved chat back and undo everything when the file does not have it.
-    let verified = null;
-    if (insert && here()) {
-        verified = await savedChatHas(reply.text, st.rev);
-        if (verified === false && here()) {
-            clearTimeout(autosaveTimer); undoMessage(); undoTainted();
-            if (prevModule === undefined) delete ctx().chatMetadata[MODULE]; else ctx().chatMetadata[MODULE] = prevModule;
-            syncHide(); refreshInjection(); await showCarried(); render();
-            toastr.error('채팅 파일에 저장되지 않아서 이어하기를 되돌렸어요. 첫 메시지와 기억은 불러오기 전 그대로예요. 잠시 뒤 다시 시도해 주세요.', 'SavePoint', { timeOut: 12000 });
+        if (e instanceof Unconfirmed) {
+            // Not taken back: the file may already have it. The room stops saving until a read confirms it.
+            if (insert && here()) await showCarried();
+            toastr.warning(`${insert ? '이어하기' : '불러오기'}를 저장했지만 채팅 파일에 들어갔는지 확인하지 못했어요. 새로고침한 뒤 ${insert ? '첫 메시지와 ' : ''}기억이 맞는지 봐 주세요. 확인될 때까지 SavePoint는 저장하지 않아요.`, 'SavePoint', { timeOut: 15000 });
             return;
         }
+        if (undoMessage) { undoMessage(); undoTainted(); if (here()) { syncHide(); refreshInjection(); await showCarried(); render(); } }
+        if (insert && !(e instanceof RoomBlocked)) toastr.error(`채팅 파일에 저장되지 않아서 이어하기를 되돌렸어요. 첫 메시지와 기억은 불러오기 전 그대로예요. 잠시 뒤 다시 시도해 주세요. (${errorText(e)})`, 'SavePoint', { timeOut: 12000 });
+        else reportError(e);
+        return;
     }
     if (insert && here()) await showCarried();
-    if (insert && verified === null) toastr.info('채팅 파일에 저장됐는지 확인하지 못했어요. 새로고침한 뒤 첫 메시지가 그대로인지 봐 주세요.', 'SavePoint');
     toastr.success(exact ? `저장 당시 위치(#${st.lastIndex})로 돌아갔어요. 그 뒤 메시지는 미저장이에요.`
         : carried && reply.recorded ? `이전 방 #${reply.index}에서 이어서 시작해요. #0은 이미 기록된 메시지라 새 기록은 #1부터예요.`
         : carried ? `이전 방 #${reply.index} 메시지로 시작했어요. 이 메시지는 아직 기록 전이라 다음 세이브 때 기록해요.`
@@ -2054,8 +2313,22 @@ function carryPlan(reply) {
     if (!reply) return null;
     const list = chat(), first = list[0];
     if (first && !first.is_user && !first.is_system && sameText(first.mes, reply.text)) return { kind: 'match' };
-    if (!list.length || (list.length === 1 && first && !first.is_user)) return { kind: 'insert' };
+    if (!list.length) return { kind: 'insert' };
+    // v0.6.58: a one-message room is replaced only when that message is shown to be the character's
+    // greeting (a system or user message, or any other text, is the room's own story).
+    if (list.length === 1 && isGreeting(first)) return { kind: 'insert', greeting: first.mes };
     return null;
+}
+// The character card's first message or one of its alternative greetings (with {{user}}/{{char}} filled in).
+function isGreeting(m) {
+    if (!m || m.is_user || m.is_system || typeof m.mes !== 'string' || !m.mes.trim()) return false;
+    const c = ctx();
+    if (c.groupId !== undefined && c.groupId !== null && c.groupId !== '') return false;
+    const ch = c.characters?.[c.characterId];
+    if (!ch) return false;
+    const fill = g => { try { return typeof c.substituteParams === 'function' ? c.substituteParams(g) : g; } catch { return g; } };
+    const list = [ch.first_mes, ch.data?.first_mes, ...(Array.isArray(ch.data?.alternate_greetings) ? ch.data.alternate_greetings : [])].filter(g => typeof g === 'string' && g.trim());
+    return list.some(g => sameText(g, m.mes) || sameText(fill(g), m.mes));
 }
 function carryMatches(reply) { const m = chat()[0]; return !!m && !m.is_user && !m.is_system && sameText(m.mes, reply.text); }
 function carryGap(reply) {
@@ -2079,21 +2352,6 @@ function putCarried(reply) {
     const keep = Object.fromEntries([HIDE_KEY, VISIBLE_KEY, HELD_KEY, KEEP_KEY].filter(k => m.extra && Object.hasOwn(m.extra, k)).map(k => [k, m.extra[k]]));
     m.extra = keep;
     return () => { for (const k of Object.keys(m)) delete m[k]; Object.assign(m, before); };
-}
-// Read the room's chat file back from the server. true/false: whether the file has this #0 text and
-// this memory revision; null: it could not be checked (group chat, no server route, network error).
-async function savedChatHas(text, rev) {
-    try {
-        const c = ctx(), file = c.getCurrentChatId?.(), ch = c.characters?.[c.characterId];
-        if (!file || c.groupId || !ch) return null;
-        const r = await fetch('/api/chats/get', { method: 'POST', headers: serverHeaders(), body: JSON.stringify({ ch_name: ch.name, file_name: file, avatar_url: ch.avatar }) });
-        if (!r.ok) return null;
-        const data = await r.json();
-        if (!Array.isArray(data) || !data.length) return null;
-        const head = data[0]?.chat_metadata ? data[0] : null;
-        const first = (head ? data.slice(1) : data)[0];
-        return !!first && sameText(first.mes, text) && (!head || head.chat_metadata?.[MODULE]?.rev === rev);
-    } catch { return null; }
 }
 // Show the new #0 after the memory is in place: redraw that message when SillyTavern offers it,
 // otherwise reload the chat view (which reads the saved chat and metadata back).
@@ -3841,7 +4099,7 @@ function settingsChanged(keys) {
     // v0.6.49: a switch to manual starts from what is hidden now (older manual ranges no longer count).
     if (keys.includes('hideMode') && settings().hideMode === 'manual') settings().hideManualAt = Date.now();
     saveSettings();
-    if (keys.some(k => ['hideMode', 'keepRecent', 'enabled'].includes(k))) syncHide();
+    if (keys.some(k => ['hideMode', 'keepRecent', 'enabled'].includes(k)) && gateOpen()) syncHide();
     if (keys.some(k => ['auto', 'autoEvery', 'autoReserve', 'enabled'].includes(k))) scheduleAuto();
     if (keys.includes('enabled')) { installLootBar(); paintKeep(); }
     updateSettingsSummaries(); refreshInjection(); render(true);
@@ -4060,21 +4318,11 @@ function onChatChanged() {
     clearTimeout(persistTimer); clearTimeout(chatSaveTimer); clearTimeout(sourceTimer);
     ui.edit = null; ui.checkEdit = null; ui.lastError = null; ui.lastFix = null; mainGenerating = false;
     document.querySelector?.('#sp_loot_dialog')?.close();
-    if (hasChat()) {
-        const st = state();
-        if (st && st.roomKey !== roomKey()) {
-            // A branch copies chat metadata; the copy becomes this room's own memory.
-            st.roomKey = roomKey(); st.linkedSave = null; persistSoon();
-        }
-        reconcile();
-        syncHide();
-        const it = interruptedNote(state());
-        if (it) toastr.info(`이 방의 지난 저장이 방을 옮기면서 중간에 멈췄어요 (#${it.from}부터 미저장). SavePoint에서 퀵세이브로 이어서 기록할 수 있어요.`, 'SavePoint', { timeOut: 10000 });
-    }
-    refreshInjection(); render(true); installLootBar(); updateSaveBanner();
     hideResume(); clearTimeout(resumeTimer);
-    const epoch = roomEpoch;
-    resumeTimer = setTimeout(() => { if (epoch === roomEpoch) offerResume(); }, 700);
+    // v0.6.58: the event only starts the check. SillyTavern can send it after a room failed to load;
+    // what used to run here (branch memory, source check, hiding, "continue?") waits for roomOpened().
+    startRoomCheck();
+    refreshInjection(); render(true); installLootBar(); updateSaveBanner();
 }
 // ───────── new chat: continue or start fresh ─────────
 // A new chat of a character that has saves in other rooms gets a small choice near the top:
@@ -4082,7 +4330,7 @@ function onChatChanged() {
 let resumeTimer = null;
 function resumeChoices() {
     const s = settings();
-    if (!s.enabled || !s.askResume || !hasChat() || ui.run) return [];
+    if (!s.enabled || !s.askResume || !hasChat() || ui.run || !gateOpen()) return [];
     const room = roomKey();
     if (s.resumeDismissed?.[room] || hasMemory(state()?.mem)) return [];
     const list = chat();
@@ -4132,8 +4380,11 @@ function offerResume(open = false) {
 function onSourceChanged() {
     clearTimeout(sourceTimer);
     const epoch = roomEpoch;
-    sourceTimer = setTimeout(() => {
+    sourceTimer = setTimeout(async () => {
         if (epoch !== roomEpoch || !hasChat()) return;
+        // v0.6.58: a room that is not confirmed yet is checked again first (it may have finished opening).
+        if (!gateOpen() && !(await roomReady())) return;
+        if (epoch !== roomEpoch) return;
         reconcile(); syncHide(); refreshInjection(); render();
     }, 150);
 }
@@ -4142,7 +4393,8 @@ function onGenerationStarted(type, options, dryRun) {
     mainGenerating = true;
     if (ui.run?.viaMain) cancelRun();
     // Recall depends on the newest message, so rebuild right before the prompt is assembled.
-    reconcile(); refreshInjection();
+    if (gateOpen()) reconcile();
+    refreshInjection();
 }
 function onGenerationEnded() { mainGenerating = false; render(); scheduleAuto(); }
 
@@ -4170,7 +4422,7 @@ jQuery(() => {
     const on = (t, f) => { if (ev[t]) eventSource.on(ev[t], f); };
     on('CHAT_CHANGED', onChatChanged);
     // 🔖: before the source checks, so a swipe of a kept message is still kept when they run.
-    for (const t of ['MESSAGE_SWIPED', 'MESSAGE_RECEIVED', 'MESSAGE_UPDATED', 'MESSAGE_EDITED']) on(t, id => { if (repairKeep(id)) syncHide(); paintKeepSoon(); });
+    for (const t of ['MESSAGE_SWIPED', 'MESSAGE_RECEIVED', 'MESSAGE_UPDATED', 'MESSAGE_EDITED']) on(t, id => { if (gateOpen() && repairKeep(id)) syncHide(); paintKeepSoon(); });
     for (const t of ['CHAT_CHANGED', 'CHARACTER_MESSAGE_RENDERED', 'USER_MESSAGE_RENDERED', 'MESSAGE_DELETED', 'MORE_MESSAGES_LOADED']) on(t, paintKeepSoon);
     $(document).on('click', '#chat .sp-keep-btn', function (e) {
         e.preventDefault(); e.stopPropagation();

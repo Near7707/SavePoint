@@ -3,6 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { gateBox } from './gate-stub.mjs';
 import vm from 'node:vm';
 import * as core from '../core.js';
 import * as temporal from '../temporal.js';
@@ -34,7 +35,7 @@ function harness({ count = 40, chars = 1000, limit = 22500, failAt = Infinity, c
     const calls = [], notifications = [];
     const ui = {};
     let failureSeq = 0;
-    const sandbox = { ...core, ...temporal, ...prompts, ...batches, ...provenance, ...loot, Cancelled, RequestTimeout, ui,
+    const sandbox = { ...gateBox(), ...core, ...temporal, ...prompts, ...batches, ...provenance, ...loot, Cancelled, RequestTimeout, ui,
         structuredClone, Set, Map, Date, newId: () => `test-failure-${++failureSeq}`, console: { error() {} },
         settings: () => s, num: key => s[key], names: () => ({}), cardText: () => '',
         chat: () => chat, state: () => st, ensureState: () => st, hasChat: () => true, mainBusy: () => false, reconcile: () => true,

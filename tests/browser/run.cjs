@@ -202,11 +202,13 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     });
     ok(r.scenes > 0 && r.hidden === r.hiddenBefore, '기억 비우기 저장 실패 → 기억·하이드 그대로');
     // a save that SillyTavern swallows: the change stays in the page, memory and hide flags together
-    await ev(() => { M.add(3); M.swallowMeta = true; });
+    // v0.6.58: the file is read back; it is unchanged, so the save is taken back (memory and hide together).
+    const lastBefore2 = await ev(() => { M.add(3); M.swallowMeta = true; toastr.log.length = 0; M.hidBefore = M.chat.map(m => !!m.is_system).join(); return __savePoint.state().lastIndex; });
     await ev(() => __savePoint.handle('run'));
-    r = await ev(() => { const st = __savePoint.state(); const cut = Math.min(st.lastIndex, M.chat.length - 11);
-        return { last: st.lastIndex, len: M.chat.length, swallowed: M.swallowed, consistent: M.chat.every((m, i) => !!m.is_system === (i <= cut) || !!m.extra?.savepointVisible) }; });
-    ok(r.last === r.len - 1 && r.swallowed >= 1 && r.consistent, '조용히 실패한 저장 → 페이지의 기억과 하이드는 같은 상태로 유지 (다음 저장 때 함께 기록)');
+    r = await ev(() => { const st = __savePoint.state();
+        return { last: st.lastIndex, len: M.chat.length, swallowed: M.swallowed, toast: toastr.log.map(x => x[1]).join(' | '),
+            consistent: M.chat.map(m => !!m.is_system).join() === M.hidBefore }; });
+    ok(r.last === lastBefore2 && r.swallowed >= 1 && r.consistent && r.toast.includes('채팅 파일은 그대로'), `조용히 실패한 저장 → 다시 읽어 보고 되돌림, 기억과 하이드는 함께 이전 상태 (${r.last}/${lastBefore2} ${r.swallowed} ${r.consistent} ${r.toast.slice(0, 80)})`);
     await ev(() => { M.swallowMeta = false; });
     // room switch while a failing save is in flight
     r = await ev(async () => {

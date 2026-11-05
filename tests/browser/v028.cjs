@@ -82,14 +82,14 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     // 3. terms: shown in the quest tab, never injected
     await ev(() => { M.add(3, i => (i === M.chat.length + 1 ? 'PROMISE: we both wash the dishes after cards.' : '')); });
     await ev(() => { const b = M.chat.length; });
-    await ev(() => { M.chat[M.chat.length - 2].mes = 'PROMISE: we both wash the dishes after cards.'; });
+    await ev(() => { M.chat[M.chat.length - 2].mes = 'PROMISE: we both wash the dishes after cards.'; M.stSave(); });
     await ev(() => __savePoint.handle('run'));
     r = await ev(() => { const q = __savePoint.state().mem.records.filter(x => x.type === 'quest').pop(); __savePoint.handle('tab', 'quests'); return { q, html: $('.sp-terms').text(), inj: M.prompts[Object.keys(M.prompts)[0]]?.v || '' }; });
     ok(r.q?.terms?.quote?.startsWith('PROMISE: we both wash') && r.html.includes('근거 원문 #'), '3. 약속에 원문 인용이 붙고 퀘스트 탭에서 보임');
     ok(r.inj.includes('Promise made') && !r.inj.includes('wash the dishes'), '3. 인용은 주입에 들어가지 않음');
 
     // 4. a debt/promise whose evidence cannot be sent whole is "근거 일부 누락 · 판단 보류", not "문제 없음"
-    await ev(() => { M.settings.savePoint.check = true; M.add(3); M.chat[M.chat.length - 2].mes = 'PROMISE: we both wash. ' + 'The band plays on. '.repeat(400); });
+    await ev(() => { M.settings.savePoint.check = true; M.add(3); M.chat[M.chat.length - 2].mes = 'PROMISE: we both wash. ' + 'The band plays on. '.repeat(400); M.stSave(); });
     await ev(() => __savePoint.handle('run'));
     await page.waitForTimeout(900);
     r = await ev(() => ({ prompt: M.lastCheck }));
@@ -104,7 +104,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => { M.settings.savePoint.inputChars = 60000; });
 
     // 5. the whole range from first to last evidence is sent for a promise
-    await ev(() => { M.promiseRange = true; M.add(5); M.chat[M.chat.length - 1].mes = 'PROMISE kept for later.'; M.chat[M.chat.length - 3].mes = 'Plan update: we both wash.'; });
+    await ev(() => { M.promiseRange = true; M.add(5); M.chat[M.chat.length - 1].mes = 'PROMISE kept for later.'; M.chat[M.chat.length - 3].mes = 'Plan update: we both wash.'; M.stSave(); });
     await ev(() => __savePoint.handle('run'));
     await page.waitForTimeout(900);
     r = await ev(() => { const q = __savePoint.state().mem.records.filter(x => x.type === 'quest').pop(); const orig = M.lastCheck.split('[ORIGINAL MESSAGES]')[1]; const lo = Math.min(...q.msgs), hi = Math.max(...q.msgs); const need = []; for (let n = lo; n <= hi; n++) need.push(n); return { need, all: need.every(n => orig.includes(`#${n} `)), status: __savePoint.state().check.status }; });
@@ -112,7 +112,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => { M.promiseRange = false; });
 
     // 6. disagreement without proof: both named, nobody blamed, two edit buttons
-    await ev(() => { M.checkUnclear = true; M.add(3); M.chat[M.chat.length - 2].mes = 'PROMISE again.'; });
+    await ev(() => { M.checkUnclear = true; M.add(3); M.chat[M.chat.length - 2].mes = 'PROMISE again.'; M.stSave(); });
     await ev(() => __savePoint.handle('run'));
     await page.waitForTimeout(900);
     r = await ev(() => ({ hud: $('.sp-checks').text(), edits: $('.sp-checks [data-act^="check-edit"]').length }));

@@ -2,7 +2,9 @@
 window.toastr = { log: [] };
 for (const k of ['info', 'success', 'warning', 'error']) window.toastr[k] = m => window.toastr.log.push([k, String(m)]);
 const listeners = {};
-const eventSource = { on(t, f) { (listeners[t] ??= []).push(f); }, async emit(t, ...a) { for (const f of listeners[t] || []) await f(...a); } };
+// SillyTavern saves the chat before it tells extensions a message came, changed or went.
+const SAVED_EVENTS = ['message_sent', 'message_received', 'message_edited', 'message_deleted', 'message_swiped', 'message_updated', 'message_swipe_deleted'];
+const eventSource = { on(t, f) { (listeners[t] ??= []).push(f); }, async emit(t, ...a) { if (SAVED_EVENTS.includes(t)) window.M?.stSave?.(); for (const f of listeners[t] || []) await f(...a); } };
 const event_types = {
     CHAT_CHANGED: 'chat_id_changed', MESSAGE_SENT: 'message_sent', MESSAGE_RECEIVED: 'message_received',
     MESSAGE_EDITED: 'message_edited', MESSAGE_DELETED: 'message_deleted', MESSAGE_SWIPED: 'message_swiped',
@@ -108,28 +110,53 @@ window.SillyTavern = {
     getContext: () => ({
         extensionSettings: M.settings, saveSettingsDebounced() { M.settingsSaves = (M.settingsSaves || 0) + 1; },
         getCurrentChatId: () => M.chatId,
-        characters: [{ avatar: 'ari.png', name: 'Ari', description: 'Ari is a courier with green hair.' }], characterId: 0, groups: [],
+        get characters() { return M.characters; }, characterId: 0, groups: [],
         name1: 'Me', name2: 'Ari',
         get chat() { return M.chat; }, get chatMetadata() { return M.meta; },
-        async saveMetadata() { if (M.metaDelay) await new Promise(r => setTimeout(r, M.metaDelay)); if (M.failMeta) throw new Error('disk full'); if (M.failOnce) { M.failOnce = false; throw new Error('disk full once'); } if (M.failNth) { M.failNth--; if (!M.failNth) throw new Error('disk full nth'); } if (M.swallowMeta) { M.swallowed = (M.swallowed || 0) + 1; return; } M.saves = (M.saves || 0) + 1; M.writeServerChat(); },
+        async saveMetadata() { if (M.metaDelay) await new Promise(r => setTimeout(r, M.metaDelay)); if (M.failMeta) throw new Error('disk full'); if (M.failOnce) { M.failOnce = false; throw new Error('disk full once'); } if (M.failNth) { M.failNth--; if (!M.failNth) throw new Error('disk full nth'); } if (M.swallowMeta) { M.swallowed = (M.swallowed || 0) + 1; if (M.readFailAfterSave) M.serverError = true; return; } M.saves = (M.saves || 0) + 1; M.writeServerChat(); if (M.readFailAfterSave) M.serverError = true; },
         async saveChat() { M.chatSaves++; M.writeServerChat(); },
         getRequestHeaders: () => ({ 'Content-Type': 'application/json', 'X-CSRF-Token': 'test' }),
         setExtensionPrompt(k, v, p, d, s, r) { M.prompts[k] = { v, p, d, r }; },
         eventSource, event_types,
         get ConnectionManagerRequestService() { return M.cm; },
         async generateRaw({ prompt }) { M.calls.push(prompt); if (M.throwNext) { const e = M.throwNext; M.throwNext = null; throw e; } if (M.badJson && !prompt.startsWith('You are checking')) return 'Sure! Here is the summary: {not json'; if (M.delay) await new Promise(r => setTimeout(r, M.delay)); if (M.delayOnce) { const d = M.delayOnce; M.delayOnce = 0; await new Promise(r => setTimeout(r, d)); M.lateDone = (M.lateDone || 0) + 1; } return fake(prompt); },
-        callGenericPopup: async (text, type) => { (M.popups ||= []).push(String(text)); return type === 3 ? M.popupInput : M.confirm; },
+        callGenericPopup: async (text, type) => { (M.popups ||= []).push(String(text)); if (M.onPopup) await M.onPopup(String(text), type); return type === 3 ? M.popupInput : M.confirm; },
         POPUP_TYPE: { TEXT: 1, CONFIRM: 2, INPUT: 3 },
     }),
 };
-M.writeServerChat = () => { if (!M.silentSaveFail) M.serverChat = JSON.parse(JSON.stringify([{ chat_metadata: M.meta }, ...M.chat])); };
+// v0.6.58: the character card (its greetings decide whether a one-message room may get a carried #0).
+M.characters = [{ avatar: 'ari.png', name: 'Ari', description: 'Ari is a courier with green hair.', first_mes: 'Hello! This is the very first greeting.',
+    data: { alternate_greetings: ['Another greeting.', 'Fresh greeting for the failing room.', 'A brand new greeting.'] } }];
+const copy = v => JSON.parse(JSON.stringify(v));
+M.writeServerChat = () => {
+    if (M.silentSaveFail) return;
+    M.serverChat = copy([{ chat_metadata: M.meta }, ...M.chat]);
+    M.serverFiles[M.chatId] = M.serverChat;
+};
+// v0.6.58: the chat files on the server, one per room (null: no file). A room's file is what it held
+// when it was opened; SavePoint's saves write it (M.writeServerChat) and so does SillyTavern itself when
+// messages come, change or go (M.stSave: M.add and the message events). While saves fail silently
+// (M.silentSaveFail, M.swallowMeta) or M.serverFrozen is set, nothing changes it.
+// M.serverEmpty: an empty answer (a missing file and a failed read look the same). M.serverError: 500.
+M.serverFiles = {};
+M.stSave = () => { if (M.serverFrozen || M.silentSaveFail || M.swallowMeta || M.noStSave) return; M.serverFiles[M.chatId] = copy([{ chat_metadata: M.meta }, ...M.chat]); };
+M.serverFile = name => {
+    if (M.serverEmpty) return {};
+    if (M.serverError) return null;
+    if (!Object.hasOwn(M.serverFiles, name)) {
+        if (name !== M.chatId) return {};
+        M.serverFiles[name] = copy([{ chat_metadata: M.meta }, ...M.chat]);   // the room as it was loaded
+    }
+    return M.serverFiles[name] ?? {};
+};
 M.add = (n, fn) => {
     for (let i = 0; i < n; i++) {
         const idx = M.chat.length, user = idx % 2 === 1;
         M.chat.push({ name: user ? 'Me' : 'Ari', is_user: user, is_system: false, mes: (fn ? fn(idx) : '') || `Message ${idx} from ${user ? 'Me' : 'Ari'} about the day ${'and more '.repeat(10)}.`, swipe_id: 0, extra: {} });
     }
+    M.stSave();
 };
-M.switchChat = async (id, chatArr, meta) => { M.chatId = id; M.chat = chatArr; M.meta = meta; await eventSource.emit('chat_id_changed'); };
+M.switchChat = async (id, chatArr, meta) => { M.chatId = id; M.chat = chatArr; M.meta = meta; if (!Object.hasOwn(M.serverFiles, id)) M.serverFiles[id] = copy([{ chat_metadata: meta }, ...chatArr]); await eventSource.emit('chat_id_changed'); };
 
 // Fake SillyTavern files API (/api/files/upload|delete|verify, /user/files/<name>).
 const realFetch = window.fetch;
@@ -139,7 +166,12 @@ window.fetch = async (url, opts = {}) => {
     const res = (body, status = 200) => new Response(typeof body === 'string' ? body : JSON.stringify(body), { status });
     // SillyTavern's chat read-back: the copy last written by a save that "succeeded" on the server.
     // M.silentSaveFail mimics SillyTavern swallowing a server error: the call returns, the file stays old.
-    if (u === '/api/chats/get') return M.serverChat ? res(M.serverChat) : res([]);
+    if (u === '/api/chats/get') {
+        M.serverReads = (M.serverReads || 0) + 1;
+        if (M.serverReadDelay) await new Promise(r => setTimeout(r, M.serverReadDelay));
+        const f = M.serverFile(JSON.parse(opts.body || '{}').file_name);
+        return f === null ? res('down', 500) : res(f);
+    }
     if (!u.startsWith('/api/files/') && !u.startsWith('/user/files/')) return realFetch(url, opts);
     if (M.serverDown) return res('down', 503);
     if (u === '/api/files/upload') {

@@ -5,12 +5,13 @@ import * as core from '../core.js';
 import * as temporal from '../temporal.js';
 import * as prompts from '../prompts.js';
 import * as vault from '../vault.js';
+import * as guard from '../guard.js';
 import * as provenance from '../provenance.js';
 import * as batches from '../request-batches.js';
 import * as loot from '../loot.js';
 
 function harness({ messages = ['A participant kept a token.'], recorded = false } = {}) {
-    const imported = { ...core, ...temporal, ...prompts, ...vault, ...provenance, ...batches, ...loot };
+    const imported = { ...guard, ...core, ...temporal, ...prompts, ...vault, ...provenance, ...batches, ...loot };
     const names = [];
     const source = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8').replace(/^import\s*\{([\s\S]*?)\}\s*from\s*['"][^'"]+['"];\n/gm, (_, list) => {
         names.push(...list.split(',').map(x => x.trim()).filter(Boolean)); return '';
@@ -23,6 +24,7 @@ function harness({ messages = ['A participant kept a token.'], recorded = false 
         async saveMetadata() { if (h.failWrite) throw new Error('Disk failed'); writes.push(structuredClone(context.chatMetadata.savePoint)); } };
     const toast = Object.fromEntries(['info', 'error', 'warning', 'success'].map(k => [k, msg => notices.push([k, msg])]));
     const app = new Function(...names, 'SillyTavern', 'jQuery', 'toastr', 'checks', 'console', source + `
+        gateOpen = () => hasChat(); roomReady = async () => hasChat(); readServerChat = async () => ({ ok: true, snap: pageSnap(), count: chat().length, first: chat()[0], rev: state()?.rev ?? null });
         setHidden = () => {}; render = () => {}; autosave = () => {}; quickSave = async () => null; persistSoon = () => {}; saveChatSoon = () => {};
         queueCheck = (st, before) => checks.push(checkScope(before, st.mem));
         return { ensureState, state, settings, addLoot, summarize, autoCollect, fingerprint, roomKey, ui, handle, journalHtml, queueHtml,

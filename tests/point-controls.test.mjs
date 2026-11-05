@@ -6,6 +6,7 @@ import * as core from '../core.js';
 import * as temporal from '../temporal.js';
 import * as prompts from '../prompts.js';
 import * as vault from '../vault.js';
+import * as guard from '../guard.js';
 
 function controls() {
     const mem = core.emptyMem();
@@ -17,14 +18,14 @@ function controls() {
     const context = { characterId: 0, characters: [{ name: 'Theo', avatar: 'theo.png' }], chatId: 'room', chat: [],
         chatMetadata: { savePoint: st }, extensionSettings: {}, setExtensionPrompt() {},
         async saveMetadata() { writes++; }, saveSettingsDebounced() {} };
-    const imported = { ...core, ...temporal, ...prompts, ...vault };
+    const imported = { ...guard, ...core, ...temporal, ...prompts, ...vault };
     const original = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
     const names = [];
     const source = original.replace(/^import\s*\{([\s\S]*?)\}\s*from\s*['"][^'"]+['"];\n/gm, (_, list) => {
         names.push(...list.split(',').map(x => x.trim()).filter(Boolean)); return '';
     });
     const run = new Function(...names, 'SillyTavern', 'jQuery',
-        source + '\nrender = () => {}; autosave = () => {}; return { handle, journalHtml, ui };');
+        source + '\ngateOpen = () => hasChat(); roomReady = async () => hasChat(); readServerChat = async () => ({ ok: true, snap: pageSnap(), count: chat().length, first: chat()[0], rev: state()?.rev ?? null }); render = () => {}; autosave = () => {}; return { handle, journalHtml, ui };');
     const app = run(...names.map(n => imported[n]), { getContext: () => context }, () => {});
     return { app, context, writes: () => writes,
         point: () => context.chatMetadata.savePoint.mem.scenes[0].segs[0].points[0],

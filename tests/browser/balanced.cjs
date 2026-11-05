@@ -57,7 +57,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.last === 29 && JSON.stringify(r.ranges) === JSON.stringify([[0,14],[15,29]]), 'retry resumes at the next unsaved original message without duplicates');
 
     await ev(async () => { await M.switchChat('balanced-auto', [], {}); M.add(32, i => `Short message ${i}.`);
-        M.chat.at(-1).is_user = false; M.chat.at(-1).name = 'Ari';
+        M.chat.at(-1).is_user = false; M.chat.at(-1).name = 'Ari'; M.stSave();
         M.settings.savePoint.auto = true; M.settings.savePoint.autoEvery = 30; M.settings.savePoint.autoReserve = 2; });
     await ev(() => __savePoint.autoCollect()); r = await snapshot();
     ok(r.last === 29 && JSON.stringify(r.ranges) === JSON.stringify([[0,14],[15,29]]), 'checkpoint balances only the prefix before its reserve');

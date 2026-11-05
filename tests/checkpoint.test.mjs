@@ -6,26 +6,36 @@ import * as core from '../core.js';
 import * as temporal from '../temporal.js';
 import * as prompts from '../prompts.js';
 import * as vault from '../vault.js';
+import * as guard from '../guard.js';
 import * as provenance from '../provenance.js';
 import * as batches from '../request-batches.js';
 import * as loot from '../loot.js';
 
 function harness({ count = 20, chars = 30, reserve = 2, keep = 0, limit = 60000 } = {}) {
-    const imported = { ...core, ...temporal, ...prompts, ...vault, ...provenance, ...batches, ...loot }, names = [];
+    const imported = { ...guard, ...core, ...temporal, ...prompts, ...vault, ...provenance, ...batches, ...loot }, names = [];
     const source = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8').replace(/^import\s*\{([\s\S]*?)\}\s*from\s*['"][^'"]+['"];\n/gm, (_, list) => {
         names.push(...list.split(',').map(x => x.trim()).filter(Boolean)); return '';
     });
-    const writes = [], calls = [], notices = [], backups = [], checks = [], quicks = [];
-    const context = { characterId: 0, characters: [{ name: 'Participant', avatar: 'participant.png' }], chatId: 'room-A',
+    const writes = [], calls = [], notices = [], backups = [], checks = [], quicks = [], h0 = {};
+    // v0.6.58: a one-message room is replaced only when it is the card's greeting.
+    const context = { characterId: 0, characters: [{ name: 'Participant', avatar: 'participant.png', first_mes: 'Welcome to the very first scene.' }], chatId: 'room-A',
         chat: [], chatMetadata: {}, extensionSettings: { savePoint: { profileId: 'fake', autoEvery: 20, autoReserve: reserve, keepRecent: keep, inputChars: limit, check: false } },
         setExtensionPrompt() {}, saveSettingsDebounced() {},
         async saveMetadata() {
             h.writeCount++;
             if (h.writeCount === h.failWriteAt) throw new Error('Disk failed');
             writes.push(structuredClone(context.chatMetadata.savePoint));
+            h.saved?.();
         } };
     const toast = Object.fromEntries(['info', 'error', 'warning', 'success'].map(k => [k, msg => notices.push([k, msg])]));
-    const app = new Function(...names, 'SillyTavern', 'jQuery', 'toastr', 'backups', 'checks', 'quicks', 'console', source + `
+    let h;
+    const app = new Function(...names, 'h', '__saved', 'SillyTavern', 'jQuery', 'toastr', 'backups', 'checks', 'quicks', 'console', source + `
+        gateOpen = () => hasChat(); roomReady = async () => hasChat();
+        // The chat file of each room (a room here is its chat array): what the room showed when first read,
+        // then whatever a save wrote.
+        const files = new WeakMap(), fileOf = () => { if (!files.has(chat())) files.set(chat(), clone({ meta: ctx().chatMetadata, chat: chat() })); return files.get(chat()); };
+        __saved = () => { files.set(chat(), clone({ meta: ctx().chatMetadata, chat: chat() })); };
+        readServerChat = async () => { const f = fileOf(); return { ok: true, snap: snapshot(f.meta, f.chat, OWN_KEYS), count: f.chat.length, first: f.chat[0], rev: f.meta?.savePoint?.rev ?? null }; };
         setHidden = (m, i, hidden) => { m.is_system = !!hidden; };
         render = () => {}; persistSoon = () => {}; saveChatSoon = () => {};
         autosave = st => { if (st) backups.push({ lastIndex: st.lastIndex, mem: clone(st.mem) }); };
@@ -33,13 +43,14 @@ function harness({ count = 20, chars = 30, reserve = 2, keep = 0, limit = 60000 
         queueCheck = (st, before, opts) => checks.push(opts);
         const realEnd = endRun; let lastNotice;
         endRun = run => { lastNotice = clone(run.notice); realEnd(run); };
+        h.saved = () => __saved();
         return { ensureState, state, settings, summarize, autoCollect, autoCount, autoBlocked, reconcile, undo, loadSave,
             addLoot, saveRecord, hudHtml, syncHide, ui, RequestTimeout, Cancelled,
             notice: () => lastNotice, setModel(fn) { llm = fn; },
             setSlot(rec) { findSave = () => rec; readSave = async () => rec; confirmBox = async () => true; },
             setConfirm(fn) { confirmBox = fn; } };
-    `)(...names.map(n => imported[n]), { getContext: () => context }, () => {}, toast, backups, checks, quicks, { error() {}, warn() {} });
-    const h = { app, context, writes, calls, notices, backups, checks, quicks, writeCount: 0, failWriteAt: Infinity, failAt: Infinity };
+    `)(...names.map(n => imported[n]), h0, null, { getContext: () => context }, () => {}, toast, backups, checks, quicks, { error() {}, warn() {} });
+    h = Object.assign(h0, { app, context, writes, calls, notices, backups, checks, quicks, writeCount: 0, failWriteAt: Infinity, failAt: Infinity });
     h.add = (n, text = i => 'A participant continued walking. ' + 'x'.repeat(chars) + ' END' + i) => {
         for (let k = 0; k < n; k++) { const i = context.chat.length; context.chat.push({ name: 'Participant', mes: text(i), is_user: false, extra: {} }); }
     };

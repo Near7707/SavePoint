@@ -64,7 +64,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.tpl && r.all, '1. … 메뉴(새 메시지 틀과 보이는 메시지 모두)에 🔖 버튼');
 
     // 2. turning it on shows the message at once, marks it, and the window shows the count
-    await ev(() => { M.chat[3].swipe_info = [{ extra: {} }, { extra: {} }]; });
+    await ev(() => { M.chat[3].swipe_info = [{ extra: {} }, { extra: {} }]; M.stSave(); });
     const saves0 = await ev(() => M.saves || 0);
     await click(3); await page.waitForTimeout(300);
     await ev(() => $('#sp_wand').trigger('click'));
@@ -90,7 +90,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.hid[3] === 'H' && !r.mark && !r.swipes, `5. 자동 모드에서 끄면 바로 숨김, 표시 사라짐 (${JSON.stringify(r)})`);
 
     // 6. a failed write takes both back
-    await ev(() => { M.chat[5].swipe_info = [{ extra: {} }]; M.failOnce = true; });
+    await ev(() => { M.chat[5].swipe_info = [{ extra: {} }]; M.stSave(); M.failOnce = true; });
     await click(5); await page.waitForTimeout(300);
     r = { hid: await hidden(), keep: await ev(() => !!M.chat[5].extra.savepointKeep), swipe: await ev(() => !!M.chat[5].swipe_info[0].extra.savepointKeep), mark: await ev(() => !!document.querySelector('#chat .mes[mesid="5"] .sp-keep-mark')), err: await ev(() => toastr.log.some(([k]) => k === 'error')) };
     ok(r.hid[5] === 'H' && !r.keep && !r.swipe && !r.mark && r.err, `6. 저장 실패 → 🔖와 숨김 모두 원래대로 (${JSON.stringify(r)})`);

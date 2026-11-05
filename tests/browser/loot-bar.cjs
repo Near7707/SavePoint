@@ -43,6 +43,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         M.chat[2].mes = 'The guide handed over a small brass key at the door. She promised to come back tomorrow.';
         M.chat[2].extra.display_text = '안내인은 문 앞에서 작은 놋쇠 열쇠를 건넸다. 그녀는 내일 다시 오겠다고 약속했다.';
         M.chat[4].mes = 'The lantern flickered while the rain kept falling on the roof.';
+        M.stSave();
         const box = document.getElementById('chat');
         box.innerHTML = M.chat.map((m, i) => `<div class="mes" mesid="${i}"><div class="mes_text">${m.extra.display_text || m.mes}</div></div>`).join('');
         document.body.insertAdjacentHTML('beforeend', '<div id="send_form"><div id="leftSendForm"><div id="options_button">≡</div><div id="extensionsMenuButton">✦</div></div><textarea id="send_textarea"></textarea></div>');
@@ -176,7 +177,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(after.n === r.n - 1 && after.calls === r.calls + 1 && after.linked && after.records === r.records, `9. 그 항목만 한 번 요청해 저널에 보충하고 대기열에서 제거, 현재 상태는 그대로 (${r.n}→${after.n})`);
     await ev(() => { M.supplementLinks = false; });
     // 10. other states never promise an automatic retry they will not do
-    await ev(async () => { M.add(1, () => 'The ferry horn sounded across the water.'); const n = M.chat.length - 1; M.chat[n].is_user = false; await __savePoint.addLoot(n, 'The ferry horn sounded'); });
+    await ev(async () => { M.add(1, () => 'The ferry horn sounded across the water.'); const n = M.chat.length - 1; M.chat[n].is_user = false; M.stSave(); await __savePoint.addLoot(n, 'The ferry horn sounded'); });
     r = await ev(() => {
         const st = __savePoint.state(), base = st.lootQueue[0], fresh = st.lootQueue.at(-1);
         const view = q => { const div = document.createElement('div'); div.innerHTML = __savePoint.queueHtml({ ...st, lootQueue: [q] }); return div.textContent; };
