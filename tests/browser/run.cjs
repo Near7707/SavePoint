@@ -220,7 +220,9 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         await p;
         M.metaDelay = 0; M.failMeta = false;
         const res = { oldPin: oldMeta.savePoint.mem.scenes[0].pin === pinBefore, newState: !!__savePoint.state(), newInj: M.prompts.savepoint?.v || '', newHidden: M.chat.some(m => m.is_system) };
-        await M.switchChat('chatC', oldChat, oldMeta);
+        // v0.6.60: SillyTavern opens a room from its chat file (the first check compares the memory too).
+        const f = JSON.parse(JSON.stringify(M.serverFiles.chatC));
+        await M.switchChat('chatC', f.slice(1), f[0].chat_metadata);
         return res;
     });
     ok(r.oldPin && !r.newState && r.newInj === '' && !r.newHidden, '저장 중 방 이동 + 실패 → 원래 방만 원복, 새 방은 그대로');

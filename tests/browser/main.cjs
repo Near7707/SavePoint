@@ -117,7 +117,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => M.switchChat('roomB', [], {}));
     await ev(() => $('#sp_wand').trigger('click'));
     const tabB = await ev(() => $('.sp-tab.sp-active').attr('data-id'));
-    await ev(a => M.switchChat(a.id, a.chat, a.meta), roomA);
+    // v0.6.60: SillyTavern opens a room from its chat file (the first check compares the memory too).
+    await ev(a => { const f = JSON.parse(JSON.stringify(M.serverFiles[a.id])); return M.switchChat(a.id, f.slice(1), f[0].chat_metadata); }, roomA);
     await ev(() => $('#sp_wand').trigger('click'));
     r = await ev(() => $('.sp-tab.sp-active').attr('data-id'));
     ok(tabB === 'main' && r === 'party', `7. B방은 처음이라 메인, A방은 고른 파티 탭 그대로 (B ${tabB}, A ${r})`);

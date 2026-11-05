@@ -109,11 +109,15 @@ const NULL_HASH = hashOf(null);
 // | 'gone' (a message the file had when it was last read is no longer in it), at }.
 // `seen`: the file as it was last confirmed. A message the page has beyond the file is a new one, unless
 // that same message was in the file before: then it was deleted somewhere else, and a write would bring it back.
-export function covers(page, file, module, seen = null) {
+// v0.6.60: `cut` is the lowest message count this page itself went down to by deleting since `seen` was
+// read (null: it deleted nothing). Where the file now has fewer messages than `seen` had, a message the page
+// still has at such a place came back from a deletion elsewhere — even when it was edited here since — unless
+// this page deleted down to that place itself (then it is a new message made after that deletion).
+export function covers(page, file, module, seen = null, cut = null) {
     if (file.plain.length > page.plain.length) return { ok: false, why: 'more', at: page.plain.length };
     for (let i = 0; i < file.plain.length; i++) if (file.plain[i] !== page.plain[i]) return { ok: false, why: 'diff', at: i };
     if (seen) for (let i = file.plain.length; i < Math.min(page.plain.length, seen.plain.length); i++)
-        if (page.plain[i] === seen.plain[i]) return { ok: false, why: 'gone', at: i };
+        if (page.plain[i] === seen.plain[i] || !(cut !== null && cut <= i)) return { ok: false, why: 'gone', at: i };
     if (file.meta) for (const k of Object.keys(file.meta)) {
         if (k === module) continue;
         if (file.meta[k] === NULL_HASH && DEFAULTED.includes(k)) continue;
@@ -133,8 +137,11 @@ export function writeResult(written, before, after, module) {
     return 'unsure';
 }
 // Two snapshots of the same page, everything included (for "did the room change while we asked?").
-export function samePage(a, b, module) {
-    if (a.full.length !== b.full.length || a.full.some((h, i) => b.full[i] !== h)) return false;
+// v0.6.60: `plain` compares the messages without SavePoint's own parts (its hide flags and marks, which
+// earlier changes in the room's queue may set while a change waits for its turn).
+export function samePage(a, b, module, { plain = false } = {}) {
+    const x = plain ? a.plain : a.full, y = plain ? b.plain : b.full;
+    if (x.length !== y.length || x.some((h, i) => y[i] !== h)) return false;
     const keys = new Set([...Object.keys(a.meta || {}), ...Object.keys(b.meta || {})]);
     for (const k of keys) if (k !== module && (a.meta || {})[k] !== (b.meta || {})[k]) return false;
     return true;

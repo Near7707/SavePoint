@@ -33,7 +33,7 @@ function harness({ count = 10, lastIndex = 9, keepRecent = 2 } = {}) {
         openScene, closeOpenScene: mem => ({ ...mem, scenes: mem.scenes.map(s => ({ ...s, status: 'closed' })) }),
         nextMessageChunk: msgs => chunkMessages(msgs, Infinity)[0], extractPrompt: () => 'prompt',
         newRun: () => { const run = { hashes: chat.map(m => m.mes), cancelled: false }; ui.run = run; return run; },
-        assertValid() {}, checkpoint: () => structuredClone(meta.savePoint), pushHistory() {}, settleAutoFail() {}, persistSoon() {},
+        assertValid() {}, assertStill() {}, checkpoint: () => structuredClone(meta.savePoint), pushHistory() {}, settleAutoFail() {}, persistSoon() {},
         lootForChunk: () => [], settleLoot: () => 0, supplementLoot: async () => ({ saved: 0, failed: 0 }), markStaleLoot: async () => {}, failPendingLoot: async () => 0,
         async extractChunk() { calls++; return { scenes: [{}] }; }, applyResult: () => ({ mem: meta.savePoint.mem }),
         endRun() { ui.run = null; }, queueCheck() {}, Cancelled: class extends Error {}, errorText: e => e.message,

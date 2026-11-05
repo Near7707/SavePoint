@@ -70,7 +70,11 @@ test('a message the file had when last read and lacks now was deleted elsewhere 
     assert.deepEqual(covers(page, file, MOD, seen), { ok: false, why: 'gone', at: 19 });
     assert.equal(covers(page, file, MOD).ok, true, 'without the last read it looks like a new message');
     const local = [...list.slice(0, 19), msg(99)];
-    assert.equal(covers(snap({}, local), file, MOD, seen).ok, true, 'a message made here at that place is new');
+    // v0.6.60: only when this page deleted down to that place itself (cut); otherwise it is the deleted
+    // message edited here.
+    assert.equal(covers(snap({}, local), file, MOD, seen, 19).ok, true, 'a message made here after deleting here is new');
+    assert.equal(covers(snap({}, local), file, MOD, seen).why, 'gone', 'the deleted message edited here is still gone');
+    assert.equal(covers(snap({}, local), file, MOD, seen, 20).why, 'gone', 'a deletion here above that place does not count');
     assert.equal(covers(snap({}, [...list, msg(20)]), snap({}, list), MOD, seen).ok, true, 'a message after the last read is new');
     const shorter = snap({}, list.slice(0, 18));
     assert.equal(covers(shorter, shorter, MOD, seen).ok, true, 'deleted here and saved: the page has nothing extra');
@@ -102,4 +106,13 @@ test('a write is never confirmed from a file without the memory (older group cha
     assert.equal(writeResult(written, before, before, MOD), 'failed', 'the file did not change at all');
     assert.equal(writeResult(written, before, snap(null, [msg(0), msg(1)]), MOD), 'unsure');
     assert.equal(writeResult(written, before, written, MOD), 'ok', 'once the header with the memory is there');
+});
+
+// v0.6.60
+test('samePage can leave SavePoint\'s own marks out (a change waiting in the queue)', () => {
+    const a = snap({ x: 1 }, [msg(0)]), b = snap({ x: 1 }, [msg(0, { savepointHidden: 1 })]);
+    assert.equal(samePage(a, b, MOD), false);
+    assert.equal(samePage(a, b, MOD, { plain: true }), true);
+    assert.equal(samePage(a, snap({ x: 1 }, [msg(1)]), MOD, { plain: true }), false);
+    assert.equal(samePage(a, snap({ x: 1 }, [msg(0), msg(1)]), MOD, { plain: true }), false);
 });
