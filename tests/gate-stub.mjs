@@ -10,5 +10,8 @@ export function gateBox() {
         serverCovered: async () => ({ ok: true, snap: null, rev: null, count: 0 }), readServerChat: async () => ({ ok: true, snap: null, rev: null, count: 0 }),
         pageSnap: () => null, snapshot: () => ({ meta: {} }), writeResult: () => 'ok', samePage: () => true,
         cancelMoved: () => new Error('moved'), queueIdle: async () => true, setSeen() {},
+        // v0.6.61: a change no longer valid at its turn; the write receipt; QUICK through the queue.
+        Stale: class extends Error {}, proofOf: () => null, canon: JSON.stringify, newId: () => 'wid',
+        quickSaveChecked: async () => null,
     };
 }

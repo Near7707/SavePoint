@@ -11,7 +11,7 @@ import { foldLegacyOutline,
 } from './core.js';
 import { lootStatus, lootWarning, lootInChunk, lootBlock, attachLoot, settleLoot, failLoot, lootTarget, applyLootSupplement, restoreLostLoot } from './loot.js';
 import { Vault, roomHash, quickId } from './vault.js';
-import { snapshot, splitFile, covers, writeResult, samePage } from './guard.js';
+import { snapshot, splitFile, covers, writeResult, samePage, canon } from './guard.js';
 import { upgradeEvidence, segmentPrior, evidenceNumbers } from './provenance.js';
 import { assertPromptFits, nextMessageChunk, planReviewBatches } from './request-batches.js';
 import { DEFAULT_GUIDE, guideHash, OLD_GUIDE_HASHES, buildCheckPrompt, buildRekeyPrompt, buildExtractPrompt, buildExtractPromptParts, PROMPT_PART_LABELS, retryNote, extractionRepairNote, TRANSLATE_PROMPT } from './prompts.js';
@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.60';
+const VERSION = '0.6.61';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -191,12 +191,16 @@ async function persist() { if (hasChat()) await ctx().saveMetadata(); }
 // v0.6.59: one room, one line. Each change waits for the ones before it (and for their read-back), then
 // the file is checked, the change is applied and written, with nothing else in between. So the page never
 // shows a change the file check has not passed, and what was checked is exactly what is written.
-async function transact(change, { undoable = false, undoKind = '', autosave: doAutosave = true, rehide = false, replay = false, snapshot = false, verify = false } = {}) {
+// v0.6.61: one rule for every change decided before its turn (after a question, an AI answer or a read):
+// `still(pre)` is asked at its turn, after the file check and right before it is applied. Anything but
+// true stops it with nothing changed (Stale; a string is the reason shown). The change itself works from
+// the room's state at its turn (state()), never from objects taken before the wait.
+async function transact(change, { undoable = false, undoKind = '', autosave: doAutosave = true, rehide = false, replay = false, snapshot = false, verify = false, still = null, stale = '' } = {}) {
     const key = roomKey(), epoch = roomEpoch;
     const ready = gateOpen() || await roomReady();
     if (roomKey() !== key || roomEpoch !== epoch) throw new RoomBlocked('채팅방이 바뀌어서 이번 변경은 하지 않았어요.');
     if (!ready) throw new RoomBlocked(gateMessage());
-    const entry = { change, undoable, undoKind, autosave: doAutosave, rehide, replay, snapshot, verify, key, epoch };
+    const entry = { change, undoable, undoKind, autosave: doAutosave, rehide, replay, snapshot, verify, still, stale, key, epoch };
     const queue = saveQueue(key, epoch);
     queue.pending.push(entry);
     const done = queue.chain.then(() => writeEntry(queue, entry)).finally(() => { const i = queue.pending.indexOf(entry); if (i >= 0) queue.pending.splice(i, 1); });
@@ -239,6 +243,9 @@ function applyEntry(entry) {
         else if (st.undo && st.undoInfo && JSON.stringify(entry.prev?.undoInfo ?? null) === JSON.stringify(st.undoInfo) && JSON.stringify(entry.prev?.mem ?? null) !== JSON.stringify(st.mem)) st.undoInfo.edits = (st.undoInfo.edits || 0) + 1;
         st.rev = (entry.prev?.rev || 0) + 1;
         st.by = SESSION;
+        // v0.6.61: this write's own receipt. A later read proves the write landed by this id and the record
+        // it carried (memory, position), not by the status marks that change after it (see proofOf).
+        st.wid = newId();
     }
     syncHide({ rehide: entry.rehide }); refreshInjection();
     if (roomKey() === entry.key && roomEpoch === entry.epoch) render();
@@ -293,11 +300,15 @@ async function writeEntry(queue, entry) {
     if (moved()) throw cancelMoved(queue, entry);
     if (entry.cancelled) throw entry.cancelled;
     if (!pre.ok) { blockRoom(pre.why); throw new RoomBlocked(`${gateMessage()} 이번 변경은 취소했어요.`); }
+    if (entry.still) {
+        const ok = entry.still(pre);
+        if (ok !== true) throw new Stale(typeof ok === 'string' ? ok : entry.stale || '기다리는 사이 대화나 기억이 바뀌어서 이 변경은 하지 않았어요. 다시 해 주세요.');
+    }
     entry.pre = pre;
     if (applyEntry(entry) === false) return false;
     let unsure = null;
     try {
-        const written = pageSnap(), rev = state()?.rev ?? null;
+        const written = pageSnap(), rev = state()?.rev ?? null, proof = proofOf(ctx().chatMetadata?.[MODULE]);
         await persist();
         if (entry.verify) {
             // SillyTavern reports most failed saves on screen and returns normally: read the file back.
@@ -305,7 +316,7 @@ async function writeEntry(queue, entry) {
             const result = !post || moved() ? 'moved' : post.ok ? writeResult(written, pre.snap, post.snap, MODULE) : 'unsure';
             if (result === 'failed') throw new Error('실리태번은 저장을 마쳤다고 했지만 채팅 파일은 그대로예요');
             if (result === 'moved') unsure = { moved: true };
-            else if (result === 'unsure') unsure = { rev, prevRev: pre.rev, written, before: pre.snap };
+            else if (result === 'unsure') unsure = { rev, prevRev: pre.rev, written, before: pre.snap, proof, prevProof: pre.proof };
             else if (gateHere()) setSeen(post.snap);
         }
     } catch (e) {
@@ -522,7 +533,8 @@ async function readServerChat() {
         const parts = splitFile(await r.json());
         if (!parts) return { ok: false, why: 'empty' };
         const mod = parts.meta?.[MODULE];
-        return { ok: true, snap: snapshot(parts.meta, parts.messages, OWN_KEYS), count: parts.messages.length, first: parts.messages[0], rev: mod?.rev ?? null, by: mod?.by ?? null };
+        return { ok: true, snap: snapshot(parts.meta, parts.messages, OWN_KEYS), count: parts.messages.length, first: parts.messages[0], rev: mod?.rev ?? null, by: mod?.by ?? null,
+            proof: parts.meta ? proofOf(mod) : undefined };
     } catch { return { ok: false, why: 'error' }; }
 }
 // Reads the file until the page covers it, a few times while SillyTavern may still be saving.
@@ -552,6 +564,13 @@ async function serverCovered(page = pageSnap, tries = [0, 500, 1500]) {
 // v0.6.60: on the first read of a room (nothing confirmed yet) the memory in the file must be the one the
 // page loaded: nothing on this page changes it before the room is confirmed, so another memory there was
 // saved after the page read the file (by another device), and a later write would put the older one back.
+// v0.6.61: what proves a write landed: its receipt (wid, new for every write) and the record it carried.
+// Status marks written later (the last checkpoint result, the check status) are left out, so SillyTavern
+// saving the page afterwards does not hide a write that is there.
+function proofOf(mod) {
+    if (!mod || typeof mod !== 'object') return null;
+    return hashString(canon([mod.wid ?? null, mod.mem ?? null, mod.lastIndex ?? null, mod.hashes ?? null, mod.floor ?? null]));
+}
 function foreignMemory(r, page, seen) {
     const mod = r.snap.meta?.[MODULE] ?? null;
     if (!seen) return gateHere() && !!r.snap.meta && mod !== (page.meta?.[MODULE] ?? null);
@@ -612,9 +631,10 @@ async function confirmUnsure() {
     const r = await readServerChat();
     if (gate.unsure !== u || !gateHere()) return !gate.unsure;
     if (!r.ok) return false;
-    const mod = snap => snap?.meta ? snap.meta[MODULE] ?? null : undefined;
-    const wrote = mod(u.written), had = mod(u.before), now = mod(r.snap);
-    const landed = now !== undefined && wrote !== undefined && now === wrote;
+    // v0.6.61: by the write's receipt and record (proofOf), not by the whole memory: status marks the page
+    // gets after the write (the "unconfirmed" note itself) may be saved over it by SillyTavern.
+    const wrote = u.proof, had = u.prevProof, now = r.proof;
+    const landed = now !== undefined && now !== null && wrote !== undefined && now === wrote;
     if (landed) {
         gate.unsure = null; clearTimeout(unsureTimer);
         // v0.6.60: finding the write confirms it, but that file becomes the base for the next writes only
@@ -935,6 +955,8 @@ function refreshInjection() {
 // ───────── AI calls ─────────
 
 class Cancelled extends Error {}
+// v0.6.61: a change that was no longer valid at its turn (see transact `still`). Nothing was changed.
+class Stale extends Cancelled { constructor(m) { super(m); this.name = 'Stale'; } }
 class RequestTimeout extends Error {
     // kind: 'idle' = no new output for the wait limit, 'total' = the overall maximum was reached,
     // 'limit' = a request whose progress cannot be seen ran past its single time limit.
@@ -1168,6 +1190,7 @@ function assertStill(run, upTo, base) {
     const ok = !run.cancelled && run.key === roomKey() && run.epoch === roomEpoch && state() === run.st && run.st.mem === base &&
         !run.st.review && firstMismatch(run.hashes.slice(0, upTo + 1)) === -1;
     if (!ok) { run.cancelled = true; throw new Cancelled('기록하는 사이 대화나 기억이 바뀌어서 이 구간은 저장하지 않았어요. 다시 세이브해 주세요.'); }
+    return true;
 }
 function endRun(run) {
     if (ui.run === run) { ui.run = null; ui.progress = ''; ui.req = null; applyPendingSettings(); }
@@ -1352,7 +1375,6 @@ async function supplementLoot(run, items, undoPoint = checkpoint(run.st)) {
             const linked = {}, counted = new Set(run.lootCounted), base = st.mem;
             const next = refreshProvisionalOutlines(applyLootSupplement(st.mem, target.seg.id, data, group, linked));
             await transact(() => {
-                assertStill(run, chat().length - 1, base);
                 const before = st.mem;
                 st.mem = next; pushHistory(st, before, next, { kind: 'edit', run: run.id });
                 failed += settleLoot(st, group, next, linked.why, counted);
@@ -1365,7 +1387,7 @@ async function supplementLoot(run, items, undoPoint = checkpoint(run.st)) {
                 } else if (lr?.run === run.id) { lr.at = Date.now(); lr.from = Math.min(lr.from, lo); lr.to = Math.max(lr.to, hi); }
                 else st.lastRecord = { at: Date.now(), from: lo, to: hi, kind: 'supplement', run: run.id };
                 st.undoInfo = { kind: st.lastRecord.kind, run: run.id, at: Date.now(), edits: 0 };
-            }, { undoable: false, autosave: false, rehide: true, verify: true });
+            }, { undoable: false, autosave: false, rehide: true, verify: true, still: () => assertStill(run, chat().length - 1, base) });
             run.lootCounted = counted;
             saved++;
         } catch (e) {
@@ -1414,6 +1436,8 @@ async function summarize({ close = false, auto = false } = {}) {
         }
     }
     if (!msgs.length && !queued.length) {
+        // v0.6.61: QUICK is kept only when nothing here was blocked or failed (and it checks the file itself).
+        let fine = true;
         if (close && openScene(st.mem)) {
             try {
                 await transact(() => {
@@ -1421,15 +1445,15 @@ async function summarize({ close = false, auto = false } = {}) {
                     cur.mem = closeOpenScene(before); pushHistory(cur, before, cur.mem, { kind: 'edit' });
                 }, { rehide: true, undoable: true, undoKind: 'sceneclose', verify: true });
                 toastr.success('진행 중이던 장면을 닫았어요.');
-            } catch (e) { reportError(e); }
+            } catch (e) { fine = false; reportError(e); }
         } else if (settings().enabled && hideModeOf(settings()) !== 'off' && hasMemory(st.mem)) {
             try {
                 await transact(() => {}, { undoable: false, autosave: false, rehide: true });
                 toastr.info('기록할 새 메시지가 없어요. 하이드 상태를 다시 확인했어요.');
-            } catch (e) { reportError(e); }
+            } catch (e) { fine = false; reportError(e); }
         } else toastr.info('기록할 새 메시지가 없어요.');
         // Nothing new to collect, but the memory may have been edited by hand: keep it as QUICK.
-        if (!auto && state() === st) await quickSave(st).catch(reportError);
+        if (!auto && fine && state() === st) await quickSaveChecked(st).catch(reportError);
         return;
     }
     if (!auto) { st.autoMark = latest; st.autoHold = null; persistSoon(); }
@@ -1464,7 +1488,6 @@ async function summarize({ close = false, auto = false } = {}) {
             // Failure counts made inside a write that is rolled back must not stick.
             const counted = new Set(run.lootCounted);
             await transact(() => {
-                assertStill(run, coverTo, base);
                 const before = st.mem;
                 st.mem = next;
                 pushHistory(st, before, next, { kind: 'summary', from: st.lastIndex + 1, to: coverTo, run: run.id });
@@ -1473,7 +1496,7 @@ async function summarize({ close = false, auto = false } = {}) {
                 st.undo = undoPoint; st.undoInfo = { kind: st.lastRecord.kind, run: run.id, at: Date.now(), edits: 0 };
                 settleAutoFail(st);
                 lootFailed += settleLoot(st, marked, next, data.lootWhy, counted);
-            }, { undoable: false, autosave: false, rehide: true, verify: true });
+            }, { undoable: false, autosave: false, rehide: true, verify: true, still: () => assertStill(run, coverTo, base) });
             run.lootCounted = counted;
             done++; cursor += chunk.indices.length;
         }
@@ -1552,7 +1575,7 @@ async function summarize({ close = false, auto = false } = {}) {
         endRun(run);
         if (done && run.key === roomKey()) { autosave(state()); if (state() === st) { queueCheck(st, memBefore, { auto }); announceReturns(st); } }
         // A partial, failed or cancelled run keeps the previous QUICK; what it saved is in AUTO.
-        if (complete && !auto && run.key === roomKey() && state() === st) await quickSave(st).catch(reportError);
+        if (complete && !auto && run.key === roomKey() && state() === st) await quickSaveChecked(st).catch(reportError);
     }
 }
 
@@ -1684,6 +1707,10 @@ function queueCheck(st, before, opts = {}) {
     setTimeout(() => { if (state() === st) runCheck(st, scope, opts).catch(reportError); }, 300);
 }
 async function runCheck(st, scope, { auto = false } = {}) {
+    // v0.6.61: the check writes its status into the room's memory, so like any change it starts only in a
+    // confirmed room (pressed while the room is still being checked, it waits for that check).
+    if (!gateOpen() && !(await roomReady())) { if (!auto) toastr.warning(gateMessage(), 'SavePoint', { timeOut: 10000 }); return; }
+    if (state() !== st) return;
     if (ui.run) { st.check = { at: Date.now(), status: 'failed', reason: '다른 작업 중이라 건너뜀', scope, issues: [] }; persistSoon(); render(); return; }
     const end = chat().length - 1;
     const run = newRun(st, end, 'check');
@@ -2003,11 +2030,11 @@ async function translate() {
             if (run.cancelled || state() !== st || st.rev !== rev) throw new Cancelled('기억이 바뀌어서 번역을 적용하지 않았어요.');
             if (Array.isArray(res)) for (const x of res) if (x && typeof x.id === 'string' && typeof x.ko === 'string' && x.ko.trim()) { applyTranslation(next, x.id, x.ko.trim()); count++; }
         }
+        // v0.6.61: at its turn — still running (not stopped), and the memory is the one it translated.
         await transact(() => {
-            if (state() !== st || st.rev !== rev) throw new Cancelled('기억이 바뀌어서 번역을 적용하지 않았어요.');
             const before = st.mem;
             st.mem = next; pushHistory(st, before, next, { kind: 'edit' });
-        });
+        }, { still: () => run.cancelled || ui.run !== run ? '중지했어요.' : state() !== st || st.rev !== rev ? '기억이 바뀌어서 번역을 적용하지 않았어요.' : true });
         // v0.6.39: the view language stays whatever the user chose last (🌐 원문 during the request wins).
         toastr.success(`${count}개 항목의 한국어 보기를 만들었어요.`);
     } catch (e) {
@@ -2047,13 +2074,13 @@ async function rekeyScenes(ids) {
         }
         if (state() !== st || st.rev !== rev) throw new Cancelled('기억이 바뀌어서 적용하지 않았어요.');
         if (results.length) {
+            // v0.6.61: at its turn — still running (not stopped), and the memory is the one it read.
             await transact(() => {
-                if (state() !== st || st.rev !== rev) throw new Cancelled('기억이 바뀌어서 적용하지 않았어요.');
                 const before = st.mem;
                 let next = before;
                 for (const [sid, keys] of results) next = applyRekey(next, sid, keys);
                 st.mem = next; pushHistory(st, before, next, { kind: 'edit' });
-            });
+            }, { still: () => run.cancelled || ui.run !== run ? '중지했어요.' : state() !== st || st.rev !== rev ? '기억이 바뀌어서 적용하지 않았어요.' : true });
         }
         refreshInjection();
         toastr[failed ? 'warning' : 'success'](`주입 포인트를 다시 골랐어요 (장면 ${results.length}개${failed ? `, 실패 ${failed}개` : ''}). 직접 지정한 포인트는 그대로예요.`);
@@ -2098,19 +2125,30 @@ async function undo() {
     if (!st?.undo) { toastr.info('되돌릴 작업이 없어요. ⏪ 리와인드는 마지막 저장·리셋·세이브 불러오기를 되돌려요.', 'SavePoint'); return; }
     const what = undoLabel(st), edits = st.undoInfo?.edits || 0;
     // v0.6.56: what the question names is what goes back; a save that lands while it is open cancels it.
-    const target = st.undo, info = JSON.stringify({ kind: st.undoInfo?.kind, run: st.undoInfo?.run, at: st.undoInfo?.at });
-    if (!(await confirmHere(`⏪ 리와인드: ${what} 전으로 되돌릴까요?${edits ? ` 그 뒤에 한 편집 ${edits}개도 함께 되돌아가요.` : ''}`,
-        () => !ui.run && st.undo === target && JSON.stringify({ kind: st.undoInfo?.kind, run: st.undoInfo?.run, at: st.undoInfo?.at }) === info))) return;
-    const restored = { ...clone(st.undo), undo: null, undoInfo: null };
-    restored.lootQueue = restoreLostLoot(st.lootQueue, st.mem, restored.mem, { room: roomKey(), hashes: st.hashes, fallback: st.undo.lootQueue });
-    await transact(() => { ctx().chatMetadata[MODULE] = restored; }, { undoable: false, verify: true });
+    const target = st.undo, infoOf = () => JSON.stringify({ kind: st.undoInfo?.kind, run: st.undoInfo?.run, at: st.undoInfo?.at }), info = infoOf();
+    // v0.6.56/61: the rewind point the question names is the one taken back — at the answer and again at its
+    // turn in the room's queue (a reset or a save waiting before it would make it another one).
+    const same = () => !ui.run && state() === st && st.undo === target && infoOf() === info;
+    if (!(await confirmHere(`⏪ 리와인드: ${what} 전으로 되돌릴까요?${edits ? ` 그 뒤에 한 편집 ${edits}개도 함께 되돌아가요.` : ''}`, same))) return;
+    try {
+        await transact(() => {
+            // Worked out at its turn, from the room as it is then.
+            const restored = { ...clone(st.undo), undo: null, undoInfo: null };
+            restored.lootQueue = restoreLostLoot(st.lootQueue, st.mem, restored.mem, { room: roomKey(), hashes: st.hashes, fallback: st.undo.lootQueue });
+            ctx().chatMetadata[MODULE] = restored;
+        }, { undoable: false, verify: true, still: same, stale: '리와인드를 기다리는 사이 되돌릴 지점이 바뀌어서(다른 저장·리셋) 되돌리지 않았어요. ⏪를 다시 눌러 주세요.' });
+    } catch (e) {
+        if (e instanceof Stale) { toastr.info(e.message, 'SavePoint', { timeOut: 10000 }); return; }
+        throw e;
+    }
     if (!reconcile()) { render(); return; }
     toastr.info(`⏪ 리와인드: ${what} 전으로 돌아갔어요.`);
 }
 async function clearRoom() {
     const st = state();
     if (!st || !(await confirmHere('리셋: 이 방의 기억을 모두 지울까요? 세이브 슬롯은 남아요. (⏪ 리와인드로 되돌릴 수 있어요)', () => !ui.run))) return;
-    await transact(() => { ctx().chatMetadata[MODULE] = freshState({ autoMark: chat().length - 1, lootQueue: clone(st.lootQueue || []) }); }, { undoable: true, undoKind: 'reset', verify: true });
+    // v0.6.61: the loot queue kept is the one there at its turn.
+    await transact(() => { ctx().chatMetadata[MODULE] = freshState({ autoMark: chat().length - 1, lootQueue: clone(state()?.lootQueue || []) }); }, { undoable: true, undoKind: 'reset', verify: true });
 }
 
 // ───────── save slots (server files via vault.js) ─────────
@@ -2265,6 +2303,24 @@ function announceReturns(st) {
     persistSoon();
 }
 // QUICK: one per room, replaced only after a manual quicksave or scene clear finished completely.
+// v0.6.61: QUICK replaces the room's backup, so it follows the room's rules too: it takes its turn in the
+// room's queue, and is made only when the chat file then holds nothing the page lacks (another device went
+// on, a message deleted elsewhere, another memory) and the room's state is still the one it was asked for.
+function quickSaveChecked(st) {
+    if (!gateOpen()) return Promise.resolve(null);
+    const key = roomKey(), epoch = roomEpoch;
+    const here = () => roomKey() === key && roomEpoch === epoch && gateOpen() && state() === st;
+    const queue = saveQueue(key, epoch);
+    const job = queue.chain.then(async () => {
+        if (!here()) return null;
+        const pre = await serverCovered();
+        if (!here()) return null;
+        if (!pre.ok) { blockRoom(pre.why); toastr.warning(`${gateMessage()} QUICK 백업도 바꾸지 않았어요.`, 'SavePoint', { timeOut: 12000 }); return null; }
+        return quickSave(st);
+    });
+    queue.chain = job.catch(() => {});
+    return job;
+}
 async function quickSave(st) {
     // v0.6.58: QUICK keeps a confirmed save only.
     if (!st || !hasMemory(st.mem) || roomKey() !== st.roomKey || gate.unsure) return null;
@@ -2279,7 +2335,7 @@ async function saveNew() {
     const name = await askText('세이브 슬롯 이름', `${charInfo()?.name || 'Save'} · ${memStats(st.mem).lastTitle || ''}`.slice(0, 60));
     if (!name) return;
     const res = await storeSave(saveRecord(st, name));
-    st.linkedSave = res.meta.id; persistSoon(); render();
+    linkSlot(st, res.meta.id);
     if (res.local) toastr.warning(`"${name}"을(를) 설정에만 저장했어요. 서버 백업 실패: ${res.error?.message || ''}`);
     else toastr.success(`"${name}"에 저장했어요.`);
 }
@@ -2288,7 +2344,7 @@ async function overwriteSave(id) {
     if (!st || !old || old.auto || old.quick || !hasMemory(st.mem)) return;
     if (!(await confirmHere(`"${old.name}" 슬롯을 지금 기억으로 덮어쓸까요?`))) return;
     const res = await storeSave(saveRecord(st, old.name, id));
-    st.linkedSave = id; persistSoon(); render();
+    linkSlot(st, id);
     if (res.local) toastr.warning(`설정에만 저장했어요. 서버 백업 실패: ${res.error?.message || ''}`);
     else toastr.success(`"${old.name}"에 저장했어요.`);
 }
@@ -2343,11 +2399,14 @@ async function loadSave(id) {
         toastr.warning('서버의 채팅 파일에 이 방의 메시지가 더 있거나 첫 메시지가 달라서 이어하기를 하지 않았어요. 방을 다시 열어 주세요.', 'SavePoint', { timeOut: 12000 });
         return;
     }
-    let undoMessage = null, st = null, exact = false, carried = false, stale = false;
+    let undoMessage = null, st = null, exact = false, carried = false;
     // v0.6.60: checked again at the change's turn in the room's queue, right before it is applied: the
     // messages are still the ones the questions were about (a first message edited while the change waited
     // is never replaced), and a new #0 still has the file holding exactly the page's messages.
-    const stillAsked = pre => samePage(asked, pageSnap(), MODULE, { plain: true }) && (!insert || (chat().length <= 1 && pre?.count === chat().length
+    // v0.6.61: the room's memory is still the one the questions were about too (whether it would be replaced
+    // was part of the question); other parts of the room's state (the loot queue) are taken as they are then.
+    const memKey = s => s && hasMemory(s.mem) ? hashString(canon(s.mem)) : 'none', askedMem = memKey(cur);
+    const stillAsked = pre => memKey(state()) === askedMem && samePage(asked, pageSnap(), MODULE, { plain: true }) && (!insert || (chat().length <= 1 && pre?.count === chat().length
         && (!chat().length || (plan.greeting && sameText(chat()[0].mes, plan.greeting) && sameText(pre.first?.mes, plan.greeting)))));
     // The edited-chat mark is put back too if the load is undone (it must not outlive a cancelled load).
     // v0.6.59: on this room's own metadata object, never on whatever room is open when the undo runs.
@@ -2356,11 +2415,11 @@ async function loadSave(id) {
     // The new #0, the room's memory and the chat's "edited" mark are written by the same chat-file save,
     // so they are kept together or dropped together. The file is read back after the write (verify).
     try {
-        const ok = await transact(pre => {
+        const ok = await transact(() => {
             if (!here()) return false;
-            if (!stillAsked(pre)) { stale = true; return false; }
+            const now = state();   // the room's state at this turn (a loot added while waiting stays)
             if (insert) { undoMessage = putCarried(reply); ctx().chatMetadata.tainted = true; }
-            st = freshState({ mem, lootQueue: clone(cur?.lootQueue || []), linkedSave: save.auto || save.quick ? null : id, autoMark: chat().length - 1 });
+            st = freshState({ mem, lootQueue: clone(now?.lootQueue || []), linkedSave: save.auto || save.quick ? null : id, autoMark: chat().length - 1 });
             const p = save.pos;
             if (p && Number.isInteger(p.lastIndex) && p.lastIndex >= 0 && p.lastIndex < chat().length) {
                 const h = hashesTo(p.lastIndex);
@@ -2373,11 +2432,12 @@ async function loadSave(id) {
                 st.carry = { room: sourceRoom, index: reply.index, recorded: reply.recorded, at: Date.now() };
                 if (reply.recorded) { st.lastIndex = 0; st.hashes = hashesTo(0); st.floor = 0; }
             }
-            if (cur) st.lootQueue = restoreLostLoot(cur.lootQueue, cur.mem, st.mem, { room: key, hashes: cur.hashes, fallback: cur.undo?.lootQueue });
+            if (now) st.lootQueue = restoreLostLoot(now.lootQueue, now.mem, st.mem, { room: key, hashes: now.hashes, fallback: now.undo?.lootQueue });
             ctx().chatMetadata[MODULE] = st;
-        }, { undoable: true, undoKind: 'load', verify: true });
-        if (ok === false) return stale ? toastr.info(changedNote, 'SavePoint', { timeOut: 10000 }) : moved();
+        }, { undoable: true, undoKind: 'load', verify: true, still: pre => !here() || stillAsked(pre), stale: changedNote });
+        if (ok === false) return moved();
     } catch (e) {
+        if (e instanceof Stale) { toastr.info(e.message, 'SavePoint', { timeOut: 10000 }); return; }
         if (e instanceof Unconfirmed) {
             // Not taken back: the file may already have it. The room stops saving until a read confirms it.
             if (insert && here()) await showCarried();
@@ -2479,8 +2539,18 @@ async function deleteSave(id) {
         if (save.local) { delete localSaves()[id]; saveSettings(); }
         else await vault.remove(id);
     } catch (e) { reportError(e); return; }
-    if (state()?.linkedSave === id) { state().linkedSave = null; persistSoon(); }
+    if (state()?.linkedSave === id) linkSlot(state(), null, id);
     render();
+}
+// v0.6.61: which slot the room is linked to is part of its memory: changed through the room's queue like
+// everything else (in a room not confirmed yet the link is just not changed; the slot itself is saved).
+function linkSlot(st, id, was) {
+    render();
+    return transact(() => {
+        const cur = state();
+        if (cur !== st || (was !== undefined && cur.linkedSave !== was) || cur.linkedSave === id) return false;
+        cur.linkedSave = id;
+    }, { undoable: false, autosave: false }).catch(e => console.warn('[SavePoint] slot link not saved', e)).finally(() => render());
 }
 
 // ───────── 세이브 내보내기 / 가져오기 / 백업 찾기 / 복구 ─────────
