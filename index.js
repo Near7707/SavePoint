@@ -24,7 +24,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.56';
+const VERSION = '0.6.57';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -1531,13 +1531,13 @@ function reportText(st) {
     const c = st?.check;
     if (c && c.status !== 'running') {
         const all = c.issues || [];
-        const state = c.status === 'failed' ? `저장 후 검토 실패 (${c.reason || ''}) · 기록은 저장됨${c.stage ? ` · 단계: ${c.stage}` : ''}${c.attempts !== undefined ? ` · 요청 ${c.attempts}회` : ''}` : all.filter(x => !x.ignored).length ? `확인 필요 ${all.filter(x => !x.ignored).length}건` : '문제 없음';
+        const state = c.status === 'failed' ? `저장 후 검토 실패 (${c.reason || ''}) · 기록은 저장됨${c.stage ? ` · 단계: ${c.stage}` : ''}${c.attempts !== undefined ? ` · 요청 ${c.attempts}회` : ''}` : all.filter(x => !x.ignored && !x.fixed).length ? `확인 필요 ${all.filter(x => !x.ignored && !x.fixed).length}건` : '문제 없음';
         out.push('', `[기록 확인] ${new Date(c.at).toLocaleString()} · ${state}`);
         if (c.coverage?.batches !== undefined) out.push(`검토 요청 ${c.coverage.batches}회 · 검토 보류 ${c.coverage.deferred || 0}개 항목`);
         if (c.status === 'failed') for (const t of c.tries || []) out.push(`- ${t}`);
         if (c.coverage) out.push(`보낸 원문 ${c.coverage.sent}개 · 일부만 보냄: ${c.coverage.cut.map(n => '#' + n).join(', ') || '없음'} · 못 보냄: ${c.coverage.missing.map(n => '#' + n).join(', ') || '없음'}`);
         all.forEach((x, i) => {
-            out.push('', `${i + 1}. [${CHECK_KIND[x.kind] || x.kind}]${x.ignored ? ' (무시함)' : ''} ${ABOUT_LABEL(st.mem, x.about)}${x.also ? ` ↔ ${ABOUT_LABEL(st.mem, x.also)}` : ''}`);
+            out.push('', `${i + 1}. [${CHECK_KIND[x.kind] || x.kind}]${x.ignored ? ' (무시함)' : x.fixed ? ' (고침)' : ''} ${ABOUT_LABEL(st.mem, x.about)}${x.also ? ` ↔ ${ABOUT_LABEL(st.mem, x.also)}` : ''}`);
             out.push(`   대상: ${statementText(st.mem, x.about)}`);
             if (x.also) out.push(`   상대: ${statementText(st.mem, x.also)}`);
             out.push(`   이유: ${x.problem}`);
@@ -1586,14 +1586,35 @@ function checkHtml(st) {
     const at = new Date(c.at).toLocaleTimeString();
     if (c.status === 'running') return '';
     if (c.status === 'failed') return `<div class="sp-hud-meta"><span class="sp-warn">저장 후 기록 확인 실패 (${esc(c.reason || '')}) · 기록은 저장됨 · ${at}</span>${btn('check-rerun', '', '다시 확인')}</div>`;
-    const open = c.issues.filter(x => !x.ignored);
-    if (!open.length) return `<div class="sp-hud-meta"><span class="sp-dim">기록 확인: 문제 없음 · ${at}</span></div>`;
-    return `<details class="sp-checks" data-group="hud-checks" ${ui.savesOpen.get('hud-checks') ? 'open' : ''}><summary class="sp-warn">⚠ 확인 필요 ${open.length}건 · ${at}</summary><div class="sp-scroll">${open.map(x => `<div class="sp-check">
+    const open = c.issues.filter(x => !x.ignored && !x.fixed);
+    const fixed = c.issues.filter(x => x.fixed).length;
+    if (!open.length) return `<div class="sp-hud-meta"><span class="sp-dim">기록 확인: ${fixed ? `고침 ${fixed} · 남은 것 없음` : '문제 없음'} · ${at}</span></div>`;
+    return `<details class="sp-checks" data-group="hud-checks" ${ui.savesOpen.get('hud-checks') ? 'open' : ''}><summary class="sp-warn">⚠ 확인 필요 ${open.length}건${fixed ? ` · 고침 ${fixed}` : ''} · ${at}</summary><div class="sp-scroll">${open.map(x => `<div class="sp-check">
         <div><span class="sp-kind">${CHECK_KIND[x.kind] || '모순'}</span> <b>${esc(ABOUT_LABEL(st.mem, x.about))}</b>${x.also ? ` ↔ <b>${esc(ABOUT_LABEL(st.mem, x.also))}</b>` : ''} — ${esc(x.problem)}</div>
         ${x.gaps?.length ? `<div class="sp-gaps">판단 보류 이유: ${esc(gapText(x.gaps))}${x.was ? ` · AI 원래 판단: ${esc(CHECK_KIND[x.was] || x.was)}` : ''}</div>` : ''}
+        <div class="sp-row">${btn('check-edit', x.id, x.also ? `편집: ${ABOUT_LABEL(st.mem, x.about)}` : '편집')}${x.also ? btn('check-edit-also', x.id, `편집: ${ABOUT_LABEL(st.mem, x.also)}`) : ''}${btn('check-ignore', x.id, '무시')}</div>
         ${x.conflict.map(t => `<div class="sp-quote">“${esc(t)}”</div>`).join('')}
         ${x.excerpt.map(t => `<div class="sp-excerpt">${esc(t)}</div>`).join('')}
-        <div class="sp-row">${btn('check-edit', x.id, x.also ? `편집: ${ABOUT_LABEL(st.mem, x.about)}` : '편집')}${x.also ? btn('check-edit-also', x.id, `편집: ${ABOUT_LABEL(st.mem, x.also)}`) : ''}${btn('check-ignore', x.id, '무시')}</div></div>`).join('')}</div></details>`;
+</div>`).join('')}</div></details>`;
+}
+// v0.6.57: 편집 from a check opens that item's edit form in its tab, folds the status area so the form is
+// visible, and comes back to the remaining checks when the form closes. A saved change marks the check fixed.
+function editFromCheck(st, x, about) {
+    ui.checkEdit = { st, issue: x, kind: null, id: null };
+    ui.edit = null;
+    editAbout(about);
+    if (!ui.edit) { ui.checkEdit = null; return render(true); }
+    ui.checkEdit.kind = ui.edit.kind; ui.checkEdit.id = ui.edit.id;
+    ui.editFocus = true;
+    return render(true);
+}
+function backToChecks(fixed = false) {
+    const c = ui.checkEdit;
+    if (!c) return;
+    ui.checkEdit = null;
+    if (state() !== c.st) return;
+    if (fixed && c.st.check?.issues.includes(c.issue)) { c.issue.fixed = true; persistSoon(); }
+    ui.savesOpen.set('hud-checks', true);
 }
 function editAbout(about) {
     const mem = state().mem;
@@ -2206,7 +2227,7 @@ async function toggleKeep(index) {
         }
         paintKeep(); throw e;
     }
-    paintKeep();
+    paintKeep(); if (ui.open) render(true);
     toastr.info(on ? '🔖 원문 유지: 이 메시지는 하이드하지 않아요. 기록은 평소처럼 해요.'
         : hideModeOf(settings()) === 'manual' ? '🔖 원문 유지를 껐어요. 다음에 👻 하이드를 누를 때 함께 숨겨요.' : '🔖 원문 유지를 껐어요.', 'SavePoint');
 }
@@ -2215,6 +2236,42 @@ function repairKeep(index) {
     const m = chat()[Number(index)];
     if (!m || kept(m) || !(Array.isArray(m.swipe_info) && m.swipe_info.some(x => x?.extra?.[KEEP_KEY]))) return false;
     setKeep(m, true); saveChatSoon(); return true;
+}
+// v0.6.57: the 🔖 list in the status area — go to a message, turn one off, or turn all off.
+function keepListHtml() {
+    const rows = chat().map((m, i) => kept(m) ? i : -1).filter(i => i >= 0);
+    return `<div class="sp-keeplist"><div class="sp-scroll">${rows.map(i => {
+        const m = chat()[i], t = String(msgText(m) ?? "").trim().replace(/\s+/g, ' ');
+        return `<div class="sp-keep-row"><span class="grow"><b>#${i}</b> ${esc(speaker(m))}: <span class="sp-dim">${esc(t.length > 60 ? t.slice(0, 60) + '…' : t)}</span></span>${btn('keep-go', String(i), '이동', '채팅에서 이 메시지로 가요')}${btn('keep-off', String(i), '해제', '원문 유지 끄기')}</div>`;
+    }).join('')}</div>${rows.length > 1 ? `<div class="sp-row sp-keep-foot">${btn('keep-off-all', '', `모두 해제 (${rows.length})`)}</div>` : ''}</div>`;
+}
+function goToMessage(i) {
+    const el = typeof document !== 'undefined' && document.querySelector(`#chat .mes[mesid="${i}"]`);
+    if (!el) return toastr.info(`#${i}은 지금 채팅 화면에 불러오지 않은 메시지예요. 위로 올려서 불러온 뒤 다시 눌러 주세요.`, 'SavePoint');
+    closeWindow();
+    el.scrollIntoView?.({ block: 'center' });
+    el.classList.add('sp-focus'); setTimeout(() => el.classList.remove('sp-focus'), 1800);
+}
+async function keepOffAll() {
+    if (!hasChat() || !settings().enabled) return;
+    const list = chat().filter(kept);
+    if (!list.length) return;
+    if (!(await confirmHere(`🔖 원문 유지 ${list.length}개를 모두 해제할까요? ${hideModeOf(settings()) === 'manual' ? '다음에 👻 하이드를 누를 때 함께 숨겨요.' : '저장된 원문은 바로 하이드돼요.'}`,
+        () => chat().filter(kept).length === list.length && list.every(kept)))) return;
+    const swipes = list.flatMap(m => (Array.isArray(m.swipe_info) ? m.swipe_info : []).map(x => x && typeof x === 'object'
+        ? { x, hadExtra: Object.hasOwn(x, 'extra'), had: !!x.extra && Object.hasOwn(x.extra, KEEP_KEY), v: x.extra?.[KEEP_KEY] } : null));
+    try {
+        await transact(() => { for (const m of list) setKeep(m, false); }, { undoable: false, autosave: false, snapshot: true });
+    } catch (e) {
+        for (const w of swipes) {
+            if (!w) continue;
+            if (!w.hadExtra) delete w.x.extra;
+            else if (w.had) w.x.extra[KEEP_KEY] = w.v; else delete w.x.extra?.[KEEP_KEY];
+        }
+        paintKeep(); render(); throw e;
+    }
+    paintKeep(); ui.keepList = false; render(true);
+    toastr.info(`🔖 원문 유지 ${list.length}개를 해제했어요.`, 'SavePoint');
 }
 const KEEP_BUTTON = '<div class="mes_button sp-keep-btn interactable" role="button" tabindex="0" title="🔖 원문 유지 (하이드하지 않기)">🔖</div>';
 // The "…" menu button (on the message template for new messages, and on those already shown) and
@@ -2303,7 +2360,7 @@ function openWindow() {
     $('#sp_overlay').css('display', 'flex');
     render(true);
 }
-function closeWindow() { tabResizeObserver?.disconnect(); ui.open = false; ui.edit = null; ui.revealFailure = false; $('#sp_overlay').hide(); updateSaveBanner(); }
+function closeWindow() { tabResizeObserver?.disconnect(); ui.open = false; ui.edit = null; ui.checkEdit = null; ui.revealFailure = false; $('#sp_overlay').hide(); updateSaveBanner(); }
 
 // Checks one excerpt against its message and builds the queue item. The excerpt may come from the
 // original or, when a translator shows a translation instead, from that on-screen translation.
@@ -3187,7 +3244,7 @@ function hudHtml(st) {
     // A checkpoint failure is also the last failure; the same one is counted once.
     const sameFailure = st?.autoFail?.failureId && st.autoFail.failureId === ui.lastError?.failureId;
     const fails = (st?.autoFail ? 1 : 0) + (ui.lastError && !sameFailure ? 1 : 0), lootFails = (st?.lootQueue || []).filter(x => x.error?.startsWith('반영 실패')).length;
-    const issues = st?.check && st.check.status !== 'running' && settings().check ? st.check.status === 'failed' ? 1 : st.check.issues.filter(x => !x.ignored).length : 0;
+    const issues = st?.check && st.check.status !== 'running' && settings().check ? st.check.status === 'failed' ? 1 : st.check.issues.filter(x => !x.ignored && !x.fixed).length : 0;
     const interrupted = interruptedNote(st);
     const alerting = fails || lootFails || issues || ui.inj?.pinOverflow || interrupted;
     const chip = [`미저장 ${pending}`, injectionStatus, ...(st?.lootQueue?.length ? [`⏳ ${st.lootQueue.length}`] : []), ...(fails ? [`⚠ 실패 ${fails}`] : []),
@@ -3200,7 +3257,8 @@ function hudHtml(st) {
         ${review}
         <div class="sp-hud-more">
         ${storyTimeContext(st?.mem || {}, 'ko') ? `<div class="sp-hud-time">마지막 저장 기준 · ${esc(storyTimeContext(st.mem, 'ko'))}</div>` : ''}
-        <div class="sp-hud-meta"><span>미저장 <b>${pending}</b></span>${btn('tab', 'queue', `⏳ 대기열 ${st?.lootQueue?.length || 0}개`)}${returnNotices(st).length ? btn('tab', 'main', `📦 복귀 확인 ${returnNotices(st).length}`, '보관함 물건이 이야기에서 다시 쓰였어요', 'sp-on') : ''}<span>${esc(injectionStatus)}</span><span>요약 AI: ${esc(profileLabel())}</span>${keptCount() ? `<span title="SavePoint가 하이드하지 않는 메시지 (메시지 … 메뉴의 🔖)">🔖 원문 유지 ${keptCount()}개</span>` : ''}${ui.inj?.pinOverflow ? `<span class="sp-warn">⚓ ${ui.inj.pinMissing}개 주입 못 함</span>` : ''}</div>
+        <div class="sp-hud-meta"><span>미저장 <b>${pending}</b></span>${btn('tab', 'queue', `⏳ 대기열 ${st?.lootQueue?.length || 0}개`)}${returnNotices(st).length ? btn('tab', 'main', `📦 복귀 확인 ${returnNotices(st).length}`, '보관함 물건이 이야기에서 다시 쓰였어요', 'sp-on') : ''}<span>${esc(injectionStatus)}</span><span>요약 AI: ${esc(profileLabel())}</span>${keptCount() ? btn('keep-list', '', `🔖 원문 유지 ${keptCount()}개 ${ui.keepList ? '▴' : '▾'}`, 'SavePoint가 하이드하지 않는 메시지 · 눌러서 목록 보기·해제', ui.keepList ? 'sp-on' : '') : ''}${ui.inj?.pinOverflow ? `<span class="sp-warn">⚓ ${ui.inj.pinMissing}개 주입 못 함</span>` : ''}</div>
+        ${ui.keepList && keptCount() ? keepListHtml() : ''}
         <div class="sp-hud-meta sp-auto-line">${autoLine}${autoLast}${lastRecord}</div>
         ${interrupted && !busy ? `<div class="sp-hud-meta"><span class="sp-warn">⚠ 지난 저장이 방을 옮기면서 중간에 멈췄어요 (#${interrupted.from}부터 미저장)</span>${btn('run', '', '퀵세이브로 이어서')}</div>` : ''}
         ${autoFailHtml(st)}
@@ -3224,6 +3282,8 @@ function hudHtml(st) {
 // screens and folded on phones.
 function hudOpen() {
     if (ui.revealFailure) return true;
+    // v0.6.57: editing from a check folds the status area for a while (the saved choice is untouched).
+    if (ui.checkEdit) return false;
     const v = settings().hudOpen;
     return typeof v === 'boolean' ? v : !(typeof window !== 'undefined' && window.innerWidth <= 700);
 }
@@ -3287,6 +3347,8 @@ function render(force = false) {
     const scrollKey = JSON.stringify([roomKey(), ui.tab]);
     const scroll = ui.scrollPositions.get(scrollKey) ?? 0;
     const tabScroll = win.find('.sp-tabs').scrollLeft() || 0;
+    // v0.6.57: the quick settings panel keeps its own scroll across redraws (a changed value redraws the window).
+    const qsScroll = win.find('.sp-qs').scrollTop() || 0;
     const counts = st ? {
         queue: st.lootQueue?.length || 0, journal: st.mem.scenes.length, quests: st.mem.records.filter(r => r.type === 'quest' && r.status === 'open' && !r.track).length,
         party: st.mem.entities.filter(e => e.type === 'person').length, items: st.mem.records.filter(r => r.type === 'item' && !r.stored).length,
@@ -3313,8 +3375,21 @@ function render(force = false) {
         <div class="sp-tab-nav"><button type="button" class="sp-tab-arrow" data-tab-scroll="prev" aria-label="이전 탭 보기" title="이전 탭 보기">‹</button><div class="sp-tabs">${tabs}</div><button type="button" class="sp-tab-arrow" data-tab-scroll="next" aria-label="다음 탭 보기" title="다음 탭 보기">›</button></div>
         <div class="sp-body" data-scroll-key="${esc(scrollKey)}">${body}</div>`);
     win.find('.sp-body').scrollTop(scroll);
+    if (qsScroll) win.find('.sp-qs').scrollTop(qsScroll);
     installTabNavigation(win.find('.sp-tab-nav .sp-tabs')[0], tabScroll);
     // A jump from the timeline: bring that part or quest into view and mark it briefly.
+    if (ui.editFocus) {
+        ui.editFocus = false;
+        const form = win.find('.sp-body .sp-edit')[0];
+        if (form) {
+            for (let d = form.closest('details'); d; d = d.parentElement?.closest('details')) {
+                d.open = true;
+                if (d.dataset.group) ui.savesOpen.set(d.dataset.group, true);
+            }
+            form.scrollIntoView?.({ block: 'center' });
+            form.querySelector('textarea, input')?.focus?.({ preventScroll: true });
+        } else if (ui.checkEdit) { ui.checkEdit = null; ui.edit = null; toastr.info('이 탭에서 그 항목을 찾지 못했어요. 직접 찾아서 고쳐 주세요.'); render(true); return; }
+    }
     if (ui.focus) {
         const el = document.getElementById(ui.focus);
         ui.focus = null;
@@ -3352,6 +3427,15 @@ function startEdit(kind, id) {
 async function saveEdit() {
     const e = ui.edit;
     if (!e) return;
+    const fromCheck = ui.checkEdit && ui.checkEdit.kind === e.kind && ui.checkEdit.id === e.id;
+    const changed = JSON.stringify(e.values) !== JSON.stringify(e.orig);
+    let r;
+    try { r = await saveEditInner(e); }
+    catch (err) { if (fromCheck && !ui.edit) { backToChecks(false); render(true); } throw err; }
+    if (fromCheck && !ui.edit) { backToChecks(changed); render(true); }
+    return r;
+}
+async function saveEditInner(e) {
     const v = e.values;
     if (e.kind === 'segtime') {
         if (ui.run) { toastr.info('저장 작업이 끝난 뒤 시간을 수정해 주세요.'); return; }
@@ -3426,13 +3510,15 @@ async function handle(act, id) {
     const st = state();
     switch (act) {
         case 'close': return closeWindow();
-        case 'hud-toggle': settings().hudOpen = !hudOpen(); ui.revealFailure = false; saveSettings(); return render(true);
+        case 'hud-toggle':
+            if (ui.checkEdit) { ui.checkEdit = null; return render(true); }
+            settings().hudOpen = !hudOpen(); ui.revealFailure = false; saveSettings(); return render(true);
         case 'tab':
             // The loot queue moved into 💠 메인; old shortcuts open it there.
             if (id === 'queue') { ui.tab = 'main'; ui.savesOpen.set('main-queue', true); ui.edit = null; return render(true); }
             // A tab chosen before the window first opens in this room wins over the "first tab" setting.
             ui.roomTabs ||= new Map(); if (hasChat()) { ui.roomTabs.set(roomKey(), id); ui.tabRoom = roomKey(); }
-            ui.tab = id; ui.edit = null; if (id === 'inject') refreshInjection(); return render(true);
+            ui.tab = id; ui.edit = null; ui.checkEdit = null; if (id === 'inject') refreshInjection(); return render(true);
         case 'loot-retry': return retryLoot(id);
         case 'loot-delete':
             if (ui.run) return;
@@ -3461,7 +3547,7 @@ async function handle(act, id) {
         case 'qs-full': { ui.qs = false; closeWindow(); openFullSettings(); return; }
         case 'test-connection': return testConnection();
         case 'review-accept': return acceptCurrentSource();
-        case 'edit-cancel': ui.edit = null; return render(true);
+        case 'edit-cancel': ui.edit = null; backToChecks(); return render(true);
         case 'edit-save': return saveEdit();
         case 'edit-scene': return startEdit('scene', id);
         case 'edit-point': return startEdit('point', id);
@@ -3526,10 +3612,14 @@ async function handle(act, id) {
               if (!(await confirmHere('이 장면을 저널에서 지울까요? 상태 탭의 항목은 그대로 남아요. (리와인드로 되돌릴 수 없어요)', () => sig !== 'null' && JSON.stringify(state()?.mem.scenes.find(x => x.id === id) ?? null) === sig))) return; }
             return commitEdit(m => { m.scenes = m.scenes.filter(x => x.id !== id); });
         case 'check-ignore': { const x = st?.check?.issues.find(i => i.id === id); if (x) { x.ignored = true; persistSoon(); } return render(true); }
-        case 'check-edit': { const x = st?.check?.issues.find(i => i.id === id); return x ? editAbout(x.about) : undefined; }
+        case 'check-edit': { const x = st?.check?.issues.find(i => i.id === id); return x ? editFromCheck(st, x, x.about) : undefined; }
         case 'copy-report': return copyReport();
         case 'copy-close': ui.copyText = null; return render();
-        case 'check-edit-also': { const x = st?.check?.issues.find(i => i.id === id); return x?.also ? editAbout(x.also) : undefined; }
+        case 'check-edit-also': { const x = st?.check?.issues.find(i => i.id === id); return x?.also ? editFromCheck(st, x, x.also) : undefined; }
+        case 'keep-list': ui.keepList = !ui.keepList; return render(true);
+        case 'keep-go': return goToMessage(Number(id));
+        case 'keep-off': return chat()[Number(id)] && kept(chat()[Number(id)]) ? toggleKeep(Number(id)) : render(true);
+        case 'keep-off-all': return keepOffAll();
         case 'check-rerun': return st?.check?.scope ? runCheck(st, st.check.scope) : undefined;
         case 'key-toggle': return commitEdit(m => {
             const { p } = findPoint(m, id);
@@ -3968,7 +4058,7 @@ function onChatChanged() {
     roomEpoch++; cancelRun(); clearTimeout(autoTimer);
     noteLeftDuringRun(leaving);
     clearTimeout(persistTimer); clearTimeout(chatSaveTimer); clearTimeout(sourceTimer);
-    ui.edit = null; ui.lastError = null; ui.lastFix = null; mainGenerating = false;
+    ui.edit = null; ui.checkEdit = null; ui.lastError = null; ui.lastFix = null; mainGenerating = false;
     document.querySelector?.('#sp_loot_dialog')?.close();
     if (hasChat()) {
         const st = state();

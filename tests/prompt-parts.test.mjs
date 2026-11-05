@@ -15,3 +15,12 @@ test('request sections add up exactly to the request, with and without a batch n
         assert.equal(!!parts.note, !!note);
     }
 });
+
+// v0.6.57: the record check judges meaning, not wording, but still catches changes that steer the story.
+import { buildCheckPrompt as checkRule } from '../prompts.js';
+test('record check: same core meaning passes; settledness, intent, relation, ownership and result changes are reported', () => {
+    const p = checkRule({ names: {}, records: 'r1: Bo suspects Ari already thought about opening the box.', journal: '', messages: '#1 Bo: "You wrote that down, which means you already thought about it."' });
+    assert.match(p, /Judge meaning, not wording/);
+    assert.match(p, /Never report a statement only because its exact words do not appear/);
+    for (const k of ['suspects vs knows', 'offered vs accepted', 'intent', 'a relationship', 'holding something for now vs owning it', 'a result']) assert.ok(p.includes(k), k);
+});

@@ -79,7 +79,17 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(id => __savePoint.handle('check-edit', id), issueId);
     r = await ev(() => ({ edit: __savePoint.ui.edit?.kind, open: $('.sp-more[open] .sp-edit').length }));
     ok(r.edit === 'segoutline' && r.open === 1, '3. 편집 → 해당 구간 개요 편집이 바로 열림');
+    r = await ev(() => ({ fold: !$('.sp-hud-more').is(':visible'), tab: __savePoint.ui.tab, setting: M.settings.savePoint.hudOpen }));
+    ok(r.fold && r.tab === 'journal', `3. ★ 편집하는 동안 상태칸이 접혀서 편집창이 보임 (${JSON.stringify(r)})`);
     await ev(() => __savePoint.handle('edit-cancel'));
+    r = await ev(() => ({ more: $('.sp-hud-more').is(':visible'), open: $('.sp-checks').prop('open'), n: $('.sp-check').length, hud: $('.sp-checks summary').text() }));
+    ok(r.more && r.open && r.n === 1 && !r.hud.includes('고침'), `3. ★ 취소하면 검토 목록으로 돌아오고 항목은 그대로 (${JSON.stringify(r)})`);
+    await ev(id => __savePoint.handle('check-edit', id), issueId);
+    await ev(() => { __savePoint.ui.edit.values.outline += ' (fixed by hand)'; return __savePoint.handle('edit-save'); });
+    await page.waitForTimeout(200);
+    r = await ev(() => ({ more: $('.sp-hud-more').is(':visible'), hud: $('.sp-hud').text(), fixed: __savePoint.state().check.issues[0].fixed, edit: __savePoint.ui.edit }));
+    ok(r.more && r.fixed === true && r.hud.includes('고침 1') && !r.edit, `3. ★ 고쳐서 저장하면 "고침"으로 빠지고 상태칸으로 돌아옴 (${r.hud.match(/기록 확인[^·]*·[^·]*/)?.[0]})`);
+    await ev(() => { __savePoint.state().check.issues[0].fixed = false; __savePoint.render(true); });
     await ev(id => __savePoint.handle('check-ignore', id), issueId);
     ok(!(await ev(() => $('.sp-checks').length)), '3. 무시하면 경고가 사라짐');
     await ev(() => { M.checkIssues = false; });
@@ -145,6 +155,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
             id: 'c' + i, about: st.mem.scenes[0].segs[0].id, kind: 'misread', problem: 'Problem number ' + i + ' '.repeat(3) + 'x'.repeat(120), conflict: ['a sentence', 'another sentence'], msgs: [1], excerpt: ['#1 Ari: some original text '.repeat(4)], ignored: false })) };
         __savePoint.ui.lastError = { at: Date.now(), range: '#0–#55', detail: Array.from({ length: 30 }, (_, i) => `changes[${i}].holder "${i % 2 ? 'Theo' : 'Mara'}" is not a known entity id or a ref declared in "entities".`).concat(Array.from({ length: 25 }, (_, i) => `scenes[0].points[${i}] needs "text".`)) };
         M.settings.savePoint.check = true;
+        __savePoint.ui.savesOpen.delete('hud-checks');
         __savePoint.render(true);
     });
     await page.click('.sp-checks > summary');

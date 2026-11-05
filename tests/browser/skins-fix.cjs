@@ -61,6 +61,20 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         ok(r.mode === 'manual' && r.at && r.full === 'manual', `${width}px 1. 빠른 설정에서 수동으로 → 전체 설정과 같음 (${JSON.stringify(r)})`);
         await ev(() => { const sel = document.querySelector('#sp_overlay [data-qs="hideMode"]'); sel.value = 'off'; $(sel).trigger('change'); });
         ok(await ev(() => !document.querySelector('#sp_overlay [data-qs="keepRecent"]') && M.chat.every(m => !m.is_system)), `${width}px 1. 끔 → 최근 N개 칸 숨김, 숨긴 원문 다시 표시`);
+        // v0.6.57: with "더 보기" open the panel keeps a capped height and scrolls inside; the window under it stays usable.
+        await ev(() => { const sel = document.querySelector('#sp_overlay [data-qs="hideMode"]'); sel.value = 'manual'; $(sel).trigger('change'); });
+        await page.waitForTimeout(150);
+        if (!(await ev(() => document.querySelector('#sp_overlay .sp-qs details').open))) await page.click('#sp_overlay .sp-qs details > summary');
+        await page.waitForTimeout(150);
+        r = await ev(() => { const q = document.querySelector('#sp_overlay .sp-qs'), w = document.querySelector('#sp_overlay .sp-window'), b = w.querySelector('.sp-body');
+            return { qh: q.clientHeight, sh: q.scrollHeight, wh: w.clientHeight, vh: innerHeight, body: b.getBoundingClientRect().height, head: getComputedStyle(q.querySelector('.sp-qs-h')).position }; });
+        ok(r.qh <= r.vh * 0.72 && r.sh > r.qh && (width > 560 || (r.qh <= r.vh * 0.46 && r.body > 60)) && r.head === 'sticky', `${width}px 1. ★ 빠른 설정 높이 제한·안에서 스크롤, 아래 창이 남음 (${JSON.stringify(r)})`);
+        const qbox = await page.locator('#sp_overlay .sp-qs').boundingBox();
+        await page.mouse.move(qbox.x + 12, qbox.y + qbox.height / 2); await page.mouse.wheel(0, 600); await page.waitForTimeout(300);
+        await ev(() => __savePoint.render(true));
+        r = await ev(() => { const q = document.querySelector('#sp_overlay .sp-qs'); const h = q.querySelector('.sp-qs-h').getBoundingClientRect(), qb = q.getBoundingClientRect(); return { top: q.scrollTop, headIn: h.top >= qb.top - 1 && h.bottom <= qb.bottom }; });
+        ok(r.top > 50 && r.headIn, `${width}px 1. ★ 빠른 설정이 실제로 스크롤되고(다시 그려도 그대로) ✕ 줄은 위에 남음 (${JSON.stringify(r)})`);
+        if (SHOTS) await page.screenshot({ path: path.join(OUT, `qs-${width}.png`) });
         await ev(() => __savePoint.handle('qs'));
 
         // 2. 스토리 콘솔: the scene title takes at most two lines over the picture (wide screens)

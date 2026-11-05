@@ -110,6 +110,29 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     // 8. the off option says what it does
     ok(await ev(() => [...document.querySelectorAll('#sp_settings [data-set=hideMode] option')].some(o => o.value === 'off' && o.textContent === '끔 · 숨긴 원문 다시 표시')), '8. 끔 설명: 숨긴 원문 다시 표시');
 
+    // 9. v0.6.57: the 🔖 list in the status area — go to, turn one off, turn all off (manual mode)
+    await click(2); await click(3); await click(6); await page.waitForTimeout(300);
+    await ev(() => $('#sp_wand').trigger('click'));
+    await ev(() => __savePoint.handle('keep-list'));
+    r = await ev(() => ({ rows: $('.sp-keep-row').map((i, e) => e.querySelector('b').textContent).get(), all: $('[data-act="keep-off-all"]').text() }));
+    ok(r.rows.join() === '#2,#3,#6' && r.all.includes('3'), `9. 🔖 목록: 번호·이동·해제·모두 해제 (${JSON.stringify(r)})`);
+    await ev(() => __savePoint.handle('keep-off', '3'));
+    await page.waitForTimeout(300);
+    r = await ev(() => ({ rows: $('.sp-keep-row').length, kept3: !!M.chat[3].extra.savepointKeep, mark: !!document.querySelector('#chat .mes[mesid="3"] .sp-keep-mark') }));
+    ok(r.rows === 2 && !r.kept3 && !r.mark, `9. 해제 하나: 목록에서 빠지고 메시지 표시도 사라짐 (${JSON.stringify(r)})`);
+    await ev(() => __savePoint.handle('keep-go', '6'));
+    r = await ev(() => ({ closed: !$('#sp_overlay').is(':visible'), focus: document.querySelector('#chat .mes[mesid="6"]').classList.contains('sp-focus') }));
+    ok(r.closed && r.focus, `9. 이동: 창을 닫고 그 메시지로 감 (${JSON.stringify(r)})`);
+    await ev(() => $('#sp_wand').trigger('click'));
+    await ev(() => { M.confirm = false; });
+    await ev(() => __savePoint.handle('keep-off-all')); await page.waitForTimeout(200);
+    ok((await ev(() => M.chat.filter(m => m.extra?.savepointKeep).length)) === 2, '9. 모두 해제: 확인창에서 취소하면 그대로');
+    await ev(() => { M.confirm = true; });
+    await ev(() => __savePoint.handle('keep-off-all')); await page.waitForTimeout(300);
+    r = await ev(() => ({ left: M.chat.filter(m => m.extra?.savepointKeep || m.swipe_info?.some(x => x?.extra?.savepointKeep)).length, list: $('.sp-keeplist').length, hud: $('.sp-hud').text().includes('원문 유지'), popup: M.popups.at(-1) }));
+    ok(!r.left && !r.list && !r.hud && /모두 해제/.test(r.popup || ''), `9. 모두 해제: 확인 후 전부 꺼짐 (${JSON.stringify(r)})`);
+    await ev(() => $('#sp_overlay').hide());
+
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();

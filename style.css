@@ -920,6 +920,11 @@ details.sp-st-alert[open] > summary { margin-bottom: 6px; }
 .sp-qs-check { display: flex; align-items: center; gap: 6px; }
 .sp-qs-foot { justify-content: flex-end; }
 @media (min-width: 561px) { .sp-qs { position: absolute; right: 12px; top: 52px; width: 300px; z-index: 5; background: var(--sp-bg); box-shadow: 0 12px 30px rgba(0,0,0,.35); } #sp_overlay .sp-window { position: relative; } }
+/* v0.6.57: quick settings never take the whole window — capped height, scrolls inside (phone and PC). */
+.sp-qs { flex: 0 0 auto; min-height: 0; max-height: 46vh; max-height: 46dvh; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; touch-action: pan-y; }
+.sp-qs-h { position: sticky; top: -10px; z-index: 1; margin: -10px -12px 0; padding: 8px 12px; background: var(--sp-bg); border-bottom: 1px solid var(--sp-line); }
+@media (max-width: 560px) { .sp-qs { max-height: 42vh; max-height: 42dvh; gap: 6px; padding: 10px 10px 8px; margin: 0 6px 6px; font-size: 12.5px; } .sp-qs-h { margin: -10px -10px 0; padding: 6px 10px; } }
+@media (min-width: 561px) { .sp-qs { max-height: min(70vh, calc(100% - 64px)); } }
 
 /* v0.6.38: 🌐 원문/번역 with an optional small "+N" (fill missing translations) beside it. */
 .sp-langwrap { display: inline-flex; gap: 3px; flex: 0 1 auto; min-width: 0; }
@@ -1035,3 +1040,13 @@ details.sp-st-alert[open] > summary { margin-bottom: 6px; }
 .sp-actions .sp-langwrap .sp-langbtn { width: 100%; }
 .sp-hide-n { display: inline-block; min-width: 3ch; text-align: left; font-variant-numeric: tabular-nums; }
 .sp-scene-close { margin: 6px 0 2px; }
+
+/* v0.6.57: 🔖 원문 유지 list in the status area. */
+.sp-keeplist { margin: 4px 0 6px; padding: 6px 8px; border: 1px solid var(--sp-line); border-radius: 8px; background: var(--sp-panel); font-size: 12.5px; }
+.sp-keeplist .sp-scroll { max-height: 22vh; max-height: 22dvh; }
+.sp-keep-row { display: flex; align-items: center; gap: 6px; padding: 3px 0; border-bottom: 1px dashed var(--sp-line); }
+.sp-keep-row:last-child { border-bottom: none; }
+.sp-keep-row .grow { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-keep-row .sp-btn { flex: 0 0 auto; }
+.sp-keep-foot { justify-content: flex-end; margin-top: 4px; }
+#chat .mes.sp-focus { outline: 2px solid #f0b45c; outline-offset: -2px; }
