@@ -87,7 +87,7 @@ test('legacy import/export and history restoration normalize without changing ev
 test('opening old chat metadata persists cleanup once, including a restored undo snapshot', () => {
     const meta = { savePoint: { v: 1, mem: fixture() } }; let saves = 0;
     const state = vm.runInNewContext(section('function state() {', '\nfunction freshState') + ';state', {
-        ...core, upgradeStoryTimes, ui: {}, MODULE: 'savePoint', ctx: () => ({ chatMetadata: meta }), persistSoon: () => saves++,
+        ...core, upgradeStoryTimes, ui: {}, MODULE: 'savePoint', gateOpen: () => true, ctx: () => ({ chatMetadata: meta }), persistSoon: () => saves++,
     });
     state(); state();
     assert.equal(saves, 1);
@@ -103,8 +103,8 @@ test('real translation and manual-edit entry points normalize their stored resul
     translate(mem, 'r1|rec', '테오: 피곤함');
     assert.equal(mem.records[0].ko, '피곤함');
     const st = { mem };
-    const commitEdit = vm.runInNewContext(section('async function commitEdit(', '\nasync function undo') + ';commitEdit', {
-        ...core, hasChat: () => true, ensureState: () => st, clone: structuredClone,
+    const commitEdit = vm.runInNewContext(section('// v0.6.47: what an item without an id is', '\nfunction persistSoon') + section('async function commitEdit(', '\nasync function undo') + ';commitEdit', {
+        ...core, hasChat: () => true, ensureState: () => st, state: () => st, clone: structuredClone,
         transact: async change => { change(); return true; }, pushHistory() {},
     });
     await commitEdit(next => { next.records[0].text = 'Theo: rested'; });

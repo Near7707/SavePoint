@@ -5,10 +5,10 @@ export function gateBox() {
     class Unconfirmed extends Error {}
     class RoomBlocked extends Error {}
     return {
-        gate: { unsure: null, status: 'ready' }, OWN_KEYS: [], Unconfirmed, RoomBlocked,
-        gateOpen: () => true, roomReady: async () => true, gateMessage: () => '', blockRoom() {}, warnBlocked() {}, markUnsure() {}, confirmUnsure: async () => true,
+        gate: { unsure: null, status: 'ready', seen: null, why: '' }, SESSION: 'test', OWN_KEYS: [], Unconfirmed, RoomBlocked,
+        gateOpen: () => true, gateHere: () => true, roomReady: async () => true, gateMessage: () => '', blockRoom() {}, warnBlocked() {}, markUnsure() {}, confirmUnsure: async () => true,
         serverCovered: async () => ({ ok: true, snap: null, rev: null, count: 0 }), readServerChat: async () => ({ ok: true, snap: null, rev: null, count: 0 }),
-        pageBase: () => null, pageSnap: () => null, plainHash: () => '', snapshot: () => ({ meta: {} }), writeResult: () => 'ok', samePage: () => true,
-        cancelMoved: () => new Error('moved'),
+        pageSnap: () => null, snapshot: () => ({ meta: {} }), writeResult: () => 'ok', samePage: () => true,
+        cancelMoved: () => new Error('moved'), queueIdle: async () => true,
     };
 }

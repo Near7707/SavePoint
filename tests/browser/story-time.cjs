@@ -93,7 +93,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const beforeEditCalls=r.calls;
     await ev(()=>__savePoint.handle('edit-segtime','s1|g1'));
     await page.fill('[data-edit=date]','2026-10-26');
-    await page.click('[data-act=edit-save]');
+    await page.click('[data-act=edit-save]');await page.waitForTimeout(200);
     r=await ev(()=>({mem:__savePoint.state().mem,calls:M.calls.length,text:$('.sp-window').text(),injection:M.prompts.savepoint.v}));
     ok(r.calls === beforeEditCalls && r.mem.scenes[0].segs[0].time.end.certainty === 'manual' && r.injection.includes('Last recorded story time: 2026-10-27'), '3. 직접 지정은 호출 없이 보호되고 이후 연결 시간만 재계산');
     await ev(()=>__savePoint.handle('edit-scene','s1'));
@@ -130,7 +130,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const lastGid=await ev(()=>__savePoint.state().mem.scenes[0].segs.at(-1).id);
     await ev(gid=>__savePoint.handle('edit-segtime','s1|'+gid),lastGid);
     ok(await page.inputValue('[data-edit=day]')==='','10. 미확인 구간의 일 수 편집은 빈칸');
-    await page.selectOption('[data-edit=period]','night');await page.click('[data-act=edit-save]');
+    await page.selectOption('[data-edit=period]','night');await page.click('[data-act=edit-save]');await page.waitForTimeout(200);   // v0.6.59: applied after the file check
     r=await ev(()=>({t:__savePoint.state().mem.scenes[0].segs.at(-1).time.end,injection:M.prompts.savepoint.v}));
     ok(r.t.day===null&&r.t.certainty==='manual'&&r.injection.includes('Last recorded story time: unknown date · night'),'10. 밤만 직접 지정해도 1일째를 만들지 않음');
     await ev(()=>{M.timeCase='bad';M.add(2,()=> 'No usable date.');});await ev(()=>__savePoint.handle('run'));
@@ -164,7 +164,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(()=>{M.timeCase='bad-count';M.add(2,()=> '그날 밤 우리는 다음에 만나자고 했다.');});await ev(()=>__savePoint.handle('run'));
     ok(await ev(()=>__savePoint.state().mem.scenes.at(-1).segs.at(-1).time.end.certainty==='unconfirmed'),'14. 다음이라는 조각만으로 +3일을 확정하지 않음');
     await ev(()=>{const s=__savePoint.state().mem.scenes.at(-1);return __savePoint.handle('edit-segtime',s.id+'|'+s.segs.at(-1).id);});
-    await page.fill('[data-edit=date]','2026-10-28');await page.click('[data-act=edit-save]');
+    await page.fill('[data-edit=date]','2026-10-28');await page.click('[data-act=edit-save]');await page.waitForTimeout(200);
     const beforeWeekCalls=await ev(()=>M.calls.length);
     await ev(()=>{M.timeCase='week';M.add(2,()=> '일주일 뒤, 다시 길을 나섰다.');});await ev(()=>__savePoint.handle('run'));
     r=await ev(()=>({t:__savePoint.state().mem.scenes.at(-1).segs.at(-1).time.end,calls:M.calls.length,injection:M.prompts.savepoint.v}));

@@ -113,7 +113,9 @@ window.SillyTavern = {
         get characters() { return M.characters; }, characterId: 0, groups: [],
         name1: 'Me', name2: 'Ari',
         get chat() { return M.chat; }, get chatMetadata() { return M.meta; },
-        async saveMetadata() { if (M.metaDelay) await new Promise(r => setTimeout(r, M.metaDelay)); if (M.failMeta) throw new Error('disk full'); if (M.failOnce) { M.failOnce = false; throw new Error('disk full once'); } if (M.failNth) { M.failNth--; if (!M.failNth) throw new Error('disk full nth'); } if (M.swallowMeta) { M.swallowed = (M.swallowed || 0) + 1; if (M.readFailAfterSave) M.serverError = true; return; } M.saves = (M.saves || 0) + 1; M.writeServerChat(); if (M.readFailAfterSave) M.serverError = true; },
+        // v0.6.59: two writes of the chat file at the same time are counted (M.overlap).
+        async saveMetadata() { M.inSave = (M.inSave || 0) + 1; if (M.inSave > 1) M.overlap = (M.overlap || 0) + 1; try { return await this._saveMetadata(); } finally { M.inSave--; } },
+        async _saveMetadata() { if (M.metaDelay) await new Promise(r => setTimeout(r, M.metaDelay)); if (M.failMeta) throw new Error('disk full'); if (M.failOnce) { M.failOnce = false; throw new Error('disk full once'); } if (M.failNth) { M.failNth--; if (!M.failNth) throw new Error('disk full nth'); } if (M.swallowMeta) { M.swallowed = (M.swallowed || 0) + 1; if (M.readFailAfterSave) M.serverError = true; return; } M.saves = (M.saves || 0) + 1; M.writeServerChat(); if (M.readFailAfterSave) M.serverError = true; if (M.readFailAfterNth && !--M.readFailAfterNth) M.serverError = true; },
         async saveChat() { M.chatSaves++; M.writeServerChat(); },
         getRequestHeaders: () => ({ 'Content-Type': 'application/json', 'X-CSRF-Token': 'test' }),
         setExtensionPrompt(k, v, p, d, s, r) { M.prompts[k] = { v, p, d, r }; },
@@ -156,6 +158,8 @@ M.add = (n, fn) => {
     }
     M.stSave();
 };
+// v0.6.59: SillyTavern keeps the same message list object for the next room (chat.splice(0, n, ...data)).
+M.switchSame = async (id, list, meta) => { M.chatId = id; M.chat.splice(0, M.chat.length, ...list); M.meta = meta; if (!Object.hasOwn(M.serverFiles, id)) M.serverFiles[id] = copy([{ chat_metadata: meta }, ...list]); await eventSource.emit('chat_id_changed'); };
 M.switchChat = async (id, chatArr, meta) => { M.chatId = id; M.chat = chatArr; M.meta = meta; if (!Object.hasOwn(M.serverFiles, id)) M.serverFiles[id] = copy([{ chat_metadata: meta }, ...chatArr]); await eventSource.emit('chat_id_changed'); };
 
 // Fake SillyTavern files API (/api/files/upload|delete|verify, /user/files/<name>).
@@ -168,8 +172,10 @@ window.fetch = async (url, opts = {}) => {
     // M.silentSaveFail mimics SillyTavern swallowing a server error: the call returns, the file stays old.
     if (u === '/api/chats/get') {
         M.serverReads = (M.serverReads || 0) + 1;
-        if (M.serverReadDelay) await new Promise(r => setTimeout(r, M.serverReadDelay));
-        const f = M.serverFile(JSON.parse(opts.body || '{}').file_name);
+        const fileName = JSON.parse(opts.body || '{}').file_name;
+        const delay = M.readDelayFor?.[fileName] ?? M.serverReadDelay;
+        if (delay) await new Promise(r => setTimeout(r, delay));
+        const f = M.serverFile(fileName);
         return f === null ? res('down', 500) : res(f);
     }
     if (!u.startsWith('/api/files/') && !u.startsWith('/user/files/')) return realFetch(url, opts);
