@@ -925,6 +925,12 @@ details.sp-st-alert[open] > summary { margin-bottom: 6px; }
 .sp-qs-h { position: sticky; top: -10px; z-index: 1; margin: -10px -12px 0; padding: 8px 12px; background: var(--sp-bg); border-bottom: 1px solid var(--sp-line); }
 @media (max-width: 560px) { .sp-qs { max-height: 42vh; max-height: 42dvh; gap: 6px; padding: 10px 10px 8px; margin: 0 6px 6px; font-size: 12.5px; } .sp-qs-h { margin: -10px -10px 0; padding: 6px 10px; } }
 @media (min-width: 561px) { .sp-qs { max-height: min(70vh, calc(100% - 64px)); } }
+/* v0.6.63: on a phone the quick settings cover the whole window below the top bar (✕ brings the window back). */
+@media (max-width: 560px) {
+    .sp-window.sp-qs-open > .sp-hud, .sp-window.sp-qs-open > .sp-tab-nav, .sp-window.sp-qs-open > .sp-body { display: none; }
+    .sp-window.sp-qs-open > .sp-qs { flex: 1 1 auto; max-height: none; margin: 0; border-radius: 0; border-left: 0; border-right: 0; border-bottom: 0; padding: 12px 14px 24px; font-size: 14px; gap: 8px; }
+    .sp-window.sp-qs-open > .sp-qs .sp-qs-h { margin: -12px -14px 0; padding: 8px 14px; }
+}
 
 /* v0.6.38: 🌐 원문/번역 with an optional small "+N" (fill missing translations) beside it. */
 .sp-langwrap { display: inline-flex; gap: 3px; flex: 0 1 auto; min-width: 0; }

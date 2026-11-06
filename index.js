@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.62';
+const VERSION = '0.6.63';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -3124,7 +3124,7 @@ function mainHtml(st) {
     const time = storyTimeContext(mem, 'ko');
     const go = (tab, label) => `<button class="sp-st-more" data-act="tab" data-id="${tab}">${label} ›</button>`;
     const head = (title, tab, label, extra = '') => `<div class="sp-st-h"><span>${title}</span>${extra}${tab ? go(tab, label) : ''}</div>`;
-    const basis = `<div class="sp-st-title">STATUS</div><div class="sp-st-basis">마지막 저장 기준 <b>#${st.lastIndex}</b>${time ? ` · 이야기 시간 ${esc(time)}` : ''}${pending ? ` · 미저장 <b>${pending}</b>개 — 그 뒤 대화는 아직 반영 전이에요` : ' · 미저장 없음'}</div>`;
+    const basis = `<div class="sp-st-title">STATUS</div><div class="sp-st-basis">${Number.isInteger(st.lastIndex) && st.lastIndex >= 0 ? `마지막 저장 기준 <b>#${st.lastIndex}</b>` : '아직 저장 전이에요'}${time ? ` · 이야기 시간 ${esc(time)}` : ''}${pending ? ` · 미저장 <b>${pending}</b>개 — 그 뒤 대화는 아직 반영 전이에요` : ' · 미저장 없음'}</div>`;
     // Alerts: only what needs a decision.
     const queue = st.lootQueue || [];
     const returns = returnNotices(st);
@@ -3800,10 +3800,13 @@ function render(force = false) {
     const st = state();
     const s = settings();
     win.attr('data-theme', s.theme in THEMES ? s.theme : 'jrpg');
+    // v0.6.63: on a phone the quick settings take the whole window below the top bar (style.css).
+    win.toggleClass('sp-qs-open', !!ui.qs);
     // ui.tab and the current room may already have changed. Save the old body under the
     // room/tab it actually displays, then restore the target's own position (initially top).
     const oldBody = win.find('.sp-body')[0];
-    if (oldBody?.dataset.scrollKey) ui.scrollPositions.set(oldBody.dataset.scrollKey, oldBody.scrollTop);
+    // v0.6.63: a body hidden behind the phone's quick settings keeps the position it had.
+    if (oldBody?.dataset.scrollKey && oldBody.getClientRects().length) ui.scrollPositions.set(oldBody.dataset.scrollKey, oldBody.scrollTop);
     const scrollKey = JSON.stringify([roomKey(), ui.tab]);
     const scroll = ui.scrollPositions.get(scrollKey) ?? 0;
     const tabScroll = win.find('.sp-tabs').scrollLeft() || 0;

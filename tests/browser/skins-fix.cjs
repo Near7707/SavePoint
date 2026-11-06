@@ -68,14 +68,19 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         await page.waitForTimeout(150);
         r = await ev(() => { const q = document.querySelector('#sp_overlay .sp-qs'), w = document.querySelector('#sp_overlay .sp-window'), b = w.querySelector('.sp-body');
             return { qh: q.clientHeight, sh: q.scrollHeight, wh: w.clientHeight, vh: innerHeight, body: b.getBoundingClientRect().height, head: getComputedStyle(q.querySelector('.sp-qs-h')).position }; });
-        ok(r.qh <= r.vh * 0.72 && r.sh > r.qh && (width > 560 || (r.qh <= r.vh * 0.46 && r.body > 60)) && r.head === 'sticky', `${width}px 1. ★ 빠른 설정 높이 제한·안에서 스크롤, 아래 창이 남음 (${JSON.stringify(r)})`);
+        // v0.6.63: on a phone the panel covers the whole window below the top bar instead (the rest comes back on ✕).
+        const over = r.sh > r.qh;
+        ok((width > 560 ? r.qh <= r.vh * 0.72 && over : r.qh >= r.wh * 0.85 && r.body === 0) && r.head === 'sticky',
+            `${width}px 1. ★ 빠른 설정: PC는 높이 제한·안에서 스크롤, 폰은 창 전체를 덮음 (${JSON.stringify(r)})`);
         const qbox = await page.locator('#sp_overlay .sp-qs').boundingBox();
         await page.mouse.move(qbox.x + 12, qbox.y + qbox.height / 2); await page.mouse.wheel(0, 600); await page.waitForTimeout(300);
         await ev(() => __savePoint.render(true));
         r = await ev(() => { const q = document.querySelector('#sp_overlay .sp-qs'); const h = q.querySelector('.sp-qs-h').getBoundingClientRect(), qb = q.getBoundingClientRect(); return { top: q.scrollTop, headIn: h.top >= qb.top - 1 && h.bottom <= qb.bottom }; });
-        ok(r.top > 50 && r.headIn, `${width}px 1. ★ 빠른 설정이 실제로 스크롤되고(다시 그려도 그대로) ✕ 줄은 위에 남음 (${JSON.stringify(r)})`);
+        ok((r.top > 50 || (width <= 560 && !over)) && r.headIn, `${width}px 1. ★ 빠른 설정이 넘치면 스크롤되고(다시 그려도 그대로) ✕ 줄은 위에 남음 (${JSON.stringify(r)})`);
         if (SHOTS) await page.screenshot({ path: path.join(OUT, `qs-${width}.png`) });
         await ev(() => __savePoint.handle('qs'));
+        r = await ev(() => { const w = document.querySelector('#sp_overlay .sp-window'); return { qs: !!w.querySelector('.sp-qs'), body: w.querySelector('.sp-body').getBoundingClientRect().height, hud: !!w.querySelector('.sp-hud')?.getClientRects().length }; });
+        ok(!r.qs && r.body > 60 && r.hud, `${width}px 1. 빠른 설정을 닫으면 원래 창이 그대로 돌아옴 (${JSON.stringify(r)})`);
 
         // 2. 스토리 콘솔: the scene title takes at most two lines over the picture (wide screens)
         r = await ev(() => { const w = document.querySelector('#sp_overlay .sp-window'); w.setAttribute('data-theme', 'consolenight'); const el = w.querySelector('.sp-scene-now'); const lh = parseFloat(getComputedStyle(el).lineHeight) || 20;
