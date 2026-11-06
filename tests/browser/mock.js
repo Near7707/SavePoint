@@ -118,7 +118,7 @@ window.SillyTavern = {
         async _saveMetadata() { if (M.metaDelay) await new Promise(r => setTimeout(r, M.metaDelay)); if (M.failMeta) throw new Error('disk full'); if (M.failOnce) { M.failOnce = false; throw new Error('disk full once'); } if (M.failNth) { M.failNth--; if (!M.failNth) throw new Error('disk full nth'); } if (M.swallowMeta) { M.swallowed = (M.swallowed || 0) + 1; if (M.readFailAfterSave) M.serverError = true; return; } M.saves = (M.saves || 0) + 1; M.writeServerChat(); if (M.readFailAfterSave) M.serverError = true; if (M.readFailAfterNth && !--M.readFailAfterNth) M.serverError = true; },
         async saveChat() { M.chatSaves++; M.writeServerChat(); },
         getRequestHeaders: () => ({ 'Content-Type': 'application/json', 'X-CSRF-Token': 'test' }),
-        setExtensionPrompt(k, v, p, d, s, r) { M.prompts[k] = { v, p, d, r }; },
+        setExtensionPrompt(k, v, p, d, s, r) { if (M.promptThrow > 0) { M.promptThrow--; throw new Error('prompt update failed'); } M.prompts[k] = { v, p, d, r }; },
         eventSource, event_types,
         get ConnectionManagerRequestService() { return M.cm; },
         async generateRaw({ prompt }) { M.calls.push(prompt); if (M.throwNext) { const e = M.throwNext; M.throwNext = null; throw e; } if (M.badJson && !prompt.startsWith('You are checking')) return 'Sure! Here is the summary: {not json'; if (M.delay) await new Promise(r => setTimeout(r, M.delay)); if (M.delayOnce) { const d = M.delayOnce; M.delayOnce = 0; await new Promise(r => setTimeout(r, d)); M.lateDone = (M.lateDone || 0) + 1; } return fake(prompt); },

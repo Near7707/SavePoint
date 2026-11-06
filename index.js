@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.61';
+const VERSION = '0.6.62';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -163,7 +163,9 @@ function state() {
 const storyTimesChecked = new WeakSet();
 const oldViews = new WeakMap();
 function freshState(extra = {}) {
-    return { v: 1, roomKey: roomKey(), mem: emptyMem(), lastIndex: -1, hashes: [], history: [], floor: -1, linkedSave: null, undo: null, review: null, rev: 0, lootQueue: [], ...extra };
+    // v0.6.62: `line` is new whenever the room's memory is replaced as a whole (a new state: load, reset).
+    // A rewind brings the earlier one back with its own line. Edits pressed on one line never land on another.
+    return { v: 1, line: newId(), roomKey: roomKey(), mem: emptyMem(), lastIndex: -1, hashes: [], history: [], floor: -1, linkedSave: null, undo: null, review: null, rev: 0, lootQueue: [], ...extra };
 }
 function ensureState() {
     let st = state();
@@ -247,9 +249,15 @@ function applyEntry(entry) {
         // it carried (memory, position), not by the status marks that change after it (see proofOf).
         st.wid = newId();
     }
-    syncHide({ rehide: entry.rehide }); refreshInjection();
-    if (roomKey() === entry.key && roomEpoch === entry.epoch) render();
+    syncHide({ rehide: entry.rehide });
+    if (roomKey() === entry.key && roomEpoch === entry.epoch) refreshView();
     return true;
+}
+// v0.6.62: the prompt and the window are worked out again from the memory any time; an error there is
+// reported, but does not decide whether a change happened or was saved.
+function refreshView() {
+    try { refreshInjection(); } catch (e) { console.error('[SavePoint] prompt refresh failed', e); }
+    try { render(); } catch (e) { console.error('[SavePoint] render failed', e); }
 }
 // Puts the page back to the state before `entry` (memory and, for a rescan, the hide flags).
 function restoreEntry(entry) {
@@ -305,7 +313,21 @@ async function writeEntry(queue, entry) {
         if (ok !== true) throw new Stale(typeof ok === 'string' ? ok : entry.stale || '기다리는 사이 대화나 기억이 바뀌어서 이 변경은 하지 않았어요. 다시 해 주세요.');
     }
     entry.pre = pre;
-    if (applyEntry(entry) === false) return false;
+    // v0.6.62: an error while the change is applied takes the change back on the page too (otherwise
+    // SillyTavern's next own save would write the half-applied state). Only the change and the hide flags
+    // count here; refreshing the prompt and the window is kept apart (see applyEntry).
+    let applied;
+    try { applied = applyEntry(entry); }
+    catch (e) {
+        const here = entry.meta ? restoreEntry(entry) : roomKey() === entry.key && roomEpoch === entry.epoch;
+        if (here) {
+            try { if (!entry.visibility) syncHide(); else ctx().swipe?.refresh?.(); } catch (x) { console.error('[SavePoint] hide after a failed change', x); }
+            refreshView();
+        }
+        // A change that stopped itself on purpose (no longer valid) says so in its own words.
+        throw e instanceof Cancelled ? e : new Error(`변경을 적용하다 오류가 나서 이번 변경을 취소했어요. (${e?.message || e})`);
+    }
+    if (applied === false) return false;
     let unsure = null;
     try {
         const written = pageSnap(), rev = state()?.rev ?? null, proof = proofOf(ctx().chatMetadata?.[MODULE]);
@@ -2095,16 +2117,22 @@ async function rekeyScenes(ids) {
 // even if the first write fails), and applied as final values at its turn in the queue.
 async function commitEdit(mutate, { undoable = false } = {}) {
     if (!hasChat()) return false;
-    const shown = state()?.mem || emptyMem(), draft = clone(shown);
+    const pressed = state(), line = pressed ? pressed.line ?? '' : null;
+    const shown = pressed?.mem || emptyMem(), draft = clone(shown);
     if (mutate(draft) === false) return false;
     normalizeRecordNames(draft);
     refreshProvisionalOutlines(draft);
     const patch = diffPaths(shown, draft);
     if (!patch.length) return false;
     return transact(() => {
+        // v0.6.62: the memory the edit was pressed on must still be the room's memory: after a load or a
+        // reset (a whole new memory, even with the same ids) the edit is not applied to it.
+        const now = state();
+        if (line === null ? now && hasMemory(now.mem) : !now || (now.line ?? '') !== line)
+            throw new Stale('기억이 통째로 바뀌어서(불러오기·리셋·리와인드) 이 편집은 하지 않았어요. 다시 눌러 주세요.');
         const st = ensureState(), before = st.mem, next = clone(before);
         const res = applyPaths(next, patch);
-        if (res === 'stop') throw new Error('기억이 바뀌어서 이 편집은 하지 않았어요. 다시 눌러 주세요.');
+        if (res === 'stop') throw new Stale('기억이 바뀌어서 이 편집은 하지 않았어요. 다시 눌러 주세요.');
         if (res === 'same') return false;
         cleanMem(clone(next));   // the result must still be a valid memory, or nothing is kept
         st.mem = next; pushHistory(st, before, next, { kind: 'edit' });
@@ -2371,6 +2399,10 @@ async function loadSave(id) {
     } catch (e) { reportError(e); return; }
     if (!here()) return moved();
     const cur = state();
+    // v0.6.62: the memory the questions are about is fixed here, before any question is shown (a title
+    // edited while a question is open is then a change, and the load stops instead of replacing it).
+    const memKey = s => s && hasMemory(s.mem) ? hashString(canon(s.mem)) : 'none', askedMem = memKey(cur);
+    const memSame = () => memKey(state()) === askedMem;
     // v0.6.58: the whole room as the questions see it (every message with its swipes and data, and the
     // chat metadata). After the answers it must still be exactly this, or nothing is changed.
     const asked = pageSnap();
@@ -2389,12 +2421,12 @@ async function loadSave(id) {
     // v0.6.58: after the answers — the room is still confirmed, the page is exactly what was asked about,
     // and the chat file on the server holds nothing the page lacks. A new #0 also needs the file to have
     // exactly the messages on the page (none, or the one greeting the question showed).
-    const changedNote = '확인하는 사이 대화가 바뀌어서 아무것도 바꾸지 않았어요. 다시 불러와 주세요.';
-    if (!gateOpen() || !samePage(asked, pageSnap(), MODULE)) { toastr.info(gateOpen() ? changedNote : gateMessage(), 'SavePoint', { timeOut: 10000 }); return; }
+    const changedNote = '확인하는 사이 대화나 기억이 바뀌어서 아무것도 바꾸지 않았어요. 다시 불러와 주세요.';
+    if (!gateOpen() || !samePage(asked, pageSnap(), MODULE) || !memSame()) { toastr.info(gateOpen() ? changedNote : gateMessage(), 'SavePoint', { timeOut: 10000 }); return; }
     const server = await serverCovered(pageSnap, [0]);
     if (!here()) return moved();
     if (!server.ok) { blockRoom(server.why); toastr.warning(`${gateMessage()} 이 방은 바꾸지 않았어요.`, 'SavePoint', { timeOut: 12000 }); return; }
-    if (!gateOpen() || !samePage(asked, pageSnap(), MODULE)) { toastr.info(gateOpen() ? changedNote : gateMessage(), 'SavePoint', { timeOut: 10000 }); return; }
+    if (!gateOpen() || !samePage(asked, pageSnap(), MODULE) || !memSame()) { toastr.info(gateOpen() ? changedNote : gateMessage(), 'SavePoint', { timeOut: 10000 }); return; }
     if (insert && (server.count !== chat().length || chat().length > 1 || (chat().length === 1 && !(plan.greeting && sameText(chat()[0].mes, plan.greeting) && sameText(server.first?.mes, plan.greeting))))) {
         toastr.warning('서버의 채팅 파일에 이 방의 메시지가 더 있거나 첫 메시지가 달라서 이어하기를 하지 않았어요. 방을 다시 열어 주세요.', 'SavePoint', { timeOut: 12000 });
         return;
@@ -2405,8 +2437,7 @@ async function loadSave(id) {
     // is never replaced), and a new #0 still has the file holding exactly the page's messages.
     // v0.6.61: the room's memory is still the one the questions were about too (whether it would be replaced
     // was part of the question); other parts of the room's state (the loot queue) are taken as they are then.
-    const memKey = s => s && hasMemory(s.mem) ? hashString(canon(s.mem)) : 'none', askedMem = memKey(cur);
-    const stillAsked = pre => memKey(state()) === askedMem && samePage(asked, pageSnap(), MODULE, { plain: true }) && (!insert || (chat().length <= 1 && pre?.count === chat().length
+    const stillAsked = pre => memSame() && samePage(asked, pageSnap(), MODULE, { plain: true }) && (!insert || (chat().length <= 1 && pre?.count === chat().length
         && (!chat().length || (plan.greeting && sameText(chat()[0].mes, plan.greeting) && sameText(pre.first?.mes, plan.greeting)))));
     // The edited-chat mark is put back too if the load is undone (it must not outlive a cancelled load).
     // v0.6.59: on this room's own metadata object, never on whatever room is open when the undo runs.
@@ -4614,4 +4645,4 @@ jQuery(() => {
 });
 
 // Exposed for regression checks only.
-globalThis.__savePoint = { persistSoon, toggleKeep, paintKeep, repairKeep, state, settings, summarize, listSaves, vault, migrateLocal, autoCollect, autoBlocked, autoCount, scheduleAuto, undo, loadSave, reconcile, syncHide, refreshInjection, handle, ui, render, estTokens, recordLine, reportText, addLoot, queueHtml, installLootBar, openLootDialog, fillSettings };
+globalThis.__savePoint = { persistSoon, transact, commitEdit, toggleKeep, paintKeep, repairKeep, state, settings, summarize, listSaves, vault, migrateLocal, autoCollect, autoBlocked, autoCount, scheduleAuto, undo, loadSave, reconcile, syncHide, refreshInjection, handle, ui, render, estTokens, recordLine, reportText, addLoot, queueHtml, installLootBar, openLootDialog, fillSettings };

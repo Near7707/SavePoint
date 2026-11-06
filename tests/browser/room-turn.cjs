@@ -75,7 +75,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => M.p);
     await wait(300);
     r = await ev(() => ({ page: M.chat[0].mes, file: M.serverFiles.roomP[1].mes, n: M.serverFiles.roomP.length - 1, mem: !!M.serverFiles.roomP[0].chat_metadata.savePoint, t: toastr.log.map(x => x[1]).join(' | ') }));
-    ok(r.page === 'An edited first line written here.' && r.file === r.page && r.n === 2 && !r.mem && r.t.includes('확인하는 사이 대화가 바뀌어서'),
+    ok(r.page === 'An edited first line written here.' && r.file === r.page && r.n === 2 && !r.mem && r.t.includes('확인하는 사이 대화나 기억이 바뀌어서'),
         `1. 이어하기를 기다리는 사이 고친 첫 메시지는 덮지 않음 (${r.file.slice(0, 16)}, ${r.n}, ${r.t.slice(0, 30)})`);
     await ev(() => { M.metaDelay = 0; });
     //    the same continue with nothing changed still works
