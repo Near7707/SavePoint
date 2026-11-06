@@ -10,6 +10,7 @@ const event_types = {
     MESSAGE_EDITED: 'message_edited', MESSAGE_DELETED: 'message_deleted', MESSAGE_SWIPED: 'message_swiped',
     MESSAGE_UPDATED: 'message_updated', MESSAGE_SWIPE_DELETED: 'message_swipe_deleted',
     GENERATION_STARTED: 'generation_started', GENERATION_ENDED: 'generation_ended', GENERATION_STOPPED: 'generation_stopped',
+    CHAT_RENAMED: 'chat_renamed', CHAT_DELETED: 'chat_deleted', GROUP_CHAT_DELETED: 'group_chat_deleted', CHAT_CREATED: 'chat_created',
 };
 const M = window.M = { files: new Map(Object.entries(window.__presetFiles || {})), fileLog: [], serverDown: !!window.__presetServerDown, chatId: 'chatA', chat: [], meta: {}, settings: window.__presetSettings || {}, prompts: {}, calls: [], popupInput: 'Save', confirm: 1, eventSource, event_types, chatSaves: 0 };
 
@@ -114,9 +115,10 @@ window.SillyTavern = {
         name1: 'Me', name2: 'Ari',
         get chat() { return M.chat; }, get chatMetadata() { return M.meta; },
         // v0.6.59: two writes of the chat file at the same time are counted (M.overlap).
-        async saveMetadata() { M.inSave = (M.inSave || 0) + 1; if (M.inSave > 1) M.overlap = (M.overlap || 0) + 1; try { return await this._saveMetadata(); } finally { M.inSave--; } },
+        // v0.6.64: M.spSaves counts the chat saves SavePoint asks for (SillyTavern's own: M.stSaves).
+        async saveMetadata() { M.spSaves++; M.inSave = (M.inSave || 0) + 1; if (M.inSave > 1) M.overlap = (M.overlap || 0) + 1; try { return await this._saveMetadata(); } finally { M.inSave--; } },
         async _saveMetadata() { if (M.metaDelay) await new Promise(r => setTimeout(r, M.metaDelay)); if (M.failMeta) throw new Error('disk full'); if (M.failOnce) { M.failOnce = false; throw new Error('disk full once'); } if (M.failNth) { M.failNth--; if (!M.failNth) throw new Error('disk full nth'); } if (M.swallowMeta) { M.swallowed = (M.swallowed || 0) + 1; if (M.readFailAfterSave) M.serverError = true; return; } M.saves = (M.saves || 0) + 1; M.writeServerChat(); if (M.readFailAfterSave) M.serverError = true; if (M.readFailAfterNth && !--M.readFailAfterNth) M.serverError = true; },
-        async saveChat() { M.chatSaves++; M.writeServerChat(); },
+        async saveChat() { M.spSaves++; M.chatSaves++; M.writeServerChat(); },
         getRequestHeaders: () => ({ 'Content-Type': 'application/json', 'X-CSRF-Token': 'test' }),
         setExtensionPrompt(k, v, p, d, s, r) { if (M.promptThrow > 0) { M.promptThrow--; throw new Error('prompt update failed'); } M.prompts[k] = { v, p, d, r }; },
         eventSource, event_types,
@@ -141,7 +143,8 @@ M.writeServerChat = () => {
 // (M.silentSaveFail, M.swallowMeta) or M.serverFrozen is set, nothing changes it.
 // M.serverEmpty: an empty answer (a missing file and a failed read look the same). M.serverError: 500.
 M.serverFiles = {};
-M.stSave = () => { if (M.serverFrozen || M.silentSaveFail || M.swallowMeta || M.noStSave) return; M.serverFiles[M.chatId] = copy([{ chat_metadata: M.meta }, ...M.chat]); };
+M.stSave = () => { if (M.serverFrozen || M.silentSaveFail || M.swallowMeta || M.noStSave) return; M.stSaves++; M.serverFiles[M.chatId] = copy([{ chat_metadata: M.meta }, ...M.chat]); };
+M.spSaves = 0; M.stSaves = 0;
 M.serverFile = name => {
     if (M.serverEmpty) return {};
     if (M.serverError) return null;
@@ -159,8 +162,53 @@ M.add = (n, fn) => {
     M.stSave();
 };
 // v0.6.59: SillyTavern keeps the same message list object for the next room (chat.splice(0, n, ...data)).
-M.switchSame = async (id, list, meta) => { M.chatId = id; M.chat.splice(0, M.chat.length, ...list); M.meta = meta; if (!Object.hasOwn(M.serverFiles, id)) M.serverFiles[id] = copy([{ chat_metadata: meta }, ...list]); await eventSource.emit('chat_id_changed'); };
-M.switchChat = async (id, chatArr, meta) => { M.chatId = id; M.chat = chatArr; M.meta = meta; if (!Object.hasOwn(M.serverFiles, id)) M.serverFiles[id] = copy([{ chat_metadata: meta }, ...chatArr]); await eventSource.emit('chat_id_changed'); };
+// v0.6.64: M.stIntegrity: like SillyTavern, a room opened without `integrity` gets one on the page only
+// (it reaches the file with the next save). Off by default (older suites compare metadata as given).
+const uuid = () => globalThis.crypto?.randomUUID?.() || 'u' + Math.random().toString(36).slice(2);
+const opened = meta => { if (M.stIntegrity && meta && typeof meta === 'object' && !meta.integrity) meta.integrity = uuid(); return meta; };
+M.switchSame = async (id, list, meta) => { opened(meta); M.chatId = id; M.chat.splice(0, M.chat.length, ...list); M.meta = meta; if (!Object.hasOwn(M.serverFiles, id)) M.serverFiles[id] = copy([{ chat_metadata: meta }, ...list]); await eventSource.emit('chat_id_changed'); };
+M.switchChat = async (id, chatArr, meta) => { opened(meta); M.chatId = id; M.chat = chatArr; M.meta = meta; if (!Object.hasOwn(M.serverFiles, id)) M.serverFiles[id] = copy([{ chat_metadata: meta }, ...chatArr]); await eventSource.emit('chat_id_changed'); };
+
+// v0.6.64: opening a room from its server file (the way SillyTavern reloads a room), and the room tools
+// that make new chat files: rename, delete, branch (with a swipe), checkpoint, import.
+M.chatList = () => Object.keys(M.serverFiles).filter(k => Array.isArray(M.serverFiles[k]));
+M.openFile = async (id, { same = true } = {}) => {
+    const f = copy(M.serverFiles[id]);
+    const head = f[0] && 'chat_metadata' in f[0] ? f.shift().chat_metadata : {};
+    await (same ? M.switchSame(id, f, head) : M.switchChat(id, f, head));
+};
+// SillyTavern renames on the server, reopens the room if it was open, and only then sends CHAT_RENAMED
+// (names with .jsonl, the new one as typed). Only the device that renamed gets the notice.
+M.renameChat = async (from, to, { avatarId = 'ari.png', groupId = undefined } = {}) => {
+    M.serverFiles[to] = M.serverFiles[from]; delete M.serverFiles[from];
+    if (M.chatId === from) await M.openFile(to);
+    await eventSource.emit(event_types.CHAT_RENAMED, { avatarId, groupId, oldFileName: `${from}.jsonl`, newFileName: `${to}.jsonl` });
+};
+M.deleteChat = async (id, { group = false } = {}) => { delete M.serverFiles[id]; await eventSource.emit(group ? event_types.GROUP_CHAT_DELETED : event_types.CHAT_DELETED, id); };
+// createBranch / createNewBookmark: the open room's messages up to `at` (the last one on `swipe` if given)
+// and its whole metadata, plus main_chat and a new integrity (an older SillyTavern kept the old one:
+// keepIntegrity). The branch name is added to that message's extra.branches on the page (not saved here).
+M.branchChat = (name, at, { swipe = null, keepIntegrity = false } = {}) => {
+    const list = copy(M.chat.slice(0, at + 1));
+    const last = list[at];
+    if (swipe !== null) { last.swipe_id = swipe; last.mes = last.swipes[swipe]; if (last.swipe_info?.[swipe]) last.extra = copy(last.swipe_info[swipe].extra || {}); }
+    const meta = { ...copy(M.meta), main_chat: M.chatId, ...(keepIntegrity ? {} : { integrity: uuid() }) };
+    M.serverFiles[name] = [{ chat_metadata: meta }, ...list];
+    const m = M.chat[at]; m.extra ||= {}; (m.extra.branches ||= []).push(name);
+    return name;
+};
+M.checkpointChat = (at, n = 1) => M.branchChat(`Checkpoint #${n} - ${M.chatId}`, at);
+// Importing a .jsonl copies the file as it is (same integrity) under a new name.
+M.importChat = (id, name = `${id} imported`) => { M.serverFiles[name] = copy(M.serverFiles[id]); return name; };
+
+// v0.6.64: the user files folder for the planned memory files.
+// M.fileState[name]: 'broken' (200 with something that is not the file), 'error' (500), 'missing' (404
+// even though it is there). M.fileDelay[name] (or ['*']): ms before a read answers. M.fileReads: names read.
+// M.beforeUpload(name, text): awaited right before a write lands (another device can write in between:
+// M.otherPut). M.otherPut / M.otherDel: another device's writes, straight to the folder.
+M.fileState = {}; M.fileDelay = {}; M.fileReads = [];
+M.otherPut = (name, obj) => { M.files.set(name, typeof obj === 'string' ? obj : JSON.stringify(obj)); M.fileLog.push(['other-put', name]); };
+M.otherDel = name => { M.files.delete(name); M.fileLog.push(['other-del', name]); };
 
 // Fake SillyTavern files API (/api/files/upload|delete|verify, /user/files/<name>).
 const realFetch = window.fetch;
@@ -178,12 +226,15 @@ window.fetch = async (url, opts = {}) => {
         const f = M.serverFile(fileName);
         return f === null ? res('down', 500) : res(f);
     }
+    // v0.6.64: the chat list of a character (simple form), from the server files.
+    if (u === '/api/characters/chats') return res(M.chatList().map(id => ({ file_name: `${id}.jsonl`, file_id: id })));
     if (!u.startsWith('/api/files/') && !u.startsWith('/user/files/')) return realFetch(url, opts);
     if (M.serverDown) return res('down', 503);
     if (u === '/api/files/upload') {
         const b = JSON.parse(opts.body);
         if (!/^[a-zA-Z0-9_\-.]+$/.test(b.name)) return res('bad name', 400);
         if (M.failFile && b.name.includes(M.failFile)) return res('fail', 500);
+        if (M.beforeUpload) await M.beforeUpload(b.name, fromB64(b.data));
         M.files.set(b.name, fromB64(b.data)); M.fileLog.push(['put', b.name]);
         return res({ path: 'user/files/' + b.name });
     }
@@ -197,5 +248,13 @@ window.fetch = async (url, opts = {}) => {
         return res(Object.fromEntries(urls.map(x => [x, M.files.has(x.replace('user/files/', ''))])));
     }
     const name = u.slice('/user/files/'.length).split('?')[0];
+    M.fileReads.push(name);
+    const wait = M.fileDelay[name] ?? M.fileDelay['*'];
+    if (wait) await new Promise(r => setTimeout(r, wait));
+    const st = M.fileState[name];
+    if (st === 'error') return res('down', 500);
+    if (st === 'missing') return res('nf', 404);
+    if (st === 'broken' && M.files.has(name)) { const t = M.files.get(name); return res(t.slice(0, Math.max(1, Math.floor(t.length / 2)))); }
+    if (st === 'broken') return res('<!DOCTYPE html><html><body>not found</body></html>');
     return M.files.has(name) ? res(M.files.get(name)) : res('nf', 404);
 };
