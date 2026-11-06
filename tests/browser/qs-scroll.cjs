@@ -79,6 +79,29 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(tabs0 === 40 && tabs1 === 40 && r.tabs === 40, `2. 탭 줄 가로 위치도 그대로 (${tabs0} → 다시 그림 ${tabs1} → 열고 닫음 ${r.tabs})`);
     ok(r.body === 180, `2. 본문 위치도 그대로 (${r.body})`);
 
+    // 4. v0.6.68: the chosen tab scrolled out of view stays there on redraws and resizes; it is brought into
+    // view only when the tab changes (also when that happened while the bar was hidden).
+    const inView = () => ev(() => { const a = document.querySelector('#sp_overlay .sp-tabs .sp-active').getBoundingClientRect(), b = document.querySelector('#sp_overlay .sp-tabs').getBoundingClientRect(); return a.left >= b.left - 1 && a.right <= b.right + 1; });
+    const far = await ev(() => { const t = document.querySelector('#sp_overlay .sp-tabs'); t.scrollLeft = t.scrollWidth; return Math.round(t.scrollLeft); });
+    ok(far > 40 && !(await inView()), `4. 준비: 고른 탭(저널)이 화면 밖 (${far})`);
+    await ev(() => __savePoint.render(true));
+    await wait(700);                                             // past the redraw ~0.5 s after opening, and resize callbacks
+    r = await where();
+    ok(r.tabs === far, `4. ★ 다시 그려도 보던 위치 그대로 (${r.tabs}, 기대 ${far})`);
+    await page.setViewportSize({ width: 380, height: 844 }); await wait(200);
+    await page.setViewportSize({ width: 390, height: 844 }); await wait(200);
+    const afterResize = (await where()).tabs;
+    ok(Math.abs(afterResize - far) <= 12 && !(await inView()), `4. ★ 창 크기가 바뀌어도 고른 탭 쪽으로 끌려가지 않음 (${afterResize})`);
+    await ev(() => { __savePoint.ui.tab = 'main'; __savePoint.ui.edit = null; __savePoint.render(true); });
+    await wait(150);
+    ok(await inView(), `4. 탭을 바꾸면 고른 탭이 보이게 이동 (${(await where()).tabs})`);
+    await ev(() => { const t = document.querySelector('#sp_overlay .sp-tabs'); t.scrollLeft = t.scrollWidth; });
+    await ev(() => __savePoint.handle('qs'));
+    await ev(() => { __savePoint.ui.tab = 'journal'; __savePoint.render(true); });  // changed while the bar is hidden
+    await ev(() => __savePoint.handle('qs'));
+    await wait(200);
+    ok(await inView(), `4. 빠른 설정이 열린 동안 바꾼 탭도 닫으면 보임 (${(await where()).tabs})`);
+
     // 3. PC: the panel sits on top; nothing is hidden and nothing moves.
     const pc = await session({ width: 1100, settings: { savePoint: { firstTab: 'journal', check: false, askResume: false, hudOpen: true } } });
     await pc.evaluate(() => { M.add(40, i => i % 3 === 0 ? `SCENEBREAK ${i} ${'a long line of words '.repeat(12)}` : ''); return __savePoint.handle('run'); });

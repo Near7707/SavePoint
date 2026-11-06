@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.67';
+const VERSION = '0.6.68';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -3762,8 +3762,13 @@ function installTabNavigation(strip, previousScroll) {
     };
     strip.scrollLeft = previousScroll;
     const active = strip.querySelector('.sp-active');
+    // v0.6.68: a redraw keeps where the bar was scrolled to; the chosen tab is brought into view only when
+    // the tab changed since it was last shown (a tab click, a jump to another tab). While the bar is hidden
+    // (phone quick settings) that waits until it shows again (the resize observer calls this then).
     const reveal = () => {
-        if (active) {
+        const key = active?.dataset.id ?? null;
+        if (active && key !== ui.tabShown && strip.getClientRects().length && strip.clientWidth > 0) {
+            ui.tabShown = key;
             const a = active.getBoundingClientRect(), b = strip.getBoundingClientRect();
             if (a.left < b.left) strip.scrollLeft -= b.left - a.left + 8;
             else if (a.right > b.right) strip.scrollLeft += a.right - b.right + 8;
