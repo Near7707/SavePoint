@@ -247,13 +247,15 @@ export const homeOk = (home, addr, ...ints) => home.addr === addr && (home.integ
 //  1  integrity on both sides and different → hold
 //  2  the old in-chat copy differs from the one recorded (an older SavePoint wrote it again) → hold
 //  3  same room? integrity on both and equal / (no integrity, or only the tag lacks it) the copy hash is
-//     the recorded one, or every recorded fingerprint matches (none recorded is no proof) / the tag has
-//     integrity and the file does not → hold / not proven → hold
+//     the recorded one (v0.6.69: matching fingerprints are no proof) / the tag has integrity and the file
+//     does not → hold / not proven → hold
 //  4  only once it is the same room: some fingerprints differ → link + source change
 //  without a tag:
 //  5  a rename seen on this device and the integrity matches → move the tag
 //  6  this room's own memory file (by its id rules, the integrity hint, the moved mark or the move-start
 //     mark), readable, at home here and with the same old copy → link again to it (before everything below)
+//     (v0.6.69: without integrity only the same old copy proves it; an unfinished move whose old copy another
+//     room moved out → hold)
 //  8  the same integrity is linked to another room → hold (v0.6.65: before 7, so an imported copy of a
 //     linked branch is held with that branch as the candidate instead of copying the parent's memory)
 //  7  a branch (integrity differs from the parent, main_chat is a linked room in the same scope) → inherit
@@ -291,11 +293,9 @@ export async function decideRoom(input, read, { readMem = id => read(memName(id)
         if (str(tag.integrity) && str(integrity)) proof = 'integrity';
         else if (str(tag.integrity)) return hold(3, 'integrityGone');
         else if (copy && str(tag.copy) && copy.hash === tag.copy) proof = 'copy';
-        else {
-            const pc = printCheck(tag.prints, prints);
-            if (pc.total >= 1 && pc.matched === pc.total) proof = 'prints';
-            else return hold(3, 'unproven', { prints: pc });
-        }
+        // v0.6.69: fingerprints show the same messages, not the same room (a new room under the same name
+        // with the same greeting): matching ones alone no longer link. Hold, with the check for the reason.
+        else return hold(3, 'unproven', { prints: printCheck(tag.prints, prints) });
         const m = await mem(tag.mem);
         if (bad(m)) return fail(3, [memName(tag.mem)]);
         if (m.kind === MISSING) return hold(3, 'memGone', { mem: tag.mem });
@@ -341,11 +341,19 @@ export async function decideRoom(input, read, { readMem = id => read(memName(id)
         if (!homeOk(m.data.home, addr, integrity)) return hold(6, 'homeDiff', { mem: id });
         if (copy && m.data.copy !== copy.hash) return hold(6, 'copyChanged', { mem: id });
         // v0.6.67: a memory without integrity (moved from an older chat) matches any room under this name,
-        // so the address alone is no proof: the same old copy in the chat, or its recorded fingerprints (one
-        // or more, all matching). Otherwise hold (a new room reusing the name; the old memory stays as it is).
-        if (!str(m.data.home.integrity) && !copy) {
-            const pc = printCheck(pickPrints(m.data.state.hashes), prints);
-            if (!(pc.total >= 1 && pc.matched === pc.total)) return hold(6, 'unproven', { mem: id, prints: pc });
+        // so the address alone is no proof. v0.6.69: only the same old copy in the chat is (fingerprints show
+        // the same messages, not the same room). Otherwise hold; the old memory stays as it is.
+        if (!str(m.data.home.integrity) && !copy) return hold(6, 'unproven', { mem: id, prints: printCheck(pickPrints(m.data.state.hashes), prints) });
+        // v0.6.69: an unfinished move (no tag) of an old copy that another room has moved out too (its moved
+        // mark, or the copy hint) → hold, the same answer a retry of the writes gives (writePlan, writeCopy).
+        if (m.data.from.kind === 'migrate' && str(m.data.copy)) {
+            const c = m.data.copy;
+            for (const [name, res] of files) if (name.startsWith('savepoint-moved-') && res.kind === OK && res.data.addr !== addr && res.data.copy === c) return hold(6, 'copyMoved', { mem: id, from: res.data.addr });
+            let h = files.get(copyName(c));
+            if (!h) { try { h = checked(await read(copyName(c)), validCopyHint(c)); } catch { h = { kind: ERROR }; } }
+            if (bad(h)) return fail(6, [copyName(c)]);
+            const rooms = h.kind === OK ? h.data.rooms.filter(a => a !== addr) : [];
+            if (rooms.length) return hold(6, 'copyMoved', { mem: id, from: rooms[0], rooms });
         }
         return out('relink', 6, { mem: id, from: m.data.from });
     }
@@ -409,6 +417,11 @@ export async function decideRoom(input, read, { readMem = id => read(memName(id)
 
 // ───────── branch ─────────
 
+// v0.6.69: a history entry that can be undone (rollbackFrom).
+const usableEntry = h => plainObj(h) && str(h.kind) && plainObj(h.diff) && Array.isArray(h.diff.changes)
+    && plainObj(h.diff.orderBefore) && (h.kind !== 'summary' || int(h.from) && int(h.to));
+const usableHistory = list => Array.isArray(list) && list.every(usableEntry);
+
 // A branch's memory, worked out on a copy of the parent's (the parent's file is never touched).
 // prints: the branch's messages (fingerprints, from its chat file). slots: the parent's AUTO/QUICK records
 // ({ mem, pos: { lastIndex, digest }, updated }).
@@ -425,8 +438,11 @@ export function branchRestore(parent, prints, slots = []) {
     if (k < 0) return { ok: true, via: 'parent', at: -1, state: st };
     const allMatch = s => s.hashes.length === s.lastIndex + 1 && s.hashes.every((h, i) => prints[i] === h);
     // v0.6.67: no history list (a file that passed validState without one) → no rewind, the same as below the floor.
-    let why = Array.isArray(st.history) ? 'floor' : 'noHistory';
-    if (why === 'floor' && rollbackFrom(st, k)) {
+    // v0.6.69: the same for a list with an entry that cannot be undone (null, no diff, a summary without its
+    // range), and a rewind that fails anyway ('rewindFail'): a matching slot, otherwise no.
+    let why = usableHistory(st.history) ? 'floor' : 'noHistory', rewound = false;
+    if (why === 'floor') { try { rewound = rollbackFrom(st, k); } catch { why = 'rewindFail'; } }
+    if (rewound) {
         st.hashes = st.hashes.slice(0, st.lastIndex + 1);
         if (st.lastIndex < 0) why = 'nothingLeft';
         else if (allMatch(st)) return { ok: true, via: 'rewind', at: k, state: st };
