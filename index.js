@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.69';
+const VERSION = '0.6.70';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -3748,6 +3748,7 @@ function hudOpen() {
     return typeof v === 'boolean' ? v : !(typeof window !== 'undefined' && window.innerWidth <= 700);
 }
 let tabResizeObserver = null;
+const TAB_EDGE = 44;
 function installTabNavigation(strip, previousScroll) {
     tabResizeObserver?.disconnect();
     if (!strip) return;
@@ -3769,9 +3770,16 @@ function installTabNavigation(strip, previousScroll) {
         const key = active?.dataset.id ?? null;
         if (active && key !== ui.tabShown && strip.getClientRects().length && strip.clientWidth > 0) {
             ui.tabShown = key;
+            // v0.6.70: a side with more tabs beyond it is covered by its arrow and fade (TAB_EDGE, style.css
+            // .sp-tab-nav mask); the chosen tab is kept clear of it. A side scrolled to its end has neither.
             const a = active.getBoundingClientRect(), b = strip.getBoundingClientRect();
-            if (a.left < b.left) strip.scrollLeft -= b.left - a.left + 8;
-            else if (a.right > b.right) strip.scrollLeft += a.right - b.right + 8;
+            const max = Math.max(0, strip.scrollWidth - strip.clientWidth), cw = strip.clientWidth;
+            const start = a.left - b.left + strip.scrollLeft, end = a.right - b.left + strip.scrollLeft;
+            let s = strip.scrollLeft;
+            const padL = s > 1 ? TAB_EDGE : 0, padR = s < max - 1 ? TAB_EDGE : 0;
+            if (start < s + padL) s = start - TAB_EDGE;
+            else if (end > s + cw - padR) s = end + TAB_EDGE - cw;
+            strip.scrollLeft = Math.max(0, Math.min(max, Math.round(s)));
         }
         update();
     };

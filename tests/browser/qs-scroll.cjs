@@ -102,6 +102,35 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await wait(200);
     ok(await inView(), `4. 빠른 설정이 열린 동안 바꾼 탭도 닫으면 보임 (${(await where()).tabs})`);
 
+    // 5. v0.6.70: a chosen tab is clear of the arrows and the fades (44px on a side with more tabs beyond it),
+    // on the left and on the right, also when it was already inside the bar but under a fade.
+    const clear = () => ev(() => {
+        const nav = document.querySelector('#sp_overlay .sp-tab-nav'), t = nav.querySelector('.sp-tabs');
+        const a = t.querySelector('.sp-active').getBoundingClientRect(), b = t.getBoundingClientRect();
+        const l = nav.classList.contains('sp-more-left') ? 44 : 0, r = nav.classList.contains('sp-more-right') ? 44 : 0;
+        const arrows = [...nav.querySelectorAll('.sp-tab-arrow')].filter(x => getComputedStyle(x).display !== 'none').map(x => x.getBoundingClientRect());
+        const under = arrows.some(x => Math.min(a.right, x.right) > Math.max(a.left, x.left));
+        return { ok: a.left >= b.left + l - 1 && a.right <= b.right - r + 1 && !under, left: Math.round(a.left - b.left), right: Math.round(b.right - a.right), l, r };
+    });
+    for (const width of [390, 340]) {
+        await page.setViewportSize({ width, height: 844 }); await wait(200);
+        const ids = await ev(() => [...document.querySelectorAll('#sp_overlay .sp-tabs .sp-tab')].map(x => x.dataset.id));
+        const bad = [];
+        for (const from of ['start', 'middle', 'end']) for (const id of ids) {
+            await ev(f => { const t = document.querySelector('#sp_overlay .sp-tabs'), max = t.scrollWidth - t.clientWidth; t.scrollLeft = f === 'start' ? 0 : f === 'end' ? max : Math.round(max / 2); }, from);
+            // tabShown cleared: choosing the tab already shown counts as a change too (a click on it).
+            await ev(id => { __savePoint.ui.tabShown = null; __savePoint.ui.tab = id; __savePoint.ui.edit = null; __savePoint.render(true); }, id);
+            const c = await clear();
+            if (!c.ok) bad.push(`${from}→${id} ${JSON.stringify(c)}`);
+        }
+        ok(!bad.length, `5. ★ ${width}px: 어느 쪽에서 골라도 고른 탭이 화살표·흐린 영역 밖 (${bad.length ? bad.join(' / ') : `${ids.length}개 탭 × 3`})`);
+    }
+    // Once chosen, redraws and resizes still keep the bar where it was scrolled to (v0.6.68).
+    await page.setViewportSize({ width: 390, height: 844 }); await wait(200);
+    const kept = await ev(() => { const t = document.querySelector('#sp_overlay .sp-tabs'); t.scrollLeft = 120; return Math.round(t.scrollLeft); });
+    await ev(() => __savePoint.render(true)); await wait(300);
+    ok((await where()).tabs === kept, `5. 같은 탭에서 다시 그리면 위치 그대로 (${(await where()).tabs}, 기대 ${kept})`);
+
     // 3. PC: the panel sits on top; nothing is hidden and nothing moves.
     const pc = await session({ width: 1100, settings: { savePoint: { firstTab: 'journal', check: false, askResume: false, hudOpen: true } } });
     await pc.evaluate(() => { M.add(40, i => i % 3 === 0 ? `SCENEBREAK ${i} ${'a long line of words '.repeat(12)}` : ''); return __savePoint.handle('run'); });
