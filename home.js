@@ -340,14 +340,33 @@ export async function decideRoom(input, read, { readMem = id => read(memName(id)
         if (m.kind === MISSING) continue;
         if (!homeOk(m.data.home, addr, integrity)) return hold(6, 'homeDiff', { mem: id });
         if (copy && m.data.copy !== copy.hash) return hold(6, 'copyChanged', { mem: id });
+        // v0.6.67: a memory without integrity (moved from an older chat) matches any room under this name,
+        // so the address alone is no proof: the same old copy in the chat, or its recorded fingerprints (one
+        // or more, all matching). Otherwise hold (a new room reusing the name; the old memory stays as it is).
+        if (!str(m.data.home.integrity) && !copy) {
+            const pc = printCheck(pickPrints(m.data.state.hashes), prints);
+            if (!(pc.total >= 1 && pc.matched === pc.total)) return hold(6, 'unproven', { mem: id, prints: pc });
+        }
         return out('relink', 6, { mem: id, from: m.data.from });
     }
     if (movedHere?.kind === OK) return hold(6, 'movedNoBody', { mem: movedHere.data.mem });
     if (start?.kind === OK && !copy) return hold(6, 'moveStarted', { mem: start.data.mem });
 
     // 8: the same integrity linked somewhere else (an imported copy, an old-style branch).
+    // v0.6.67: a listed room counts only when its tag (linked) still has this integrity (the address may now
+    // be another room's), or when it has no tag but its memory file is there, at home in that room with this
+    // integrity (only the tag was lost: the parent's memory must not be copied again).
     const clueRooms = clue?.kind === OK ? clue.data.rooms : [];
-    const linked = [...new Set(clueRooms.filter(x => x.addr !== addr && files.get(tagName(x.addr))?.kind === OK && files.get(tagName(x.addr)).data.state === 'linked').map(x => x.addr))];
+    const linked = [];
+    for (const x of clueRooms) {
+        if (x.addr === addr || linked.includes(x.addr)) continue;
+        const t = files.get(tagName(x.addr));
+        if (t?.kind === OK) { if (t.data.state === 'linked' && t.data.integrity === integrity) linked.push(x.addr); continue; }
+        if (t?.kind !== MISSING) continue;
+        const m = await mem(x.mem);
+        if (bad(m)) return fail(8, [memName(x.mem)]);
+        if (m.kind === OK && m.data.home.addr === x.addr && m.data.home.integrity === integrity) linked.push(x.addr);
+    }
     if (linked.length) return hold(8, 'sameIntegrity', { candidates: linked });
 
     // 7: a branch of a linked room.
@@ -405,8 +424,9 @@ export function branchRestore(parent, prints, slots = []) {
     const k = firstDiff(st.hashes, prints);
     if (k < 0) return { ok: true, via: 'parent', at: -1, state: st };
     const allMatch = s => s.hashes.length === s.lastIndex + 1 && s.hashes.every((h, i) => prints[i] === h);
-    let why = 'floor';
-    if (rollbackFrom(st, k)) {
+    // v0.6.67: no history list (a file that passed validState without one) → no rewind, the same as below the floor.
+    let why = Array.isArray(st.history) ? 'floor' : 'noHistory';
+    if (why === 'floor' && rollbackFrom(st, k)) {
         st.hashes = st.hashes.slice(0, st.lastIndex + 1);
         if (st.lastIndex < 0) why = 'nothingLeft';
         else if (allMatch(st)) return { ok: true, via: 'rewind', at: k, state: st };
@@ -474,6 +494,9 @@ export function writePlan({ id, from, addr, integrity = null, copy = null, mem, 
         if (r.moved.kind === MISSING) steps.push('writeMoved');
         else if (r.moved.data.mem !== id) return { stop: 'movedDiff' };
     }
+    // v0.6.67: the copy hint lists another room (this old copy was moved out of it after this room was
+    // decided) → hold, the same as row 9.
+    if (r.hint?.kind === OK && r.hint.data.rooms.some(a => a !== addr)) return { hold: 'copyMoved' };
     if (r.hint && !(r.hint.kind === OK && r.hint.data.rooms.includes(addr))) steps.push('writeCopy');
     if (r.clue && !(r.clue.kind === OK && r.clue.data.rooms.some(x => x.addr === addr && x.mem === id))) steps.push('writeClue');
     if (r.tag.kind === MISSING) steps.push(...move ? ['recheckStart'] : [], 'writeTag');
@@ -546,7 +569,17 @@ export async function placeMemory(io, { id, from, addr, integrity = null, copy =
         else if (step === 'checkStart' || step === 'recheckStart') {
             const v = checkStart(await rd(startName(addr)), { addr, copy, id, wid });
             if (v !== 'mine' && v !== 'same') return { hold: v, step };
-        } else if (step === 'writeMem') { if (!await wr(memName(id), memBody({ id, state, wid, from, home: { addr, integrity }, copy }))) return { stop: 'write', step }; }
+        } else if (step === 'writeMem') {
+            // v0.6.67: read again right before writing. Another device may have finished this move (and edited
+            // the memory since) after the plan was made: a body that is there now is never written over. The
+            // same room and old copy → keep it as it is (checkMem then takes it as theirs); anything else → hold.
+            const pre = checked(await rd(memName(id)), validMem(id));
+            if (bad(pre)) return { stop: 'read', step };
+            if (pre.kind === OK) {
+                const v = checkMem(pre, { id, from, addr, integrity, copy, wid });
+                if (v !== 'theirs' && v !== 'mine') return { hold: v, step };
+            } else if (!await wr(memName(id), memBody({ id, state, wid, from, home: { addr, integrity }, copy }))) return { stop: 'write', step };
+        }
         else if (step === 'checkMem') {
             const back = await rd(memName(id));
             const v = checkMem(back, { id, from, addr, integrity, copy, wid });
@@ -556,6 +589,8 @@ export async function placeMemory(io, { id, from, addr, integrity = null, copy =
         else if (step === 'writeCopy') {
             const h = checked(await rd(copyName(copy)), validCopyHint(copy));
             if (bad(h)) return { stop: 'read', step };
+            // v0.6.67: another room moved this old copy out since the plan was made → hold.
+            if (h.kind === OK && h.data.rooms.some(a => a !== addr)) return { hold: 'copyMoved', step };
             if (!await wr(copyName(copy), copyHintWith(h.kind === OK ? h.data : null, copy, addr))) return { stop: 'write', step };
         } else if (step === 'writeClue') {
             const c = checked(await rd(clueName(integrity)), validClue(integrity));
