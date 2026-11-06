@@ -7,7 +7,7 @@ import {
     roomAddr, scopeOf, migrateId, homeId, memName, tagName, clueName, movedName, copyHash, fingerprint, digest, renameNotice, hasTraces,
     classifyRead, readUserFile, checked, validMem, validTag, memBody, tagBody, renamedTag, clueBody, clueWith, movedBody,
     pickPrints, firstDiff, printCheck, decideRoom, branchRestore, branchState, writePlan, canWrite, nextMem, wroteMine, maybeOverwritten,
-    MISSING, BROKEN, ERROR, OK,
+    MISSING, BROKEN, ERROR, OK, startName, copyName, startBody, copyHintBody, validState, homeOk, checkStart, checkMem, placeMemory,
 } from '../home.js';
 import { emptyMem, pushHistory } from '../core.js';
 
@@ -38,8 +38,8 @@ function recorded(prints, upto, { size = 5, floorTo = -1 } = {}) {
     if (floorTo >= 0) { st.history = st.history.filter(h => h.from > floorTo); st.floor = floorTo; }
     return st;
 }
-const memFile = (id, { addr = A, integrity = 'i-A', state = recorded(P80, 19), from = { kind: 'new', addr, integrity }, rev = 0 } = {}) =>
-    memBody({ id, state, rev, wid: 'w0', from, home: { addr, integrity } });
+const memFile = (id, { addr = A, integrity = 'i-A', state = recorded(P80, 19), from = { kind: 'new', addr, integrity }, rev = 0, copy = from.kind === 'migrate' ? from.copy : null } = {}) =>
+    memBody({ id, state, rev, wid: 'w0', from, home: { addr, integrity }, copy });
 
 function world(files = {}, states = {}) {
     const store = new Map(Object.entries(files));
@@ -73,8 +73,8 @@ test('room address is the same string as index.js roomKey', () => {
 });
 
 test('file names are safe user-file names, fixed per input, and differ per input', () => {
-    const names = [memName(homeId(A, 'x')), memName(migrateId(A, 'c')), tagName(A), tagName(B), clueName('x'), movedName(A, 'c'), movedName(B, 'c')];
-    for (const n of names) assert.match(n, /^savepoint-(mem|room|int|moved)-[a-z0-9]{28}\.json$/);
+    const names = [memName(homeId(A, 'x')), memName(migrateId(A, 'c')), tagName(A), tagName(B), clueName('x'), movedName(A, 'c'), movedName(B, 'c'), startName(A), startName(B), copyName('c'), copyName('d')];
+    for (const n of names) assert.match(n, /^savepoint-(mem|room|int|moved|moving|copy)-[a-z0-9]{28}\.json$/);
     assert.equal(new Set(names).size, names.length);
     assert.equal(tagName(A), tagName(roomAddr('ari.png', 'Ari - 2026-01-01')));
     assert.notEqual(homeId(A, 'c'), migrateId(A, 'c'));
@@ -365,6 +365,10 @@ test('row 7: not enough to inherit → hold; the same integrity as the parent (a
     const pw = parentWorld({ floorTo: 49 });
     let r = await decideRoom(branchRoom({ prints: P80.slice(0, 21) }), world(pw.files).read, { slotsOf: pw.slotsOf });
     assert.deepEqual([r.verdict, r.row, r.why, r.reason], ['hold', 7, 'branchUnproven', 'floor']);
+    // The first message differs and no slot fits → hold (starting empty is the user's choice).
+    const first = [...P80]; first[0] = 'another greeting';
+    r = await decideRoom(branchRoom({ prints: first.slice(0, 21) }), world(parentWorld().files).read);
+    assert.deepEqual([r.verdict, r.row, r.reason], ['hold', 7, 'nothingLeft']);
     // A branch made by an older SillyTavern keeps the parent's integrity; the hint lists the parent.
     const pw2 = parentWorld({ integrity: 'i-A' });
     const files = { ...pw2.files, [clueName('i-A')]: clueBody('i-A', [{ addr: pw2.pAddr, mem: pw2.pid }]) };
@@ -406,7 +410,7 @@ test('deciding only reads (no write path), and a read that throws is an error', 
     // decideRoom gets nothing it could write with; the reads it made are user-file names only.
     const w = world({});
     await decideRoom(room({ copy: { hash: 'c1', ok: true }, mainChat: 'Ari - main', renames: [{ from: B, to: A }] }), w.read);
-    for (const n of w.reads) assert.match(n, /^savepoint-(mem|room|int|moved)-/);
+    for (const n of w.reads) assert.match(n, /^savepoint-(mem|room|int|moved|moving|copy)-/);
 });
 
 // ───────── branch restore ─────────
@@ -430,9 +434,21 @@ test('branch: the parent changed an earlier message; the first message differs',
     const edited = [...P80]; edited[7] = 'edited later';
     let r = branchRestore(recorded(edited, 79), P80.slice(0, 30));
     assert.deepEqual([r.ok, r.at, r.state.lastIndex], [true, 7, 4]);
-    const first = [...P80]; first[0] = 'another greeting';
-    r = branchRestore(recorded(P80, 79), first.slice(0, 30));
-    assert.deepEqual([r.ok, r.via, r.state.lastIndex, r.state.mem.scenes.length], [true, 'rewind', -1, 0]);
+});
+
+test('branch: the first message differs → a matching slot, else no (never an empty memory on its own)', () => {
+    // The parent's #0 is now "new"; the branch still has the "old" one; an earlier AUTO recorded the old one.
+    const parentNow = [...P80]; parentNow[0] = 'new greeting';
+    const branch = P80.slice(0, 30);
+    let r = branchRestore(recorded(parentNow, 79), branch);
+    assert.deepEqual([r.ok, r.why, r.at], [false, 'nothingLeft', 0]);
+    const auto = { id: 'auto1', mem: { ...emptyMem(), scenes: [{ id: 'old' }] }, pos: { lastIndex: 9, digest: digest(branch.slice(0, 10)) }, updated: 3 };
+    r = branchRestore(recorded(parentNow, 79), branch, [auto]);
+    assert.deepEqual([r.ok, r.via, r.slot, r.state.lastIndex], [true, 'slot', 'auto1', 9]);
+    // A parent that has recorded nothing yet is carried over as it is.
+    const loaded = { v: 1, mem: { ...emptyMem(), scenes: [{ id: 'kept' }] }, lastIndex: -1, hashes: [], history: [], floor: -1 };
+    r = branchRestore(loaded, branch);
+    assert.deepEqual([r.ok, r.via, r.state.mem.scenes[0].id], [true, 'parent', 'kept']);
 });
 
 test('branch: history too short → a slot whose recorded messages all match (the furthest), or no', () => {
@@ -468,26 +484,32 @@ test('moving the old copy out: first try, a stop after each step, and what is ne
     const id = migrateId(A, 'c1'), from = { kind: 'migrate', addr: A, copy: 'c1' };
     const body = memFile(id, { from });
     const base = { id, from, addr: A, integrity: 'i-A', copy: 'c1' };
-    const none = { mem: { kind: MISSING }, moved: { kind: MISSING }, clue: { kind: MISSING }, tag: { kind: MISSING } };
+    const none = { mem: { kind: MISSING }, start: { kind: MISSING }, moved: { kind: MISSING }, hint: { kind: MISSING }, clue: { kind: MISSING }, tag: { kind: MISSING } };
     const ok = data => ({ kind: OK, data });
-    assert.deepEqual(writePlan({ ...base, ...none }), { steps: ['writeMem', 'checkMem', 'writeMoved', 'writeClue', 'writeTag'] });
-    // Stopped after the body: the body is never written again (even with a newer rev).
-    assert.deepEqual(writePlan({ ...base, ...none, mem: ok({ ...body, rev: 9 }) }), { steps: ['writeMoved', 'writeClue', 'writeTag'] });
-    assert.deepEqual(writePlan({ ...base, ...none, mem: ok(body), moved: ok(movedBody({ addr: A, copy: 'c1', mem: id })) }), { steps: ['writeClue', 'writeTag'] });
-    const clue = ok(clueBody('i-A', [{ addr: A, mem: id }]));
-    assert.deepEqual(writePlan({ ...base, ...none, mem: ok(body), moved: ok(movedBody({ addr: A, copy: 'c1', mem: id })), clue }), { steps: ['writeTag'] });
-    assert.deepEqual(writePlan({ ...base, mem: ok(body), moved: ok(movedBody({ addr: A, copy: 'c1', mem: id })), clue, tag: ok(tagBody({ addr: A, integrity: 'i-A', mem: id, copy: 'c1' })) }), { steps: [] });
+    const started = ok(startBody({ addr: A, copy: 'c1', mem: id, wid: 'w0' }));
+    const moved = ok(movedBody({ addr: A, copy: 'c1', mem: id })), hint = ok(copyHintBody('c1', [A])), clue = ok(clueBody('i-A', [{ addr: A, mem: id }]));
+    assert.deepEqual(writePlan({ ...base, ...none }), { steps: ['writeStart', 'checkStart', 'writeMem', 'checkMem', 'writeMoved', 'writeCopy', 'writeClue', 'recheckStart', 'writeTag'] });
+    // Stopped after the start mark; after the body (never written again, even with a newer rev); later.
+    assert.deepEqual(writePlan({ ...base, ...none, start: started }), { steps: ['writeMem', 'checkMem', 'writeMoved', 'writeCopy', 'writeClue', 'recheckStart', 'writeTag'] });
+    assert.deepEqual(writePlan({ ...base, ...none, start: started, mem: ok({ ...body, rev: 9 }) }), { steps: ['writeMoved', 'writeCopy', 'writeClue', 'recheckStart', 'writeTag'] });
+    assert.deepEqual(writePlan({ ...base, ...none, start: started, mem: ok(body), moved }), { steps: ['writeCopy', 'writeClue', 'recheckStart', 'writeTag'] });
+    assert.deepEqual(writePlan({ ...base, ...none, start: started, mem: ok(body), moved, hint }), { steps: ['writeClue', 'recheckStart', 'writeTag'] });
+    assert.deepEqual(writePlan({ ...base, start: started, mem: ok(body), moved, hint, clue, tag: ok(tagBody({ addr: A, integrity: 'i-A', mem: id, copy: 'c1' })) }), { steps: [] });
     // A memory file from somewhere else, or one that cannot be read or checked → stop.
     assert.deepEqual(writePlan({ ...base, ...none, mem: ok(memFile(id, { from: { kind: 'migrate', addr: A, copy: 'c2' } })) }), { stop: 'otherOrigin' });
-    for (const k of ['mem', 'moved', 'clue', 'tag']) for (const kind of [BROKEN, ERROR]) assert.equal(writePlan({ ...base, ...none, [k]: { kind } }).stop, 'read');
+    for (const k of ['mem', 'start', 'moved', 'hint', 'clue', 'tag']) for (const kind of [BROKEN, ERROR]) assert.equal(writePlan({ ...base, ...none, [k]: { kind } }).stop, 'read', k);
     assert.deepEqual(writePlan({ ...base, ...none, mem: ok({ ...body, id: 'zz' }) }), { stop: 'read', file: 'mem' });
     // The moved mark without the body: hold, never remade from the old copy.
-    assert.deepEqual(writePlan({ ...base, ...none, moved: ok(movedBody({ addr: A, copy: 'c1', mem: id })) }), { hold: 'movedNoBody' });
+    assert.deepEqual(writePlan({ ...base, ...none, start: started, moved }), { hold: 'movedNoBody' });
     assert.deepEqual(writePlan({ ...base, ...none, mem: ok(body), moved: ok(movedBody({ addr: A, copy: 'c1', mem: 'other' })) }), { stop: 'movedDiff' });
+    // The old copy changed since the move started (an older SavePoint wrote it again) → hold.
+    assert.deepEqual(writePlan({ ...base, ...none, copy: 'c2', from: { ...from, copy: 'c2' }, id: migrateId(A, 'c2'), start: started }), { hold: 'copyChanged' });
     // A tag to another memory is never overwritten.
     assert.deepEqual(writePlan({ ...base, ...none, mem: ok(body), tag: ok(tagBody({ addr: A, mem: 'other' })) }), { stop: 'tagDiff' });
-    // No integrity: no hint.
-    assert.deepEqual(writePlan({ ...base, integrity: null, ...none }), { steps: ['writeMem', 'checkMem', 'writeMoved', 'writeTag'] });
+    // The body is for this address but another integrity → stop.
+    assert.deepEqual(writePlan({ ...base, ...none, mem: ok(memFile(id, { from, integrity: 'i-B' })) }), { stop: 'homeDiff' });
+    // No integrity: no hint by integrity.
+    assert.deepEqual(writePlan({ ...base, integrity: null, ...none }), { steps: ['writeStart', 'checkStart', 'writeMem', 'checkMem', 'writeMoved', 'writeCopy', 'recheckStart', 'writeTag'] });
     // An existing hint for other rooms gets this room added.
     assert.deepEqual(clueWith(clueBody('i-A', [{ addr: B, mem: 'm2' }]), 'i-A', A, id).rooms, [{ addr: B, mem: 'm2' }, { addr: A, mem: id }]);
     assert.deepEqual(clueWith(null, 'i-A', A, id).rooms, [{ addr: A, mem: id }]);
@@ -521,4 +543,196 @@ test('two devices: write only over what was seen (rev and receipt), ours only wi
     const known = n.recent.at(-2);
     assert.deepEqual(maybeOverwritten([known, { rev: n.recent.at(-2).rev, wid: 'other' }, { rev: 99, wid: 'z' }, { rev: 1, wid: 'old' }, { rev: 5 }], n).map(a => a.wid), ['other', 'z']);
     assert.deepEqual(maybeOverwritten([{ rev: 1, wid: 'a' }], null), []);
+});
+
+// ───────── v0.6.65: review of v0.6.64 (P2 × 4) ─────────
+
+test('[P2] tag gone, then an older SavePoint changed the old copy: hold, never link again or move it twice', async () => {
+    const mid = migrateId(A, 'c1');
+    const body = memFile(mid, { from: { kind: 'migrate', addr: A, copy: 'c1' }, rev: 12 });
+    const started = startBody({ addr: A, copy: 'c1', mem: mid, wid: 'w0' });
+    const now = { copy: { hash: 'c2', ok: true } };
+    // Found through the integrity hint: its recorded copy is not the chat's → hold.
+    let r = await decideRoom(room(now), world({ [memName(mid)]: body, [clueName('i-A')]: clueBody('i-A', [{ addr: A, mem: mid }]), [startName(A)]: started }).read);
+    assert.deepEqual([r.verdict, r.row, r.why], ['hold', 6, 'copyChanged']);
+    // No hint, no integrity: the move-start mark (found by the address alone) still finds it → hold.
+    r = await decideRoom(room({ ...now, integrity: null }), world({ [memName(mid)]: body, [startName(A)]: started }).read);
+    assert.deepEqual([r.verdict, r.row, r.why], ['hold', 6, 'copyChanged']);
+    // The copy changed in the middle of the move (mark written, no body yet) → hold, not a second move.
+    r = await decideRoom(room({ ...now, integrity: null }), world({ [startName(A)]: started }).read);
+    assert.deepEqual([r.verdict, r.row, r.why], ['hold', 6, 'copyChanged']);
+    // The same copy after a stop with no body yet → the move is tried again.
+    r = await decideRoom(room({ copy: { hash: 'c1', ok: true }, integrity: null }), world({ [startName(A)]: started }).read);
+    assert.deepEqual([r.verdict, r.row, r.mem], ['migrate', 10, mid]);
+    // A mark, no body and no old copy left in the chat → hold.
+    r = await decideRoom(room({ integrity: null }), world({ [startName(A)]: started }).read);
+    assert.deepEqual([r.verdict, r.row, r.why], ['hold', 6, 'moveStarted']);
+    // A new room's memory (no copy recorded) and now an old copy in the chat → hold.
+    const own = homeId(A, 'i-A');
+    r = await decideRoom(room(now), world({ [memName(own)]: memFile(own) }).read);
+    assert.deepEqual([r.verdict, r.row, r.why], ['hold', 6, 'copyChanged']);
+    // The same copy as recorded → link again.
+    r = await decideRoom(room({ copy: { hash: 'c1', ok: true } }), world({ [memName(mid)]: body, [startName(A)]: started }).read);
+    assert.deepEqual([r.verdict, r.mem], ['relink', mid]);
+});
+
+test('[P2] an imported copy of a linked branch is held with that branch as the candidate (row 8 before 7)', async () => {
+    const pw = parentWorld();
+    const bid = homeId(B, 'i-B1');
+    const files = { ...pw.files,
+        [tagName(B)]: tagBody({ addr: B, integrity: 'i-B1', mem: bid }),
+        [memName(bid)]: memFile(bid, { addr: B, integrity: 'i-B1', from: { kind: 'branch', addr: B, integrity: 'i-B1', parent: pw.pAddr } }),
+        [clueName('i-B1')]: clueBody('i-B1', [{ addr: B, mem: bid }]) };
+    const imported = roomAddr('ari.png', 'Ari - renamed imported');
+    const w = world(files);
+    const r = await decideRoom({ ...branchRoom({ prints: P80.slice(0, 21) }), addr: imported }, w.read, { slotsOf: pw.slotsOf });
+    assert.deepEqual([r.verdict, r.row, r.candidates], ['hold', 8, [B]]);
+    assert.equal(w.reads.includes(memName(pw.pid)), false, "the parent's memory is not even read");
+    // The branch itself (its own tag gone) still links to its own memory first (row 6).
+    const f2 = { ...files }; delete f2[tagName(B)];
+    const own = await decideRoom({ ...branchRoom(), addr: B }, world(f2).read);
+    assert.deepEqual([own.verdict, own.row, own.mem], ['relink', 6, bid]);
+});
+
+test('[P2] a memory file must hold a real memory; tag, chat file and memory must agree on the integrity', async () => {
+    const st = recorded(P80, 19);
+    assert.equal(validState(st), true);
+    assert.equal(validState({ v: 1, mem: {}, lastIndex: 80, hashes: [] }), false);
+    assert.equal(validState({ ...st, hashes: st.hashes.slice(1) }), false);
+    assert.equal(validState({ ...st, lastIndex: -2, hashes: [] }), false);
+    assert.equal(validState({ ...st, hashes: [...st.hashes.slice(1), 7] }), false);
+    assert.equal(validState({ ...st, mem: { ...st.mem, records: null } }), false);
+    assert.equal(validState({ ...st, history: {} }), false);
+    assert.equal(branchRestore({ v: 1, mem: {}, lastIndex: 80, hashes: [] }, P80).ok, false);
+    const id = homeId(A, 'i-A');
+    assert.equal(checked({ kind: OK, data: memBody({ id, state: { v: 1, mem: {}, lastIndex: 80, hashes: [] }, wid: 'w', from: { kind: 'new', addr: A }, home: { addr: A, integrity: null } }) }, validMem(id)).kind, BROKEN);
+    // The tag says i-A, the memory's home says i-B (same address) → hold, not link.
+    const { files } = linked();
+    files[memName(id)] = memFile(id, { integrity: 'i-B' });
+    const r = await decideRoom(room(), world(files).read);
+    assert.deepEqual([r.verdict, r.why], ['hold', 'homeDiff']);
+    assert.equal(homeOk({ addr: A, integrity: 'i-A' }, A, 'i-A', null), true);
+    assert.equal(homeOk({ addr: A, integrity: null }, A, null), true);
+    assert.equal(homeOk({ addr: A, integrity: 'i-A' }, A, 'i-A', 'i-B'), false);
+    assert.equal(homeOk({ addr: A, integrity: 'i-A' }, A, null), false);
+    assert.equal(homeOk({ addr: B, integrity: null }, A, 'i-A'), false);
+});
+
+test('copy hint: an old copy moved out of another room (no integrity, renamed elsewhere) → hold; only a reason to hold', async () => {
+    const files = { [copyName('c1')]: copyHintBody('c1', [B]) };
+    let r = await decideRoom(room({ integrity: null, copy: { hash: 'c1', ok: true } }), world(files).read);
+    assert.deepEqual([r.verdict, r.row, r.from], ['hold', 9, B]);
+    // Listing only this room is no reason to hold (and never a reason to link).
+    r = await decideRoom(room({ integrity: null, copy: { hash: 'c1', ok: true } }), world({ [copyName('c1')]: copyHintBody('c1', [A]) }).read);
+    assert.deepEqual([r.verdict, r.row], ['migrate', 10]);
+    r = await decideRoom(room({ integrity: null, copy: { hash: 'c1', ok: true } }), world({ [copyName('c1')]: copyHintBody('c1', [A]) }, { [copyName('c1')]: 'broken' }).read);
+    assert.equal(r.verdict, 'readFail');
+});
+
+// ───────── v0.6.65: putting the memory in place, one device and two ─────────
+
+// A user-files folder shared by devices; each device's reads and writes take turns as `order` says
+// (then they alternate).
+function folder(files = {}) {
+    const store = new Map(Object.entries(files).map(([k, v]) => [k, JSON.stringify(v)]));
+    const log = [];
+    let sched = null;
+    const io = (dev, { failWrite = null } = {}) => ({
+        async read(n) { await sched?.turn(dev); try { return store.has(n) ? { kind: OK, data: JSON.parse(store.get(n)) } : { kind: MISSING }; } finally { sched?.done(); } },
+        async write(n, body) {
+            await sched?.turn(dev);
+            try { if (failWrite && n.startsWith(failWrite)) throw new Error('disk'); store.set(n, JSON.stringify(body)); log.push([dev, n]); } finally { sched?.done(); }
+        },
+    });
+    const run = async (jobs, order = []) => {
+        const devs = Object.keys(jobs), active = new Set(devs), wait = new Map();
+        let k = 0, busy = false, alt = 0;
+        const cur = () => k < order.length ? order[k] : devs[alt % devs.length];
+        const pump = () => {
+            if (busy) return;
+            for (let t = 0; t < 2 * devs.length && !active.has(cur()); t++) k < order.length ? k++ : alt++;
+            const w = wait.get(cur());
+            if (w) { wait.delete(cur()); busy = true; w(); }
+        };
+        sched = { turn: d => new Promise(r => { wait.set(d, r); pump(); }), done: () => { busy = false; k < order.length ? k++ : alt++; pump(); } };
+        const out = await Promise.all(devs.map(d => jobs[d]().finally(() => { active.delete(d); pump(); })));
+        sched = null;
+        return Object.fromEntries(devs.map((d, i) => [d, out[i]]));
+    };
+    return { store, log, io, run, get: n => store.has(n) ? JSON.parse(store.get(n)) : undefined };
+}
+const moveArgs = (copy, wid, extra = {}) => ({ id: migrateId(A, copy), from: { kind: 'migrate', addr: A, copy }, addr: A, integrity: 'i-A', copy, state: recorded(P80, 19), wid, ...extra });
+
+test('one device: a first move writes every file, the tag last; a stop after any write is finished by a retry', async () => {
+    const f = folder();
+    const r = await placeMemory(f.io('A'), moveArgs('c1', 'wa'));
+    const id = migrateId(A, 'c1');
+    assert.deepEqual([r.done, r.mem, r.adopted, r.seen], [true, id, false, { rev: 0, wid: 'wa' }]);
+    assert.deepEqual(f.log.map(x => x[1]), [startName(A), memName(id), movedName(A, 'c1'), copyName('c1'), clueName('i-A'), tagName(A)]);
+    assert.equal(f.get(memName(id)).copy, 'c1');
+    assert.deepEqual(f.get(tagName(A)).prints.map(p => p.i), [0, 5, 10, 14, 19]);
+    // Every write that can fail, failing once: nothing is half-linked, and a retry finishes without rewriting the body.
+    for (const failAt of [startName(A), memName(id), movedName(A, 'c1'), copyName('c1'), clueName('i-A'), tagName(A)]) {
+        const g = folder();
+        const x = await placeMemory(g.io('A', { failWrite: failAt }), moveArgs('c1', 'wa'));
+        assert.deepEqual([x.stop, g.get(tagName(A))], ['write', undefined], failAt);
+        const y = await placeMemory(g.io('A'), moveArgs('c1', 'wa2'));
+        assert.equal(y.done, true, failAt);
+        assert.equal(g.log.filter(e => e[1] === memName(id)).length, 1, `body written once (${failAt})`);
+    }
+    // A body that is there already, moved later on (rev 9): never rewritten, the rest only.
+    const h = folder({ [startName(A)]: startBody({ addr: A, copy: 'c1', mem: id, wid: 'w0' }), [memName(id)]: memFile(id, { from: { kind: 'migrate', addr: A, copy: 'c1' }, rev: 9 }) });
+    const z = await placeMemory(h.io('A'), moveArgs('c1', 'wa'));
+    assert.deepEqual([z.done, z.seen.rev, h.log.some(e => e[1] === memName(id))], [true, 9, false]);
+    assert.equal(h.get(movedName(A, 'c1')).rev, 9);
+});
+
+test('two devices, the same old copy: one body file; the device that reads back the other receipt does not write it again', async () => {
+    const f = folder();
+    const id = migrateId(A, 'c1');
+    const r = await f.run({ A: () => placeMemory(f.io('A'), moveArgs('c1', 'wa')), B: () => placeMemory(f.io('B'), moveArgs('c1', 'wb')) });
+    assert.deepEqual([r.A.done, r.B.done, r.A.mem, r.B.mem], [true, true, id, id]);
+    const bodies = f.log.filter(e => e[1] === memName(id));
+    assert.deepEqual(bodies.map(e => e[0]), ['A', 'B'], 'both wrote the body once (same name)');
+    assert.equal([...f.store.keys()].filter(n => n.startsWith('savepoint-mem-')).length, 1);
+    // A read back B's receipt: it keeps B's body as it is and only finishes the links.
+    assert.deepEqual([r.A.adopted, r.A.seen.wid, r.B.adopted, r.B.seen.wid], [true, 'wb', false, 'wb']);
+    assert.equal(f.get(memName(id)).wid, 'wb');
+    assert.equal(f.get(tagName(A)).mem, id);
+    // The three conditions: the other body must read fine, be for this room and come from the same old copy.
+    const mine = { id, from: { kind: 'migrate', addr: A, copy: 'c1' }, addr: A, integrity: 'i-A', copy: 'c1', wid: 'wa' };
+    const theirs = memFile(id, { from: mine.from });
+    assert.equal(checkMem({ kind: OK, data: theirs }, mine), 'theirs');
+    assert.equal(checkMem({ kind: OK, data: { ...theirs, wid: 'wa' } }, mine), 'mine');
+    assert.equal(checkMem({ kind: OK, data: { ...theirs, copy: 'c2' } }, mine), 'otherOrigin');
+    assert.equal(checkMem({ kind: OK, data: { ...theirs, home: { addr: A, integrity: 'i-B' } } }, mine), 'otherOrigin');
+    assert.equal(checkMem({ kind: OK, data: { ...theirs, from: { kind: 'new', addr: A, integrity: 'i-A' } } }, mine), 'otherOrigin');
+    for (const res of [{ kind: MISSING }, { kind: BROKEN }, { kind: ERROR }, { kind: OK, data: { ...theirs, state: {} } }]) assert.equal(checkMem(res, mine), 'unsure');
+    assert.equal(checkStart({ kind: OK, data: startBody({ addr: A, copy: 'c1', mem: id, wid: 'wb' }) }, { addr: A, copy: 'c1', id, wid: 'wa' }), 'same');
+    assert.equal(checkStart({ kind: OK, data: startBody({ addr: A, copy: 'c2', mem: 'x', wid: 'wb' }) }, { addr: A, copy: 'c1', id, wid: 'wa' }), 'copyChanged');
+    assert.equal(checkStart({ kind: MISSING }, { addr: A, copy: 'c1', id, wid: 'wa' }), 'unsure');
+});
+
+test('two devices, the old copy changed in between: a conflict that is found is held', async () => {
+    const id1 = migrateId(A, 'c1'), id2 = migrateId(A, 'c2');
+    // Both start together: B's mark lands after A's, A reads B's mark back → A holds; B goes on.
+    let f = folder();
+    let r = await f.run({ A: () => placeMemory(f.io('A'), moveArgs('c1', 'wa')), B: () => placeMemory(f.io('B'), moveArgs('c2', 'wb')) });
+    assert.deepEqual([r.A.hold, r.A.step, r.B.done], ['copyChanged', 'checkStart', true]);
+    assert.equal(f.store.has(memName(id1)), false);
+    assert.equal(f.get(tagName(A)).mem, id2);
+    // One after the other: B finds A's mark for another copy → hold, nothing written.
+    f = folder();
+    await placeMemory(f.io('A'), moveArgs('c1', 'wa'));
+    const before = f.log.length;
+    const b = await placeMemory(f.io('B'), moveArgs('c2', 'wb'));
+    assert.deepEqual([b.hold, f.log.length], ['copyChanged', before]);
+    // B read before A's mark, A checked its mark, then B wrote and checked its own: both passed the first
+    // check. A's recheck right before the tag finds it → A holds and writes no tag (its body stays unused).
+    f = folder();
+    r = await f.run({ A: () => placeMemory(f.io('A'), moveArgs('c1', 'wa')), B: () => placeMemory(f.io('B'), moveArgs('c2', 'wb')) },
+        ['B', 'B', 'B', 'B', 'B', 'B', 'A', 'A', 'A', 'A', 'A', 'A', 'A', 'A', 'B', 'B']);
+    assert.deepEqual([r.A.hold, r.A.step, r.B.done], ['copyChanged', 'recheckStart', true]);
+    assert.equal(f.get(tagName(A)).mem, id2);
+    assert.equal(f.log.filter(e => e[0] === 'A' && e[1] === tagName(A)).length, 0);
 });

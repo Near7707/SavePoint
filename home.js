@@ -16,6 +16,11 @@
 //                                      Never enough to link on its own (an imported copy has the same value).
 // - savepoint-moved-<hash of address + old copy>.json   "this room's old in-chat memory was moved":
 //                                      the memory id it went to and its rev then.
+// - savepoint-moving-<hash of address>.json   (v0.6.65) "a move out of this room's chat started": the old
+//                                      copy it started from, the memory id, a receipt. Found by the address
+//                                      alone, so a retry finds it even after the old copy changed.
+// - savepoint-copy-<hash of old copy>.json    (v0.6.65) rooms this old copy was moved out of. Only ever a
+//                                      reason to hold (an older chat without integrity, renamed elsewhere).
 // A room's address is the character (avatar) or group ('group:<id>') plus the chat file name, the same
 // string index.js uses as roomKey(). Memory ids follow fixed rules, so a retry points at the same file and
 // a room's memory file can be found by name even when its tag is gone:
@@ -68,6 +73,8 @@ export const memName = id => `savepoint-mem-${id}.json`;
 export const tagName = addr => `savepoint-room-${idOf('room', addr)}.json`;
 export const clueName = integrity => `savepoint-int-${idOf('int', integrity)}.json`;
 export const movedName = (addr, copy) => `savepoint-moved-${idOf('moved', addr, copy)}.json`;
+export const startName = addr => `savepoint-moving-${idOf('moving', addr)}.json`;
+export const copyName = copy => `savepoint-copy-${idOf('copy', copy)}.json`;
 
 // The old in-chat memory (chat metadata `savePoint`) as one value.
 export const copyHash = copy => hashString(canon(copy));
@@ -129,20 +136,27 @@ const bad = r => r.kind === BROKEN || r.kind === ERROR;
 // ───────── file bodies ─────────
 
 const RECENT = 8;
-export const validState = s => plainObj(s) && s.v === 1 && plainObj(s.mem) && int(s.lastIndex) && Array.isArray(s.hashes);
+// v0.6.65: a memory's shape, its recorded range and its fingerprints agree (one per recorded message).
+export const validState = s => plainObj(s) && s.v === 1 && plainObj(s.mem)
+    && ['scenes', 'entities', 'records'].every(k => Array.isArray(s.mem[k]))
+    && int(s.lastIndex) && s.lastIndex >= -1 && Array.isArray(s.hashes) && s.hashes.length === s.lastIndex + 1 && s.hashes.every(str)
+    && (s.history === undefined || Array.isArray(s.history)) && (s.floor === undefined || int(s.floor) && s.floor >= -1);
 const validFrom = f => plainObj(f) && ['migrate', 'branch', 'new'].includes(f.kind) && str(f.addr);
 export const validMem = id => d => plainObj(d) && d.format === 'savepoint-mem' && d.v === 1 && d.id === id && int(d.rev) && d.rev >= 0 && str(d.wid)
     && Array.isArray(d.recent) && d.recent.every(x => plainObj(x) && int(x.rev) && str(x.wid))
-    && validFrom(d.from) && plainObj(d.home) && str(d.home.addr) && optStr(d.home.integrity) && validState(d.state);
+    && validFrom(d.from) && plainObj(d.home) && str(d.home.addr) && optStr(d.home.integrity) && optStr(d.copy) && validState(d.state);
 export const validTag = addr => d => plainObj(d) && d.format === 'savepoint-room' && d.v === 1 && d.addr === addr && str(d.mem)
     && optStr(d.integrity) && optStr(d.copy) && Array.isArray(d.prints) && d.prints.every(p => plainObj(p) && int(p.i) && p.i >= 0 && str(p.h))
     && (d.state === 'linked' || d.state === 'renamed' && str(d.to));
 export const validClue = integrity => d => plainObj(d) && d.format === 'savepoint-int' && d.v === 1 && d.integrity === integrity
     && Array.isArray(d.rooms) && d.rooms.every(x => plainObj(x) && str(x.addr) && str(x.mem));
 export const validMoved = (addr, copy) => d => plainObj(d) && d.format === 'savepoint-moved' && d.v === 1 && d.addr === addr && d.copy === copy && str(d.mem) && int(d.rev);
+export const validStart = addr => d => plainObj(d) && d.format === 'savepoint-moving' && d.v === 1 && d.addr === addr && str(d.copy) && str(d.mem) && str(d.wid);
+export const validCopyHint = copy => d => plainObj(d) && d.format === 'savepoint-copy' && d.v === 1 && d.copy === copy && Array.isArray(d.rooms) && d.rooms.every(str);
 
-export const memBody = ({ id, state, rev = 0, wid, recent = [], from, home }) =>
-    ({ format: 'savepoint-mem', v: 1, id, rev, wid, recent: [...recent, { rev, wid }].slice(-RECENT), from, home, state });
+// `copy`: the old in-chat copy the chat file had when this memory was linked to the room (null: none).
+export const memBody = ({ id, state, rev = 0, wid, recent = [], from, home, copy = null }) =>
+    ({ format: 'savepoint-mem', v: 1, id, rev, wid, recent: [...recent, { rev, wid }].slice(-RECENT), from, home, copy, state });
 export const tagBody = ({ addr, integrity = null, mem, copy = null, prints = [], at = Date.now() }) =>
     ({ format: 'savepoint-room', v: 1, addr, integrity, mem, copy, prints, state: 'linked', at });
 export const renamedTag = (tag, to, at = Date.now()) => ({ ...tag, state: 'renamed', to, at });
@@ -152,6 +166,9 @@ export const clueWith = (clue, integrity, addr, mem) => {
     return clueBody(integrity, [...rooms, { addr, mem }]);
 };
 export const movedBody = ({ addr, copy, mem, rev = 0 }) => ({ format: 'savepoint-moved', v: 1, addr, copy, mem, rev });
+export const startBody = ({ addr, copy, mem, wid, at = Date.now() }) => ({ format: 'savepoint-moving', v: 1, addr, copy, mem, wid, at });
+export const copyHintBody = (copy, rooms) => ({ format: 'savepoint-copy', v: 1, copy, rooms });
+export const copyHintWith = (hint, copy, addr) => copyHintBody(copy, [...new Set([...(hint?.rooms || []), addr])]);
 
 // ───────── fingerprints ─────────
 
@@ -203,6 +220,8 @@ async function gather(input, read) {
         if (clue.kind === OK) for (const x of clue.data.rooms) if (x.addr !== addr) { others.add(x.addr); await get(tagName(x.addr), validTag(x.addr)); }
     }
     if (copy) await get(movedName(addr, copy.hash), validMoved(addr, copy.hash));
+    await get(startName(addr), validStart(addr));
+    if (copy) await get(copyName(copy.hash), validCopyHint(copy.hash));
     if (str(mainChat)) {
         let p = roomAddr(scopeOf(addr), mainChat);
         const seen = new Set([addr]);
@@ -217,7 +236,10 @@ async function gather(input, read) {
     return { files, failed };
 }
 
-const homeMatches = (m, addr, integrity) => m.home.addr === addr && (m.home.integrity == null || m.home.integrity === integrity);
+// A memory's home is this room: the same address, and its integrity (if it has one) is every one given.
+// v0.6.65: also used when a tag links (row 3) and in writePlan/checkMem, not only for row 6. By row 3 the
+// tag and the chat file have the same integrity (or the tag has none), so the chat file's is the one to check.
+export const homeOk = (home, addr, ...ints) => home.addr === addr && (home.integrity == null || ints.filter(str).every(i => i === home.integrity) && ints.some(str));
 
 // Decide what an opening room is. The rows are tried from the top; the first that fits is the answer.
 //  0  a needed file is broken or could not be read → readFail (stop, check again later)
@@ -230,17 +252,21 @@ const homeMatches = (m, addr, integrity) => m.home.addr === addr && (m.home.inte
 //  4  only once it is the same room: some fingerprints differ → link + source change
 //  without a tag:
 //  5  a rename seen on this device and the integrity matches → move the tag
-//  6  this room's own memory file (by its id rules, the integrity hint or the moved mark), readable and
-//     at home here → link again to it (before the branch check)
+//  6  this room's own memory file (by its id rules, the integrity hint, the moved mark or the move-start
+//     mark), readable, at home here and with the same old copy → link again to it (before everything below)
+//  8  the same integrity is linked to another room → hold (v0.6.65: before 7, so an imported copy of a
+//     linked branch is held with that branch as the candidate instead of copying the parent's memory)
 //  7  a branch (integrity differs from the parent, main_chat is a linked room in the same scope) → inherit
-//  8  the same integrity is linked to another room → hold
-//  9  the old copy was already moved from another room → hold
+//  9  the old copy was already moved from another room (moved marks, or the copy hint) → hold
 //  10 an old copy → move it out (migrate)
 //  11 other SavePoint traces → hold
 //  12 a new room (memory only once the integrity is in the chat file)
 // Also: a tag that says this name was renamed away → hold (row 1), unless a rename back to it was seen
 // here (row 5). The tag's memory file is read only once the room is proven (row 3): missing → hold,
-// at another home → hold. Row 0 covers the small files (tags, the hint, moved marks), all read first;
+// at another home (address, or an integrity the tag or the chat file disagrees with) → hold.
+// v0.6.65, row 6: a found memory whose recorded old copy is not the chat's (an older SavePoint wrote it
+// again), or a move-start mark for another old copy → hold; a move-start mark with nothing behind it and
+// no old copy in the chat any more → hold; with the same old copy → the move is tried again (row 10). Row 0 covers the small files (tags, the hint, moved marks), all read first;
 // a memory file that cannot be read stops at the row that needs it (still readFail).
 // readMem(id) → { kind, data } of savepoint-mem-<id>.json; slotsOf(addr) → that room's AUTO/QUICK records.
 // Nothing here writes. While holding nothing is written or deleted.
@@ -273,7 +299,7 @@ export async function decideRoom(input, read, { readMem = id => read(memName(id)
         const m = await mem(tag.mem);
         if (bad(m)) return fail(3, [memName(tag.mem)]);
         if (m.kind === MISSING) return hold(3, 'memGone', { mem: tag.mem });
-        if (m.data.home.addr !== addr) return hold(3, 'homeDiff', { mem: tag.mem });
+        if (!homeOk(m.data.home, addr, integrity)) return hold(3, 'homeDiff', { mem: tag.mem });
         const at = [printCheck(tag.prints, prints).first, firstDiff(m.data.state.hashes, prints)].filter(i => i >= 0);
         const changedAt = at.length ? Math.min(...at) : -1;
         return out('link', changedAt < 0 ? 3 : 4, { proof, mem: tag.mem, changedAt, fill: !str(tag.integrity) && str(integrity) ? { integrity } : null });
@@ -303,14 +329,26 @@ export async function decideRoom(input, read, { readMem = id => read(memName(id)
     if (clue?.kind === OK) for (const x of clue.data.rooms) if (x.addr === addr) ids.push(x.mem);
     const movedHere = copy ? files.get(movedName(addr, copy.hash)) : null;
     if (movedHere?.kind === OK) ids.push(movedHere.data.mem);
+    const start = files.get(startName(addr));
+    if (start?.kind === OK) {
+        if (copy && start.data.copy !== copy.hash) return hold(6, 'copyChanged', { mem: start.data.mem });
+        ids.push(start.data.mem);
+    }
     for (const id of [...new Set(ids)]) {
         const m = await mem(id);
         if (bad(m)) return fail(6, [memName(id)]);
         if (m.kind === MISSING) continue;
-        if (!homeMatches(m.data, addr, integrity)) return hold(6, 'homeDiff', { mem: id });
+        if (!homeOk(m.data.home, addr, integrity)) return hold(6, 'homeDiff', { mem: id });
+        if (copy && m.data.copy !== copy.hash) return hold(6, 'copyChanged', { mem: id });
         return out('relink', 6, { mem: id, from: m.data.from });
     }
     if (movedHere?.kind === OK) return hold(6, 'movedNoBody', { mem: movedHere.data.mem });
+    if (start?.kind === OK && !copy) return hold(6, 'moveStarted', { mem: start.data.mem });
+
+    // 8: the same integrity linked somewhere else (an imported copy, an old-style branch).
+    const clueRooms = clue?.kind === OK ? clue.data.rooms : [];
+    const linked = [...new Set(clueRooms.filter(x => x.addr !== addr && files.get(tagName(x.addr))?.kind === OK && files.get(tagName(x.addr)).data.state === 'linked').map(x => x.addr))];
+    if (linked.length) return hold(8, 'sameIntegrity', { candidates: linked });
 
     // 7: a branch of a linked room.
     let parent = null;
@@ -335,16 +373,15 @@ export async function decideRoom(input, read, { readMem = id => read(memName(id)
         return out('branch', 7, { parent: parent.addr, parentMem: parent.tag.mem, mem: homeId(addr, integrity), state: branchState(r.state, addr), via: r.via, at: r.at });
     }
 
-    // 8: the same integrity linked somewhere else (an imported copy, an old-style branch).
-    if (clue?.kind === OK) {
-        const linked = [...new Set(clue.data.rooms.filter(x => x.addr !== addr && files.get(tagName(x.addr))?.kind === OK && files.get(tagName(x.addr)).data.state === 'linked').map(x => x.addr))];
-        if (linked.length) return hold(8, 'sameIntegrity', { candidates: linked });
-    }
-    // 9: this old copy was already moved out of another room (the parent, a room with this integrity, a rename).
+    // 9: this old copy was already moved out of another room (the parent, a room with this integrity, a
+    // rename), or the copy hint lists another room (an older chat without integrity renamed elsewhere).
     if (copy) for (const [name, res] of files) {
         if (!name.startsWith('savepoint-moved-') || res.kind !== OK || res.data.addr === addr || res.data.copy !== copy.hash) continue;
         return hold(9, 'copyMoved', { from: res.data.addr, mem: res.data.mem });
     }
+    const hint = copy ? files.get(copyName(copy.hash)) : null;
+    const elsewhere = hint?.kind === OK ? hint.data.rooms.filter(a => a !== addr) : [];
+    if (elsewhere.length) return hold(9, 'copyMoved', { from: elsewhere[0], rooms: elsewhere });
     if (copy?.ok) return out('migrate', 10, { mem: migrateId(addr, copy.hash) });
     if (copy || traces) return hold(11, 'traces');
     if (str(integrity)) return out('new', 12, { mem: homeId(addr, integrity) });
@@ -359,6 +396,9 @@ export async function decideRoom(input, read, { readMem = id => read(memName(id)
 // 1. the first recorded place where the branch differs; 2. undo every summary from the one covering it
 // (fails below the trimmed history, `floor`); 3. every recorded fingerprint left must match the branch;
 // 4. otherwise the slot whose recorded messages all match, the furthest one (then the newest); 5. none → no.
+// v0.6.65: a rewind that leaves nothing recorded (the first message differs) proves nothing, the same as
+// no fingerprints: a matching slot is used, otherwise no (hold; starting empty is the user's choice).
+// A parent that has recorded nothing yet (a memory loaded without messages) is still carried over as it is.
 export function branchRestore(parent, prints, slots = []) {
     if (!validState(parent)) return { ok: false, why: 'parent', at: -1 };
     const st = clone(parent);
@@ -368,8 +408,9 @@ export function branchRestore(parent, prints, slots = []) {
     let why = 'floor';
     if (rollbackFrom(st, k)) {
         st.hashes = st.hashes.slice(0, st.lastIndex + 1);
-        if (allMatch(st)) return { ok: true, via: 'rewind', at: k, state: st };
-        why = 'mismatch';
+        if (st.lastIndex < 0) why = 'nothingLeft';
+        else if (allMatch(st)) return { ok: true, via: 'rewind', at: k, state: st };
+        else why = 'mismatch';
     }
     const fits = (Array.isArray(slots) ? slots : []).filter(s => plainObj(s?.mem) && int(s?.pos?.lastIndex) && s.pos.lastIndex >= 0
         && s.pos.lastIndex < prints.length && digest(prints.slice(0, s.pos.lastIndex + 1)) === s.pos.digest)
@@ -400,11 +441,15 @@ export function branchState(st, addr) {
 //  - it exists and came from the same place → the rest only (its rev may be newer; it is left alone)
 //  - it came from somewhere else, or any read failed → stop
 //  - a moved mark without its memory file → hold (do not remake it from the old copy; offer a slot)
-// Steps, always in this order: writeMem → checkMem (read back) → writeMoved → writeClue → writeTag (last).
-// in: { id, from, addr, integrity, copy (moves only), mem, moved, clue, tag: reads ({ kind, data }) }
-export function writePlan({ id, from, addr, integrity = null, copy = null, mem, moved = null, clue = null, tag }) {
+//  - (moves) a move-start mark for another old copy, or a memory that recorded another one → hold
+// Steps, always in this order: writeStart → checkStart (moves only) → writeMem → checkMem (read back) →
+// writeMoved → writeCopy (moves only) → writeClue → recheckStart (moves) → writeTag (last).
+// in: { id, from, addr, integrity, copy (the old copy the chat has: moves, and a branch that carries one),
+//       mem, moved, start, hint, clue, tag: reads ({ kind, data }) }
+export function writePlan({ id, from, addr, integrity = null, copy = null, mem, moved = null, start = null, hint = null, clue = null, tag }) {
+    const move = from?.kind === 'migrate';
     const reads = [['mem', mem, validMem(id)], ['tag', tag, validTag(addr)]];
-    if (from?.kind === 'migrate') reads.push(['moved', moved, validMoved(addr, copy)]);
+    if (move) reads.push(['start', start, validStart(addr)], ['moved', moved, validMoved(addr, copy)], ['hint', hint, validCopyHint(copy)]);
     if (str(integrity)) reads.push(['clue', clue, validClue(integrity)]);
     const r = {};
     for (const [k, res, valid] of reads) {
@@ -412,9 +457,15 @@ export function writePlan({ id, from, addr, integrity = null, copy = null, mem, 
         if (bad(r[k])) return { stop: 'read', file: k };
     }
     const steps = [];
+    if (move) {
+        if (r.start.kind === MISSING) steps.push('writeStart', 'checkStart');
+        else if (r.start.data.copy !== copy) return { hold: 'copyChanged' };
+        else if (r.start.data.mem !== id) return { stop: 'startDiff' };
+    }
     if (r.mem.kind === OK) {
         if (canon(r.mem.data.from) !== canon(from)) return { stop: 'otherOrigin' };
-        if (r.mem.data.home.addr !== addr) return { stop: 'homeDiff' };
+        if (!homeOk(r.mem.data.home, addr, integrity)) return { stop: 'homeDiff' };
+        if ((r.mem.data.copy ?? null) !== (copy ?? null)) return { hold: 'copyChanged' };
     } else {
         if (r.moved?.kind === OK) return { hold: 'movedNoBody' };
         steps.push('writeMem', 'checkMem');
@@ -423,8 +474,9 @@ export function writePlan({ id, from, addr, integrity = null, copy = null, mem, 
         if (r.moved.kind === MISSING) steps.push('writeMoved');
         else if (r.moved.data.mem !== id) return { stop: 'movedDiff' };
     }
+    if (r.hint && !(r.hint.kind === OK && r.hint.data.rooms.includes(addr))) steps.push('writeCopy');
     if (r.clue && !(r.clue.kind === OK && r.clue.data.rooms.some(x => x.addr === addr && x.mem === id))) steps.push('writeClue');
-    if (r.tag.kind === MISSING) steps.push('writeTag');
+    if (r.tag.kind === MISSING) steps.push(...move ? ['recheckStart'] : [], 'writeTag');
     else if (r.tag.data.state !== 'linked' || r.tag.data.mem !== id) return { stop: 'tagDiff' };
     return { steps };
 }
@@ -434,7 +486,7 @@ export function writePlan({ id, from, addr, integrity = null, copy = null, mem, 
 // Write only over the file last seen: same rev and same receipt.
 export const canWrite = (file, seen) => !!file && !!seen && file.rev === seen.rev && file.wid === seen.wid;
 // The next body of a memory file (rev + 1, a new receipt, the recent list kept short).
-export const nextMem = (file, state, wid) => memBody({ id: file.id, state, rev: file.rev + 1, wid, recent: file.recent, from: file.from, home: file.home });
+export const nextMem = (file, state, wid) => memBody({ id: file.id, state, rev: file.rev + 1, wid, recent: file.recent, from: file.from, home: file.home, copy: file.copy ?? null });
 // After writing, read it back: ours only when it holds our receipt.
 export const wroteMine = (after, wid) => !!after && after.wid === wid;
 // When a room opens: AUTO saves of this room that the memory file's recent list does not know about.
@@ -447,4 +499,71 @@ export function maybeOverwritten(autos, file) {
         if (a.rev < low) return false;
         return !recent.some(x => x.rev === a.rev && x.wid === a.wid);
     });
+}
+
+// ───────── putting a memory file in place, with read-backs (v0.6.65) ─────────
+
+// After writing the move-start mark, read it back. Ours ('mine'); another device's for the same old copy
+// and memory id ('same': both started the same move, go on); anything else → hold ('copyChanged' when it
+// is another old copy, 'unsure' when it is gone or unreadable).
+export function checkStart(res, { addr, copy, id, wid }) {
+    const r = checked(res, validStart(addr));
+    if (r.kind !== OK) return 'unsure';
+    if (r.data.wid === wid) return 'mine';
+    if (r.data.copy !== copy) return 'copyChanged';
+    return r.data.mem === id ? 'same' : 'unsure';
+}
+// After writing the memory file, read it back. Ours ('mine'). Another device's receipt: kept as it is and
+// used ('theirs') only when it reads fine, is for this room (address and integrity) and was moved from the
+// same old copy (the same `from` and the same recorded copy); otherwise hold ('otherOrigin' / 'unsure').
+export function checkMem(res, { id, from, addr, integrity = null, copy = null, wid }) {
+    const r = checked(res, validMem(id));
+    if (r.kind !== OK) return 'unsure';
+    if (r.data.wid === wid) return 'mine';
+    if (canon(r.data.from) !== canon(from) || !homeOk(r.data.home, addr, integrity) || (r.data.copy ?? null) !== (copy ?? null)) return 'otherOrigin';
+    return 'theirs';
+}
+
+// Carry out writePlan with reads and writes given (io.read(name) → { kind, data }, io.write(name, body)).
+// in: { id, from, addr, integrity, copy, state, wid }. Returns { done, mem, adopted, seen: { rev, wid } }
+// (the memory file this room now uses; adopted: another device's, left as it was), { hold }, or { stop }.
+// Each step that changes something is followed by the read that confirms it; nothing is retried here.
+// Two devices: one that finds the other's start mark for another old copy holds. Both can still pass when
+// the second writes its mark after the first checked its own (the server has no compare-and-write); the
+// recheck right before the tag narrows that, and the tag is written last either way.
+export async function placeMemory(io, { id, from, addr, integrity = null, copy = null, state, wid }) {
+    const move = from?.kind === 'migrate';
+    const rd = async name => { try { return await io.read(name); } catch { return { kind: ERROR }; } };
+    const wr = async (name, body) => { try { await io.write(name, body); return true; } catch { return false; } };
+    const reads = { mem: await rd(memName(id)), tag: await rd(tagName(addr)) };
+    if (move) Object.assign(reads, { start: await rd(startName(addr)), moved: await rd(movedName(addr, copy)), hint: await rd(copyName(copy)) });
+    if (str(integrity)) reads.clue = await rd(clueName(integrity));
+    const plan = writePlan({ id, from, addr, integrity, copy, ...reads });
+    if (!plan.steps) return plan;
+    let body = reads.mem?.kind === OK ? reads.mem.data : null, adopted = false;
+    for (const step of plan.steps) {
+        if (step === 'writeStart') { if (!await wr(startName(addr), startBody({ addr, copy, mem: id, wid }))) return { stop: 'write', step }; }
+        else if (step === 'checkStart' || step === 'recheckStart') {
+            const v = checkStart(await rd(startName(addr)), { addr, copy, id, wid });
+            if (v !== 'mine' && v !== 'same') return { hold: v, step };
+        } else if (step === 'writeMem') { if (!await wr(memName(id), memBody({ id, state, wid, from, home: { addr, integrity }, copy }))) return { stop: 'write', step }; }
+        else if (step === 'checkMem') {
+            const back = await rd(memName(id));
+            const v = checkMem(back, { id, from, addr, integrity, copy, wid });
+            if (v !== 'mine' && v !== 'theirs') return { hold: v, step };
+            body = back.data; adopted = v === 'theirs';
+        } else if (step === 'writeMoved') { if (!await wr(movedName(addr, copy), movedBody({ addr, copy, mem: id, rev: body.rev }))) return { stop: 'write', step }; }
+        else if (step === 'writeCopy') {
+            const h = checked(await rd(copyName(copy)), validCopyHint(copy));
+            if (bad(h)) return { stop: 'read', step };
+            if (!await wr(copyName(copy), copyHintWith(h.kind === OK ? h.data : null, copy, addr))) return { stop: 'write', step };
+        } else if (step === 'writeClue') {
+            const c = checked(await rd(clueName(integrity)), validClue(integrity));
+            if (bad(c)) return { stop: 'read', step };
+            if (!await wr(clueName(integrity), clueWith(c.kind === OK ? c.data : null, integrity, addr, id))) return { stop: 'write', step };
+        } else if (step === 'writeTag') {
+            if (!await wr(tagName(addr), tagBody({ addr, integrity, mem: id, copy, prints: pickPrints(body.state.hashes) }))) return { stop: 'write', step };
+        }
+    }
+    return { done: true, mem: id, adopted, seen: { rev: body.rev, wid: body.wid } };
 }

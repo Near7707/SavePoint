@@ -178,26 +178,39 @@ M.openFile = async (id, { same = true } = {}) => {
     await (same ? M.switchSame(id, f, head) : M.switchChat(id, f, head));
 };
 // SillyTavern renames on the server, reopens the room if it was open, and only then sends CHAT_RENAMED
-// (names with .jsonl, the new one as typed). Only the device that renamed gets the notice.
-M.renameChat = async (from, to, { avatarId = 'ari.png', groupId = undefined } = {}) => {
-    M.serverFiles[to] = M.serverFiles[from]; delete M.serverFiles[from];
-    if (M.chatId === from) await M.openFile(to);
+// (names with .jsonl). Only the device that renamed gets the notice.
+// v0.6.65: the server may clean the typed name (sanitizedFileName): the file and the reopened room get the
+// cleaned name (`saved`), the notice still carries the typed one (`to`).
+M.renameChat = async (from, to, { avatarId = 'ari.png', groupId = undefined, saved = to } = {}) => {
+    M.serverFiles[saved] = M.serverFiles[from]; delete M.serverFiles[from];
+    if (M.chatId === from) await M.openFile(saved);
     await eventSource.emit(event_types.CHAT_RENAMED, { avatarId, groupId, oldFileName: `${from}.jsonl`, newFileName: `${to}.jsonl` });
 };
 M.deleteChat = async (id, { group = false } = {}) => { delete M.serverFiles[id]; await eventSource.emit(group ? event_types.GROUP_CHAT_DELETED : event_types.CHAT_DELETED, id); };
 // createBranch / createNewBookmark: the open room's messages up to `at` (the last one on `swipe` if given)
 // and its whole metadata, plus main_chat and a new integrity (an older SillyTavern kept the old one:
 // keepIntegrity). The branch name is added to that message's extra.branches on the page (not saved here).
-M.branchChat = (name, at, { swipe = null, keepIntegrity = false } = {}) => {
+const branchFile = (name, at, { swipe = null, keepIntegrity = false } = {}) => {
     const list = copy(M.chat.slice(0, at + 1));
     const last = list[at];
     if (swipe !== null) { last.swipe_id = swipe; last.mes = last.swipes[swipe]; if (last.swipe_info?.[swipe]) last.extra = copy(last.swipe_info[swipe].extra || {}); }
     const meta = { ...copy(M.meta), main_chat: M.chatId, ...(keepIntegrity ? {} : { integrity: uuid() }) };
     M.serverFiles[name] = [{ chat_metadata: meta }, ...list];
+};
+M.branchChat = (name, at, opts = {}) => {
+    branchFile(name, at, opts);
     const m = M.chat[at]; m.extra ||= {}; (m.extra.branches ||= []).push(name);
     return name;
 };
-M.checkpointChat = (at, n = 1) => M.branchChat(`Checkpoint #${n} - ${M.chatId}`, at);
+// v0.6.65: createNewBookmark: the same file as a branch, then the message gets `bookmark_link` and the
+// original room is saved by SillyTavern itself (saveChatConditional).
+M.checkpointChat = (at, n = 1) => {
+    const name = `Checkpoint #${n} - ${M.chatId}`;
+    branchFile(name, at);
+    const m = M.chat[at]; m.extra ||= {}; m.extra.bookmark_link = name;
+    M.stSave();
+    return name;
+};
 // Importing a .jsonl copies the file as it is (same integrity) under a new name.
 M.importChat = (id, name = `${id} imported`) => { M.serverFiles[name] = copy(M.serverFiles[id]); return name; };
 

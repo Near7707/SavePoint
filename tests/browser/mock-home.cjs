@@ -99,6 +99,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         M.meta.integrity = 'i-main';
         M.chat[4].swipes = [M.chat[4].mes, 'Another way it went.']; M.chat[4].swipe_info = [{ extra: {} }, { extra: {} }];
         M.stSave();
+        const stBefore = M.stSaves;
         const b = M.branchChat('Branch #1', 4), s = M.branchChat('Branch #2', 4, { swipe: 1 }), o = M.branchChat('Branch #3', 4, { keepIntegrity: true }), c = M.checkpointChat(6);
         const i = M.importChat('chatA');
         const f = n => M.serverFiles[n];
@@ -106,11 +107,13 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
             b: [f(b).length - 1, f(b)[0].chat_metadata.main_chat, f(b)[0].chat_metadata.integrity !== 'i-main', !!f(b)[0].chat_metadata.savePoint],
             s: [f(s)[5].mes, f(s)[5].swipe_id], o: f(o)[0].chat_metadata.integrity, c: [c, f(c).length - 1, f(c)[0].chat_metadata.main_chat],
             i: [i, f(i)[0].chat_metadata.integrity, f(i).length === f('chatA').length], marks: M.chat[4].extra.branches,
+            link: [M.chat[6].extra.bookmark_link, M.serverFiles.chatA[7].extra?.bookmark_link, M.chat[6].extra.branches ?? null, stBefore, M.stSaves],
             list: M.chatList().sort(),
         };
     });
     ok(r.b.join() === '5,chatA,true,true' && r.s.join() === 'Another way it went.,1' && r.o === 'i-main', `4. 분기·스와이프 분기·예전 분기 (${JSON.stringify([r.b, r.s, r.o])})`);
     ok(r.c[1] === 7 && r.c[2] === 'chatA' && r.i.join() === 'chatA imported,i-main,true' && r.marks.join() === 'Branch #1,Branch #2,Branch #3', `4. 체크포인트·가져오기 (${JSON.stringify([r.c, r.i])})`);
+    ok(r.link[0] === r.c[0] && r.link[1] === r.c[0] && r.link[2] === null && r.link[4] === r.link[3] + 1, `4. 체크포인트는 원래 방 메시지에 bookmark_link를 붙이고 실리태번이 원래 방을 저장 (${JSON.stringify(r.link)})`);
     r = await ev(async () => (await (await fetch('/api/characters/chats', { method: 'POST', body: JSON.stringify({ avatar_url: 'ari.png', simple: true }) })).json()).map(x => x.file_name));
     ok(r.includes('chatA.jsonl') && r.includes('Branch #2.jsonl') && r.includes('chatA imported.jsonl'), `4. 채팅 목록 (${r.length}개)`);
 
@@ -123,10 +126,11 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         await M.renameChat('chatA', 'chatR');
         await M.renameChat('Branch #1', 'Branch one');
         await M.deleteChat('Branch #3');
+        await M.renameChat('chatR', 'chat:R?', { saved: 'chat_R_' });
         return { order, list: M.chatList(), open: M.chatId, len: M.chat.length };
     });
-    ok(r.order.join(' ') === 'changed:chatR renamed:chatA.jsonl>chatR.jsonl:chatR renamed:Branch #1.jsonl>Branch one.jsonl:chatR deleted:Branch #3', `5. 이름 바꾸기·삭제 알림 순서 (${r.order.join(' ')})`);
-    ok(r.open === 'chatR' && r.len === 9 && !r.list.includes('chatA') && r.list.includes('Branch one') && !r.list.includes('Branch #3'), `5. 파일 목록 (${r.list.join(', ')})`);
+    ok(r.order.join(' ') === 'changed:chatR renamed:chatA.jsonl>chatR.jsonl:chatR renamed:Branch #1.jsonl>Branch one.jsonl:chatR deleted:Branch #3 changed:chat_R_ renamed:chatR.jsonl>chat:R?.jsonl:chat_R_', `5. 이름 바꾸기·삭제 알림 순서 (${r.order.join(' ')})`);
+    ok(r.open === 'chat_R_' && r.len === 9 && !r.list.includes('chatA') && !r.list.includes('chatR') && r.list.includes('chat_R_') && r.list.includes('Branch one') && !r.list.includes('Branch #3'), `5. 서버가 정리한 이름으로 파일·방, 알림은 입력한 이름 (${r.list.join(', ')})`);
     await wait(500);
 
     // 6. integrity like SillyTavern (opt-in): added on the page when a room opens without one, not in the file.
