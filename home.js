@@ -255,7 +255,7 @@ export const homeOk = (home, addr, ...ints) => home.addr === addr && (home.integ
 //  6  this room's own memory file (by its id rules, the integrity hint, the moved mark or the move-start
 //     mark), readable, at home here and with the same old copy → link again to it (before everything below)
 //     (v0.6.69: without integrity only the same old copy proves it; an unfinished move whose old copy another
-//     room moved out → hold)
+//     room moved out → hold; v0.6.71: carried out by relinkMemory — the missing hints first, the tag last)
 //  8  the same integrity is linked to another room → hold (v0.6.65: before 7, so an imported copy of a
 //     linked branch is held with that branch as the candidate instead of copying the parent's memory)
 //  7  a branch (integrity differs from the parent, main_chat is a linked room in the same scope) → inherit
@@ -349,13 +349,17 @@ export async function decideRoom(input, read, { readMem = id => read(memName(id)
         if (m.data.from.kind === 'migrate' && str(m.data.copy)) {
             const c = m.data.copy;
             for (const [name, res] of files) if (name.startsWith('savepoint-moved-') && res.kind === OK && res.data.addr !== addr && res.data.copy === c) return hold(6, 'copyMoved', { mem: id, from: res.data.addr });
-            let h = files.get(copyName(c));
-            if (!h) { try { h = checked(await read(copyName(c)), validCopyHint(c)); } catch { h = { kind: ERROR }; } }
+            // v0.6.71: read again here, not the copy gathered before the memory file was read (another room
+            // may have finished moving this copy out in between).
+            let h;
+            try { h = checked(await read(copyName(c)), validCopyHint(c)); } catch { h = { kind: ERROR }; }
             if (bad(h)) return fail(6, [copyName(c)]);
             const rooms = h.kind === OK ? h.data.rooms.filter(a => a !== addr) : [];
             if (rooms.length) return hold(6, 'copyMoved', { mem: id, from: rooms[0], rooms });
         }
-        return out('relink', 6, { mem: id, from: m.data.from });
+        // v0.6.71: no tag means the writes stopped before the end (the tag is last): not the tag alone but the
+        // rest of those writes (relinkMemory), with the memory's own old copy and the receipt seen here.
+        return out('relink', 6, { mem: id, from: m.data.from, copy: m.data.copy ?? null, seen: { rev: m.data.rev, wid: m.data.wid } });
     }
     if (movedHere?.kind === OK) return hold(6, 'movedNoBody', { mem: movedHere.data.mem });
     if (start?.kind === OK && !copy) return hold(6, 'moveStarted', { mem: start.data.mem });
@@ -418,8 +422,19 @@ export async function decideRoom(input, read, { readMem = id => read(memName(id)
 // ───────── branch ─────────
 
 // v0.6.69: a history entry that can be undone (rollbackFrom).
-const usableEntry = h => plainObj(h) && str(h.kind) && plainObj(h.diff) && Array.isArray(h.diff.changes)
-    && plainObj(h.diff.orderBefore) && (h.kind !== 'summary' || int(h.from) && int(h.to));
+// v0.6.71: every change too. A missing `before` was read as "not there before" and deleted the item: both
+// sides must be present (null = not there on that side, a normal value), and agree with the order lists
+// (memDiff keeps an item's side exactly when its id is in that list). The id counters (`next`) on both
+// sides must be usable after the rewind: all four, positive whole numbers (memDiff always keeps them).
+const COLLECTIONS = ['scenes', 'entities', 'records'];
+const usableNext = n => plainObj(n) && ['s', 'g', 'e', 'r'].every(k => int(n[k]) && n[k] >= 1);
+const usableChange = (c, d) => plainObj(c) && COLLECTIONS.includes(c.kind) && (str(c.id) || int(c.id)) && 'before' in c && 'after' in c
+    && (c.before === null || plainObj(c.before)) && (c.after === null || plainObj(c.after))
+    && (c.before !== null) === d.orderBefore[c.kind].includes(c.id) && (c.after !== null) === d.orderAfter[c.kind].includes(c.id);
+const usableDiff = d => plainObj(d) && Array.isArray(d.changes) && plainObj(d.orderBefore) && plainObj(d.orderAfter)
+    && COLLECTIONS.every(k => Array.isArray(d.orderBefore[k]) && Array.isArray(d.orderAfter[k]))
+    && usableNext(d.nextBefore) && usableNext(d.nextAfter) && d.changes.every(c => usableChange(c, d));
+const usableEntry = h => plainObj(h) && str(h.kind) && usableDiff(h.diff) && (h.kind !== 'summary' || int(h.from) && int(h.to));
 const usableHistory = list => Array.isArray(list) && list.every(usableEntry);
 
 // A branch's memory, worked out on a copy of the parent's (the parent's file is never touched).
@@ -570,21 +585,42 @@ export function checkMem(res, { id, from, addr, integrity = null, copy = null, w
 // Two devices: one that finds the other's start mark for another old copy holds. Both can still pass when
 // the second writes its mark after the first checked its own (the server has no compare-and-write); the
 // recheck right before the tag narrows that, and the tag is written last either way.
-export async function placeMemory(io, { id, from, addr, integrity = null, copy = null, state, wid }) {
+export async function placeMemory(io, { id, from, addr, integrity = null, copy = null, state, wid, resume = null }) {
     const move = from?.kind === 'migrate';
     const rd = async name => { try { return await io.read(name); } catch { return { kind: ERROR }; } };
     const wr = async (name, body) => { try { await io.write(name, body); return true; } catch { return false; } };
+    // v0.6.71, resume: only over the very memory file seen when the room was decided (same rev and receipt).
+    // Gone or another one now → stop; it is never made again from what was read before.
+    const same = res => {
+        const r = checked(res, validMem(id));
+        if (bad(r)) return 'read';
+        if (r.kind === MISSING) return 'memGone';
+        return r.data.rev === resume.rev && r.data.wid === resume.wid ? null : 'memChanged';
+    };
     const reads = { mem: await rd(memName(id)), tag: await rd(tagName(addr)) };
+    if (resume) { const why = same(reads.mem); if (why) return { stop: why }; }
     if (move) Object.assign(reads, { start: await rd(startName(addr)), moved: await rd(movedName(addr, copy)), hint: await rd(copyName(copy)) });
     if (str(integrity)) reads.clue = await rd(clueName(integrity));
     const plan = writePlan({ id, from, addr, integrity, copy, ...reads });
     if (!plan.steps) return plan;
+    if (resume && plan.steps.includes('writeMem')) return { stop: 'memGone' };
+    if (resume && plan.steps.includes('writeTag')) plan.steps.splice(plan.steps.indexOf('writeTag'), 0, 'recheckMem');
     let body = reads.mem?.kind === OK ? reads.mem.data : null, adopted = false;
     for (const step of plan.steps) {
         if (step === 'writeStart') { if (!await wr(startName(addr), startBody({ addr, copy, mem: id, wid }))) return { stop: 'write', step }; }
         else if (step === 'checkStart' || step === 'recheckStart') {
             const v = checkStart(await rd(startName(addr)), { addr, copy, id, wid });
             if (v !== 'mine' && v !== 'same') return { hold: v, step };
+            // v0.6.71: right before the tag, the copy hint again (also on a retry that had no writeCopy left):
+            // another room moved this old copy out → hold, no tag.
+            if (step === 'recheckStart') {
+                const h = checked(await rd(copyName(copy)), validCopyHint(copy));
+                if (bad(h)) return { stop: 'read', step };
+                if (h.kind === OK && h.data.rooms.some(a => a !== addr)) return { hold: 'copyMoved', step };
+            }
+        } else if (step === 'recheckMem') {
+            const why = same(await rd(memName(id)));
+            if (why) return { stop: why, step };
         } else if (step === 'writeMem') {
             // v0.6.67: read again right before writing. Another device may have finished this move (and edited
             // the memory since) after the plan was made: a body that is there now is never written over. The
@@ -617,4 +653,14 @@ export async function placeMemory(io, { id, from, addr, integrity = null, copy =
         }
     }
     return { done: true, mem: id, adopted, seen: { rev: body.rev, wid: body.wid } };
+}
+
+// v0.6.71: what a row-6 'relink' does (a memory file left without its tag: the writes stopped before the end).
+// Not the tag alone: the missing steps of placeMemory (moved mark, copy hint, integrity hint, then the tag),
+// never the body. The memory's own old copy is used (the chat may have lost it, the integrity proved the
+// room; a chat copy that differs was held by row 6 already), and only over the memory file decideRoom saw.
+// d: decideRoom's answer; in: { addr, integrity, wid }.
+export async function relinkMemory(io, d, { addr, integrity = null, wid }) {
+    if (d?.verdict !== 'relink' || !plainObj(d.seen)) return { stop: 'notRelink' };
+    return placeMemory(io, { id: d.mem, from: d.from, addr, integrity, copy: d.copy ?? null, wid, resume: d.seen });
 }
