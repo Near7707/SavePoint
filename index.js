@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.65';
+const VERSION = '0.6.66';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -3800,16 +3800,20 @@ function render(force = false) {
     const st = state();
     const s = settings();
     win.attr('data-theme', s.theme in THEMES ? s.theme : 'jrpg');
-    // v0.6.63: on a phone the quick settings take the whole window below the top bar (style.css).
-    win.toggleClass('sp-qs-open', !!ui.qs);
     // ui.tab and the current room may already have changed. Save the old body under the
     // room/tab it actually displays, then restore the target's own position (initially top).
     const oldBody = win.find('.sp-body')[0];
     // v0.6.63: a body hidden behind the phone's quick settings keeps the position it had.
+    // v0.6.66: read before the quick settings hide it (opening used to keep an older position), and the
+    // tab bar's sideways position the same way (it read 0 while hidden and came back at the start).
     if (oldBody?.dataset.scrollKey && oldBody.getClientRects().length) ui.scrollPositions.set(oldBody.dataset.scrollKey, oldBody.scrollTop);
+    const oldTabs = win.find('.sp-tabs')[0];
+    if (oldTabs?.getClientRects().length) ui.tabScroll = oldTabs.scrollLeft || 0;
+    const tabScroll = ui.tabScroll || 0;
+    // v0.6.63: on a phone the quick settings take the whole window below the top bar (style.css).
+    win.toggleClass('sp-qs-open', !!ui.qs);
     const scrollKey = JSON.stringify([roomKey(), ui.tab]);
     const scroll = ui.scrollPositions.get(scrollKey) ?? 0;
-    const tabScroll = win.find('.sp-tabs').scrollLeft() || 0;
     // v0.6.57: the quick settings panel keeps its own scroll across redraws (a changed value redraws the window).
     const qsScroll = win.find('.sp-qs').scrollTop() || 0;
     const counts = st ? {
