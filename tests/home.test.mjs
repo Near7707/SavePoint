@@ -1181,3 +1181,66 @@ test('v0.6.71 ⑥: a damaged change in the history (a side missing, a side the o
     const d = await decideRoom(branchRoom({ prints: other }), world(pw.files).read, { slotsOf: pw.slotsOf });
     assert.deepEqual([d.verdict, d.row, d.reason], ['hold', 7, 'noHistory']);
 });
+
+test('v0.6.78: the tag is read again right before it is written: none → written, the same link → kept, anything else → hold', async () => {
+    const id = homeId(A, 'i-A');
+    const args = { id, from: { kind: 'new', addr: A, integrity: 'i-A' }, addr: A, integrity: 'i-A', state: recorded(P80, 19), wid: 'wa' };
+    const failClue = io => ({ read: io.read, async write(n, b) { if (n === clueName('i-A')) throw new Error('x'); return io.write(n, b); } });
+    // ① relink (row 6) while another device marks this name renamed away → hold, the mark stays.
+    {
+        const f = hooked();
+        await placeMemory(failClue(f.io('A')), args);
+        const d = await decideRoom(room(), readOf(f));
+        assert.deepEqual([d.verdict, d.row], ['relink', 6]);
+        f.after('A', clueName('i-A'), async () => { await f.io('B').write(tagName(A), renamedTag(tagBody({ addr: A, integrity: 'i-A', mem: id }), A2)); });
+        const r = await relinkMemory(f.io('A'), d, { addr: A, integrity: 'i-A', wid: 'wa2' });
+        assert.deepEqual([r.hold, r.step], ['tagChanged', 'writeTag']);
+        assert.deepEqual([f.get(tagName(A)).state, f.get(tagName(A)).to], ['renamed', A2]);
+    }
+    // ② another device linked this name to another memory meanwhile → hold, its tag stays.
+    {
+        const f = hooked();
+        await placeMemory(failClue(f.io('A')), args);
+        const d = await decideRoom(room(), readOf(f));
+        f.after('A', clueName('i-A'), async () => { await f.io('B').write(tagName(A), tagBody({ addr: A, integrity: 'i-A', mem: 'm-other' })); });
+        const r = await relinkMemory(f.io('A'), d, { addr: A, integrity: 'i-A', wid: 'wa2' });
+        assert.equal(r.hold, 'tagChanged');
+        assert.equal(f.get(tagName(A)).mem, 'm-other');
+    }
+    // ③ the other device finished the same link first → kept as it is (written once, by B), done.
+    {
+        const f = hooked();
+        await placeMemory(failClue(f.io('A')), args);
+        const d = await decideRoom(room(), readOf(f));
+        const theirs = tagBody({ addr: A, integrity: 'i-A', mem: id, at: 1 });
+        f.after('A', clueName('i-A'), async () => { await f.io('B').write(tagName(A), theirs); });
+        const r = await relinkMemory(f.io('A'), d, { addr: A, integrity: 'i-A', wid: 'wa2' });
+        assert.equal(r.done, true);
+        assert.deepEqual(f.get(tagName(A)), theirs);
+        assert.equal(f.log.filter(e => e[0] === 'A' && e[1] === tagName(A)).length, 0);
+    }
+    // ④ the tag cannot be read right before → stop, nothing written; ⑤ none (as before) → written last.
+    {
+        const f = folder();
+        await placeMemory(failClue(f.io('A')), args);
+        const d = await decideRoom(room(), readOf(f));
+        let reads = 0;
+        const io = f.io('A');
+        const flaky = { read: async n => (n === tagName(A) && ++reads === 2 ? { kind: ERROR } : io.read(n)), write: io.write };
+        const r = await relinkMemory(flaky, d, { addr: A, integrity: 'i-A', wid: 'wa2' });
+        assert.deepEqual([r.stop, r.step], ['read', 'writeTag']);
+        assert.equal(f.store.has(tagName(A)), false);
+        const ok = await relinkMemory(f.io('A'), d, { addr: A, integrity: 'i-A', wid: 'wa2' });
+        assert.equal(ok.done, true);
+        assert.equal(f.get(tagName(A)).mem, id);
+    }
+    // ⑥ the first move does the same: another device marks the name renamed right before the tag → hold.
+    {
+        const f = hooked();
+        const cid = migrateId(A, 'c1');
+        f.after('A', clueName('i-A'), async () => { await f.io('B').write(tagName(A), renamedTag(tagBody({ addr: A, integrity: 'i-A', mem: cid }), A2)); });
+        const r = await placeMemory(f.io('A'), moveOf(A, 'c1', 'wa', 'i-A'));
+        assert.deepEqual([r.hold, r.step], ['tagChanged', 'writeTag']);
+        assert.equal(f.get(tagName(A)).state, 'renamed');
+    }
+});

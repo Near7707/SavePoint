@@ -649,6 +649,15 @@ export async function placeMemory(io, { id, from, addr, integrity = null, copy =
             if (bad(c)) return { stop: 'read', step };
             if (!await wr(clueName(integrity), clueWith(c.kind === OK ? c.data : null, integrity, addr, id))) return { stop: 'write', step };
         } else if (step === 'writeTag') {
+            // v0.6.78: the tag read again right before it is written. Another device may have written it since
+            // the plan (linked this name elsewhere, or marked it renamed away): never written over. None yet →
+            // written; already this very link (same memory, same integrity) → kept as it is; anything else → hold; unreadable → stop.
+            const t = checked(await rd(tagName(addr)), validTag(addr));
+            if (bad(t)) return { stop: 'read', step };
+            if (t.kind === OK) {
+                if (t.data.state === 'linked' && t.data.mem === id && (t.data.integrity ?? null) === (integrity ?? null)) continue;
+                return { hold: 'tagChanged', step };
+            }
             if (!await wr(tagName(addr), tagBody({ addr, integrity, mem: id, copy, prints: pickPrints(body.state.hashes) }))) return { stop: 'write', step };
         }
     }
