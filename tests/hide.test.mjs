@@ -455,3 +455,20 @@ test('v0.6.74: recorded again, a shown part follows the hide setting of that mom
         assert.equal(shown(h), want, mode);
     }
 });
+
+test('v0.6.77: a failed change puts the hide flags back in every mode, by where each message is now', async () => {
+    for (const mode of ['off', 'auto', 'manual']) {
+        const h = harness({ keepRecent: 2 });
+        h.syncHide({ rehide: true });
+        h.settings.hideMode = mode;
+        const hidden = () => h.chat.map(m => (m.is_system ? 'H' : '.')).join('');
+        const before = hidden();
+        assert.equal(before, 'HHHHHHHH..');
+        // A reset (no memory left) whose write fails; one message is deleted while the write is on its way.
+        h.box.persist = async () => { h.chat.splice(1, 1); h.dom.delete(h.chat.length); throw new Error('disk full'); };
+        await assert.rejects(h.transact(() => { h.meta.savePoint.mem = { scenes: [], records: [], entities: [] }; h.meta.savePoint.lastIndex = -1; }), /저장하지 못해서/);
+        assert.equal(hidden(), 'HHHHHHH..', mode);
+        assert(h.chat.slice(0, 7).every(m => m.extra[HIDE_KEY] === 1), mode);
+        h.chat.forEach((m, n) => assert.equal(h.dom.get(n), String(m.is_system), `${mode} #${n}`));
+    }
+});

@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.76';
+const VERSION = '0.6.77';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -344,12 +344,15 @@ function applyEntry(entry) {
     // the exact pre-save state, including messages the user had opened.
     // v0.6.51: in manual mode an ordinary sync no longer hides anything new, so a failed write cannot
     // rebuild the old visibility from the memory alone: every change keeps the snapshot there.
-    entry.visibility = entry.rehide || entry.snapshot || hideModeOf(settings()) === 'manual' ? chat().map(m => ({ m, system: m.is_system,
+    // v0.6.77: the same in every mode. Since v0.6.74 nothing hidden is shown again by the settings (hide off,
+    // SavePoint off), so a failed reset, rewind or load could not hide again what it had shown; the next
+    // save then wrote that. Every change now puts the exact hide flags back when it is taken back.
+    entry.visibility = chat().map(m => ({ m, system: m.is_system,
         hadSystem: Object.hasOwn(m, 'is_system'), hadExtra: Object.hasOwn(m, 'extra'), extra: m.extra,
         hadHidden: !!m.extra && Object.hasOwn(m.extra, HIDE_KEY), hidden: m.extra?.[HIDE_KEY],
         hadVisible: !!m.extra && Object.hasOwn(m.extra, VISIBLE_KEY), visible: m.extra?.[VISIBLE_KEY],
         hadHeld: !!m.extra && Object.hasOwn(m.extra, HELD_KEY), held: m.extra?.[HELD_KEY],
-        hadKeep: !!m.extra && Object.hasOwn(m.extra, KEEP_KEY), keep: m.extra?.[KEEP_KEY] })) : null;
+        hadKeep: !!m.extra && Object.hasOwn(m.extra, KEEP_KEY), keep: m.extra?.[KEEP_KEY] }));
     // v0.6.60: the change gets the file check made at its turn ({ snap, count, first, … }).
     if (entry.change(entry.pre) === false) return false;
     const st = state();
@@ -378,8 +381,11 @@ function restoreEntry(entry) {
     const meta = entry.meta;
     if (entry.prev === undefined) delete meta[MODULE]; else meta[MODULE] = entry.prev;
     const here = roomKey() === entry.key && roomEpoch === entry.epoch;
-    if (entry.visibility) entry.visibility.forEach((v, i) => {
-        if (here) setHidden(v.m, i, !!v.system);
+    // v0.6.77: by where the message is now (one deleted meanwhile moves the ones after it).
+    const where = here && entry.visibility ? new Map(chat().map((m, i) => [m, i])) : null;
+    if (entry.visibility) entry.visibility.forEach(v => {
+        const at = where?.get(v.m) ?? -1;
+        if (at >= 0) setHidden(v.m, at, !!v.system);
         if (v.hadSystem) v.m.is_system = v.system; else delete v.m.is_system;
         if (v.hadExtra) v.m.extra = v.extra; else delete v.m.extra;
         if (v.m.extra) {
