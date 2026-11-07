@@ -1423,11 +1423,18 @@ export function buildInjection(mem, opts = {}) {
 // largest allowed limit is not enough. With { points: true }: every scene with all its ● points
 // (notes and ○ points are never part of the journal; they can only be recalled).
 export function neededBudget(mem, opts = {}, max = 100000, { points = false } = {}) {
+    const it = neededBudgetSteps(mem, opts, max, { points });
+    for (;;) { const r = it.next(); if (r.done) return r.value; }
+}
+// v0.6.73: the same search one injection at a time (each `next()` builds one), so the window can do it in
+// small pieces and stay responsive; the last `next()` returns the result.
+export function* neededBudgetSteps(mem, opts = {}, max = 100000, { points = false } = {}) {
     const fits = b => { const r = buildInjection(mem, { ...opts, budget: b }); return Object.values(r.levels || {}).every(l => l === 'full' || l === 'outline' || l === 'points') && (!points || !r.pointsLeft); };
     let lo = Math.max(300, opts.budget ?? 6000), hi = lo;
-    if (fits(lo)) return lo;
-    while (!fits(hi)) { if (hi >= max) return null; lo = hi; hi = Math.min(max, hi * 2); }
-    while (hi - lo > 100) { const mid = Math.floor((lo + hi) / 2); if (fits(mid)) hi = mid; else lo = mid; }
+    const first = fits(lo); yield;
+    if (first) return lo;
+    for (;;) { const ok = fits(hi); yield; if (ok) break; if (hi >= max) return null; lo = hi; hi = Math.min(max, hi * 2); }
+    while (hi - lo > 100) { const mid = Math.floor((lo + hi) / 2); const ok = fits(mid); yield; if (ok) hi = mid; else lo = mid; }
     return Math.ceil(hi / 500) * 500;
 }
 

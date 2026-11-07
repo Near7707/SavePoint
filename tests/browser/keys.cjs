@@ -86,12 +86,17 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(/포인트 \d+ \(주입 \d+\)/.test(await ev(() => $('.sp-more summary').first().text())), '7. 저널에 포인트 수와 주입 수 표시');
     // Injection tab: how each scene is written, why scenes are left out, and the limit that fits all outlines
     {
-        const r2 = await page.evaluate(() => {
+        await page.evaluate(() => {
             const st = __savePoint.state(); const extra = [];
             for (let i = 0; i < 30; i++) extra.push({ id: 'sx' + i, title: 'Errand ' + i, where: 'Harbor', who: [], status: 'closed', segs: [{ id: 'gx' + i, from: 0, to: 0, outline: 'They walked the long harbor road and talked about the tides and the lantern routes in detail. They agreed to meet again.', points: [] }] });
             st.mem.scenes = [...extra, ...st.mem.scenes];
             if (!__savePoint.ui.open) document.querySelector('#sp_open').click();
             M.settings.savePoint.budget = 900; __savePoint.refreshInjection(); __savePoint.handle('tab', 'inject');
+        });
+        // v0.6.73: the needed limit is worked out after the tab is drawn.
+        await page.waitForFunction(() => !(document.querySelector('#sp_overlay .sp-window')?.textContent || '').includes('계산하고 있어요'), null, { timeout: 8000 }).catch(() => {});
+        const r2 = await page.evaluate(() => {
+            const st = __savePoint.state();
             const t = document.querySelector('#sp_overlay .sp-window')?.textContent || '';
             st.mem.scenes = st.mem.scenes.filter(x => !x.id.startsWith('sx')); M.settings.savePoint.budget = 6000; __savePoint.refreshInjection();
             return t;

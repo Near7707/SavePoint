@@ -1,8 +1,8 @@
-# 리뷰 요청 · v0.6.72 (저장 쪽 긴급 수정)
+# 리뷰 요청 · v0.6.72 (저장 쪽 긴급 수정) + v0.6.73 (주입 탭 지연)
 
-- 범위: `a2f22be`(v0.6.71) → 이 커밋(v0.6.72). **동작 변화 있음(저장 방식).** — `git diff a2f22be HEAD`
+- 범위: `a2f22be`(v0.6.71) → `678862c`(v0.6.72) → 이 커밋(v0.6.73). v0.6.73은 주입 탭의 '필요한 상한' 계산을 나눠서 뒤에서 하고 결과를 다시 쓰는 화면 쪽 수정이에요(REVIEW.md 맨 위). **동작 변화 있음(저장 방식).** — `git diff a2f22be HEAD`
 - 바뀐 내용과 ★ 항목, **바뀐 기존 검사 기대**: [docs/REVIEW.md](REVIEW.md) 맨 위 v0.6.72.
-- 검사: `node --test tests/*.test.mjs`(458개) + `for f in tests/browser/*.cjs; do node $f; done`(36묶음, Playwright). 새 묶음 `tests/browser/room-switch-save.cjs`.
+- 검사: `node --test tests/*.test.mjs`(458개) + `for f in tests/browser/*.cjs; do node $f; done`(37묶음, Playwright). 새 묶음 `tests/browser/room-switch-save.cjs`.
 - v0.6.71 리뷰 요청(`home.js`, 동작 변화 없음)은 그대로 유효해요. 이번 것과 따로 봐 주셔도 돼요.
 
 ## 고친 것 (실제 사고)

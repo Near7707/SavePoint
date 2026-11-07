@@ -3,7 +3,7 @@ import { questEventTimes, dueStatus, formatDue, setManualDue, upgradeStoryTimes,
 // with game-style save files. Summaries run on demand and at periodic checkpoints.
 import { foldLegacyOutline,
     emptyMem, cleanMem, detachMem, chunkMessages, promptContext, validateResult, resultLanguageIssues,
-    applyResult, closeOpenScene, pushHistory, rollbackFrom, buildInjection, neededBudget, openScene, memStats,
+    applyResult, closeOpenScene, pushHistory, rollbackFrom, buildInjection, neededBudgetSteps, openScene, memStats,
     pointInjected, pointSymbol, rekeyItems, validateRekey, applyRekey, sceneOutlineText, sceneOutlineParts,
     refreshProvisionalOutlines, normalizeResult, validateCheck, checkScope, dupState, pointId,
     recordLine, normalizeRecordNames, entityName, estTokens, QUEST_KINDS, WORLD_KINDS, ENTITY_TYPES,
@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.72';
+const VERSION = '0.6.73';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -1007,6 +1007,36 @@ function rawExcerpt(scene) {
     }
     return '';
 }
+function injNeedKey(st, opts) {
+    const { rawRecall, ...rest } = opts;
+    return `${roomKey()}|${st.rev || 0}|${JSON.stringify({ ...rest, rawRecall: !!rawRecall })}`;
+}
+// One piece (one injection built) per timer turn; it stops when the tab is left or the figures go out
+// of date, and starts again when the tab shows them. A finished figure is drawn by a normal render.
+const needJob = { key: null, timer: null };
+function startNeedJob(st, { outline, points }) {
+    const key = ui.injNeedKey;
+    if (!key || needJob.key === key) return;
+    clearTimeout(needJob.timer);
+    const want = [];
+    if (outline) want.push(['injNeed', neededBudgetSteps(st.mem, ui.injOpts)]);
+    if (points) want.push(['injNeedPoints', neededBudgetSteps(st.mem, ui.injOpts, 100000, { points: true })]);
+    if (!want.length) return;
+    needJob.key = key;
+    const step = () => {
+        needJob.timer = null;
+        if (needJob.key !== key) return;
+        if (ui.injNeedKey !== key || !ui.open || ui.tab !== 'inject') { needJob.key = null; return; }
+        let r;
+        try { r = want[0][1].next(); } catch (e) { needJob.key = null; console.error('[SavePoint] needed limit failed', e); return; }
+        if (r.done) {
+            ui[want[0][0]] = r.value; want.shift();
+            if (!want.length) { needJob.key = null; render(); return; }
+        }
+        needJob.timer = setTimeout(step, 0);
+    };
+    needJob.timer = setTimeout(step, 0);
+}
 function refreshInjection() {
     const st = state(), s = settings();
     let text = '';
@@ -1018,7 +1048,11 @@ function refreshInjection() {
             ignoreNames: [names().char, names().user, charInfo()?.name].filter(Boolean),
         };
         ui.inj = buildInjection(st.mem, opts);
-        ui.injOpts = opts; ui.injNeed = undefined; ui.injNeedPoints = undefined;   // the needed limit is computed when the tab shows it
+        ui.injOpts = opts;
+        // v0.6.73: the "needed limit" figures are kept while memory and injection settings stay the same,
+        // and worked out in small pieces only when the tab shows them (injectLevelsHtml → startNeedJob).
+        const key = injNeedKey(st, opts);
+        if (key !== ui.injNeedKey || ui.injNeedMem !== st.mem) { ui.injNeedKey = key; ui.injNeedMem = st.mem; ui.injNeed = undefined; ui.injNeedPoints = undefined; }
         text = ui.inj.text;
     }
     ctx().setExtensionPrompt(PROMPT_KEY, text, Number(s.position), num('depth', 0, 999), false, Number(s.role));
@@ -3669,17 +3703,19 @@ function injectLevelsHtml(st, inj) {
     const count = k => levels.filter(l => l === k).length;
     const line = Object.keys(LEVEL_KO).filter(k => count(k)).map(k => `${LEVEL_KO[k]} ${count(k)}`).join(' · ');
     const reduced = levels.some(l => l !== 'full' && l !== 'outline' && l !== 'points');
-    if (reduced && ui.injNeed === undefined && ui.injOpts) ui.injNeed = neededBudget(st.mem, ui.injOpts);
-    // Second figure: what it takes for every scene to carry all its ● points too.
-    if (inj.pointsLeft && ui.injNeedPoints === undefined && ui.injOpts) ui.injNeedPoints = neededBudget(st.mem, ui.injOpts, 100000, { points: true });
+    // Second figure: what it takes for every scene to carry all its ● points too. Both are worked out after
+    // the tab is drawn (v0.6.73); until then the line says so.
+    const waitOutline = reduced && ui.injNeed === undefined, waitPoints = !!inj.pointsLeft && ui.injNeedPoints === undefined;
+    if ((waitOutline || waitPoints) && ui.injOpts) startNeedJob(st, { outline: waitOutline, points: waitPoints });
+    const calc = '<div class="sp-dim sp-need-wait">필요한 주입 상한을 계산하고 있어요…</div>';
     const budget = num('budget', 300, 100000), titleCap = num('titleCap', 0, 20000);
     const why = !inj.omittedScenes ? '' : inj.omittedBy === 'titleCap'
         ? `<div class="sp-warn">‘오래된 장면 제목 목록 상한’(${titleCap.toLocaleString()}토큰) 때문에 제목도 넣지 못한 장면이 ${inj.omittedScenes}개 있어요. 그 상한을 늘리면 제목이 들어가요.</div>`
         : `<div class="sp-warn">주입 상한(${budget.toLocaleString()}토큰)이 차서 제목도 넣지 못한 장면이 ${inj.omittedScenes}개 있어요.</div>`;
-    const need = (!reduced ? '' : ui.injNeed
+    const need = (!reduced ? '' : waitOutline ? calc : ui.injNeed
         ? `<div class="sp-dim">모든 장면의 개요까지 넣으려면 주입 상한 약 <b>${ui.injNeed.toLocaleString()}</b>토큰이 필요해요.</div>`
         : '<div class="sp-dim">주입 상한을 최대로 늘려도 모든 장면의 개요를 넣을 수는 없어요.</div>')
-        + (!inj.pointsLeft ? '' : ui.injNeedPoints
+        + (!inj.pointsLeft ? '' : waitPoints ? (waitOutline ? '' : calc) : ui.injNeedPoints
             ? `<div class="sp-dim">● 포인트까지 모두 넣으려면 약 <b>${ui.injNeedPoints.toLocaleString()}</b>토큰이 필요해요 (지금 ${inj.pointsLeft}개 장면의 포인트가 일부 빠져 있어요). 상세 노트와 ○ 포인트는 회상으로만 들어가요.</div>`
             : `<div class="sp-dim">● 포인트가 일부 빠진 장면이 ${inj.pointsLeft}개 있어요. 상한을 최대로 늘려도 모두 넣을 수는 없어요.</div>`);
     return `<div class="sp-dim">장면 ${levels.length}개 · ${line}</div>${why}${need}${reduced ? '<div class="sp-dim">줄어든 장면도 저장된 기록·포인트는 그대로예요. 자세한 내용은 최근 대화와 관련될 때 회상 후보가 되지만, 회상은 검색 결과와 회상 몫 안에서 골라요.</div>' : ''}`;
