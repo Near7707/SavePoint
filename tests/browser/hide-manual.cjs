@@ -146,10 +146,14 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => __savePoint.handle('tab', 'journal'));
     ok(await ev(() => !!document.querySelector('#sp_overlay [data-act="pin"]')?.textContent.includes('⚓')), '8. 저널 고정 버튼 ⚓');
 
-    // 9. off shows what SavePoint hid; a message hidden by the user stays hidden
-    await ev(() => { M.chat[20].is_system = true; const sel = document.querySelector('#sp_settings [data-set=hideMode]'); sel.value = 'off'; $(sel).trigger('change'); });
+    // 9. off keeps every hide (v0.6.74; before, it showed what SavePoint hid); a message hidden by the user stays hidden
+    const before9 = await ev(() => { M.chat[20].is_system = true; M.stSave(); return M.chat.map(m => m.is_system ? 'H' : '.').join(''); });
+    await ev(() => { const sel = document.querySelector('#sp_settings [data-set=hideMode]'); sel.value = 'off'; $(sel).trigger('change'); });
+    await page.waitForTimeout(600);
     r = await hidden();
-    ok(r.split('').filter(c => c === 'H').length === 1 && r[20] === 'H', `9. 끔 → SavePoint가 숨긴 것만 다시 보이고 직접 숨긴 건 유지 (${r})`);
+    const file9 = await ev(() => M.serverFiles[M.chatId].slice(1).map(m => m.is_system ? 'H' : '.').join(''));
+    ok(r === before9 && r.includes('HHH') && r[20] === 'H' && file9 === r, `9. 끔 → 기존 하이드 유지, 파일도 그대로 (${r})`);
+    ok(await ev(() => [...document.querySelector('#sp_settings [data-set=hideMode]').options].find(o => o.value === 'off').textContent) === '끔 · 기존 하이드 유지', '9. 끔 이름은 `끔 · 기존 하이드 유지`');
 
     // 10. back to auto: the normal rule applies at once
     await ev(() => { const sel = document.querySelector('#sp_settings [data-set=hideMode]'); sel.value = 'auto'; $(sel).trigger('change'); });

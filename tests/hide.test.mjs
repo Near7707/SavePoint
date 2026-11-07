@@ -91,11 +91,14 @@ test('N=0 hides all recorded messages and a large N leaves them visible', () => 
     assert(none.chat.every(m => !m.is_system));
 });
 
-test('recent messages previously hidden by SavePoint are reopened', () => {
-    const h = harness();
+// v0.6.74 (was: "recent messages previously hidden by SavePoint are reopened"): "keep the latest N" only
+// limits new hides; what SavePoint hid stays hidden. Only what left the memory is shown again.
+test('recent messages hidden by SavePoint stay hidden; only what is no longer recorded is shown again', () => {
+    const h = harness({ lastIndex: 8 });
     for (const n of [8, 9]) { h.chat[n].is_system = true; h.chat[n].extra[HIDE_KEY] = 1; }
     h.syncHide({ rehide: true });
-    assert(h.chat.slice(8).every(m => !m.is_system && !m.extra[HIDE_KEY]));
+    assert(h.chat[8].is_system && h.chat[8].extra[HIDE_KEY], 'recorded, inside the latest N: stays hidden');
+    assert(!h.chat[9].is_system && !h.chat[9].extra[HIDE_KEY], 'past the last recorded message: shown again');
 });
 
 test('manual hides remain owned by the user and are not reopened when SavePoint is disabled', () => {
@@ -103,10 +106,12 @@ test('manual hides remain owned by the user and are not reopened when SavePoint 
     h.chat[1].is_system = true;
     h.syncHide({ rehide: true });
     assert.equal(h.chat[1].extra[HIDE_KEY], undefined);
+    const hidden = h.chat.map(m => m.is_system);
     h.settings.enabled = false;
     h.syncHide();
     assert.equal(h.chat[1].is_system, true);
-    assert(h.chat.filter((_, n) => n !== 1).every(m => !m.is_system));
+    // v0.6.74 (was: everything SavePoint hid shown again): turning SavePoint off keeps every hide.
+    assert.deepEqual(h.chat.map(m => m.is_system), hidden);
 });
 
 test('hide-off, source-review and empty-memory states never force a new hide', () => {
@@ -258,7 +263,7 @@ test('manual: a user-hidden message is left alone, and off shows only what SaveP
     assert.equal(shown(h), 'HHHHHHHH.H');
     h.settings.hideMode = 'off';
     h.syncHide();
-    assert.equal(shown(h), '.........H');
+    assert.equal(shown(h), 'HHHHHHHH.H');   // v0.6.74 (was '.........H'): off keeps every hide
 });
 
 test('manual: a failed write of the button puts every message and the range back', async () => {
@@ -288,13 +293,14 @@ test('manual: off -> manual never reads "opened by the user" marks as a hidden r
     h.syncHide({ rehide: true });
     h.chat[3].is_system = false; h.syncHide();          // the user opens #3
     assert.equal(h.chat[3].extra[VISIBLE_KEY], true);
+    // v0.6.74 (was: off showed everything and dropped the mark): off keeps the hides and the user's choice.
     h.settings.hideMode = 'off'; h.syncHide();
-    assert.equal(shown(h), '..........');
-    assert(h.chat.every(m => !m.extra[VISIBLE_KEY]));
+    assert.equal(shown(h), 'HHH.HHHH..');
+    assert.equal(h.chat[3].extra[VISIBLE_KEY], true);
     h.settings.hideMode = 'manual'; h.settings.hideManualAt = Date.now();
     h.syncHide();
-    assert.equal(shown(h), '..........');
-    assert.equal(h.meta.savePoint.hideManual.to, -1);
+    assert.equal(shown(h), 'HHH.HHHH..');
+    assert.equal(h.meta.savePoint.hideManual.to, 7, 'the range is what is really hidden, never the opened mark');
 });
 
 test('manual: a save leaves a message the user opened shown; the next press hides it again', async () => {
@@ -320,12 +326,25 @@ test('manual: a message the user hid and opened again is never hidden by a sync'
     assert.equal(shown(h), 'HHH.HHHH....');
 });
 
-test('manual: messages shown only for "keep the latest N" are hidden again when N goes back down', async () => {
+// v0.6.74 (was: "messages shown only for keep the latest N are hidden again when N goes back down" —
+// raising N showed them with a held mark): raising N no longer shows anything.
+test('manual: raising or lowering "keep the latest N" leaves hidden messages hidden', async () => {
     const h = manual({ count: 10, lastIndex: 9, keepRecent: 2 });
     await press(h);
     h.settings.keepRecent = 5; h.syncHide();
+    assert.equal(shown(h), 'HHHHHHHH..');
+    assert(h.chat.every(m => !m.extra[HELD_KEY]));
+    h.settings.keepRecent = 2; h.syncHide();
+    assert.equal(shown(h), 'HHHHHHHH..');
+});
+test('manual: a held mark from before is still hidden again when it falls outside the latest N', () => {
+    const h = harness({ count: 10, lastIndex: 9, keepRecent: 5 });
+    h.settings.hideMode = 'manual'; h.settings.hideManualAt = 1;
+    h.meta.savePoint.hideManual = { to: 7, at: 2 };
+    for (let n = 0; n < 5; n++) { h.chat[n].is_system = true; h.chat[n].extra[HIDE_KEY] = 1; }
+    for (const n of [5, 6, 7]) h.chat[n].extra[HELD_KEY] = 1;
+    h.syncHide();
     assert.equal(shown(h), 'HHHHH.....');
-    assert(h.chat.slice(5, 8).every(m => m.extra[HELD_KEY] === 1));
     h.settings.keepRecent = 2; h.syncHide();
     assert.equal(shown(h), 'HHHHHHHH..');
     assert(h.chat.every(m => !m.extra[HELD_KEY]));
@@ -379,4 +398,60 @@ test('🔖 a failed write puts the mark and the hide back together', async () =>
     await assert.rejects(h.transact(() => keepOn(h, 4), { snapshot: true }), /저장하지 못해서/);
     assert.equal(JSON.stringify(h.chat), before);
     assert.equal(shown(h), 'HHHHHHHH..');
+});
+
+// ───────── v0.6.74: a hide is never undone by settings; only leaving the memory shows it again ─────────
+test('v0.6.74: hide off, SavePoint off, the latest N and deleted messages keep every hide', () => {
+    for (const how of ['off', 'disabled', 'keepRecent', 'deleted']) {
+        const h = harness({ count: 10, lastIndex: 7, keepRecent: 2 });
+        h.chat[9].is_system = true;                         // hidden by the user
+        h.syncHide({ rehide: true });
+        assert.equal(shown(h), 'HHHHHHHH.H', how);
+        if (how === 'off') h.settings.hideMode = 'off';
+        if (how === 'disabled') h.settings.enabled = false;
+        if (how === 'keepRecent') h.settings.keepRecent = 8;
+        if (how === 'deleted') { h.chat.splice(8, 2); }
+        h.syncHide();
+        assert.equal(shown(h), how === 'deleted' ? 'HHHHHHHH' : 'HHHHHHHH.H', how);
+    }
+});
+test('v0.6.74: a rewind shows again only what SavePoint hid past the last recorded message, whatever the settings', () => {
+    for (const how of ['auto', 'off', 'disabled', 'manual']) {
+        const h = harness({ count: 10, lastIndex: 9, keepRecent: 0 });
+        h.syncHide({ rehide: true });
+        h.chat[5].is_system = false; h.syncHide();          // the user opens #5
+        h.chat[9].extra = {}; h.chat[9].is_system = true;    // and hides #9 themselves
+        h.chat[9].extra = {};
+        assert.equal(shown(h), 'HHHHH.HHHH', how);
+        if (how === 'off') h.settings.hideMode = 'off';
+        if (how === 'disabled') h.settings.enabled = false;
+        if (how === 'manual') { h.settings.hideMode = 'manual'; h.settings.hideManualAt = 1; h.meta.savePoint.hideManual = { to: 9, at: 2 }; }
+        h.meta.savePoint.lastIndex = 3;                      // rewind
+        h.syncHide();
+        assert.equal(shown(h), 'HHHH.....H', how);           // #4–#8 left the memory: SavePoint's hides shown; #9 is the user's
+        assert.equal(h.chat[5].extra[VISIBLE_KEY], true, `${how}: the user's opened mark stays`);
+        assert(h.chat.slice(4, 9).every(m => !m.extra[HIDE_KEY]), how);
+    }
+});
+test('v0.6.74: a reset or a source under review shows what SavePoint hid; the user\'s own hides stay', () => {
+    for (const how of ['reset', 'review']) {
+        const h = harness({ count: 10, lastIndex: 9, keepRecent: 2 });
+        h.chat[9].is_system = true;
+        h.syncHide({ rehide: true });
+        if (how === 'reset') { h.meta.savePoint.mem.scenes = []; h.meta.savePoint.lastIndex = -1; }
+        else h.meta.savePoint.review = { at: 2 };
+        h.syncHide();
+        assert.equal(shown(h), '.........H', how);
+    }
+});
+test('v0.6.74: recorded again, a shown part follows the hide setting of that moment', () => {
+    for (const [mode, want] of [['auto', 'HHHHHHHH..'], ['off', 'HHHH......']]) {
+        const h = harness({ count: 10, lastIndex: 9, keepRecent: 2 });
+        h.syncHide({ rehide: true });
+        h.meta.savePoint.lastIndex = 3; h.syncHide();
+        assert.equal(shown(h), 'HHHH......');
+        h.settings.hideMode = mode;
+        h.meta.savePoint.lastIndex = 9; h.syncHide({ rehide: true });
+        assert.equal(shown(h), want, mode);
+    }
 });

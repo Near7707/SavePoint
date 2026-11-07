@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.73';
+const VERSION = '0.6.74';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -46,7 +46,7 @@ const SETTING_GROUPS = {
     // v0.6.39: the recording instructions live under 고급, folded, with what editing them means.
     advanced: { title: '🛠 고급', keys: ['guide'] },
 };
-const HIDE_MODES = [['auto', '자동 · 세이브할 때마다 기록된 원문 숨기기'], ['manual', '수동 · 👻 하이드 버튼을 누를 때만'], ['off', '끔 · 숨긴 원문 다시 표시']];
+const HIDE_MODES = [['auto', '자동 · 세이브할 때마다 기록된 원문 숨기기'], ['manual', '수동 · 👻 하이드 버튼을 누를 때만'], ['off', '끔 · 기존 하이드 유지']];
 const QUEST_MODES = [['auto', '자동 등록 · 바로 진행 중 목록에'], ['confirm', '확인 후 등록 · 후보로 모아 수락·거절']];
 const THEMES = { jrpg: '클래식 JRPG', neon: '네온 아케이드', glass: '글래스 사이버', archive: '다크 아카이브', pastel: '파스텔 드림', terminal: '터미널', eggpet: '딸기우유', dualwhite: '듀얼 화이트', ink: '먹과 한지', cream: '크림 라테', consolenight: '스토리 콘솔', cranelemon: '레몬 인형뽑기', gingerbread: '진저브레드 하우스', xmasknit: '크리스마스 니트', lilac: '라일락 미드나잇', st: '실리태번 테마 따라가기' };
 // Themes that were retired, and the closest one now.
@@ -899,8 +899,14 @@ function syncHide({ rehide = false } = {}) {
             cutoff = Math.min(cutoff, reach);
         }
     }
-    // Off: "opened by the user" marks mean nothing any more; dropped so no later mode reads them.
-    if (mode === 'off' && s.enabled) list.forEach(m => { for (const k of [VISIBLE_KEY, HELD_KEY]) if (m.extra && Object.hasOwn(m.extra, k)) { delete m.extra[k]; changed = true; } });
+    // Off: nothing new is hidden and nothing hidden is shown (v0.6.74); a "held" mark means nothing any more.
+    // "Opened by the user" stays: it is the user's choice, read again when hiding is turned back on.
+    if (mode === 'off' && s.enabled) list.forEach(m => { if (m.extra && Object.hasOwn(m.extra, HELD_KEY)) { delete m.extra[HELD_KEY]; changed = true; } });
+    // v0.6.74: what SavePoint hid stays hidden whatever the settings (hide off, SavePoint off, the latest N,
+    // deleted messages). It is shown again only when it is no longer in valid memory: past the last recorded
+    // message after a rewind, a load, a reset or a changed original (no memory / under review: all of it).
+    // Recorded again later, it follows the hide setting of that moment.
+    const floor = st && !st.review && hasMemory(st.mem) ? st.lastIndex : -1;
     const rescan = rehide && (mode !== 'manual' || rehide === 'button');
     const dropHeld = m => { if (m.extra && Object.hasOwn(m.extra, HELD_KEY)) { delete m.extra[HELD_KEY]; changed = true; } };
     list.forEach((m, i) => {
@@ -911,6 +917,9 @@ function syncHide({ rehide = false } = {}) {
             if (mark) { if (m.is_system) setHidden(m, i, false); delete m.extra[HIDE_KEY]; changed = true; }
             for (const k of [VISIBLE_KEY, HELD_KEY]) if (Object.hasOwn(m.extra, k)) { delete m.extra[k]; changed = true; }
             return;
+        }
+        if (mark && m.is_system && i > floor) {
+            setHidden(m, i, false); delete m.extra[HIDE_KEY]; dropHeld(m); changed = true; return;
         }
         if (rescan && i <= cutoff) {
             // Recheck from #0 on every saved batch. A manually opened message
@@ -931,17 +940,15 @@ function syncHide({ rehide = false } = {}) {
         }
         if (can && mode === 'manual') {
             // v0.6.51: manual mode only keeps what the button hid. Nothing new is hidden here, so a
-            // message the user hid and opened again (it carries no SavePoint mark) stays shown. A
-            // message shown only because of "keep the latest N" is held and hidden again when it
-            // falls outside the latest N.
-            if (mark && i > cutoff) { setHidden(m, i, false); delete m.extra[HIDE_KEY]; if (i <= reach) m.extra[HELD_KEY] = 1; changed = true; }
-            else if (m.extra?.[HELD_KEY] && (m.is_system || i > reach)) dropHeld(m);
+            // message the user hid and opened again (it carries no SavePoint mark) stays shown.
+            // v0.6.74: a hidden message is no longer shown for "keep the latest N"; a "held" mark from
+            // before (shown for that reason) is still hidden again when it falls outside the latest N.
+            if (m.extra?.[HELD_KEY] && (m.is_system || i > reach)) dropHeld(m);
             else if (m.extra?.[HELD_KEY] && i <= cutoff) { m.extra[HIDE_KEY] = 1; dropHeld(m); setHidden(m, i, true); changed = true; }
             return;
         }
         dropHeld(m);
-        if (mark && i > cutoff) { setHidden(m, i, false); delete m.extra[HIDE_KEY]; changed = true; }
-        else if (!mark && i <= cutoff && !m.is_system && !m.extra?.[VISIBLE_KEY]) {
+        if (!mark && i <= cutoff && !m.is_system && !m.extra?.[VISIBLE_KEY]) {
             m.extra ||= {}; m.extra[HIDE_KEY] = 1; setHidden(m, i, true); changed = true;
         }
     });
@@ -4254,7 +4261,7 @@ function quickSettingsHtml() {
         <label class="sp-f"><span>주입 상한 (토큰)</span><input type="number" data-qs="budget" min="300" max="100000" value="${esc(s.budget)}"></label>
         <label class="sp-qs-check"><input type="checkbox" data-qs="auto" ${s.auto ? 'checked' : ''}> 체크포인트 (자동 퀵세이브)</label>
         ${s.auto ? `<label class="sp-f"><span>체크포인트 간격 (새 메시지 수)</span><input type="number" data-qs="autoEvery" min="5" max="500" value="${esc(s.autoEvery)}"></label>` : ''}
-        <label class="sp-f"><span>하이드</span><select data-qs="hideMode">${opt([['auto', '자동 · 세이브할 때마다'], ['manual', '수동 · 👻 버튼으로'], ['off', '끔 · 숨긴 원문 다시 표시']], hideModeOf(s))}</select></label>
+        <label class="sp-f"><span>하이드</span><select data-qs="hideMode">${opt([['auto', '자동 · 세이브할 때마다'], ['manual', '수동 · 👻 버튼으로'], ['off', '끔 · 기존 하이드 유지']], hideModeOf(s))}</select></label>
         ${hideModeOf(s) !== 'off' ? `<label class="sp-f"><span>하이드하지 않을 최근 메시지</span><input type="number" data-qs="keepRecent" min="0" max="200" value="${esc(s.keepRecent)}"></label>` : ''}
         <label class="sp-f"><span>요약 AI</span><select data-qs="profileId">${opt([['', '메인 API'], ...profiles().map(p => [p.id, p.name])], s.profileId)}</select></label>
         <details class="sp-more" data-group="qs-more" ${ui.savesOpen.get('qs-more') ? 'open' : ''}><summary>더 보기</summary>
@@ -4336,9 +4343,9 @@ function settingsHtml() {
             `)}
             ${settingSection('storage', `
                 <label>하이드 방식 <select data-set="hideMode">${HIDE_MODES.map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
-                <div class="sp-set-note">수동이면 기록은 그대로 하고, 기록된 원문은 위쪽 상태 칸의 <b>👻 하이드</b>를 누를 때만 숨겨요. 누른 뒤 새로 기록한 메시지는 다음에 누를 때까지 보여요. 끄면 SavePoint가 숨긴 메시지만 다시 보여요(직접 숨긴 메시지는 그대로).</div>
+                <div class="sp-set-note">수동이면 기록은 그대로 하고, 기록된 원문은 위쪽 상태 칸의 <b>👻 하이드</b>를 누를 때만 숨겨요. 누른 뒤 새로 기록한 메시지는 다음에 누를 때까지 보여요. 끄면 새로 숨기지 않고, 이미 숨긴 메시지는 그대로 둬요. 한 번 숨긴 원문은 리와인드·불러오기·리셋·원문 변경으로 기억에서 빠질 때만 다시 보여요.</div>
                 <label>하이드하지 않을 최근 메시지 <input type="number" data-set="keepRecent" min="0" max="200"></label>
-                <div class="sp-set-note">전체 대화에서 숨기지 않을 최근 메시지 수예요. 자동·수동 모두 지켜요. 미저장 메시지는 이 설정과 관계없이 숨기지 않아요.</div>
+                <div class="sp-set-note">전체 대화에서 숨기지 않을 최근 메시지 수예요. 자동·수동 모두 새로 숨길 때 지켜요(늘려도 이미 숨긴 메시지는 그대로예요). 미저장 메시지는 이 설정과 관계없이 숨기지 않아요.</div>
                 <label>오토세이브를 보관할 방 수 (방마다 최근 3개) <input type="number" data-set="autoKeep" min="1" max="500"></label>
                 <label>보관함 방식 (직접 보관한 물건이 다시 쓰일 때) <select data-set="boxMode"><option value="notify">알림 받고 결정 · 보관함에 두고 꺼내기 안내</option><option value="auto">자동 관리 · 인벤토리로 꺼냄</option></select></label>
                 <div class="sp-set-note">이야기가 넣은 물건(다 쓰거나 잃어버린 것)은 되찾으면 방식과 상관없이 돌아와요. 🔒를 건 물건은 항상 보관함에 두고 알림도 띄우지 않아요. 방식을 바꿔도 이미 보관함에 있는 물건을 한꺼번에 꺼내지 않아요.</div>

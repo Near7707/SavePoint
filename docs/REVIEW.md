@@ -1,3 +1,31 @@
+# v0.6.74 · 한 번 숨긴 원문은 풀지 않음 (하이드 동작 쪽)
+
+기준: v0.6.73 `a62b383`. 사용자 결정: 하이드 끔·SavePoint 끄기·최근 N개 변경·메시지 삭제로는 기존 하이드를 풀지 않음. 리와인드·불러오기·리셋·원문 변경으로 **더 이상 유효한 기억에 들어 있지 않은 구간**만, **SavePoint가 숨긴 메시지에 한해** 다시 보임(다음 답변 전 = 지금처럼 그 순간). 직접 숨기거나 펼친 선택은 유지. 다시 기록되면 그때의 하이드 설정을 따름.
+
+바뀐 것 (`syncHide`)
+1. 다시 보이는 길은 하나: `HIDE_KEY`가 있고 숨겨져 있으며 `i > floor`. `floor` = 기억이 있고 검토 중이 아니면 `st.lastIndex`, 아니면 -1(리셋·기억 없음·검토 중 → SavePoint가 숨긴 것 모두). 하이드 방식·`enabled`와 상관없이 같은 규칙.
+2. 예전 "`mark && i > cutoff` → 보이기"(자동·끔·꺼짐에서 최근 N개·삭제로 경계가 내려가면 풀림)와 수동의 "최근 N개 때문에 보이기 + `HELD`" 삭제. 예전 `HELD` 표시가 남아 있는 메시지는 예전처럼 최근 N개 밖으로 나가면 다시 숨김(남은 표시 정리용).
+3. 끔: `HELD`만 지우고 `VISIBLE`(사용자가 펼침)은 남김 → 나중에 자동으로 돌아가도 펼친 메시지를 그대로 둠(다음 저장의 다시 훑기에서는 지금처럼 다시 숨김).
+4. 문구: 하이드 `끔 · 숨긴 원문 다시 표시` → **`끔 · 기존 하이드 유지`**(빠른 설정·전체 설정), 수동 설명·최근 N개 설명 수정. README 하이드 절.
+5. 그대로: 🔖 원문 유지(켜면 SavePoint 하이드를 바로 풂 — 사용자가 고른 것), 사용자가 직접 숨긴 메시지(표시 없음)는 건드리지 않음, 원문 검토(`unhideAll`)는 SavePoint 하이드만 풂.
+
+★ 특히 봐 줄 곳
+- ★ 자동 모드에서 "펼친 메시지는 다음 저장 때 다시 숨김"(다시 훑기)은 그대로 둠. 사용자의 "펼친 선택 유지"는 기억에서 빠져 다시 보일 때 건드리지 말라는 뜻으로 읽음.
+- ★ 메시지를 지워 번호가 당겨질 때: 기록된 원문을 지우면 원문 변경(되감기/검토)으로 가서 그 뒤가 풀리고, 기록 안 된 최근 메시지만 지우면 하이드는 그대로.
+- ★ 숨긴 메시지가 쌓이기만 하므로, 최근 N개를 늘려도 이미 숨긴 것은 그대로(설명에 적음).
+- ★ 수동 모드 `hideManual.to`(버튼 범위)는 예전처럼 되감기 때 `lastIndex`로 줄어듦.
+
+바뀐 기대(기존 검사, `tests/hide.test.mjs`)
+- `recent messages previously hidden by SavePoint are reopened` → 이름·기대 변경: 기록된 최근 메시지(#8)는 숨긴 채, 기록 밖(#9)만 다시 보임.
+- `manual hides remain owned by the user and are not reopened when SavePoint is disabled`: 끄면 SavePoint가 숨긴 것도 다시 보이던 기대 → 모두 그대로.
+- `manual: a user-hidden message is left alone, and off shows only what SavePoint hid`: 끔 뒤 `.........H` → `HHHHHHHH.H`.
+- `manual: off -> manual never reads "opened by the user" marks as a hidden range`: 끔 뒤 모두 보임·펼침 표시 삭제 → 하이드 유지·펼침 표시 유지, 수동 범위는 실제로 숨긴 것(#7)이고 펼침 표시를 범위로 읽지 않음.
+- `manual: messages shown only for "keep the latest N" are hidden again when N goes back down` → `manual: raising or lowering "keep the latest N" leaves hidden messages hidden`(늘려도 그대로) + 예전 `HELD` 표시가 남은 방의 정리 확인을 새 검사로.
+- `tests/browser/hide-manual.cjs` 9번: 끔 → SavePoint가 숨긴 것만 다시 보임 → 끔 → 하이드 그대로·파일도 그대로, 이름 `끔 · 기존 하이드 유지`.
+- `tests/browser/keep.cjs` 8번: 끔 이름 `끔 · 숨긴 원문 다시 표시` → `끔 · 기존 하이드 유지`.
+
+새 검사: 끔·꺼짐·최근 N개·삭제 네 경우 모두 그대로 / 되감기는 자동·끔·꺼짐·수동 어디서나 기록 밖의 SavePoint 하이드만 보이고 사용자 하이드·펼침 표시 유지 / 리셋·검토는 SavePoint 하이드만 / 다시 기록되면 자동은 숨기고 끔은 보이게. 일부러 망가뜨리기 4개(기억에서 빠져도 그대로, 최근 N으로 예전처럼 풀기, 끔에서 펼침 표시 지우기, 경계를 기록 대신 화면 기준으로) 각각 실패. v0.6.73 코드로 `hide-manual.cjs`를 돌리면 9번 실패. Node 463개(새 5개), 브라우저 37묶음.
+
 # v0.6.73 · 🧿 주입 탭이 열리기까지 1~2초 멈춤 (화면 쪽)
 
 기준: v0.6.72 `678862c`. 실제 증상: 주입 탭을 누르면 1~2초 뒤에 열리고 그동안 다른 탭도 반응 없음(주입 약 7900토큰).

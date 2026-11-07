@@ -108,7 +108,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => $('#sp_overlay').hide());
 
     // 8. the off option says what it does
-    ok(await ev(() => [...document.querySelectorAll('#sp_settings [data-set=hideMode] option')].some(o => o.value === 'off' && o.textContent === '끔 · 숨긴 원문 다시 표시')), '8. 끔 설명: 숨긴 원문 다시 표시');
+    ok(await ev(() => [...document.querySelectorAll('#sp_settings [data-set=hideMode] option')].some(o => o.value === 'off' && o.textContent === '끔 · 기존 하이드 유지')), '8. 끔 설명: 기존 하이드 유지 (v0.6.74)');
 
     // 9. v0.6.57: the 🔖 list in the status area — go to, turn one off, turn all off (manual mode)
     await click(2); await click(3); await click(6); await page.waitForTimeout(300);
