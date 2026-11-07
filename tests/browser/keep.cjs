@@ -69,7 +69,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await click(3); await page.waitForTimeout(300);
     await ev(() => $('#sp_wand').trigger('click'));
     r = { hid: await hidden(), mark: await ev(() => !!document.querySelector('#chat .mes[mesid="3"] .name_text + .sp-keep-mark')), on: await ev(() => document.querySelector('#chat .mes[mesid="3"] .sp-keep-btn').classList.contains('sp-on')),
-        swipes: await ev(() => M.chat[3].swipe_info.every(x => x.extra.savepointKeep === 1)), hud: await ev(() => document.querySelector('#sp_overlay .sp-hud').textContent.includes('🔖 원문 유지 1개')), saved: (await ev(() => M.saves || 0)) > saves0 };
+        swipes: await ev(() => M.chat[3].swipe_info.every(x => x.extra.savepointKeep === 1)), hud: await ev(() => document.querySelector('#sp_overlay .sp-hud').textContent.includes('🔶 하이드 제외 1개')), saved: (await ev(() => M.saves || 0)) > saves0 };
     ok(r.hid === 'HHH.HHHH....' && r.mark && r.on && r.swipes && r.hud && r.saved, `2. 켜면 바로 보이고 🔖 표시·상태칸 개수·파일 저장 (${JSON.stringify(r)})`);
     await ev(() => $('#sp_overlay').hide());
 
@@ -129,7 +129,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok((await ev(() => M.chat.filter(m => m.extra?.savepointKeep).length)) === 2, '9. 모두 해제: 확인창에서 취소하면 그대로');
     await ev(() => { M.confirm = true; });
     await ev(() => __savePoint.handle('keep-off-all')); await page.waitForTimeout(300);
-    r = await ev(() => ({ left: M.chat.filter(m => m.extra?.savepointKeep || m.swipe_info?.some(x => x?.extra?.savepointKeep)).length, list: $('.sp-keeplist').length, hud: $('.sp-hud').text().includes('원문 유지'), popup: M.popups.at(-1) }));
+    r = await ev(() => ({ left: M.chat.filter(m => m.extra?.savepointKeep || m.swipe_info?.some(x => x?.extra?.savepointKeep)).length, list: $('.sp-keeplist').length, hud: $('.sp-hud').text().includes('하이드 제외'), popup: M.popups.at(-1) }));
     ok(!r.left && !r.list && !r.hud && /모두 해제/.test(r.popup || ''), `9. 모두 해제: 확인 후 전부 꺼짐 (${JSON.stringify(r)})`);
     await ev(() => $('#sp_overlay').hide());
 

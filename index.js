@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.74';
+const VERSION = '0.6.75';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -47,7 +47,7 @@ const SETTING_GROUPS = {
     advanced: { title: '🛠 고급', keys: ['guide'] },
 };
 const HIDE_MODES = [['auto', '자동 · 세이브할 때마다 기록된 원문 숨기기'], ['manual', '수동 · 👻 하이드 버튼을 누를 때만'], ['off', '끔 · 기존 하이드 유지']];
-const QUEST_MODES = [['auto', '자동 등록 · 바로 진행 중 목록에'], ['confirm', '확인 후 등록 · 후보로 모아 수락·거절']];
+const QUEST_MODES = [['auto', '자동 수락 · 바로 진행 중 목록에'], ['confirm', '확인 후 수락 · 후보로 모아 수락·거절']];
 const THEMES = { jrpg: '클래식 JRPG', neon: '네온 아케이드', glass: '글래스 사이버', archive: '다크 아카이브', pastel: '파스텔 드림', terminal: '터미널', eggpet: '딸기우유', dualwhite: '듀얼 화이트', ink: '먹과 한지', cream: '크림 라테', consolenight: '스토리 콘솔', cranelemon: '레몬 인형뽑기', gingerbread: '진저브레드 하우스', xmasknit: '크리스마스 니트', lilac: '라일락 미드나잇', st: '실리태번 테마 따라가기' };
 // Themes that were retired, and the closest one now.
 const RETIRED_THEMES = { parchment: 'cream', colorpocket: 'eggpet', joycon: 'dualwhite', vanilla: 'cream' };
@@ -2773,8 +2773,8 @@ async function toggleKeep(index) {
         paintKeep(); throw e;
     }
     paintKeep(); if (ui.open) render(true);
-    toastr.info(on ? '🔖 원문 유지: 이 메시지는 하이드하지 않아요. 기록은 평소처럼 해요.'
-        : hideModeOf(settings()) === 'manual' ? '🔖 원문 유지를 껐어요. 다음에 👻 하이드를 누를 때 함께 숨겨요.' : '🔖 원문 유지를 껐어요.', 'SavePoint');
+    toastr.info(on ? '🔶 하이드 제외: SavePoint가 이 메시지를 하이드하지 않아요. 기록은 평소처럼 해요.'
+        : hideModeOf(settings()) === 'manual' ? '🔶 하이드 제외를 껐어요. 다음에 👻 하이드를 누를 때 함께 숨겨요.' : '🔶 하이드 제외를 껐어요.', 'SavePoint');
 }
 // A swipe (or a new reply in place) brings that swipe's own extra; a kept message gets its mark back.
 function repairKeep(index) {
@@ -2787,7 +2787,7 @@ function keepListHtml() {
     const rows = chat().map((m, i) => kept(m) ? i : -1).filter(i => i >= 0);
     return `<div class="sp-keeplist"><div class="sp-scroll">${rows.map(i => {
         const m = chat()[i], t = String(msgText(m) ?? "").trim().replace(/\s+/g, ' ');
-        return `<div class="sp-keep-row"><span class="grow"><b>#${i}</b> ${esc(speaker(m))}: <span class="sp-dim">${esc(t.length > 60 ? t.slice(0, 60) + '…' : t)}</span></span>${btn('keep-go', String(i), '이동', '채팅에서 이 메시지로 가요')}${btn('keep-off', String(i), '해제', '원문 유지 끄기')}</div>`;
+        return `<div class="sp-keep-row"><span class="grow"><b>#${i}</b> ${esc(speaker(m))}: <span class="sp-dim">${esc(t.length > 60 ? t.slice(0, 60) + '…' : t)}</span></span>${btn('keep-go', String(i), '이동', '채팅에서 이 메시지로 가요')}${btn('keep-off', String(i), '해제', '하이드 제외 끄기')}</div>`;
     }).join('')}</div>${rows.length > 1 ? `<div class="sp-row sp-keep-foot">${btn('keep-off-all', '', `모두 해제 (${rows.length})`)}</div>` : ''}</div>`;
 }
 function goToMessage(i) {
@@ -2801,7 +2801,7 @@ async function keepOffAll() {
     if (!hasChat() || !settings().enabled) return;
     const list = chat().filter(kept);
     if (!list.length) return;
-    if (!(await confirmHere(`🔖 원문 유지 ${list.length}개를 모두 해제할까요? ${hideModeOf(settings()) === 'manual' ? '다음에 👻 하이드를 누를 때 함께 숨겨요.' : '저장된 원문은 바로 하이드돼요.'}`,
+    if (!(await confirmHere(`🔶 하이드 제외 ${list.length}개를 모두 해제할까요? ${hideModeOf(settings()) === 'manual' ? '다음에 👻 하이드를 누를 때 함께 숨겨요.' : '저장된 원문은 바로 하이드돼요.'}`,
         () => chat().filter(kept).length === list.length && list.every(kept)))) return;
     const swipes = list.flatMap(m => (Array.isArray(m.swipe_info) ? m.swipe_info : []).map(x => x && typeof x === 'object'
         ? { x, hadExtra: Object.hasOwn(x, 'extra'), had: !!x.extra && Object.hasOwn(x.extra, KEEP_KEY), v: x.extra?.[KEEP_KEY] } : null));
@@ -2816,9 +2816,9 @@ async function keepOffAll() {
         paintKeep(); render(); throw e;
     }
     paintKeep(); ui.keepList = false; render(true);
-    toastr.info(`🔖 원문 유지 ${list.length}개를 해제했어요.`, 'SavePoint');
+    toastr.info(`🔶 하이드 제외 ${list.length}개를 해제했어요.`, 'SavePoint');
 }
-const KEEP_BUTTON = '<div class="mes_button sp-keep-btn interactable" role="button" tabindex="0" title="🔖 원문 유지 (하이드하지 않기)">🔖</div>';
+const KEEP_BUTTON = '<div class="mes_button sp-keep-btn interactable" role="button" tabindex="0" title="🔶 하이드 제외 (SavePoint가 하이드하지 않기)">🔶</div>';
 // The "…" menu button (on the message template for new messages, and on those already shown) and
 // the small 🔖 beside the name of each kept message.
 function paintKeep() {
@@ -2833,11 +2833,11 @@ function paintKeep() {
     for (const el of [...document.querySelectorAll('#chat .mes[mesid]')]) {
         const m = list[Number(el.getAttribute('mesid'))], k = on && kept(m);
         const b = el.querySelector('.sp-keep-btn');
-        if (b) { b.classList.toggle('sp-on', k); b.title = k ? '🔖 원문 유지 끄기' : '🔖 원문 유지 (하이드하지 않기)'; }
+        if (b) { b.classList.toggle('sp-on', k); b.title = k ? '🔶 하이드 제외 끄기' : '🔶 하이드 제외 (SavePoint가 하이드하지 않기)'; }
         let mark = el.querySelector('.sp-keep-mark');
         if (k && !mark) {
             const name = el.querySelector('.name_text') || el.querySelector('.ch_name');
-            mark = document.createElement('span'); mark.className = 'sp-keep-mark'; mark.title = '원문 유지 · SavePoint가 하이드하지 않아요'; mark.textContent = '🔖';
+            mark = document.createElement('span'); mark.className = 'sp-keep-mark'; mark.title = '하이드 제외 · SavePoint가 하이드하지 않아요 (직접 숨기는 건 막지 않아요)'; mark.textContent = '🔶';
             if (name) name.insertAdjacentElement('afterend', mark); else el.prepend(mark);
         } else if (!k && mark) mark.remove();
     }
@@ -3810,7 +3810,7 @@ function hudHtml(st) {
         ${review}
         <div class="sp-hud-more">
         ${storyTimeContext(st?.mem || {}, 'ko') ? `<div class="sp-hud-time">마지막 저장 기준 · ${esc(storyTimeContext(st.mem, 'ko'))}</div>` : ''}
-        <div class="sp-hud-meta"><span>미저장 <b>${pending}</b></span>${btn('tab', 'queue', `⏳ 대기열 ${st?.lootQueue?.length || 0}개`)}${returnNotices(st).length ? btn('tab', 'main', `📦 복귀 확인 ${returnNotices(st).length}`, '보관함 물건이 이야기에서 다시 쓰였어요', 'sp-on') : ''}<span>${esc(injectionStatus)}</span><span>요약 AI: ${esc(profileLabel())}</span>${keptCount() ? btn('keep-list', '', `🔖 원문 유지 ${keptCount()}개 ${ui.keepList ? '▴' : '▾'}`, 'SavePoint가 하이드하지 않는 메시지 · 눌러서 목록 보기·해제', ui.keepList ? 'sp-on' : '') : ''}${ui.inj?.pinOverflow ? `<span class="sp-warn">⚓ ${ui.inj.pinMissing}개 주입 못 함</span>` : ''}</div>
+        <div class="sp-hud-meta"><span>미저장 <b>${pending}</b></span>${btn('tab', 'queue', `⏳ 대기열 ${st?.lootQueue?.length || 0}개`)}${returnNotices(st).length ? btn('tab', 'main', `📦 복귀 확인 ${returnNotices(st).length}`, '보관함 물건이 이야기에서 다시 쓰였어요', 'sp-on') : ''}<span>${esc(injectionStatus)}</span><span>요약 AI: ${esc(profileLabel())}</span>${keptCount() ? btn('keep-list', '', `🔶 하이드 제외 ${keptCount()}개 ${ui.keepList ? '▴' : '▾'}`, 'SavePoint가 하이드하지 않는 메시지 · 눌러서 목록 보기·해제', ui.keepList ? 'sp-on' : '') : ''}${ui.inj?.pinOverflow ? `<span class="sp-warn">⚓ ${ui.inj.pinMissing}개 주입 못 함</span>` : ''}</div>
         ${ui.keepList && keptCount() ? keepListHtml() : ''}
         <div class="sp-hud-meta sp-auto-line">${autoLine}${autoLast}${lastRecord}</div>
         ${interrupted && !busy ? `<div class="sp-hud-meta"><span class="sp-warn">⚠ 지난 저장이 방을 옮기면서 중간에 멈췄어요 (#${interrupted.from}부터 미저장)</span>${btn('run', '', '퀵세이브로 이어서')}</div>` : ''}
@@ -4117,6 +4117,7 @@ async function handle(act, id) {
         }
         case 'st-p': ui.savesOpen.set('stp:' + id, !ui.savesOpen.get('stp:' + id)); return render(true);
         case 'qs': ui.qs = !ui.qs; return render(true);
+        case 'power': settings().enabled = !settings().enabled; fillSettings(); return settingsChanged(['enabled']);
         case 'qs-full': { ui.qs = false; closeWindow(); openFullSettings(); return; }
         case 'test-connection': return testConnection();
         case 'review-accept': return acceptCurrentSource();
@@ -4256,7 +4257,10 @@ function quickSettingsHtml() {
     const s = { ...settings(), ...(ui.pendingSettings || {}) };
     const opt = (list, cur) => list.map(([v, l]) => `<option value="${esc(v)}" ${String(cur) === String(v) ? 'selected' : ''}>${esc(l)}</option>`).join('');
     const marks = exclusionRules().length;
+    // v0.6.75: SavePoint on/off as a console power button (the same setting as 사용 in the full settings).
+    const power = `<div class="sp-power ${s.enabled ? 'sp-on' : 'sp-off'}"><span class="sp-power-t"><span class="sp-power-led"></span>SavePoint ${s.enabled ? '켜짐' : '꺼짐'}</span>${btn('power', '', `⏻ ${s.enabled ? 'ON' : 'OFF'}`, s.enabled ? '끄면 기억 주입·새 하이드·체크포인트가 멈춰요. 기록과 이미 숨긴 원문은 그대로예요.' : '켜면 기억 주입·하이드·체크포인트가 다시 작동해요.', 'sp-power-btn')}</div>`;
     return `<div class="sp-qs"><div class="sp-qs-h"><b>⚙ 빠른 설정</b>${btn('qs', '', '✕', '닫기')}</div>
+        ${power}
         <label class="sp-f"><span>스킨</span><select data-qs="theme">${opt(Object.entries(THEMES), s.theme)}</select></label>
         <label class="sp-f"><span>주입 상한 (토큰)</span><input type="number" data-qs="budget" min="300" max="100000" value="${esc(s.budget)}"></label>
         <label class="sp-qs-check"><input type="checkbox" data-qs="auto" ${s.auto ? 'checked' : ''}> 체크포인트 (자동 퀵세이브)</label>
@@ -4267,10 +4271,10 @@ function quickSettingsHtml() {
         <details class="sp-more" data-group="qs-more" ${ui.savesOpen.get('qs-more') ? 'open' : ''}><summary>더 보기</summary>
             <label class="sp-f"><span>최근 장면 수</span><input type="number" data-qs="recentScenes" min="0" max="20" value="${esc(s.recentScenes)}"></label>
             <label class="sp-f"><span>보관함 방식</span><select data-qs="boxMode">${opt([['notify', '알림 받고 결정'], ['auto', '자동 관리']], s.boxMode)}</select></label>
-            <label class="sp-f"><span>퀘스트 등록</span><select data-qs="questMode">${opt(QUEST_MODES, s.questMode)}</select></label>
+            <label class="sp-f"><span>퀘스트 수락</span><select data-qs="questMode">${opt(QUEST_MODES, s.questMode)}</select></label>
             <div class="sp-f"><span>기록에서 뺄 부분</span><div class="sp-row">${marks ? `<span>${marks}개 적용 중</span>` : '<span class="sp-dim">없음</span>'}${btn('qs-full', '', '편집 ↗', '전체 설정에서 편집해요')}</div></div>
         </details>
-        ${ui.run ? '<div class="sp-set-note">저장 중이에요. 요약 AI·보관함 방식·퀘스트 등록은 다음 저장부터 적용돼요.</div>' : ''}
+        ${ui.run ? '<div class="sp-set-note">저장 중이에요. 요약 AI·보관함 방식·퀘스트 수락은 다음 저장부터 적용돼요.</div>' : ''}
         <div class="sp-row sp-qs-foot">${btn('qs-full', '', '전체 설정 열기 ↗', '실리태번 확장 설정의 SavePoint를 열어요')}</div></div>`;
 }
 function setQuick(key, raw, el) {
@@ -4325,8 +4329,8 @@ function settingsHtml() {
                 <div class="sp-set-note">마지막 시도 뒤 새 메시지가 간격만큼 쌓이면 실행해요. 저장할 내용은 요청마다 최대 20개·원문 분량 설정(기본 12,000자) 안에서 고르게 나눠 처리해요. 일부 실패도 다음 간격에 이어서 처리하며, 퀵세이브로 바로 저장할 수 있어요.</div>
                 <label>체크포인트 여유분 <input type="number" data-set="autoReserve" min="0" max="20"></label>
                 <div class="sp-set-note">체크포인트가 기록하지 않고 남겨 둘 최근 메시지 수예요. 스와이프·수정에 대비해요. 퀵세이브는 마지막 메시지까지 기록해요.</div>
-                <label>퀘스트 등록 <select data-set="questMode">${QUEST_MODES.map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
-                <div class="sp-set-note">확인 후 등록이면 새로 발견한 퀘스트가 💠 메인의 <b>❗ 발견한 퀘스트</b>에 모이고, 근거를 보고 수락·거절해요. 거절은 퀘스트로 관리하지 않는다는 뜻이에요. 원문과 기존 저널은 유지돼요.</div>
+                <label>퀘스트 수락 <select data-set="questMode">${QUEST_MODES.map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
+                <div class="sp-set-note">확인 후 수락이면 새로 발견한 퀘스트가 💠 메인의 <b>❗ 발견한 퀘스트</b>에 모이고, 근거를 보고 수락·거절해요. 거절은 퀘스트로 관리하지 않는다는 뜻이에요. 원문과 기존 저널은 유지돼요.</div>
                 <label data-reset-host="excludeMarks">기록에서 뺄 부분 (한 줄에 하나)</label>
                 <textarea data-set="excludeMarks" rows="3" class="text_pole" placeholder="thoughts&#10;[생각] ~ [/생각]"></textarea>
                 <div class="sp-set-note">태그 이름을 적으면 그 태그 블록을 통째로, <code>시작 ~ 끝</code>으로 적으면 그 사이를 요약 AI에게 보내지 않아요. 채팅 원문은 그대로이고, 적은 뒤 새로 기록하는 것부터 적용돼요.</div>
