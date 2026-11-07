@@ -13,5 +13,7 @@ export function gateBox() {
         // v0.6.61: a change no longer valid at its turn; the write receipt; QUICK through the queue.
         Stale: class extends Error {}, proofOf: () => null, canon: JSON.stringify, newId: () => 'wid',
         quickSaveChecked: async () => null,
+        // v0.6.76: SillyTavern's write in progress (none here); a failure once a write may have landed.
+        stIdle: async () => false, settleLanded: async e => e,
     };
 }
