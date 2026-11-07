@@ -25,7 +25,7 @@ function harness({ messages = ['A participant kept a token.'], recorded = false 
     const toast = Object.fromEntries(['info', 'error', 'warning', 'success'].map(k => [k, msg => notices.push([k, msg])]));
     const app = new Function(...names, 'SillyTavern', 'jQuery', 'toastr', 'checks', 'console', source + `
         gateOpen = () => hasChat(); roomReady = async () => hasChat(); readServerChat = async () => ({ ok: true, snap: pageSnap(), count: chat().length, first: chat()[0], rev: state()?.rev ?? null });
-        setHidden = () => {}; render = () => {}; autosave = () => {}; quickSave = async () => null; persistSoon = () => {}; saveChatSoon = () => {};
+        setHidden = () => {}; render = () => {}; autosave = () => {}; quickSave = async () => null; persistSoon = () => {}; saveChatSoon = () => {}; writeChatFile = () => ctx().saveMetadata();
         queueCheck = (st, before) => checks.push(checkScope(before, st.mem));
         return { ensureState, state, settings, addLoot, summarize, autoCollect, fingerprint, roomKey, ui, handle, journalHtml, queueHtml,
             supplementLoot, newRun, endRun, checkStatements, reportText, installLootBar, openLootDialog, reconcile, saveRecord,

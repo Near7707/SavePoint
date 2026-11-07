@@ -1,3 +1,39 @@
+# v0.6.72 · 저장 쪽 긴급 수정: 방을 옮기는 순간 다른 방 채팅 파일을 빈 내용으로 덮어씀 (실제 사고)
+
+기준: v0.6.71 `a2f22be`. 체크포인트 반복 실패(느린 답변)는 원인을 다시 확인한 뒤 따로(화면·동작 쪽 커밋).
+
+실제 증상: 캐릭터 채팅방을 오가다 연 방의 메시지가 전부 사라지고 #0 그리팅만 남음(그 방의 SavePoint 기억도 같이). 원인(실리태번 소스로 확인 + 모의 환경 재현): SavePoint 저장은 `saveMetadata()`/`saveChatConditional()`을 거쳤고, 이 둘은 `waitUntilCondition(..., 100)` 때문에 항상 0.1초 뒤 **그때 열린 방**을 저장함. 그사이 `openCharacterChat`이 메시지를 비우고(같은 배열) 파일 이름을 바꾸고 `chat_metadata = {}`로 만들면, 새 방 이름 + 메시지 0개 + 고유값 없는 메타데이터가 나감 → 서버(`/api/chats/save`)는 보낸 쪽에 고유값이 없으면 확인 없이 덮어씀 → 실리태번이 빈 파일을 읽고 그리팅을 넣어 저장.
+
+바뀐 것
+1. **대상 고정 저장(`writeChatFile`)**: `persist()`와 `saveChatSoon()`은 이제 실리태번 저장을 부르지 않고 SavePoint가 직접 `/api/chats/save`(개인방: `ch_name`·`file_name`·`avatar_url`) 또는 `/api/chats/group/save`(그룹방: `id` = 그룹의 `chat_id`)로 보냄. 방 이름·메시지·메타데이터(고유값 포함)는 **기다림 없이 한 순간에** 담음(`chatTarget`, 같은 순간 `JSON.stringify`). 그 순간 `roomKey`·`roomEpoch`가 저장을 부른 때와 다르면 보내지 않음.
+2. **여는 중인 방은 저장 안 함**: 메시지가 0개이거나 메타데이터에 `integrity`가 없으면 보내지 않음(`RoomBlocked`). 실리태번은 방을 다 읽으면 같은 동기 구간에서 메시지·메타데이터를 넣고 고유값이 없으면 만들어 넣으므로(`getChat`, 그룹은 `getGroupChat`), 다 열린 방에는 항상 있음.
+3. **고유값을 같이 보냄** → 서버가 다른 파일(고유값 다름)이면 거절(400 `integrity`). 그러면 방을 막고(`gate.why = 'integrity'`, 새 안내 문구) 변경은 화면에서도 되돌림(기존 `writeEntry` 실패 처리).
+4. **실리태번 저장과 겹치지 않게**: 실리태번 `script.js`의 `isChatSaving`을 동적 import로 읽어(없으면 그냥 진행) 저장 중이면 끝날 때까지 기다린 뒤(최대 10초) 담음.
+5. **늦게 도착한 사본**: 보낸 사본이 가는 동안 실리태번이 더 새 화면을 저장하면, 서버에 늦게 도착한 쪽(우리 사본)이 새 메시지를 덮을 수 있음(실리태번 자체 저장은 저장 순번 덕분에 이런 일이 없었음 — 대상 고정의 부작용, 검사가 잡음). → 쓰기가 끝난 뒤 같은 방을 다시 담아 **보낸 것과 다르면 한 번 더 보냄**(최대 4번, 다른 방이 됐거나 여는 중이면 그만둠).
+6. 저장 실패 문구에 서버가 준 이유를 붙임(예: `(500: …)`). `guardedSave`는 그사이 방을 옮겨 멈춘 저장을 새 방의 오류로 알리지 않음.
+
+★ 특히 봐 줄 곳
+- ★ 실리태번의 `saveChat`이 하던 것 중 안 하는 것: `characters[this_chid].date_last_chat` 갱신(목록 정렬용, 실리태번이 자기 저장 때 다시 함), 큰 요청 압축(`compressRequest`), 고유값 거절 시 덮어쓰기 확인창(대신 SavePoint가 방을 막음). 서버 쪽 백업(캐릭터별 50개)은 같은 API라 그대로 생김.
+- ★ 5번은 "마지막에 도착하는 것은 지금 화면"을 다시 맞추는 것. 다시 보낼 때는 `serverCovered` 확인을 다시 하지 않음(첫 확인 뒤 바뀐 것은 이 화면의 새 내용이라 판단). 다른 기기가 그 짧은 사이에 저장한 경우는 원래부터 있던 "읽기~쓰기 틈"과 같은 종류.
+- ★ `isChatSaving` import 경로는 `../../../../script.js`(서드파티 확장 폴더 기준 = `/script.js`). 실리태번이 이 export를 없애면 기다리지 않고 바로 보냄(5번이 남은 틈을 줄임).
+- ★ 실리태번 자체 저장(다른 확장 포함)의 0.1초 틈은 그대로. SavePoint가 그 길을 더는 부르지 않을 뿐.
+- ★ 모든 메시지를 지운 방(메시지 0개)에서는 SavePoint가 저장하지 않음(안내만).
+
+모의 환경(`tests/browser/mock.js`)
+- `/api/chats/save`·`/api/chats/group/save`·`/api/chats/group/get` 추가. 쓰기 규칙은 `M.serverSave` 하나: 고유값이 있으면 파일의 것과 비교해 다르면 400 `integrity`, 없으면 그냥 덮어씀(서버와 같음). 기존 손잡이(`metaDelay`·`failMeta`·`failOnce`·`failNth`·`swallowMeta`·`silentSaveFail`·`readFailAfterSave`·`readFailAfterNth`, 겹침 `M.overlap`)는 여기로 옮김. 실패는 이제 500 응답(예전에는 `saveMetadata`가 던짐). `M.beforeChatSave`(쓰기 직전 끼어들기), `M.saveBodies`(보낸 방·개수·고유값), `M.integrityRefused`.
+- 예전 코드용 `saveMetadata`/`saveChat`은 `M.stLateSave`: `M.stLate`면 실리태번처럼 0.1초 뒤 그때 열린 방을 저장.
+- `M.stOpen(id)`: 실리태번 방 열기 순서(같은 배열 비우기 → 이름 바꿈 → `meta = {}` → `M.openDelay`(400ms) 뒤 파일 읽기 → 비었으면 그리팅을 넣고 실리태번 저장 → CHAT_CHANGED).
+- **고유값을 기본으로 켬**(예전 `M.stIntegrity`, 이제 `M.noIntegrity`로 끔): 첫 방과 `switchChat`·`switchSame`·`openFile`로 연 방에 고유값이 없으면 파일의 것을, 파일에도 없으면 새로 넣음(실리태번 `getChat`과 같음). 이게 없으면 SavePoint가 저장하지 않으므로.
+- `/script.js`(`tests/browser/script.js`): `isChatSaving` 흉내(`M.stScript.setChatSaving`).
+- 그룹방: `M.groupId`·`M.groups`.
+- `M.chatSaves`는 이제 SavePoint의 모든 채팅 파일 쓰기 수(예전에는 `saveChat` 호출 수). `M.writeServerChat`은 예전 검사용으로 남김.
+- Node 검사 세 곳(`checkpoint`·`loot`·`point-controls`)의 가짜 컨텍스트: `writeChatFile`을 그 검사의 `saveMetadata`로 연결(검사 기대는 그대로).
+
+바뀐 기대(기존 검사)
+- `quests.cjs` 14번 뒤: 방 A에서 시작한 느린 저장이 예전 모의 환경에서는 **그때 열린 방 Q 파일**에 들어갔음(이번 사고와 같은 흐름). 이제 방 A 파일에 들어가므로, 방 A로 돌아갈 때 예전에 떠 둔 화면 사본이 아니라 **서버 파일로 다시 엶**(`M.openFile`). 새 확인 14b: 늦게 끝난 저장은 원래 방 파일에만 들어감.
+
+검사: 새 묶음 `room-switch-save.cjs` — ① 방 A 작은 저장 뒤 0~450ms 12개 시점에 방 B 열기 → B 파일 10개·고유값 그대로, A 파일 20개 + 기억, 빈 저장 0 (**v0.6.71 코드로 돌리면 300·330·350·380ms에서 B가 그리팅 1개만 남음** = 실제 사고) ② 실리태번 저장 중엔 기다림, 그사이 같은 방을 다시 열면 보내지 않음, 파일 그대로 ②b 메시지 없음·고유값 없음·다른 방 이름 각각 하나만 있어도 안 보냄 ③ 쓰기 직전 파일 고유값이 바뀌면 서버 거절 → 파일 그대로, 화면 되돌림, 방 멈춤, 고유값 안내 ④ 그룹방은 그룹 파일로 ⑤ 느린 쓰기 중 실리태번이 새 메시지 저장 → 지금 방을 한 번 더 보내 새 메시지 유지, 바뀐 게 없으면 한 번만. 새 규칙 8군데(빈 메시지·고유값·방 다시 확인·저장 중 기다림·그룹 주소·고유값 보내기·거절 때 방 멈춤·다시 보내기)를 일부러 하나씩 망가뜨리면 각각 실패(빈 메시지·고유값·방 다시 확인은 실제 방 옮기기에서는 서로 겹쳐서 ②b로 하나씩 확인). Node 458개, 브라우저 36묶음.
+
 # v0.6.71 · v0.6.69 리뷰: [P2] 1건 + [P3] 1건 (동작 변화 없음)
 
 기준: v0.6.70 `f53c550`. 이번에도 `home.js`는 본체에 연결하지 않음. 두 건과 같은 원인 2가지를 모두 레포 밖 스크립트로 먼저 재현함(`copy-` 단서 쓰기 실패 → 다시 열어 이름표만 → 다른 방이 같은 사본 이전, 방 여는 도중 다른 방 이전 → `relink`, `int-` 단서 쓰기 실패 → 가져온 복사본이 `new` 12번, 채팅의 빈 사본으로 재시도 → `copyChanged`, 수정 기록의 `before` 누락 → 슬롯이 있어도 장면 사라짐, `nextBefore` 누락 → 되감은 기억의 `next`가 비어 있음).

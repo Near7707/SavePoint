@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.71';
+const VERSION = '0.6.72';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -175,7 +175,54 @@ function ensureState() {
     return st;
 }
 function hasMemory(mem) { return !!(mem && (mem.scenes.length || mem.records.length)); }
-async function persist() { if (hasChat()) await ctx().saveMetadata(); }
+async function persist() { if (hasChat()) await writeChatFile(); }
+// v0.6.72: SavePoint writes the chat file itself, for the room open at the moment of the call. SillyTavern's
+// saveMetadata()/saveChatConditional() wait at least 0.1 s and then save whatever room is open by then: a
+// room switch in that moment sent the next room's name with no messages and metadata without `integrity`
+// (the server then skips its check) and the next room's file was left with only its greeting.
+// What is sent is taken at one moment (name, messages, metadata with its integrity); a room that is still
+// opening (no messages, or metadata without integrity) is not written. The server refuses a file whose
+// integrity differs. SillyTavern's own write in progress is waited for first, so an older page never
+// lands over a newer one it just sent.
+let stScript = null;
+try { import('../../../../script.js').then(m => { stScript = m; }, () => {}); } catch { /* not in SillyTavern */ }
+function chatTarget() {
+    const c = ctx(), list = c.chat, meta = c.chatMetadata, file = chatId();
+    if (!Array.isArray(list) || !list.length || !meta || typeof meta !== 'object' || !meta.integrity) return null;
+    if (file === null || file === undefined || file === '') return null;
+    const head = { chat_metadata: meta, user_name: 'unused', character_name: 'unused' };
+    if (c.groupId !== undefined && c.groupId !== null && c.groupId !== '')
+        return { url: '/api/chats/group/save', body: JSON.stringify({ id: file, chat: [head, ...list] }) };
+    const ch = c.characters?.[c.characterId];
+    if (!ch) return null;
+    return { url: '/api/chats/save', body: JSON.stringify({ ch_name: ch.name, file_name: file, chat: [head, ...list], avatar_url: ch.avatar, force: false }) };
+}
+async function writeChatFile() {
+    const key = roomKey(), epoch = roomEpoch;
+    // A copy is taken at one moment, so a newer page SillyTavern saves while it is on its way could land
+    // first and be overwritten by it. When the page changed meanwhile, the room as it is now is sent again
+    // (same room only), so the last write to land is never older than the page.
+    let sent = null;
+    for (let round = 0; round < 4; round++) {
+        for (let i = 0; i < 200 && stScript?.isChatSaving; i++) await wait(50);
+        // From here to the request nothing waits: the room checked is the room whose file is sent.
+        const moved = roomKey() !== key || roomEpoch !== epoch, t = moved ? null : chatTarget();
+        if (sent !== null && (!t || t.body === sent)) return;
+        if (moved) throw new RoomBlocked('채팅방이 바뀌어서 저장하지 않았어요.');
+        if (!t) throw new RoomBlocked('채팅방이 아직 다 열리지 않아서(메시지나 채팅 파일 고유값이 없음) 저장하지 않았어요.');
+        const r = await fetch(t.url, { method: 'POST', cache: 'no-cache', headers: serverHeaders(), body: t.body });
+        if (!r.ok) {
+            let why = '';
+            try { why = (await r.json())?.error || ''; } catch { /* not json */ }
+            if (why === 'integrity') {
+                if (roomKey() === key && roomEpoch === epoch) blockRoom('integrity');
+                throw new RoomBlocked('서버의 채팅 파일이 이 방과 다른 파일이라서(고유값 다름) 저장하지 않았어요. 방을 다시 열거나 새로고침해 주세요.');
+            }
+            throw new Error(`서버가 채팅 파일 저장을 거절했어요 (${r.status}${why ? `: ${String(why).slice(0, 120)}` : ''})`);
+        }
+        sent = t.body;
+    }
+}
 
 // Every change to a room's memory goes through here.
 // The memory (chat metadata) and the hide flags on messages are stored in the same chat file and
@@ -183,7 +230,9 @@ async function persist() { if (hasChat()) await ctx().saveMetadata(); }
 // never ends up with one half of a change. If the save call throws, the previous state is put back.
 // SillyTavern's saveMetadata() handles most server failures itself (it shows "Chat could not be
 // saved" and returns normally). That case cannot be detected here: the change stays in the page and
-// is written together with the next successful chat save.
+// is written together with the next successful chat save. (v0.6.72: SavePoint now sends the file itself,
+// see writeChatFile; a refused write throws. A write the server answered but did not keep is still found
+// only by reading the file back: `verify`.)
 // The automatic save file lives in the settings file and is only a convenience copy.
 // v0.6.55: a change is a ⏪ rewind point only when it says so (`undoable` + `undoKind`): saves, a reset
 // and a load. Edits made with buttons no longer take the one rewind step.
@@ -458,8 +507,7 @@ function saveChatSoon() {
     chatSaveTimer = setTimeout(function save() {
         if (roomKey() !== key || roomEpoch !== epoch) return;
         if (mainBusy()) { chatSaveTimer = setTimeout(save, 1500); return; }
-        const c = ctx();
-        guardedSave(() => (c.saveChatConditional || c.saveChat)?.call(c));
+        guardedSave(() => persist());
     }, 500);
 }
 // v0.6.58: the small saves outside the queue (status notes, 🔖 repairs) follow the same rule: only a
@@ -476,7 +524,8 @@ function guardedSave(write) {
         const pre = await serverCovered();
         if (!here()) return;
         if (!pre.ok) { blockRoom(pre.why); warnBlocked(); return; }
-        try { await write(); } catch (e) { reportError(e); }
+        // v0.6.72: a save stopped because the room moved meanwhile is not an error of the new room.
+        try { await write(); } catch (e) { if (roomKey() === key && roomEpoch === epoch) reportError(e); }
     });
     queue.chain = job.catch(() => {});
     return job;
@@ -524,6 +573,7 @@ function gateMessage() {
     if (gate.status === 'unknown') return '서버에서 이 방의 채팅 파일을 찾지 못해서(새 방인지 읽기 실패인지 알 수 없어요) 저장하지 않았어요. 방을 다시 열어 주세요.';
     if (gate.status === 'unread') return '서버에서 이 방의 채팅 파일을 읽지 못해서 저장하지 않았어요. 잠시 뒤 다시 하거나 방을 다시 열어 주세요.';
     if (gate.why === 'gone') return '다른 곳에서 지운 메시지가 이 화면에는 남아 있어서 저장하지 않았어요(저장하면 그 메시지가 되살아나요). 방을 다시 열거나 새로고침해 주세요.';
+    if (gate.why === 'integrity') return '서버의 채팅 파일이 이 방과 다른 파일이라서(고유값 다름) 저장하지 않았어요. 방을 다시 열거나 새로고침해 주세요.';
     if (gate.why === 'mem') return '다른 기기에서 이 방의 SavePoint 기억을 저장해서 이 화면의 기억이 오래됐어요. 덮어쓰지 않도록 저장하지 않았어요. 방을 다시 열거나 새로고침해 주세요.';
     return '서버의 채팅 파일에 이 화면에 없는 내용이 있어서 저장하지 않았어요. 다른 기기에서 이어졌거나 방이 덜 열렸을 수 있어요. 방을 다시 열거나 새로고침해 주세요.';
 }

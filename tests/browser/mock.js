@@ -111,14 +111,17 @@ window.SillyTavern = {
     getContext: () => ({
         extensionSettings: M.settings, saveSettingsDebounced() { M.settingsSaves = (M.settingsSaves || 0) + 1; },
         getCurrentChatId: () => M.chatId,
-        get characters() { return M.characters; }, characterId: 0, groups: [],
+        // v0.6.72: a group room when M.groupId is set (M.groups: [{ id, name, chat_id }]).
+        get characters() { return M.characters; }, characterId: 0, get groups() { return M.groups || []; }, get groupId() { return M.groupId ?? null; },
         name1: 'Me', name2: 'Ari',
         get chat() { return M.chat; }, get chatMetadata() { return M.meta; },
         // v0.6.59: two writes of the chat file at the same time are counted (M.overlap).
         // v0.6.64: M.spSaves counts the chat saves SavePoint asks for (SillyTavern's own: M.stSaves).
-        async saveMetadata() { M.spSaves++; M.inSave = (M.inSave || 0) + 1; if (M.inSave > 1) M.overlap = (M.overlap || 0) + 1; try { return await this._saveMetadata(); } finally { M.inSave--; } },
-        async _saveMetadata() { if (M.metaDelay) await new Promise(r => setTimeout(r, M.metaDelay)); if (M.failMeta) throw new Error('disk full'); if (M.failOnce) { M.failOnce = false; throw new Error('disk full once'); } if (M.failNth) { M.failNth--; if (!M.failNth) throw new Error('disk full nth'); } if (M.swallowMeta) { M.swallowed = (M.swallowed || 0) + 1; if (M.readFailAfterSave) M.serverError = true; return; } M.saves = (M.saves || 0) + 1; M.writeServerChat(); if (M.readFailAfterSave) M.serverError = true; if (M.readFailAfterNth && !--M.readFailAfterNth) M.serverError = true; },
-        async saveChat() { M.spSaves++; M.chatSaves++; M.writeServerChat(); },
+        // v0.6.72: SavePoint sends the chat file itself (/api/chats/save, below); these two are what SillyTavern
+        // offers and are kept for older code (EXT=<old folder>). M.stLate: like SillyTavern, wait 0.1 s and
+        // then save the room open by then (its name, messages and metadata).
+        async saveMetadata() { return M.stLateSave(); },
+        async saveChat() { return M.stLateSave(); },
         getRequestHeaders: () => ({ 'Content-Type': 'application/json', 'X-CSRF-Token': 'test' }),
         setExtensionPrompt(k, v, p, d, s, r) { if (M.promptThrow > 0) { M.promptThrow--; throw new Error('prompt update failed'); } M.prompts[k] = { v, p, d, r }; },
         eventSource, event_types,
@@ -132,19 +135,62 @@ window.SillyTavern = {
 M.characters = [{ avatar: 'ari.png', name: 'Ari', description: 'Ari is a courier with green hair.', first_mes: 'Hello! This is the very first greeting.',
     data: { alternate_greetings: ['Another greeting.', 'Fresh greeting for the failing room.', 'A brand new greeting.'] } }];
 const copy = v => JSON.parse(JSON.stringify(v));
-M.writeServerChat = () => {
-    if (M.silentSaveFail) return;
-    M.serverChat = copy([{ chat_metadata: M.meta }, ...M.chat]);
-    M.serverFiles[M.chatId] = M.serverChat;
+// v0.6.72: one chat file write as the server does it (both /api/chats/save and SillyTavern's own path for
+// older code). The knobs: M.metaDelay (ms before it lands), M.failMeta / M.failOnce / M.failNth (500),
+// M.swallowMeta (answers ok, keeps nothing: like SillyTavern showing "could not be saved" and returning),
+// M.silentSaveFail (answers ok, file unchanged), M.readFailAfterSave / M.readFailAfterNth (reads fail after).
+// Like the server: metadata with `integrity` is checked against the file's (refused when they differ); without
+// one the check is skipped and the file is overwritten.
+M.serverSave = async (name, data, { st = false } = {}) => {
+    if (st) M.stSaves++; else { M.spSaves++; M.chatSaves++; } M.inSave = (M.inSave || 0) + 1; if (M.inSave > 1) M.overlap = (M.overlap || 0) + 1;
+    try {
+        if (M.beforeChatSave) await M.beforeChatSave(name, data);
+        if (M.metaDelay) await new Promise(r => setTimeout(r, M.metaDelay));
+        if (M.failMeta) return { status: 500, error: 'disk full' };
+        if (M.failOnce) { M.failOnce = false; return { status: 500, error: 'disk full once' }; }
+        if (M.failNth) { M.failNth--; if (!M.failNth) return { status: 500, error: 'disk full nth' }; }
+        if (M.swallowMeta) { M.swallowed = (M.swallowed || 0) + 1; if (M.readFailAfterSave) M.serverError = true; return { status: 200 }; }
+        const sent = data[0]?.chat_metadata?.integrity, had = Array.isArray(M.serverFiles[name]) ? M.serverFiles[name][0]?.chat_metadata?.integrity : undefined;
+        if (sent && had && sent !== had) { M.integrityRefused = (M.integrityRefused || 0) + 1; return { status: 400, error: 'integrity' }; }
+        M.saves = (M.saves || 0) + 1;
+        if (!M.silentSaveFail) { M.serverFiles[name] = copy(data); if (name === M.chatId) M.serverChat = M.serverFiles[name]; (M.writes ||= []).push(name); }
+        if (M.readFailAfterSave) M.serverError = true;
+        if (M.readFailAfterNth && !--M.readFailAfterNth) M.serverError = true;
+        return { status: 200 };
+    } finally { M.inSave--; }
+};
+M.stLateSave = async () => {
+    if (M.stLate) await new Promise(r => setTimeout(r, 100));
+    const r = await M.serverSave(M.chatId, [{ chat_metadata: M.meta }, ...M.chat]);
+    if (r.status !== 200) throw new Error(r.error);
+};
+// v0.6.72: SillyTavern opening a room (openCharacterChat): the same message list is emptied, the name
+// changes, the metadata becomes {} and the file is read later (M.openDelay ms). An empty file gets the
+// card's greeting, which SillyTavern saves (saveChatConditional) before telling extensions (CHAT_CHANGED).
+M.stOpen = async (id, { greeting = 'Hello there' } = {}) => {
+    M.chat.splice(0); M.chatId = id; M.meta = {};
+    await new Promise(r => setTimeout(r, M.openDelay ?? 400));
+    const f = Array.isArray(M.serverFiles[id]) ? copy(M.serverFiles[id]) : [];
+    const head = f[0] && 'chat_metadata' in f[0] ? f.shift().chat_metadata : {};
+    M.meta = opened(head, id);
+    M.chat.splice(0, M.chat.length, ...f);
+    if (!M.chat.length) {
+        M.chat.push({ name: 'Ari', is_user: false, is_system: false, mes: greeting, swipe_id: 0, extra: {} });
+        await new Promise(r => setTimeout(r, 100));
+        await M.serverSave(M.chatId, [{ chat_metadata: M.meta }, ...M.chat], { st: true });
+    }
+    await eventSource.emit('chat_id_changed');
 };
 // v0.6.58: the chat files on the server, one per room (null: no file). A room's file is what it held
-// when it was opened; SavePoint's saves write it (M.writeServerChat) and so does SillyTavern itself when
+// when it was opened; SavePoint's saves write it (/api/chats/save) and so does SillyTavern itself when
 // messages come, change or go (M.stSave: M.add and the message events). While saves fail silently
 // (M.silentSaveFail, M.swallowMeta) or M.serverFrozen is set, nothing changes it.
 // M.serverEmpty: an empty answer (a missing file and a failed read look the same). M.serverError: 500.
 M.serverFiles = {};
+// Older suites write the open room's file directly.
+M.writeServerChat = () => { if (M.silentSaveFail) return; M.serverChat = copy([{ chat_metadata: M.meta }, ...M.chat]); M.serverFiles[M.chatId] = M.serverChat; };
 M.stSave = () => { if (M.serverFrozen || M.silentSaveFail || M.swallowMeta || M.noStSave) return; M.stSaves++; M.serverFiles[M.chatId] = copy([{ chat_metadata: M.meta }, ...M.chat]); };
-M.spSaves = 0; M.stSaves = 0;
+M.spSaves = 0; M.stSaves = 0; M.chatSaves = 0;
 M.serverFile = name => {
     if (M.serverEmpty) return {};
     if (M.serverError) return null;
@@ -165,9 +211,16 @@ M.add = (n, fn) => {
 // v0.6.64: M.stIntegrity: like SillyTavern, a room opened without `integrity` gets one on the page only
 // (it reaches the file with the next save). Off by default (older suites compare metadata as given).
 const uuid = () => globalThis.crypto?.randomUUID?.() || 'u' + Math.random().toString(36).slice(2);
-const opened = meta => { if (M.stIntegrity && meta && typeof meta === 'object' && !meta.integrity) meta.integrity = uuid(); return meta; };
-M.switchSame = async (id, list, meta) => { opened(meta); M.chatId = id; M.chat.splice(0, M.chat.length, ...list); M.meta = meta; if (!Object.hasOwn(M.serverFiles, id)) M.serverFiles[id] = copy([{ chat_metadata: meta }, ...list]); await eventSource.emit('chat_id_changed'); };
-M.switchChat = async (id, chatArr, meta) => { opened(meta); M.chatId = id; M.chat = chatArr; M.meta = meta; if (!Object.hasOwn(M.serverFiles, id)) M.serverFiles[id] = copy([{ chat_metadata: meta }, ...chatArr]); await eventSource.emit('chat_id_changed'); };
+// v0.6.72: on by default (SillyTavern always does this when it loads a room; SavePoint does not write a room
+// without it). M.noIntegrity turns it off. A file that has one gives it to the page, as reading the file would.
+const opened = (meta, id) => {
+    if (M.noIntegrity || !meta || typeof meta !== 'object' || meta.integrity) return meta;
+    const f = Array.isArray(M.serverFiles?.[id]) ? M.serverFiles[id][0]?.chat_metadata?.integrity : undefined;
+    meta.integrity = f || uuid();
+    return meta;
+};
+M.switchSame = async (id, list, meta) => { opened(meta, id); M.chatId = id; M.chat.splice(0, M.chat.length, ...list); M.meta = meta; if (!Object.hasOwn(M.serverFiles, id)) M.serverFiles[id] = copy([{ chat_metadata: meta }, ...list]); await eventSource.emit('chat_id_changed'); };
+M.switchChat = async (id, chatArr, meta) => { opened(meta, id); M.chatId = id; M.chat = chatArr; M.meta = meta; if (!Object.hasOwn(M.serverFiles, id)) M.serverFiles[id] = copy([{ chat_metadata: meta }, ...chatArr]); await eventSource.emit('chat_id_changed'); };
 
 // v0.6.64: opening a room from its server file (the way SillyTavern reloads a room), and the room tools
 // that make new chat files: rename, delete, branch (with a swipe), checkpoint, import.
@@ -231,13 +284,20 @@ window.fetch = async (url, opts = {}) => {
     const res = (body, status = 200) => new Response(typeof body === 'string' ? body : JSON.stringify(body), { status });
     // SillyTavern's chat read-back: the copy last written by a save that "succeeded" on the server.
     // M.silentSaveFail mimics SillyTavern swallowing a server error: the call returns, the file stays old.
-    if (u === '/api/chats/get') {
+    if (u === '/api/chats/get' || u === '/api/chats/group/get') {
         M.serverReads = (M.serverReads || 0) + 1;
-        const fileName = JSON.parse(opts.body || '{}').file_name;
+        const b = JSON.parse(opts.body || '{}'), fileName = u === '/api/chats/get' ? b.file_name : b.id;
         const delay = M.readDelayFor?.[fileName] ?? M.serverReadDelay;
         if (delay) await new Promise(r => setTimeout(r, delay));
         const f = M.serverFile(fileName);
         return f === null ? res('down', 500) : res(f);
+    }
+    // v0.6.72: the chat file writes SavePoint sends (personal and group rooms).
+    if (u === '/api/chats/save' || u === '/api/chats/group/save') {
+        const b = JSON.parse(opts.body || '{}');
+        (M.saveBodies ||= []).push({ url: u, name: b.file_name ?? b.id, count: (b.chat?.length || 1) - 1, integrity: b.chat?.[0]?.chat_metadata?.integrity ?? null });
+        const r = await M.serverSave(u === '/api/chats/save' ? b.file_name : b.id, b.chat);
+        return r.status === 200 ? res({ ok: true }) : res({ error: r.error }, r.status);
     }
     // v0.6.64: the chat list of a character (simple form), from the server files.
     if (u === '/api/characters/chats') return res(M.chatList().map(id => ({ file_name: `${id}.jsonl`, file_id: id })));
@@ -271,3 +331,7 @@ window.fetch = async (url, opts = {}) => {
     if (st === 'broken') return res('<!DOCTYPE html><html><body>not found</body></html>');
     return M.files.has(name) ? res(M.files.get(name)) : res('nf', 404);
 };
+// v0.6.72: SillyTavern's own module (isChatSaving), served as /script.js for SavePoint's import.
+import('/script.js').then(m => { M.stScript = m; }, () => {});
+// v0.6.72: the first room is loaded like any other (it gets its integrity).
+opened(M.meta, M.chatId);

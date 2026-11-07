@@ -25,7 +25,7 @@ function controls() {
         names.push(...list.split(',').map(x => x.trim()).filter(Boolean)); return '';
     });
     const run = new Function(...names, 'SillyTavern', 'jQuery',
-        source + '\ngateOpen = () => hasChat(); roomReady = async () => hasChat(); readServerChat = async () => ({ ok: true, snap: pageSnap(), count: chat().length, first: chat()[0], rev: state()?.rev ?? null }); render = () => {}; autosave = () => {}; return { handle, journalHtml, ui };');
+        source + '\ngateOpen = () => hasChat(); roomReady = async () => hasChat(); readServerChat = async () => ({ ok: true, snap: pageSnap(), count: chat().length, first: chat()[0], rev: state()?.rev ?? null }); render = () => {}; autosave = () => {}; writeChatFile = () => ctx().saveMetadata();; return { handle, journalHtml, ui };');
     const app = run(...names.map(n => imported[n]), { getContext: () => context }, () => {});
     return { app, context, writes: () => writes,
         point: () => context.chatMetadata.savePoint.mem.scenes[0].segs[0].points[0],

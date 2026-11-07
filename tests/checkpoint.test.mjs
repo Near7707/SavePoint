@@ -37,7 +37,7 @@ function harness({ count = 20, chars = 30, reserve = 2, keep = 0, limit = 60000 
         __saved = () => { files.set(chat(), clone({ meta: ctx().chatMetadata, chat: chat() })); };
         readServerChat = async () => { const f = fileOf(); return { ok: true, snap: snapshot(f.meta, f.chat, OWN_KEYS), count: f.chat.length, first: f.chat[0], rev: f.meta?.savePoint?.rev ?? null }; };
         setHidden = (m, i, hidden) => { m.is_system = !!hidden; };
-        render = () => {}; persistSoon = () => {}; saveChatSoon = () => {};
+        render = () => {}; persistSoon = () => {}; saveChatSoon = () => {}; writeChatFile = () => ctx().saveMetadata();
         autosave = st => { if (st) backups.push({ lastIndex: st.lastIndex, mem: clone(st.mem) }); };
         quickSave = async st => { quicks.push(st.lastIndex); return null; };
         queueCheck = (st, before, opts) => checks.push(opts);

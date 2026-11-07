@@ -202,7 +202,10 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => { M.metaDelay = 0; });
     r = await ev(() => ({ bMeta: JSON.stringify(M.meta) }));
     ok(o2.startsWith('fail:채팅방을 옮겨서') && !r.bMeta.includes('savePoint'), `14. 방을 옮긴 뒤 이전 방의 대기 저장은 새 방을 저장하지 않고 알림 (${o1} · ${o2.slice(0, 40)})`);
-    await ev(a => M.switchChat(a.id, a.chat, a.meta), roomA);
+    // v0.6.72: the slow write started in room A now lands in room A's file (before, it landed in the room open
+    // by then), so room A is opened again from its file.
+    ok(await ev(a => !!M.serverFiles[a.id][0].chat_metadata.savePoint && !M.serverFiles.roomQ?.[0]?.chat_metadata?.savePoint, roomA), '14b. 늦게 끝난 저장은 원래 방 파일에만 들어감');
+    await ev(a => M.openFile(a.id, { same: false }), roomA);
 
     // 15–17. (v0.6.46) replays address items by id; a gone target stops the replay; the file stays valid
     const setup = () => ev(() => { const st = __savePoint.state();
