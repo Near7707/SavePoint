@@ -65,6 +65,22 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await wait(500);
     const back = await look();
     ok(back.cls.includes('sp-on') && back.btn === '⏻ ON' && back.enabled && back.box, '3. 다시 누르면 켜짐');
+    // 3b. v0.6.79 (review P3): no skin's hover glow reaches the button (neon had one), on and off.
+    const themes = await ev(() => [...document.querySelectorAll('#sp_settings [data-set=theme] option')].map(o => o.value));
+    const glow = [];
+    for (const state of ['on', 'off']) {
+        if (state === 'off') { await ev(() => __savePoint.handle('power')); await wait(300); }
+        for (const t of themes) {
+            await ev(t => document.querySelector('#sp_overlay .sp-window').setAttribute('data-theme', t), t);
+            await page.mouse.move(0, 0);
+            await page.hover('#sp_overlay .sp-qs .sp-power-btn');
+            const sh = await ev(() => getComputedStyle(document.querySelector('#sp_overlay .sp-qs .sp-power-btn')).boxShadow);
+            if (sh !== 'none') glow.push(`${t}/${state}: ${sh}`);
+        }
+    }
+    await ev(() => __savePoint.handle('power')); await wait(300);
+    await page.mouse.move(0, 0);
+    ok(themes.length >= 16 && !glow.length, `3b. 스킨 ${themes.length}개 모두 마우스를 올려도 그림자 없음 (켜짐·꺼짐) ${glow.join(' / ')}`);
     // 4. 퀘스트 수락 wording (quick and full settings)
     const q = await ev(() => { const more = document.querySelector('#sp_overlay .sp-qs details'); if (more) more.open = true;
         return { qs: document.querySelector('#sp_overlay [data-qs=questMode]')?.closest('label')?.querySelector('span')?.textContent,

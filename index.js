@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.78';
+const VERSION = '0.6.79';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -1152,6 +1152,10 @@ function refreshInjection() {
         const key = injNeedKey(st, opts);
         if (key !== ui.injNeedKey || ui.injNeedMem !== st.mem) { ui.injNeedKey = key; ui.injNeedMem = st.mem; ui.injNeed = undefined; ui.injNeedPoints = undefined; }
         text = ui.inj.text;
+    } else if (ui.injNeedKey !== null) {
+        // v0.6.79: nothing to inject here (no memory, off, under review): figures worked out for another room or
+        // memory are dropped, and a calculation still running for them stops at its next piece.
+        ui.injNeedKey = null; ui.injNeedMem = null; ui.injNeed = undefined; ui.injNeedPoints = undefined;
     }
     ctx().setExtensionPrompt(PROMPT_KEY, text, Number(s.position), num('depth', 0, 999), false, Number(s.role));
 }

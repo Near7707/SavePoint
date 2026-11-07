@@ -69,6 +69,15 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r = await ev(async () => { const core = await import('/ext/core.js'); const st = __savePoint.state(); const o = __savePoint.ui.injOpts;
         return { ui: [__savePoint.ui.injNeed, __savePoint.ui.injNeedPoints], direct: [core.neededBudget(st.mem, o), __savePoint.ui.injNeedPoints === undefined ? undefined : core.neededBudget(st.mem, o, 100000, { points: true })] }; });
     ok(JSON.stringify(r.ui) === JSON.stringify(r.direct), `4. 나눠서 계산한 값이 한 번에 계산한 값과 같음 (${JSON.stringify(r)})`);
+    // 5. v0.6.79 (review P3): working it out, then a room with no memory opens on the same tab: the old room's
+    //    calculation stops (its figures never land in the new room).
+    await ev(() => { __savePoint.handle('tab', 'journal'); __savePoint.state().rev = (__savePoint.state().rev || 0) + 1; __savePoint.handle('tab', 'inject'); });
+    r = await ev(src => (new Function(`return (${src})()`))().includes('계산하고 있어요'), body.toString());
+    await ev(() => M.switchChat('chatEmpty', [{ name: 'Ari', is_user: false, is_system: false, mes: 'Hello there', swipe_id: 0, extra: {} }], {}));
+    await ev(() => __savePoint.handle('tab', 'inject'));
+    await wait(1500);
+    const empty = await ev(() => ({ key: __savePoint.ui.injNeedKey ?? null, n: __savePoint.ui.injNeed, p: __savePoint.ui.injNeedPoints, tab: __savePoint.ui.tab, mem: !!__savePoint.state()?.mem?.scenes?.length }));
+    ok(r && empty.tab === 'inject' && !empty.mem && empty.key === null && empty.n === undefined && empty.p === undefined, `5. 기억 없는 방으로 옮기면 이전 방 계산이 멈춤 (${JSON.stringify({ r, ...empty, key: empty.key && 'old' })})`);
     await browser.close(); srv.close();
     console.log(failures ? failures + ' FAILED' : 'ALL PASS'); process.exit(failures ? 1 : 0);
 })();

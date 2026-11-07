@@ -1066,5 +1066,7 @@ details.sp-st-alert[open] > summary { margin-bottom: 6px; }
 .sp-power.sp-on .sp-power-led { background: var(--sp-ok); }
 .sp-power .sp-btn.sp-power-btn { flex: 0 0 auto; min-width: 84px; height: 32px; padding: 0 12px; font-family: var(--sp-head); font-weight: 800; font-size: 14px; letter-spacing: .12em;
     border: 2px solid var(--sp-border); border-radius: calc(var(--sp-radius) + 4px); box-shadow: none; transform: none; }
+/* v0.6.79: a skin's hover glow (neon) does not reach it either. */
+.sp-power .sp-btn.sp-power-btn:hover { box-shadow: none; }
 .sp-power.sp-on .sp-btn.sp-power-btn { background: var(--sp-accent); color: var(--sp-accent-fg); }
 .sp-power.sp-off .sp-btn.sp-power-btn { background: var(--sp-panel); color: var(--sp-dim); border-color: var(--sp-line); }
