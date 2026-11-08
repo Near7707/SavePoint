@@ -487,6 +487,11 @@ export function branchState(st, addr) {
 
 // ───────── writing a memory file for a room ─────────
 
+// v0.6.82: "this very link", the one rule for a tag that is there already, both when the plan is made and
+// right before the tag would be written: linked, to this memory, with this integrity and this old copy (the
+// next opening of the room checks the copy too: decideRoom row 2). Anything else is held ('tagChanged').
+export const sameLink = (tag, { id, integrity = null, copy = null }) => !!tag && tag.state === 'linked' && tag.mem === id
+    && (tag.integrity ?? null) === (integrity ?? null) && (tag.copy ?? null) === (copy ?? null);
 // What is left to do to put a memory file in place for a room (moved from the chat, a branch or a new room),
 // for a first try and for a retry after a stop at any step. Never rewrites a memory file that exists:
 //  - it exists and came from the same place → the rest only (its rev may be newer; it is left alone)
@@ -531,7 +536,7 @@ export function writePlan({ id, from, addr, integrity = null, copy = null, mem, 
     if (r.hint && !(r.hint.kind === OK && r.hint.data.rooms.includes(addr))) steps.push('writeCopy');
     if (r.clue && !(r.clue.kind === OK && r.clue.data.rooms.some(x => x.addr === addr && x.mem === id))) steps.push('writeClue');
     if (r.tag.kind === MISSING) steps.push(...move ? ['recheckStart'] : [], 'writeTag');
-    else if (r.tag.data.state !== 'linked' || r.tag.data.mem !== id) return { stop: 'tagDiff' };
+    else if (!sameLink(r.tag.data, { id, integrity, copy })) return { hold: 'tagChanged' };
     return { steps };
 }
 
@@ -651,11 +656,12 @@ export async function placeMemory(io, { id, from, addr, integrity = null, copy =
         } else if (step === 'writeTag') {
             // v0.6.78: the tag read again right before it is written. Another device may have written it since
             // the plan (linked this name elsewhere, or marked it renamed away): never written over. None yet →
-            // written; already this very link (same memory, same integrity) → kept as it is; anything else → hold; unreadable → stop.
+            // written; already this very link (sameLink, v0.6.82: the old copy too, as when the plan was made) → kept
+            // as it is; anything else → hold; unreadable → stop.
             const t = checked(await rd(tagName(addr)), validTag(addr));
             if (bad(t)) return { stop: 'read', step };
             if (t.kind === OK) {
-                if (t.data.state === 'linked' && t.data.mem === id && (t.data.integrity ?? null) === (integrity ?? null)) continue;
+                if (sameLink(t.data, { id, integrity, copy })) continue;
                 return { hold: 'tagChanged', step };
             }
             if (!await wr(tagName(addr), tagBody({ addr, integrity, mem: id, copy, prints: pickPrints(body.state.hashes) }))) return { stop: 'write', step };

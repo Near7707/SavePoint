@@ -8,7 +8,7 @@ import {
     classifyRead, readUserFile, checked, validMem, validTag, memBody, tagBody, renamedTag, clueBody, clueWith, movedBody,
     pickPrints, firstDiff, printCheck, decideRoom, branchRestore, branchState, writePlan, canWrite, nextMem, wroteMine, maybeOverwritten,
     MISSING, BROKEN, ERROR, OK, startName, copyName, startBody, copyHintBody, validState, homeOk, checkStart, checkMem, placeMemory,
-    relinkMemory,
+    relinkMemory, sameLink,
 } from '../home.js';
 import { emptyMem, pushHistory } from '../core.js';
 
@@ -510,8 +510,9 @@ test('moving the old copy out: first try, a stop after each step, and what is ne
     assert.deepEqual(writePlan({ ...base, ...none, mem: ok(body), moved: ok(movedBody({ addr: A, copy: 'c1', mem: 'other' })) }), { stop: 'movedDiff' });
     // The old copy changed since the move started (an older SavePoint wrote it again) → hold.
     assert.deepEqual(writePlan({ ...base, ...none, copy: 'c2', from: { ...from, copy: 'c2' }, id: migrateId(A, 'c2'), start: started }), { hold: 'copyChanged' });
-    // A tag to another memory is never overwritten.
-    assert.deepEqual(writePlan({ ...base, ...none, mem: ok(body), tag: ok(tagBody({ addr: A, mem: 'other' })) }), { stop: 'tagDiff' });
+    // A tag to another memory is never overwritten. v0.6.82 (was: stop 'tagDiff'): held, the same rule as
+    // right before the tag is written (sameLink).
+    assert.deepEqual(writePlan({ ...base, ...none, mem: ok(body), tag: ok(tagBody({ addr: A, mem: 'other' })) }), { hold: 'tagChanged' });
     // The body is for this address but another integrity → stop.
     assert.deepEqual(writePlan({ ...base, ...none, mem: ok(memFile(id, { from, integrity: 'i-B' })) }), { stop: 'homeDiff' });
     // No integrity: no hint by integrity.
@@ -1243,4 +1244,46 @@ test('v0.6.78: the tag is read again right before it is written: none → writte
         assert.deepEqual([r.hold, r.step], ['tagChanged', 'writeTag']);
         assert.equal(f.get(tagName(A)).state, 'renamed');
     }
+});
+
+test('v0.6.82: one rule for a tag that is there already (sameLink), when the plan is made and right before the tag', async () => {
+    // ① A tag to this memory id with another integrity is there before the plan → held, the tag stays.
+    {
+        const f = folder();
+        const id = homeId(A, 'i-A');
+        const theirs = tagBody({ addr: A, integrity: 'i-OTHER', mem: id, at: 1 });
+        await f.io('B').write(tagName(A), theirs);
+        const r = await placeMemory(f.io('A'), { id, from: { kind: 'new', addr: A, integrity: 'i-A' }, addr: A, integrity: 'i-A', state: recorded(P80, 19), wid: 'wa' });
+        assert.equal(r.hold, 'tagChanged');
+        assert.deepEqual(f.get(tagName(A)), theirs);
+    }
+    // ② Right before the tag another device writes this memory id and integrity with another old copy →
+    //    held (it used to be taken as done, and the room then held 'copyChanged' when it opened next).
+    {
+        const f = hooked();
+        const cid = migrateId(A, 'c1');
+        const theirs = tagBody({ addr: A, integrity: 'i-A', mem: cid, copy: 'c-other', at: 1 });
+        f.after('A', clueName('i-A'), async () => { await f.io('B').write(tagName(A), theirs); });
+        const r = await placeMemory(f.io('A'), moveOf(A, 'c1', 'wa', 'i-A'));
+        assert.deepEqual([r.hold, r.step], ['tagChanged', 'writeTag']);
+        assert.deepEqual(f.get(tagName(A)), theirs);
+    }
+    // ③ The very link with the same old copy, there before the plan or written right before the tag → done,
+    //    this device never writes the tag; the room then opens linked.
+    for (const when of ['plan', 'tag']) {
+        const f = hooked();
+        const cid = migrateId(A, 'c1');
+        const theirs = tagBody({ addr: A, integrity: 'i-A', mem: cid, copy: 'c1', at: 1 });
+        if (when === 'plan') await f.io('B').write(tagName(A), theirs);
+        else f.after('A', clueName('i-A'), async () => { await f.io('B').write(tagName(A), theirs); });
+        const r = await placeMemory(f.io('A'), moveOf(A, 'c1', 'wa', 'i-A'));
+        assert.equal(r.done, true, when);
+        assert.equal(f.log.filter(e => e[0] === 'A' && e[1] === tagName(A)).length, 0, when);
+    }
+    // The rule itself: every part counts.
+    const t = tagBody({ addr: A, integrity: 'i-A', mem: 'm', copy: 'c1' });
+    assert.equal(sameLink(t, { id: 'm', integrity: 'i-A', copy: 'c1' }), true);
+    for (const x of [{ id: 'n', integrity: 'i-A', copy: 'c1' }, { id: 'm', integrity: 'i-B', copy: 'c1' }, { id: 'm', integrity: null, copy: 'c1' }, { id: 'm', integrity: 'i-A', copy: 'c2' }, { id: 'm', integrity: 'i-A', copy: null }])
+        assert.equal(sameLink(t, x), false, JSON.stringify(x));
+    assert.equal(sameLink(renamedTag(t, A2), { id: 'm', integrity: 'i-A', copy: 'c1' }), false);
 });
