@@ -96,22 +96,26 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         await page.close();
     }
     // 3–4. Continuing in a new room: the new #0 and the memory are kept when the write landed and the room was
-    //      then blocked (3); put back when the server refused it (4), except a #0 edited by hand meanwhile (4b).
-    for (const [n, how] of [[3, 'landed'], [4, 'refused'], [5, 'edited']]) {
+    //      then blocked (3); put back when the server refused it (4), except a #0 edited by hand meanwhile (4b) or
+    //      one that got anything but SavePoint's own marks meanwhile: a translation, a hide by hand (4c, v0.6.84).
+    for (const [n, how] of [[3, 'landed'], [4, 'refused'], [5, 'edited'], [6, 'marked']]) {
         const { page, ev } = await session();
         const qid = await ev(() => __savePoint.listSaves().find(x => x.quick)?.id);
         await ev(() => M.switchChat('chatNew', [{ name: 'Ari', is_user: false, is_system: false, mes: 'Hello! This is the very first greeting.', swipe_id: 0, swipes: ['Hello! This is the very first greeting.'], extra: {} }], {}));
         await page.waitForTimeout(600);
         if (how === 'landed') await landThen(ev, 'chatNew', 'other');
         else if (how === 'refused') await ev(() => { M.failOnce = true; });
-        else await ev(() => { M.metaDelay = 400; M.failOnce = true; let n = 0;
+        else if (how === 'edited') await ev(() => { M.metaDelay = 400; M.failOnce = true; let n = 0;
             M.beforeChatSave = async () => { if (++n === 1) setTimeout(() => { M.noStSave = true; M.chat[0].mes = 'Edited by hand.'; M.chat[0].swipes = [M.chat[0].mes]; }, 100); }; });
+        else await ev(() => { M.metaDelay = 400; M.failOnce = true; let n = 0;
+            M.beforeChatSave = async () => { if (++n === 1) setTimeout(() => { M.noStSave = true; M.chat[0].extra.display_text = 'Translated.'; M.chat[0].is_system = true; }, 100); }; });
         await ev(async id => { M.confirm = 1; await __savePoint.handle('load', id); }, qid);
         await page.waitForTimeout(1500);
-        const r = await ev(() => ({ page0: M.chat[0].mes, file0: M.serverFiles.chatNew[1].mes, mem: !!__savePoint.state()?.mem?.scenes?.length }));
+        const r = await ev(() => ({ page0: M.chat[0].mes, file0: M.serverFiles.chatNew[1].mes, mem: !!__savePoint.state()?.mem?.scenes?.length, tr: M.chat[0].extra?.display_text ?? null, sys: M.chat[0].is_system === true }));
         if (how === 'landed') ok(r.page0 === r.file0 && r.page0 !== 'Hello! This is the very first greeting.' && r.mem, `3. 이어하기가 들어간 뒤 방 막힘: 화면 첫 메시지·기억 = 파일 (${r.page0.slice(0, 20)})`);
         else if (how === 'refused') ok(r.page0 === 'Hello! This is the very first greeting.' && r.file0 === r.page0 && !r.mem, `4. 이어하기 거절: 첫 메시지·기억 되돌림 (${r.page0.slice(0, 20)})`);
-        else ok(r.page0 === 'Edited by hand.' && !r.mem, `4b. 이어하기 거절, 그사이 손으로 고친 첫 메시지는 그대로 (${r.page0.slice(0, 20)})`);
+        else if (how === 'edited') ok(r.page0 === 'Edited by hand.' && !r.mem, `4b. 이어하기 거절, 그사이 손으로 고친 첫 메시지는 그대로 (${r.page0.slice(0, 20)})`);
+        else ok(r.page0 !== 'Hello! This is the very first greeting.' && r.tr === 'Translated.' && r.sys && !r.mem, `4c. 이어하기 거절, 그사이 번역·직접 숨김이 붙은 새 첫 메시지는 그대로 (${JSON.stringify({ tr: r.tr, sys: r.sys })})`);
         await page.close();
     }
     // 5. Hide off: a memory edit waits for its write; meanwhile #8 is hidden by hand and #9 gets a translation

@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.83';
+const VERSION = '0.6.84';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -2804,11 +2804,20 @@ function carryGap(reply) {
 // gets a new message; a greeting-only room has its greeting replaced, including everything that
 // belonged to the greeting's text (alternative greetings, their swipe info, images, translations).
 // Returns a function that puts the room back exactly as it was if that save fails.
-// v0.6.81: only while the new #0 is still as it was put in (its text and swipes): one edited meanwhile stays.
+// v0.6.81: only while the new #0 is still as it was put in: one edited meanwhile stays.
+// v0.6.84: "as put in" is the whole message but SavePoint's own marks (its hide flag and extra keys, on the
+// message and its swipes): a translation or a hide made by hand meanwhile keeps it too, like an edit.
 function putCarried(reply) {
     const list = chat();
     const fresh = () => ({ send_date: Date.now(), extra: {} });
-    const asPut = m => JSON.stringify([m.mes, m.swipes, m.swipe_id]);
+    const own = [HIDE_KEY, VISIBLE_KEY, HELD_KEY, KEEP_KEY];
+    const bare = x => { if (!x || typeof x !== 'object' || Array.isArray(x)) return x; const e = { ...x }; for (const k of own) delete e[k]; return e; };
+    const asPut = m => {
+        const c = { ...m, extra: bare(m.extra), swipe_info: Array.isArray(m.swipe_info) ? m.swipe_info.map(x => x && typeof x === 'object' ? { ...x, extra: bare(x.extra) } : x) : m.swipe_info };
+        delete c.is_system;
+        // Hidden without SavePoint's mark: hidden by hand.
+        return JSON.stringify([c, !!m.is_system && !m.extra?.[HIDE_KEY]]);
+    };
     if (!list.length) {
         const msg = { name: reply.name || charInfo()?.name || '', is_user: false, is_system: false, send_date: Date.now(), mes: reply.text, extra: {}, swipe_id: 0, swipes: [reply.text], swipe_info: [fresh()] };
         list.push(msg);
