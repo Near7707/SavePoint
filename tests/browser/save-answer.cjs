@@ -30,8 +30,10 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
 // 1. The copy this page sent counts as its own only when the file is exactly that copy: a file that lost a
 //    message since (deleted on another device) is not resent over (the deleted message is not brought back).
 // 2–3. A request that got no answer (the connection dropped) may be in the file or still on its way: never
-//    taken back. Found in the file → done; the file still as it was → unconfirmed (never "did not go in"),
-//    and confirmed once it lands. 4. A refused request (the server answered with an error) is still taken back.
+//    taken back. Found in the file → kept; the file still as it was → unconfirmed (never "did not go in").
+//    v0.6.83 (was: done / confirmed once it lands, then the next change saved): either way the room is
+//    paused — no more SavePoint writes until it is opened again (the request may still land later).
+//    4. A refused request (the server answered with an error) is still taken back.
 // 5–6. A room without a SavePoint memory (no receipt) is confirmed by the messages and marks written.
 (async () => {
     const srv = await serve();
@@ -91,7 +93,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         await noAnswer(ev, 0);
         const msg = await ev(() => __savePoint.transact(() => { __savePoint.state().probe = 'two'; }).then(() => 'ok', e => `${e.name}: ${e.message}`));
         const r = await ev(() => ({ page: __savePoint.state().probe ?? null, file: M.serverFiles.chatA[0].chat_metadata.savePoint.probe ?? null, blocked: __savePoint.autoBlocked() }));
-        ok(msg === 'ok' && r.page === 'two' && r.file === 'two', `2. 응답만 끊김: 파일에서 찾아 성공 (${msg.slice(0, 40)}, ${JSON.stringify(r)})`);
+        ok(/저장했어요/.test(msg) && r.page === 'two' && r.file === 'two' && r.blocked === 'room', `2. 응답만 끊김: 파일에서 찾아 화면 유지, 방은 멈춤 (${msg.slice(0, 40)}, ${JSON.stringify(r)})`);
         await page.close();
     }
     // 3. The request is still on its way when the file is read (it lands 4 s later) → kept on the page,
@@ -105,9 +107,10 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         await page.waitForTimeout(3500);
         ok(!/들어가지 않았어요/.test(await toasts(ev)), '3. 파일이 아직 그대로여도 "들어가지 않았어요"라고 하지 않음');
         await page.waitForTimeout(1000);
+        const sends = await ev(() => M.saveBodies.length);
         const msg2 = await ev(() => __savePoint.transact(() => { __savePoint.state().probe2 = 'after'; }).then(() => 'ok', e => `${e.name}: ${e.message}`));
-        r = await ev(() => ({ file: M.serverFiles.chatA[0].chat_metadata.savePoint.probe ?? null, file2: M.serverFiles.chatA[0].chat_metadata.savePoint.probe2 ?? null, blocked: __savePoint.autoBlocked() }));
-        ok(msg2 === 'ok' && r.file === 'three' && r.file2 === 'after', `3. 늦게 들어간 뒤 확인하고 다음 변경 저장 (${msg2.slice(0, 40)}, ${JSON.stringify(r)})`);
+        r = await ev(() => ({ file: M.serverFiles.chatA[0].chat_metadata.savePoint.probe ?? null, file2: M.serverFiles.chatA[0].chat_metadata.savePoint.probe2 ?? null, page2: __savePoint.state().probe2 ?? null }));
+        ok(/RoomBlocked/.test(msg2) && r.file === 'three' && r.file2 === null && r.page2 === null && await ev(() => M.saveBodies.length) === sends, `3. 늦게 들어간 뒤에도 다음 변경은 보내지 않음 (${msg2.slice(0, 40)}, ${JSON.stringify(r)})`);
         await page.close();
     }
     // 4. The server answers with an error → the change is taken back, as before.
@@ -141,7 +144,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         await noAnswer(ev, 0);
         const msg = await ev(() => __savePoint.toggleKeep(3).then(() => 'ok', e => `${e.name}: ${e.message}`));
         const r = await ev(() => ({ page: !!M.chat[3].extra?.savepointKeep, file: !!M.serverFiles.chatA[4].extra?.savepointKeep, blocked: __savePoint.autoBlocked() }));
-        ok(msg === 'ok' && r.page && r.file && r.blocked !== 'unsure', `6. 기억 없는 방, 응답만 끊김: 보낸 표시로 성공 (${msg.slice(0, 40)}, ${JSON.stringify(r)})`);
+        ok(/저장했어요/.test(msg) && r.page && r.file && r.blocked === 'room', `6. 기억 없는 방, 응답만 끊김: 보낸 표시로 확인, 화면 유지, 방은 멈춤 (${msg.slice(0, 40)}, ${JSON.stringify(r)})`);
         await page.close();
     }
 

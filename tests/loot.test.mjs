@@ -26,6 +26,8 @@ function harness({ messages = ['A participant kept a token.'], recorded = false 
     const app = new Function(...names, 'SillyTavern', 'jQuery', 'toastr', 'checks', 'console', source + `
         gateOpen = () => hasChat(); roomReady = async () => hasChat(); readServerChat = async () => ({ ok: true, snap: pageSnap(), count: chat().length, first: chat()[0], rev: state()?.rev ?? null });
         setHidden = () => {}; render = () => {}; autosave = () => {}; quickSave = async () => null; persistSoon = () => {}; saveChatSoon = () => {}; writeChatFile = () => ctx().saveMetadata();
+        // v0.6.83: no chat file here (the read above is the page itself): a failed write is taken back, as before.
+        settleWrite = async e => (e?.landed ? e : 'revert');
         queueCheck = (st, before) => checks.push(checkScope(before, st.mem));
         return { ensureState, state, settings, addLoot, summarize, autoCollect, fingerprint, roomKey, ui, handle, journalHtml, queueHtml,
             supplementLoot, newRun, endRun, checkStatements, reportText, installLootBar, openLootDialog, reconcile, saveRecord,

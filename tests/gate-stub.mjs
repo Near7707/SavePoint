@@ -14,6 +14,8 @@ export function gateBox() {
         Stale: class extends Error {}, proofOf: () => null, canon: JSON.stringify, newId: () => 'wid',
         quickSaveChecked: async () => null,
         // v0.6.76: SillyTavern's write in progress (none here); a failure once a write may have landed.
-        stIdle: async () => false, settleLanded: async e => e,
+        // v0.6.83: every failed write is settled by reading the file; here, as before: one that may have landed
+        // stays (its error), any other is taken back.
+        stIdle: async () => false, settleWrite: async e => (e?.landed ? e : 'revert'),
     };
 }

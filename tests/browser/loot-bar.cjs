@@ -190,7 +190,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(async () => { M.failMeta = true; try { await __savePoint.summarize(); } catch {} });
     await sleep(300);
     r = await ev(() => { M.failMeta = false; const q = __savePoint.state().lootQueue || []; const x = q.find(i => i.text === 'The ferry horn sounded'); return { err: x?.error || '', fails: x?.fails || 0 }; });
-    ok(r.err.includes('disk full') && r.fails === 1, `11. 파일 저장 실패에도 항목별 이유와 횟수가 남음 (${r.err} · ${r.fails})`);
+    ok(r.err.includes('500') && r.fails === 1, `11. 파일 저장 실패에도 항목별 이유와 횟수가 남음 (${r.err} · ${r.fails})`);
     // 12. the same for ↻: a failed file write updates that item's reason and count
     await ev(async () => { M.failMeta = false; await __savePoint.handle('tab', 'queue'); });
     r = await ev(() => { const x = (__savePoint.state().lootQueue || []).find(i => i.error && i.msg <= __savePoint.state().lastIndex && document.querySelector(`[data-act=loot-retry][data-id="${i.id}"]`)); return x ? { id: x.id, fails: x.fails || 0 } : null; });
@@ -199,7 +199,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         await page.click(`[data-act=loot-retry][data-id="${r.id}"]`);
         await sleep(600);
         const after = await ev(id => { M.failMeta = false; M.supplementLinks = false; const x = __savePoint.state().lootQueue.find(i => i.id === id); return x ? { err: x.error, fails: x.fails } : null; }, r.id);
-        ok(after && after.err.includes('disk full') && after.fails === r.fails + 1, `12. ↻ 중 파일 저장 실패도 이유·횟수 갱신, 항목 보존 (${after?.fails})`);
+        ok(after && after.err.includes('500') && after.fails === r.fails + 1, `12. ↻ 중 파일 저장 실패도 이유·횟수 갱신, 항목 보존 (${after?.fails})`);
     } else ok(false, '12. ↻ 버튼이 있는 실패 항목을 찾지 못함');
     // 13. a re-translated on-screen text is only a warning: ↻ stays available
     r = await ev(() => {

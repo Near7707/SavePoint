@@ -137,7 +137,10 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await page.waitForTimeout(300);
     await ev(() => { M.add(10); });
     const quickBefore = await ev(() => JSON.stringify(__savePoint.listSaves().filter(x => x.quick).map(x => [x.id, x.updated])));
-    await ev(() => { M.swallowMeta = true; toastr.log.length = 0; });
+    // v0.6.83: only the run's own write is swallowed. SillyTavern answers success only after writing, and a copy
+    // answered with success is taken as the file (the base for deletions); the status save that follows the
+    // failure is written normally (before, it was swallowed too and later took that copy for the file).
+    await ev(() => { M.swallowMeta = true; M.swallowed = 0; M.beforeChatSave = async () => { if (M.swallowed >= 1) { M.swallowMeta = false; M.beforeChatSave = null; } }; toastr.log.length = 0; });
     await ev(() => __savePoint.handle('run'));
     await page.waitForTimeout(1500);
     r = await ev(() => ({ last: __savePoint.state()?.lastIndex ?? -1, t: toastr.log.map(x => x[1]).join(' | '), quick: JSON.stringify(__savePoint.listSaves().filter(x => x.quick).map(x => [x.id, x.updated])) }));

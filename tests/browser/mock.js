@@ -122,7 +122,8 @@ window.SillyTavern = {
         // then save the room open by then (its name, messages and metadata).
         async saveMetadata() { return M.stLateSave(); },
         async saveChat() { return M.stLateSave(); },
-        getRequestHeaders: () => ({ 'Content-Type': 'application/json', 'X-CSRF-Token': 'test' }),
+        // v0.6.83: M.headerThrowNth — the n-th call (from now) throws, as a request that cannot be made ready.
+        getRequestHeaders: () => { if (M.headerThrowNth && !--M.headerThrowNth) throw new Error('no token'); return { 'Content-Type': 'application/json', 'X-CSRF-Token': 'test' }; },
         setExtensionPrompt(k, v, p, d, s, r) { if (M.promptThrow > 0) { M.promptThrow--; throw new Error('prompt update failed'); } M.prompts[k] = { v, p, d, r }; },
         eventSource, event_types,
         get ConnectionManagerRequestService() { return M.cm; },
@@ -141,14 +142,16 @@ const copy = v => JSON.parse(JSON.stringify(v));
 // M.silentSaveFail (answers ok, file unchanged), M.readFailAfterSave / M.readFailAfterNth (reads fail after).
 // Like the server: metadata with `integrity` is checked against the file's (refused when they differ); without
 // one the check is skipped and the file is overwritten.
+const ST_500 = 'An error has occurred, see the console logs for more information.';
 M.serverSave = async (name, data, { st = false } = {}) => {
     if (st) M.stSaves++; else { M.spSaves++; M.chatSaves++; } M.inSave = (M.inSave || 0) + 1; if (M.inSave > 1) M.overlap = (M.overlap || 0) + 1;
     try {
         if (M.beforeChatSave) await M.beforeChatSave(name, data);
         if (M.metaDelay) await new Promise(r => setTimeout(r, M.metaDelay));
-        if (M.failMeta) return { status: 500, error: 'disk full' };
-        if (M.failOnce) { M.failOnce = false; return { status: 500, error: 'disk full once' }; }
-        if (M.failNth) { M.failNth--; if (!M.failNth) return { status: 500, error: 'disk full nth' }; }
+        // v0.6.83: a failed write answers as SillyTavern's save handler does (its catch-all 500 sentence).
+        if (M.failMeta) return { status: 500, error: ST_500 };
+        if (M.failOnce) { M.failOnce = false; return { status: 500, error: ST_500 }; }
+        if (M.failNth) { M.failNth--; if (!M.failNth) return { status: 500, error: ST_500 }; }
         if (M.swallowMeta) { M.swallowed = (M.swallowed || 0) + 1; if (M.readFailAfterSave) M.serverError = true; return { status: 200 }; }
         const sent = data[0]?.chat_metadata?.integrity, had = Array.isArray(M.serverFiles[name]) ? M.serverFiles[name][0]?.chat_metadata?.integrity : undefined;
         if (sent && had && sent !== had) { M.integrityRefused = (M.integrityRefused || 0) + 1; return { status: 400, error: 'integrity' }; }
