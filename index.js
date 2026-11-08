@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.85';
+const VERSION = '0.6.86';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -2631,16 +2631,15 @@ async function migrateLocal() {
 }
 let autosaveTimer = null;
 function autosave(st) {
-    if (!st || !hasMemory(st.mem) || roomKey() !== st.roomKey || gate.unsure) return;
+    if (!st || !hasMemory(st.mem) || roomKey() !== st.roomKey || gate.unsure || (gateHere() && gate.pending)) return;
     clearTimeout(autosaveTimer);
     const key = st.roomKey;
-    // Bursts (several edits in a row) become one autosave.
-    autosaveTimer = setTimeout(() => {
-        const cur = state();
-        if (!cur || cur.roomKey !== key || roomKey() !== key || !hasMemory(cur.mem) || gate.unsure) return;
-        const rh = roomHash(key);
-        storeSave(saveRecord(cur, `오토세이브 · ${charInfo()?.name || ''}`, `auto_${rh}_${Date.now().toString(36)}`, true));
-    }, 1200);
+    // v0.6.86: the slot is made now, when the write it follows is confirmed (the memory and the last reply as they
+    // are in the file). The timer stores that one as it is: a later change still waiting for its answer (or one
+    // taken back) is never backed up, and the confirmed one is kept even when a later write is in doubt.
+    const record = saveRecord(st, `오토세이브 · ${charInfo()?.name || ''}`, `auto_${roomHash(key)}_${Date.now().toString(36)}`, true);
+    // Bursts (several edits in a row) become one autosave: the last confirmed one.
+    autosaveTimer = setTimeout(() => { storeSave(record); }, 1200);
 }
 // 📦 Items the user boxed that the story used again (box mode "notify"). Each return is announced
 // once, after the save that recorded it; the notice stays on the card and in the status line.
@@ -2818,9 +2817,14 @@ async function loadSave(id) {
         // v0.6.81: a write that may be in the file (kept: it landed, then the room was blocked) is not taken
         // back: the page stays as the file has it (the new #0 and the memory), with the room's warning.
         if (e?.kept) { if (insert && here()) await showCarried(); reportError(e); return; }
-        if (undoMessage) { undoMessage(); undoTainted(); if (here()) { syncHide(); refreshInjection(); await showCarried(); render(); } }
-        if (insert && !(e instanceof RoomBlocked)) toastr.error(`채팅 파일에 저장되지 않아서 이어하기를 되돌렸어요. 첫 메시지와 기억은 불러오기 전 그대로예요. 잠시 뒤 다시 시도해 주세요. (${errorText(e)})`, 'SavePoint', { timeOut: 12000 });
-        else reportError(e);
+        // v0.6.86: the edited-chat mark goes back only with the first message. A #0 kept because it changed meanwhile
+        // keeps the mark too (without it SillyTavern may put the card's greeting over a one-message room).
+        let back = true;
+        if (undoMessage) { back = undoMessage() !== false; if (back) undoTainted(); if (here()) { syncHide(); refreshInjection(); await showCarried(); render(); } }
+        const keptNote = '첫 메시지는 그사이 바뀐 내용(번역·편집·숨김 등)이 있어서 지금 화면 그대로 두었어요.';
+        if (insert && !(e instanceof RoomBlocked)) toastr.error(back ? `채팅 파일에 저장되지 않아서 이어하기를 되돌렸어요. 첫 메시지와 기억은 불러오기 전 그대로예요. 잠시 뒤 다시 시도해 주세요. (${errorText(e)})`
+            : `채팅 파일에 저장되지 않아서 이어하기를 되돌렸어요. 기억은 불러오기 전 그대로예요. ${keptNote} 잠시 뒤 다시 시도해 주세요. (${errorText(e)})`, 'SavePoint', { timeOut: 12000 });
+        else { reportError(e); if (insert && !back) toastr.info(`이어하기를 되돌렸어요. 기억은 불러오기 전 그대로예요. ${keptNote}`, 'SavePoint', { timeOut: 12000 }); }
         return;
     }
     if (insert && here()) await showCarried();
@@ -2885,7 +2889,8 @@ function putCarried(reply) {
         list.push(msg);
         const put = asPut(msg);
         // v0.6.59: SillyTavern keeps the same message list for the next room; only this message is taken out.
-        return () => { const i = list.indexOf(msg); if (i >= 0 && asPut(msg) === put) list.splice(i, 1); };
+        // v0.6.86: true when the room was put back (false: the message changed meanwhile and stays).
+        return () => { const i = list.indexOf(msg); if (i < 0 || asPut(msg) !== put) return false; list.splice(i, 1); return true; };
     }
     const m = list[0], before = clone(m);
     m.mes = reply.text; m.swipes = [reply.text]; m.swipe_id = 0; m.swipe_info = [fresh()];
@@ -2893,14 +2898,17 @@ function putCarried(reply) {
     const keep = Object.fromEntries([HIDE_KEY, VISIBLE_KEY, HELD_KEY, KEEP_KEY].filter(k => m.extra && Object.hasOwn(m.extra, k)).map(k => [k, m.extra[k]]));
     m.extra = keep;
     const put = asPut(m);
-    return () => { if (asPut(m) !== put) return; for (const k of Object.keys(m)) delete m[k]; Object.assign(m, before); };
+    return () => { if (asPut(m) !== put) return false; for (const k of Object.keys(m)) delete m[k]; Object.assign(m, before); return true; };
 }
-// Show the new #0 after the memory is in place: redraw that message when SillyTavern offers it,
-// otherwise reload the chat view (which reads the saved chat and metadata back).
+// Show the new #0 after the memory is in place: redraw that message when SillyTavern offers it.
+// v0.6.86: only the screen is drawn: the drawn #0 again (updateMessageBlock), or a new one on an empty chat view
+// (addOneMessage). The chat is never reloaded from the file here: that is opening the room again, which reads a
+// file a write with no answer may still overwrite and lets SavePoint write again (gate.pending).
 async function showCarried() {
-    const c = ctx();
-    if (typeof c.updateMessageBlock === 'function' && typeof document !== 'undefined' && document.querySelector('#chat .mes[mesid="0"]')) c.updateMessageBlock(0, chat()[0]);
-    else await Promise.resolve(c.reloadCurrentChat?.()).catch(() => {});
+    const c = ctx(), m = chat()[0], doc = typeof document !== 'undefined' ? document : null;
+    if (!m || !doc) return;
+    if (typeof c.updateMessageBlock === 'function' && doc.querySelector('#chat .mes[mesid="0"]')) c.updateMessageBlock(0, m);
+    else if (typeof c.addOneMessage === 'function' && !doc.querySelector('#chat .mes')) c.addOneMessage(m);
 }
 async function renameSave(id) {
     const save = findSave(id);

@@ -128,6 +128,11 @@ window.SillyTavern = {
         eventSource, event_types,
         get ConnectionManagerRequestService() { return M.cm; },
         async generateRaw({ prompt }) { M.calls.push(prompt); if (M.throwNext) { const e = M.throwNext; M.throwNext = null; throw e; } if (M.badJson && !prompt.startsWith('You are checking')) return 'Sure! Here is the summary: {not json'; if (M.delay) await new Promise(r => setTimeout(r, M.delay)); if (M.delayOnce) { const d = M.delayOnce; M.delayOnce = 0; await new Promise(r => setTimeout(r, d)); M.lateDone = (M.lateDone || 0) + 1; } return fake(prompt); },
+        // v0.6.86: drawing messages (SillyTavern's addOneMessage / updateMessageBlock: the screen only, no event, no save)
+        // and reloading the chat from the server file (reloadCurrentChat: opens the room again; counted, M.reloads).
+        addOneMessage(m) { const i = M.chat.indexOf(m); M.draws = (M.draws || 0) + 1; drawMes(i >= 0 ? i : M.chat.length - 1, m); },
+        updateMessageBlock(i, m) { M.redraws = (M.redraws || 0) + 1; drawMes(i, m); },
+        async reloadCurrentChat() { M.reloads = (M.reloads || 0) + 1; await M.openFile(M.chatId); },
         callGenericPopup: async (text, type) => { (M.popups ||= []).push(String(text)); if (M.onPopup) await M.onPopup(String(text), type); return type === 3 ? M.popupInput : M.confirm; },
         POPUP_TYPE: { TEXT: 1, CONFIRM: 2, INPUT: 3 },
     }),
@@ -136,6 +141,15 @@ window.SillyTavern = {
 M.characters = [{ avatar: 'ari.png', name: 'Ari', description: 'Ari is a courier with green hair.', first_mes: 'Hello! This is the very first greeting.',
     data: { alternate_greetings: ['Another greeting.', 'Fresh greeting for the failing room.', 'A brand new greeting.'] } }];
 const copy = v => JSON.parse(JSON.stringify(v));
+// v0.6.86: the chat view (#chat .mes[mesid]); opening a room empties it, as SillyTavern's clearChat does.
+function drawMes(i, m) {
+    const box = document.querySelector('#chat');
+    if (!box) return;
+    let el = box.querySelector(`.mes[mesid="${i}"]`);
+    if (!el) { el = document.createElement('div'); el.className = 'mes'; el.setAttribute('mesid', String(i)); box.append(el); }
+    el.dataset.text = String(m?.mes ?? '');
+}
+const clearDrawn = () => document.querySelectorAll('#chat .mes').forEach(el => el.remove());
 // v0.6.72: one chat file write as the server does it (both /api/chats/save and SillyTavern's own path for
 // older code). The knobs: M.metaDelay (ms before it lands), M.failMeta / M.failOnce / M.failNth (500),
 // M.swallowMeta (answers ok, keeps nothing: like SillyTavern showing "could not be saved" and returning),
@@ -171,7 +185,7 @@ M.stLateSave = async () => {
 // changes, the metadata becomes {} and the file is read later (M.openDelay ms). An empty file gets the
 // card's greeting, which SillyTavern saves (saveChatConditional) before telling extensions (CHAT_CHANGED).
 M.stOpen = async (id, { greeting = 'Hello there' } = {}) => {
-    M.chat.splice(0); M.chatId = id; M.meta = {};
+    clearDrawn(); M.chat.splice(0); M.chatId = id; M.meta = {};
     await new Promise(r => setTimeout(r, M.openDelay ?? 400));
     const f = Array.isArray(M.serverFiles[id]) ? copy(M.serverFiles[id]) : [];
     const head = f[0] && 'chat_metadata' in f[0] ? f.shift().chat_metadata : {};
@@ -222,8 +236,8 @@ const opened = (meta, id) => {
     meta.integrity = f || uuid();
     return meta;
 };
-M.switchSame = async (id, list, meta) => { opened(meta, id); M.chatId = id; M.chat.splice(0, M.chat.length, ...list); M.meta = meta; if (!Object.hasOwn(M.serverFiles, id)) M.serverFiles[id] = copy([{ chat_metadata: meta }, ...list]); await eventSource.emit('chat_id_changed'); };
-M.switchChat = async (id, chatArr, meta) => { opened(meta, id); M.chatId = id; M.chat = chatArr; M.meta = meta; if (!Object.hasOwn(M.serverFiles, id)) M.serverFiles[id] = copy([{ chat_metadata: meta }, ...chatArr]); await eventSource.emit('chat_id_changed'); };
+M.switchSame = async (id, list, meta) => { clearDrawn(); opened(meta, id); M.chatId = id; M.chat.splice(0, M.chat.length, ...list); M.meta = meta; if (!Object.hasOwn(M.serverFiles, id)) M.serverFiles[id] = copy([{ chat_metadata: meta }, ...list]); await eventSource.emit('chat_id_changed'); };
+M.switchChat = async (id, chatArr, meta) => { clearDrawn(); opened(meta, id); M.chatId = id; M.chat = chatArr; M.meta = meta; if (!Object.hasOwn(M.serverFiles, id)) M.serverFiles[id] = copy([{ chat_metadata: meta }, ...chatArr]); await eventSource.emit('chat_id_changed'); };
 
 // v0.6.64: opening a room from its server file (the way SillyTavern reloads a room), and the room tools
 // that make new chat files: rename, delete, branch (with a swipe), checkpoint, import.
