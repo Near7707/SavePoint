@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.80';
+const VERSION = '0.6.81';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -365,12 +365,11 @@ function applyEntry(entry) {
     // v0.6.77: the same in every mode. Since v0.6.74 nothing hidden is shown again by the settings (hide off,
     // SavePoint off), so a failed reset, rewind or load could not hide again what it had shown; the next
     // save then wrote that. Every change now puts the exact hide flags back when it is taken back.
-    entry.visibility = chat().map(m => ({ m, system: m.is_system,
-        hadSystem: Object.hasOwn(m, 'is_system'), hadExtra: Object.hasOwn(m, 'extra'), extra: m.extra,
-        hadHidden: !!m.extra && Object.hasOwn(m.extra, HIDE_KEY), hidden: m.extra?.[HIDE_KEY],
-        hadVisible: !!m.extra && Object.hasOwn(m.extra, VISIBLE_KEY), visible: m.extra?.[VISIBLE_KEY],
-        hadHeld: !!m.extra && Object.hasOwn(m.extra, HELD_KEY), held: m.extra?.[HELD_KEY],
-        hadKeep: !!m.extra && Object.hasOwn(m.extra, KEEP_KEY), keep: m.extra?.[KEEP_KEY] }));
+    // v0.6.81: only SavePoint's own marks (the hide flag, its four extra keys, the 🔶 mark on each swipe),
+    // before the change and right after it (`entry.after`). Taken back are only the ones this change set and
+    // nobody changed since; the rest of the message (a translation, a hide made by hand meanwhile) is left.
+    entry.visibility = chat().map(m => ({ m, hadExtra: Object.hasOwn(m, 'extra'), flags: ownFlags(m), swipes: swipeMarks(m) }));
+    entry.after = null;
     // v0.6.60: the change gets the file check made at its turn ({ snap, count, first, … }).
     if (entry.change(entry.pre) === false) return false;
     const st = state();
@@ -385,8 +384,24 @@ function applyEntry(entry) {
         st.wid = newId();
     }
     syncHide({ rehide: entry.rehide });
+    entry.after = new Map(chat().map(m => [m, { flags: ownFlags(m), swipes: swipeMarks(m) }]));
     if (roomKey() === entry.key && roomEpoch === entry.epoch) refreshView();
     return true;
+}
+// [present, value] per mark: `is_system`, then HIDE · VISIBLE · HELD · KEEP in `extra`.
+const markKeys = () => [HIDE_KEY, VISIBLE_KEY, HELD_KEY, KEEP_KEY];
+function ownFlags(m) {
+    const e = m.extra && typeof m.extra === 'object' ? m.extra : null;
+    return [[Object.hasOwn(m, 'is_system'), m.is_system], ...markKeys().map(k => [!!e && Object.hasOwn(e, k), e?.[k]])];
+}
+function swipeMarks(m) {
+    return new Map((Array.isArray(m.swipe_info) ? m.swipe_info : []).filter(x => x && typeof x === 'object')
+        .map(x => [x, [!!x.extra && typeof x.extra === 'object' && Object.hasOwn(x.extra, KEEP_KEY), x.extra?.[KEEP_KEY], Object.hasOwn(x, 'extra')]]));
+}
+const sameMark = (a, b) => a[0] === b[0] && (!a[0] || a[1] === b[1]);
+function putMark(o, k, [has, v]) {
+    if (has) { if (!o.extra || typeof o.extra !== 'object') o.extra = {}; o.extra[k] = v; }
+    else if (o.extra && typeof o.extra === 'object') delete o.extra[k];
 }
 // v0.6.62: the prompt and the window are worked out again from the memory any time; an error there is
 // reported, but does not decide whether a change happened or was saved.
@@ -395,6 +410,9 @@ function refreshView() {
     try { render(); } catch (e) { console.error('[SavePoint] render failed', e); }
 }
 // Puts the page back to the state before `entry` (memory and, for a rescan, the hide flags).
+// v0.6.81: a mark goes back only when it is still what this change left (entry.after); one changed since
+// (by hand, by another change) stays. `extra` is never replaced: other keys in it (a translation) stay.
+// A change that threw while it ran (no entry.after) is put back as it was.
 function restoreEntry(entry) {
     const meta = entry.meta;
     if (entry.prev === undefined) delete meta[MODULE]; else meta[MODULE] = entry.prev;
@@ -402,16 +420,24 @@ function restoreEntry(entry) {
     // v0.6.77: by where the message is now (one deleted meanwhile moves the ones after it).
     const where = here && entry.visibility ? new Map(chat().map((m, i) => [m, i])) : null;
     if (entry.visibility) entry.visibility.forEach(v => {
-        const at = where?.get(v.m) ?? -1;
-        if (at >= 0) setHidden(v.m, at, !!v.system);
-        if (v.hadSystem) v.m.is_system = v.system; else delete v.m.is_system;
-        if (v.hadExtra) v.m.extra = v.extra; else delete v.m.extra;
-        if (v.m.extra) {
-            if (v.hadHidden) v.m.extra[HIDE_KEY] = v.hidden; else delete v.m.extra[HIDE_KEY];
-            if (v.hadVisible) v.m.extra[VISIBLE_KEY] = v.visible; else delete v.m.extra[VISIBLE_KEY];
-            if (v.hadHeld) v.m.extra[HELD_KEY] = v.held; else delete v.m.extra[HELD_KEY];
-            if (v.hadKeep) v.m.extra[KEEP_KEY] = v.keep; else delete v.m.extra[KEEP_KEY];
+        const post = entry.after ? entry.after.get(v.m) : null;
+        if (entry.after && !post) return;              // not in the room any more when the change ended
+        const now = ownFlags(v.m), mine = i => !post || sameMark(now[i], post.flags[i]);
+        if (mine(0) && !sameMark(now[0], v.flags[0])) {
+            const at = where?.get(v.m) ?? -1;
+            if (at >= 0) setHidden(v.m, at, !!v.flags[0][1]);
+            if (v.flags[0][0]) v.m.is_system = v.flags[0][1]; else delete v.m.is_system;
         }
+        markKeys().forEach((k, j) => { if (mine(j + 1)) putMark(v.m, k, v.flags[j + 1]); });
+        for (const [x, was] of v.swipes) {
+            const left = post ? post.swipes.get(x) : was;
+            if (!left) continue;                         // that swipe was replaced by the change
+            const cur = [!!x.extra && typeof x.extra === 'object' && Object.hasOwn(x.extra, KEEP_KEY), x.extra?.[KEEP_KEY]];
+            if (post && !sameMark(cur, left)) continue;
+            putMark(x, KEEP_KEY, was);
+            if (!was[2] && x.extra && typeof x.extra === 'object' && !Object.keys(x.extra).length) delete x.extra;
+        }
+        if (!v.hadExtra && v.m.extra && typeof v.m.extra === 'object' && !Object.keys(v.m.extra).length) delete v.m.extra;
     });
     return here;
 }
@@ -2684,6 +2710,9 @@ async function loadSave(id) {
             toastr.warning(`${insert ? '이어하기' : '불러오기'}를 저장했지만 채팅 파일에 들어갔는지 확인하지 못했어요. 새로고침한 뒤 ${insert ? '첫 메시지와 ' : ''}기억이 맞는지 봐 주세요. 확인될 때까지 SavePoint는 저장하지 않아요.`, 'SavePoint', { timeOut: 15000 });
             return;
         }
+        // v0.6.81: a write that may be in the file (kept: it landed, then the room was blocked) is not taken
+        // back: the page stays as the file has it (the new #0 and the memory), with the room's warning.
+        if (e?.kept) { if (insert && here()) await showCarried(); reportError(e); return; }
         if (undoMessage) { undoMessage(); undoTainted(); if (here()) { syncHide(); refreshInjection(); await showCarried(); render(); } }
         if (insert && !(e instanceof RoomBlocked)) toastr.error(`채팅 파일에 저장되지 않아서 이어하기를 되돌렸어요. 첫 메시지와 기억은 불러오기 전 그대로예요. 잠시 뒤 다시 시도해 주세요. (${errorText(e)})`, 'SavePoint', { timeOut: 12000 });
         else reportError(e);
@@ -2732,21 +2761,25 @@ function carryGap(reply) {
 // gets a new message; a greeting-only room has its greeting replaced, including everything that
 // belonged to the greeting's text (alternative greetings, their swipe info, images, translations).
 // Returns a function that puts the room back exactly as it was if that save fails.
+// v0.6.81: only while the new #0 is still as it was put in (its text and swipes): one edited meanwhile stays.
 function putCarried(reply) {
     const list = chat();
     const fresh = () => ({ send_date: Date.now(), extra: {} });
+    const asPut = m => JSON.stringify([m.mes, m.swipes, m.swipe_id]);
     if (!list.length) {
         const msg = { name: reply.name || charInfo()?.name || '', is_user: false, is_system: false, send_date: Date.now(), mes: reply.text, extra: {}, swipe_id: 0, swipes: [reply.text], swipe_info: [fresh()] };
         list.push(msg);
+        const put = asPut(msg);
         // v0.6.59: SillyTavern keeps the same message list for the next room; only this message is taken out.
-        return () => { const i = list.indexOf(msg); if (i >= 0) list.splice(i, 1); };
+        return () => { const i = list.indexOf(msg); if (i >= 0 && asPut(msg) === put) list.splice(i, 1); };
     }
     const m = list[0], before = clone(m);
     m.mes = reply.text; m.swipes = [reply.text]; m.swipe_id = 0; m.swipe_info = [fresh()];
     // Only our own visibility marks are kept; any content-bound data of the old greeting goes.
     const keep = Object.fromEntries([HIDE_KEY, VISIBLE_KEY, HELD_KEY, KEEP_KEY].filter(k => m.extra && Object.hasOwn(m.extra, k)).map(k => [k, m.extra[k]]));
     m.extra = keep;
-    return () => { for (const k of Object.keys(m)) delete m[k]; Object.assign(m, before); };
+    const put = asPut(m);
+    return () => { if (asPut(m) !== put) return; for (const k of Object.keys(m)) delete m[k]; Object.assign(m, before); };
 }
 // Show the new #0 after the memory is in place: redraw that message when SillyTavern offers it,
 // otherwise reload the chat view (which reads the saved chat and metadata back).
@@ -2877,19 +2910,11 @@ async function toggleKeep(index) {
     const m = chat()[index];
     if (!m) return;
     const on = !kept(m);
-    const swipes = (Array.isArray(m.swipe_info) ? m.swipe_info : []).map(x => x && typeof x === 'object'
-        ? { x, hadExtra: Object.hasOwn(x, 'extra'), had: !!x.extra && Object.hasOwn(x.extra, KEEP_KEY), v: x.extra?.[KEEP_KEY] } : null);
+    // v0.6.81: the message's flags and its swipes' marks come back with the change itself (restoreEntry),
+    // and only when the write surely failed: one that may be in the file (unconfirmed, kept) stays.
     try {
         await transact(() => { setKeep(m, on); }, { undoable: false, autosave: false, snapshot: true });
-    } catch (e) {
-        // The message's own flags came back with the save's snapshot; its swipes are put back here.
-        for (const w of swipes) {
-            if (!w) continue;
-            if (!w.hadExtra) delete w.x.extra;
-            else if (w.had) w.x.extra[KEEP_KEY] = w.v; else delete w.x.extra?.[KEEP_KEY];
-        }
-        paintKeep(); throw e;
-    }
+    } catch (e) { paintKeep(); throw e; }
     paintKeep(); if (ui.open) render(true);
     toastr.info(on ? '🔶 하이드 제외: SavePoint가 이 메시지를 하이드하지 않아요. 기록은 평소처럼 해요.'
         : hideModeOf(settings()) === 'manual' ? '🔶 하이드 제외를 껐어요. 다음에 👻 하이드를 누를 때 함께 숨겨요.' : '🔶 하이드 제외를 껐어요.', 'SavePoint');
@@ -2921,18 +2946,9 @@ async function keepOffAll() {
     if (!list.length) return;
     if (!(await confirmHere(`🔶 하이드 제외 ${list.length}개를 모두 해제할까요? ${hideModeOf(settings()) === 'manual' ? '다음에 👻 하이드를 누를 때 함께 숨겨요.' : '저장된 원문은 바로 하이드돼요.'}`,
         () => chat().filter(kept).length === list.length && list.every(kept)))) return;
-    const swipes = list.flatMap(m => (Array.isArray(m.swipe_info) ? m.swipe_info : []).map(x => x && typeof x === 'object'
-        ? { x, hadExtra: Object.hasOwn(x, 'extra'), had: !!x.extra && Object.hasOwn(x.extra, KEEP_KEY), v: x.extra?.[KEEP_KEY] } : null));
     try {
         await transact(() => { for (const m of list) setKeep(m, false); }, { undoable: false, autosave: false, snapshot: true });
-    } catch (e) {
-        for (const w of swipes) {
-            if (!w) continue;
-            if (!w.hadExtra) delete w.x.extra;
-            else if (w.had) w.x.extra[KEEP_KEY] = w.v; else delete w.x.extra?.[KEEP_KEY];
-        }
-        paintKeep(); render(); throw e;
-    }
+    } catch (e) { paintKeep(); render(); throw e; }
     paintKeep(); ui.keepList = false; render(true);
     toastr.info(`🔶 하이드 제외 ${list.length}개를 해제했어요.`, 'SavePoint');
 }
