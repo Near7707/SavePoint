@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.79';
+const VERSION = '0.6.80';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -213,8 +213,11 @@ async function writeChatFile() {
     // blocked. An error once something may be in the file (a first write landed, or SillyTavern saved the
     // page with the change while this waited) is marked `landed`: the caller reads the file instead of
     // taking the change back.
+    // v0.6.80: a request that got no answer (the connection dropped) may still be on its way into the file:
+    // it is `landed` too, and `noAnswer` (a file still as it was proves nothing). `sent`: the copy this page
+    // sent last, so the caller can tell its own copy in the file.
     let sent = null, sentSnap = null, landed = false;
-    const fail = e => { if (landed && e && typeof e === 'object') e.landed = true; return e; };
+    const fail = e => { if (landed && e && typeof e === 'object') { e.landed = true; e.sent = sentSnap; } return e; };
     const moved = () => roomKey() !== key || roomEpoch !== epoch;
     for (let round = 0; round < 4; round++) {
         if (await stIdle()) landed = true;
@@ -239,7 +242,11 @@ async function writeChatFile() {
         if (!t) throw fail(new RoomBlocked('채팅방이 아직 다 열리지 않아서(메시지나 채팅 파일 고유값이 없음) 저장하지 않았어요.'));
         let r;
         try { r = await fetch(t.url, { method: 'POST', cache: 'no-cache', headers: serverHeaders(), body: t.body }); }
-        catch (e) { throw fail(e instanceof Error ? e : new Error(String(e))); }
+        catch (e) {
+            const err = fail(e instanceof Error ? e : new Error(String(e)));
+            err.landed = true; err.noAnswer = true; err.sent = tSnap;
+            throw err;
+        }
         if (!r.ok) {
             let why = '';
             try { why = (await r.json())?.error || ''; } catch { /* not json */ }
@@ -254,14 +261,17 @@ async function writeChatFile() {
     if (sent === null) throw fail(new Error('실리태번이 채팅 파일을 계속 저장하고 있어서 저장하지 못했어요.'));
 }
 // v0.6.76: may this page go on writing over the file as it is now? Yes when the file holds nothing this
-// page lacks (serverCovered's rule), or nothing the copy this page itself sent last lacks (that copy landed
-// after SillyTavern saved a newer page: the file is this page's own, only older). { ok, why }.
+// page lacks (serverCovered's rule), or it is the copy this page itself sent last (that copy landed after
+// SillyTavern saved a newer page: the file is this page's own, only older). { ok, why }.
+// v0.6.80: the very copy sent (every message, mark and metadata key the same), not only something that copy
+// covers: a file that lost a message since (deleted on another device) is not this page's copy.
+const ownCopy = (sentSnap, file) => samePage(sentSnap, file, null);
 async function fileAllows(sentSnap = null) {
     const r = await readServerChat();
     if (!r.ok) return { ok: false, why: r.why };
     const seen = gateHere() ? gate.seen : null, cut = gateHere() ? gate.cut : null, now = pageSnap();
     let c = covers(now, r.snap, MODULE, seen, cut);
-    if (!c.ok && c.why !== 'gone' && sentSnap && covers(sentSnap, r.snap, MODULE).ok) c = { ok: true };
+    if (!c.ok && c.why !== 'gone' && sentSnap && ownCopy(sentSnap, r.snap)) c = { ok: true };
     if (c.ok && foreignMemory(r, now, seen)) return { ok: false, why: 'mem' };
     if (c.ok && gateHere()) setSeen(r.snap);
     return c.ok ? { ok: true, r } : { ok: false, why: c.why };
@@ -271,21 +281,29 @@ async function fileAllows(sentSnap = null) {
 // the page lacks → done (null). It holds this write and something the page lacks → the room is blocked.
 // It cannot be read or does not hold it → the usual "could not confirm" (markUnsure). Returns the error to
 // throw, or null.
+// v0.6.80: a room without a SavePoint memory has no receipt: there the file holds this write when it has the
+// messages and marks sent (writeResult). A request that got no answer is never taken back and never called
+// missing while the file is still as it was: it may land later (markUnsure noAnswer).
+function holdsWrite(r, { written, proof, before }) {
+    if (!r.ok) return false;
+    if (proof !== null && proof !== undefined) return r.proof === proof;
+    return !!written && writeResult(written, before ?? null, r.snap, MODULE) === 'ok';
+}
 async function settleLanded(e, { written, rev, proof, pre, key, epoch }) {
     const moved = () => roomKey() !== key || roomEpoch !== epoch;
     const away = () => new Unconfirmed('방을 옮겨서 마지막 저장이 채팅 파일에 들어갔는지 확인하지 못했어요. 그 방을 다시 열어 확인해 주세요.');
     if (moved()) return away();
     const r = await readServerChat();
     if (moved()) return away();
-    if (r.ok && proof !== null && proof !== undefined && r.proof === proof) {
+    if (holdsWrite(r, { written, proof, before: pre?.snap })) {
         let c = covers(pageSnap(), r.snap, MODULE, gateHere() ? gate.seen : null, gateHere() ? gate.cut : null);
         // The file is the copy this page sent (it landed over a newer save of SillyTavern's): nothing foreign.
-        if (!c.ok && c.why !== 'gone' && written && covers(written, r.snap, MODULE).ok) c = { ok: true };
+        if (!c.ok && c.why !== 'gone' && (written && ownCopy(written, r.snap) || e?.sent && ownCopy(e.sent, r.snap))) c = { ok: true };
         if (c.ok) { if (gateHere()) setSeen(r.snap); return null; }
         blockRoom(c.why);
         return new RoomBlocked(`이번 변경은 채팅 파일에 저장했어요. 하지만 ${gateMessage()}`);
     }
-    markUnsure({ rev, prevRev: pre?.rev ?? null, written, before: pre?.snap, proof, prevProof: pre?.proof });
+    markUnsure({ rev, prevRev: pre?.rev ?? null, written, before: pre?.snap, proof, prevProof: pre?.proof, noAnswer: !!e?.noAnswer });
     return new Unconfirmed(`저장은 보냈지만 채팅 파일에 들어갔는지 확인하지 못했어요(${e?.message || e}). 확인될 때까지 SavePoint는 새로 저장하지 않아요(자동 저장·QUICK 백업 포함). 잠시 뒤 다시 확인하고, 안 되면 새로고침해서 마지막 기록이 남아 있는지 봐 주세요.`);
 }
 
@@ -796,8 +814,9 @@ async function confirmUnsure() {
     if (!r.ok) return false;
     // v0.6.61: by the write's receipt and record (proofOf), not by the whole memory: status marks the page
     // gets after the write (the "unconfirmed" note itself) may be saved over it by SillyTavern.
-    const wrote = u.proof, had = u.prevProof, now = r.proof;
-    const landed = now !== undefined && now !== null && wrote !== undefined && now === wrote;
+    // v0.6.80: a room without a memory (no receipt) by the messages and marks written (holdsWrite).
+    const wrote = u.proof, had = u.prevProof, now = r.proof, byContent = wrote === null || wrote === undefined;
+    const landed = holdsWrite(r, { written: u.written, proof: wrote, before: u.before });
     if (landed) {
         gate.unsure = null; clearTimeout(unsureTimer);
         // v0.6.60: finding the write confirms it, but that file becomes the base for the next writes only
@@ -816,7 +835,11 @@ async function confirmUnsure() {
         else toastr.success('직전 저장이 채팅 파일에 들어가 있는 걸 확인했어요. 다음 저장 때 채팅 파일을 한 번 더 확인해요.', 'SavePoint');
         return false;
     }
-    if (now !== undefined && had !== undefined && now === had && wrote !== had && !u.missing) {
+    // A file still as it was: the write did not go in. v0.6.80: not for a request that got no answer (it may
+    // still be on its way); that one stays unconfirmed.
+    const asBefore = byContent ? !!u.written && !!u.before && writeResult(u.written, u.before, r.snap, MODULE) === 'failed'
+        : now !== undefined && had !== undefined && now === had && wrote !== had;
+    if (asBefore && !u.noAnswer && !u.missing) {
         u.missing = true; clearTimeout(unsureTimer);
         toastr.warning(gateMessage(), 'SavePoint', { timeOut: 15000 });
         render();
