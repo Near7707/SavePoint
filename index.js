@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.84';
+const VERSION = '0.6.85';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -259,6 +259,7 @@ async function writeChatFile() {
         const headers = serverHeaders();
         let r;
         sents.push(tSnap);
+        const tick = delTick;
         try { r = await fetch(t.url, { method: 'POST', cache: 'no-cache', headers, body: t.body }); }
         catch (e) { throw lost(e instanceof Error ? e : new Error(String(e)), tSnap); }
         if (!r.ok) {
@@ -278,8 +279,15 @@ async function writeChatFile() {
             if (r.status === 500 || [408, 502, 503, 504].includes(r.status)) throw lost(new Error(text), tSnap);
             throw fail(new Error(text));
         }
+        // v0.6.85: success is SillyTavern's own answer ({ ok: true }; before 1.12.x { result: 'ok' }). Anything else
+        // with 200 (a login page of a proxy, an empty answer) may not come from SillyTavern: as no answer.
+        let body = null;
+        try { body = await r.json(); } catch { /* not json */ }
+        if (!body || typeof body !== 'object' || !(body.ok === true || body.result === 'ok'))
+            throw lost(new Error(`채팅 파일 저장에 실리태번의 성공 응답이 오지 않았어요 (${r.status})`), tSnap);
         sent = t.body; sentSnap = tSnap; landed = true;
-        if (!moved() && gateHere()) setSeen(tSnap);
+        // v0.6.85: messages this page deleted after the request left stay this page's own deletions.
+        if (!moved() && gateHere()) seenSent(tSnap, tick);
     }
     if (sent === null) throw fail(new Error('실리태번이 채팅 파일을 계속 저장하고 있어서 저장하지 못했어요.'));
 }
@@ -314,20 +322,44 @@ function holdsWrite(r, { copies, proof, before }) {
     if (proof !== null && proof !== undefined) return r.proof === proof;
     return (copies || []).some(c => c && writeResult(c, before ?? null, r.snap, MODULE) === 'ok');
 }
+function marksInFile(changes, written, r) {
+    // v0.6.85: SavePoint's own marks a change set (changedMarks), looked up in the file: each message must be the
+    // same one at the same place (the same message and swipe, SavePoint's parts aside). 'in' — every mark is as
+    // the change left it (a mark turned off is in when it is absent); 'out' — every mark is as before; 'unsure'.
+    // null: nothing to look at (no marks changed, the file not read).
+    if (!changes?.length || !r?.ok || !Array.isArray(r.messages) || !written) return null;
+    let now = 0, was = 0;
+    for (const c of changes) {
+        const f = r.messages[c.i];
+        if (!f || typeof f !== 'object' || snapshot(null, [f], OWN_KEYS).plain[0] !== written.plain[c.i]) return 'unsure';
+        const flags = ownFlags(f), info = Array.isArray(f.swipe_info) ? f.swipe_info : [];
+        const have = [...c.marks.map(x => [flags[x.j], x]), ...c.swipes.map(x => [swipeKeep(info[x.k]), x])];
+        for (const [h, x] of have) {
+            if (sameMark(h, x.now)) now++;
+            else if (sameMark(h, x.was)) was++;
+            else return 'unsure';
+        }
+    }
+    return now && !was ? 'in' : was && !now ? 'out' : 'unsure';
+}
 // v0.6.83: every failed write is settled by reading the file, not only one that may have landed. The change
 // is taken back ('revert') only when the file shows it is not there: the file was read, does not hold it,
 // and no request of this write can land any more (none sent, or each one answered). SillyTavern's own save
 // may have put the change in the file even when every SavePoint request was refused: then it stays.
 // Returns null (in the file, nothing foreign), 'revert', or the error to throw (the change stays on the page).
 // A request with no answer keeps the room `pending` whatever the file shows (writeChatFile).
-async function settleWrite(e, { written, rev, proof, pre, key, epoch }) {
+async function settleWrite(e, { written, rev, proof, pre, key, epoch, marks = null }) {
     const moved = () => roomKey() !== key || roomEpoch !== epoch;
     const away = () => e?.landed ? new Unconfirmed('방을 옮겨서 마지막 저장이 채팅 파일에 들어갔는지 확인하지 못했어요. 그 방을 다시 열어 확인해 주세요.') : 'revert';
     if (moved()) return away();
     const r = await readServerChat();
     if (moved()) return away();
     const copies = [written, ...(e?.sents || [])].filter(Boolean);
-    if (holdsWrite(r, { copies, proof, before: pre?.snap })) {
+    // v0.6.85: a room without a memory has no receipt. Where the file differs from every copy sent (SillyTavern
+    // saved the page with this change and something more), the marks this change set decide: all there → in
+    // the file; all as before → not there; anything else (moved, partly there) → cannot tell, nothing taken back.
+    const byMarks = proof === null || proof === undefined ? marksInFile(marks, written, r) : null;
+    if (holdsWrite(r, { copies, proof, before: pre?.snap }) || byMarks === 'in') {
         let c = covers(pageSnap(), r.snap, MODULE, gateHere() ? gate.seen : null, gateHere() ? gate.cut : null);
         // The file is a copy this page sent (it landed over a newer save of SillyTavern's): nothing foreign.
         if (!c.ok && c.why !== 'gone' && copies.some(x => ownCopy(x, r.snap))) c = { ok: true };
@@ -337,8 +369,8 @@ async function settleWrite(e, { written, rev, proof, pre, key, epoch }) {
         return new RoomBlocked(`이번 변경은 채팅 파일에 저장했어요. 하지만 ${gateMessage()}`);
     }
     // Not in the file, and nothing of this write can land any more: shown not to be there.
-    if (!e?.landed && r.ok) return 'revert';
-    markUnsure({ rev, prevRev: pre?.rev ?? null, written, copies, before: pre?.snap, proof, prevProof: pre?.proof, noAnswer: !!e?.noAnswer });
+    if (!e?.landed && r.ok && byMarks !== 'unsure') return 'revert';
+    markUnsure({ rev, prevRev: pre?.rev ?? null, written, copies, marks, before: pre?.snap, proof, prevProof: pre?.proof, noAnswer: !!e?.noAnswer });
     return new Unconfirmed(`저장은 보냈지만 채팅 파일에 들어갔는지 확인하지 못했어요(${e?.message || e}). 확인될 때까지 SavePoint는 새로 저장하지 않아요(자동 저장·QUICK 백업 포함). 잠시 뒤 다시 확인하고, 안 되면 새로고침해서 마지막 기록이 남아 있는지 봐 주세요.`);
 }
 
@@ -434,6 +466,26 @@ function swipeMarks(m) {
         .map(x => [x, [!!x.extra && typeof x.extra === 'object' && Object.hasOwn(x.extra, KEEP_KEY), x.extra?.[KEEP_KEY], Object.hasOwn(x, 'extra')]]));
 }
 const sameMark = (a, b) => a[0] === b[0] && (!a[0] || a[1] === b[1]);
+const swipeKeep = x => x && typeof x === 'object' ? [!!x.extra && typeof x.extra === 'object' && Object.hasOwn(x.extra, KEEP_KEY), x.extra?.[KEEP_KEY]] : [false, undefined];
+// v0.6.85: the marks a change set, by place right after it (the page the write sends): per message its index,
+// each changed mark (`j` as in ownFlags) and each changed swipe mark (`k`, the swipe's place), before and after.
+function changedMarks(entry) {
+    const out = [];
+    if (!entry?.visibility || !entry.after) return out;
+    const at = new Map(chat().map((m, i) => [m, i]));
+    for (const v of entry.visibility) {
+        const post = entry.after.get(v.m), i = at.get(v.m);
+        if (!post || i === undefined) continue;
+        const marks = [], swipes = [], info = Array.isArray(v.m.swipe_info) ? v.m.swipe_info : [];
+        v.flags.forEach((f, j) => { if (!sameMark(f, post.flags[j])) marks.push({ j, was: f, now: post.flags[j] }); });
+        for (const [x, was] of v.swipes) {
+            const now = post.swipes.get(x), k = info.indexOf(x);
+            if (now && k >= 0 && !sameMark(was, now)) swipes.push({ k, was, now });
+        }
+        if (marks.length || swipes.length) out.push({ i, marks, swipes });
+    }
+    return out;
+}
 function putMark(o, k, [has, v]) {
     if (has) { if (!o.extra || typeof o.extra !== 'object') o.extra = {}; o.extra[k] = v; }
     else if (o.extra && typeof o.extra === 'object') delete o.extra[k];
@@ -534,12 +586,12 @@ async function writeEntry(queue, entry) {
     }
     if (applied === false) return false;
     let unsure = null, settled = false;
-    const written = pageSnap(), rev = state()?.rev ?? null, proof = proofOf(ctx().chatMetadata?.[MODULE]);
+    const written = pageSnap(), rev = state()?.rev ?? null, proof = proofOf(ctx().chatMetadata?.[MODULE]), marks = changedMarks(entry);
     try {
         // v0.6.76: a failure after the change may already be in the file is not taken back (settleWrite).
         try { await persist(); }
         catch (e) {
-            const err = await settleWrite(e, { written, rev, proof, pre, key: entry.key, epoch: entry.epoch });
+            const err = await settleWrite(e, { written, rev, proof, pre, key: entry.key, epoch: entry.epoch, marks });
             if (err === 'revert') throw e;
             if (err) { err.kept = true; throw err; }
             settled = true;
@@ -727,14 +779,24 @@ class Unconfirmed extends Error { constructor(m) { super(m); this.name = 'Unconf
 // `seen` was read (null: none); see covers.
 // v0.6.83: `pending` — a write request of this room that got no answer (it may land at any time): no more
 // SavePoint writes until the room is opened again.
-const gate = { key: null, epoch: -1, status: 'idle', check: null, unsure: null, pending: null, warned: false, readied: false, changedAt: 0, seen: null, cut: null, why: '' };
-function setSeen(snap) { gate.seen = snap; gate.cut = null; }
+const gate = { key: null, epoch: -1, status: 'idle', check: null, unsure: null, pending: null, warned: false, readied: false, changedAt: 0, seen: null, cut: null, cuts: [], why: '' };
+function setSeen(snap) { gate.seen = snap; gate.cut = null; gate.cuts = []; }
 // SillyTavern tells extensions after it deleted messages here (the count left). A deletion made on this
 // page is not one made elsewhere.
+// v0.6.85: each deletion is kept with its turn (`delTick`), so a copy answered with success becomes the base
+// (seenSent) without forgetting the deletions made here after that copy was taken.
+let delTick = 0;
 function onMessagesDeleted() {
     if (!gateHere()) return;
     const n = chat().length;
     gate.cut = gate.cut === null ? n : Math.min(gate.cut, n);
+    (gate.cuts ||= []).push({ tick: ++delTick, n });
+}
+function seenSent(snap, tick) {
+    const later = (gate.cuts || []).filter(x => x.tick > tick);
+    setSeen(snap);
+    gate.cuts = later;
+    gate.cut = later.length ? Math.min(...later.map(x => x.n)) : null;
 }
 const wait = ms => new Promise(r => setTimeout(r, ms));
 function gateHere() { return hasChat() && gate.key === roomKey() && gate.epoch === roomEpoch; }
@@ -782,7 +844,7 @@ async function readServerChat() {
         const parts = splitFile(await r.json());
         if (!parts) return { ok: false, why: 'empty' };
         const mod = parts.meta?.[MODULE];
-        return { ok: true, snap: snapshot(parts.meta, parts.messages, OWN_KEYS), count: parts.messages.length, first: parts.messages[0], rev: mod?.rev ?? null, by: mod?.by ?? null,
+        return { ok: true, snap: snapshot(parts.meta, parts.messages, OWN_KEYS), count: parts.messages.length, first: parts.messages[0], messages: parts.messages, rev: mod?.rev ?? null, by: mod?.by ?? null,
             proof: parts.meta ? proofOf(mod) : undefined };
     } catch { return { ok: false, why: 'error' }; }
 }
@@ -828,7 +890,7 @@ function foreignMemory(r, page, seen) {
 }
 function startRoomCheck() {
     clearTimeout(unsureTimer);
-    Object.assign(gate, { key: roomKey(), epoch: roomEpoch, status: hasChat() ? 'checking' : 'idle', check: null, unsure: null, pending: null, warned: false, readied: false, changedAt: Date.now(), seen: null, cut: null, why: '' });
+    Object.assign(gate, { key: roomKey(), epoch: roomEpoch, status: hasChat() ? 'checking' : 'idle', check: null, unsure: null, pending: null, warned: false, readied: false, changedAt: Date.now(), seen: null, cut: null, cuts: [], why: '' });
     if (hasChat()) gate.check = verifyRoom();
 }
 async function verifyRoom() {
@@ -884,7 +946,7 @@ async function confirmUnsure() {
     // gets after the write (the "unconfirmed" note itself) may be saved over it by SillyTavern.
     // v0.6.80: a room without a memory (no receipt) by the messages and marks written (holdsWrite).
     const wrote = u.proof, had = u.prevProof, now = r.proof, byContent = wrote === null || wrote === undefined;
-    const landed = holdsWrite(r, { copies: u.copies || [u.written], proof: wrote, before: u.before });
+    const landed = holdsWrite(r, { copies: u.copies || [u.written], proof: wrote, before: u.before }) || (byContent && marksInFile(u.marks, u.written, r) === 'in');
     if (landed) {
         gate.unsure = null; clearTimeout(unsureTimer);
         // v0.6.60: finding the write confirms it, but that file becomes the base for the next writes only
