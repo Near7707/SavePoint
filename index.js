@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.87';
+const VERSION = '0.6.88';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -2848,7 +2848,7 @@ async function loadSave(id) {
         // keeps the mark too (without it SillyTavern may put the card's greeting over a one-message room).
         let back = true;
         if (undoMessage) { back = undoMessage() !== false; if (back) undoTainted(); if (here()) { syncHide(); refreshInjection(); await showCarried(); render(); } }
-        const keptNote = '첫 메시지는 그사이 바뀐 내용(번역·편집·숨김 등)이 있어서 지금 화면 그대로 두었어요.';
+        const keptNote = '첫 메시지는 그사이 바뀐 내용(번역·편집·숨김 등)이나 그 뒤에 새 메시지가 있어서 지금 화면 그대로 두었어요.';
         if (insert && !(e instanceof RoomBlocked)) toastr.error(back ? `채팅 파일에 저장되지 않아서 이어하기를 되돌렸어요. 첫 메시지와 기억은 불러오기 전 그대로예요. 잠시 뒤 다시 시도해 주세요. (${errorText(e)})`
             : `채팅 파일에 저장되지 않아서 이어하기를 되돌렸어요. 기억은 불러오기 전 그대로예요. ${keptNote} 잠시 뒤 다시 시도해 주세요. (${errorText(e)})`, 'SavePoint', { timeOut: 12000 });
         else { reportError(e); if (insert && !back) toastr.info(`이어하기를 되돌렸어요. 기억은 불러오기 전 그대로예요. ${keptNote}`, 'SavePoint', { timeOut: 12000 }); }
@@ -2914,18 +2914,20 @@ function putCarried(reply) {
     if (!list.length) {
         const msg = { name: reply.name || charInfo()?.name || '', is_user: false, is_system: false, send_date: Date.now(), mes: reply.text, extra: {}, swipe_id: 0, swipes: [reply.text], swipe_info: [fresh()] };
         list.push(msg);
-        const put = asPut(msg);
+        const put = asPut(msg), len = list.length;
         // v0.6.59: SillyTavern keeps the same message list for the next room; only this message is taken out.
         // v0.6.86: true when the room was put back (false: the message changed meanwhile and stays).
-        return () => { const i = list.indexOf(msg); if (i < 0 || asPut(msg) !== put) return false; list.splice(i, 1); return true; };
+        // v0.6.88: messages added after it meanwhile (a message sent while the write was on its way) were made on top of
+        // it: it stays too (taking it out would also move every message after it, on the screen and in the list).
+        return () => { const i = list.indexOf(msg); if (i < 0 || list.length > len || asPut(msg) !== put) return false; list.splice(i, 1); return true; };
     }
     const m = list[0], before = clone(m);
     m.mes = reply.text; m.swipes = [reply.text]; m.swipe_id = 0; m.swipe_info = [fresh()];
     // Only our own visibility marks are kept; any content-bound data of the old greeting goes.
     const keep = Object.fromEntries([HIDE_KEY, VISIBLE_KEY, HELD_KEY, KEEP_KEY].filter(k => m.extra && Object.hasOwn(m.extra, k)).map(k => [k, m.extra[k]]));
     m.extra = keep;
-    const put = asPut(m);
-    return () => { if (asPut(m) !== put) return false; for (const k of Object.keys(m)) delete m[k]; Object.assign(m, before); return true; };
+    const put = asPut(m), len = list.length;
+    return () => { if (list.length > len || asPut(m) !== put) return false; for (const k of Object.keys(m)) delete m[k]; Object.assign(m, before); return true; };
 }
 // Show the new #0 after the memory is in place: redraw that message when SillyTavern offers it.
 // v0.6.86: only the screen is drawn: the drawn #0 again (updateMessageBlock), or a new one on an empty chat view
@@ -2936,6 +2938,9 @@ async function showCarried() {
     if (!m || !doc) return;
     if (typeof c.updateMessageBlock === 'function' && doc.querySelector('#chat .mes[mesid="0"]')) c.updateMessageBlock(0, m);
     else if (typeof c.addOneMessage === 'function' && !doc.querySelector('#chat .mes')) c.addOneMessage(m);
+    // v0.6.88: messages sent while the continue was on its way are drawn from #1 (SillyTavern numbers them by the list,
+    // which already has the new #0): #0 goes in front of them, with its own number.
+    else if (typeof c.addOneMessage === 'function' && doc.querySelector('#chat .mes')?.getAttribute('mesid') === '1') c.addOneMessage(m, { forceId: 0, insertBefore: 1, scroll: false });
 }
 async function renameSave(id) {
     const save = findSave(id);

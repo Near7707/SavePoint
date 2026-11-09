@@ -130,7 +130,9 @@ window.SillyTavern = {
         async generateRaw({ prompt }) { M.calls.push(prompt); if (M.throwNext) { const e = M.throwNext; M.throwNext = null; throw e; } if (M.badJson && !prompt.startsWith('You are checking')) return 'Sure! Here is the summary: {not json'; if (M.delay) await new Promise(r => setTimeout(r, M.delay)); if (M.delayOnce) { const d = M.delayOnce; M.delayOnce = 0; await new Promise(r => setTimeout(r, d)); M.lateDone = (M.lateDone || 0) + 1; } return fake(prompt); },
         // v0.6.86: drawing messages (SillyTavern's addOneMessage / updateMessageBlock: the screen only, no event, no save)
         // and reloading the chat from the server file (reloadCurrentChat: opens the room again; counted, M.reloads).
-        addOneMessage(m) { const i = M.chat.indexOf(m); M.draws = (M.draws || 0) + 1; drawMes(i >= 0 ? i : M.chat.length - 1, m); },
+        // v0.6.88: forceId / insertBefore as SillyTavern takes them (the id given, put in front of that drawn message).
+        addOneMessage(m, { forceId = null, insertBefore = null } = {}) { const i = M.chat.indexOf(m); M.draws = (M.draws || 0) + 1;
+            drawMes(typeof forceId === 'number' ? forceId : typeof insertBefore === 'number' ? insertBefore - 1 : i >= 0 ? i : M.chat.length - 1, m, insertBefore); },
         updateMessageBlock(i, m) { M.redraws = (M.redraws || 0) + 1; drawMes(i, m); },
         async reloadCurrentChat() { M.reloads = (M.reloads || 0) + 1; await M.openFile(M.chatId); },
         callGenericPopup: async (text, type) => { (M.popups ||= []).push(String(text)); if (M.onPopup) await M.onPopup(String(text), type); return type === 3 ? M.popupInput : M.confirm; },
@@ -142,11 +144,12 @@ M.characters = [{ avatar: 'ari.png', name: 'Ari', description: 'Ari is a courier
     data: { alternate_greetings: ['Another greeting.', 'Fresh greeting for the failing room.', 'A brand new greeting.'] } }];
 const copy = v => JSON.parse(JSON.stringify(v));
 // v0.6.86: the chat view (#chat .mes[mesid]); opening a room empties it, as SillyTavern's clearChat does.
-function drawMes(i, m) {
+function drawMes(i, m, before = null) {
     const box = document.querySelector('#chat');
     if (!box) return;
     let el = box.querySelector(`.mes[mesid="${i}"]`);
-    if (!el) { el = document.createElement('div'); el.className = 'mes'; el.setAttribute('mesid', String(i)); box.append(el); }
+    const at = typeof before === 'number' ? box.querySelector(`.mes[mesid="${before}"]`) : null;
+    if (!el) { el = document.createElement('div'); el.className = 'mes'; el.setAttribute('mesid', String(i)); if (at) at.before(el); else box.append(el); }
     el.dataset.text = String(m?.mes ?? '');
 }
 const clearDrawn = () => document.querySelectorAll('#chat .mes').forEach(el => el.remove());

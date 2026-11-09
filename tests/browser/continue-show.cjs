@@ -130,6 +130,24 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         await page.close();
     }
 
+    // 4–4b (v0.6.88). An empty room; while the continue is on its way a message is sent and answered (SillyTavern draws
+    //    them as #1 and #2). 4: it lands — #0 is drawn in front of them. 4b: refused (500) — #0 stays (messages were made
+    //    on top of it), only the memory goes back; screen numbers match the list, and the notice says so.
+    for (const refuse of [false, true]) {
+        const { page, ev } = await session();
+        const r = await carry(page, ev, [], () => ev(refuse => { M.metaDelay = 500; if (refuse) M.failOnce = true; let n = 0;
+            M.beforeChatSave = async () => { if (++n !== 1) return; setTimeout(() => { const c = SillyTavern.getContext();
+                for (const [mes, user] of [['Sent meanwhile.', true], ['Answered meanwhile.', false]]) {
+                    const m = { name: user ? 'Me' : 'Ari', is_user: user, is_system: false, mes, swipe_id: 0, extra: {} }; M.chat.push(m); c.addOneMessage(m); } }, 100); }; }, refuse));
+        await ev(() => { M.metaDelay = 0; M.beforeChatSave = null; });
+        const s = await ev(() => ({ list: M.chat.map(m => m.mes), screen: [...document.querySelectorAll('#chat .mes')].map(e => `${e.getAttribute('mesid')}:${e.dataset.text}`), mem: !!__savePoint.state()?.mem?.scenes?.length }));
+        const lined = s.screen.length === s.list.length && s.screen.every((x, i) => x === `${i}:${s.list[i]}`);
+        if (!refuse) ok(lined && s.list.length === 3 && s.list[0] === r.page0 && s.mem, `4. 이어하기 중 새 메시지 둘이 #1·#2로 그려짐 → 첫 메시지를 그 앞에 그림, 화면 번호 = 실제 번호 (${JSON.stringify(s.screen)})`);
+        else ok(lined && s.list.length === 3 && s.list[1] === 'Sent meanwhile.' && !s.mem && /그 뒤에 새 메시지가 있어서/.test(r.toasts),
+            `4b. 이어하기 거절, 그 뒤 새 메시지가 있음 → 첫 메시지는 남기고 기억만 되돌림, 화면 번호 = 실제 번호 (${JSON.stringify(s.screen)}, ${s.mem})`);
+        await page.close();
+    }
+
     await browser.close(); srv.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASSED');
     process.exit(failures ? 1 : 0);
