@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.91';
+const VERSION = '0.6.92';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -332,6 +332,16 @@ function holdsWrite(r, { copies, proof, before }) {
     if (proof !== null && proof !== undefined) return r.proof === proof;
     return (copies || []).some(c => c && writeResult(c, before ?? null, r.snap, MODULE) === 'ok');
 }
+function writeHeld(x, { copies, proof, before, marks, written, status }) {
+    // v0.6.92: does file read `x` hold this write? Its receipt (a write that made one), the copy sent, or in a room without
+    // a memory the marks it set (marksInFile) — the same rule for the file after the write and for one read during it.
+    // `status`: a save of SavePoint's status marks only (the receipt stays): held when the file has the memory part this
+    // save wrote (it differs from the one before it), so SillyTavern saved the page after this change.
+    if (holdsWrite(x, { copies, proof, before }) || ((proof === null || proof === undefined) && marksInFile(marks, written, x) === 'in')) return true;
+    if (!status || !x?.ok || !before) return false;
+    const mod = v => v?.meta?.[MODULE] ?? null, had = mod(before);
+    return (copies || []).some(c => c && mod(c) !== had && mod(x.snap) === mod(c));
+}
 function marksInFile(changes, written, r) {
     // v0.6.85: SavePoint's own marks a change set (changedMarks), looked up in the file: each message must be the
     // same one at the same place (the same message and swipe, SavePoint's parts aside). 'in' — every mark is as
@@ -371,9 +381,10 @@ async function settleWrite(e, { written, rev, proof, pre, key, epoch, marks = nu
     // v0.6.91: a receipt proves this write only when this write changed it. A background save of status marks only keeps
     // the file's receipt: there the content decides (the file must hold what was written), never the receipt.
     const own = proof !== null && proof !== undefined && proof !== pre?.proof ? proof : null;
+    const status = own === null && proof !== null && proof !== undefined;
     const byMarks = own === null ? marksInFile(marks, written, r) : null;
-    const holds = x => holdsWrite(x, { copies, proof: own, before: pre?.snap });
-    if (holds(r) || byMarks === 'in') {
+    const holds = x => writeHeld(x, { copies, proof: own, before: pre?.snap, marks, written, status });
+    if (holds(r)) {
         // v0.6.90: judged against writeBase, not a file read before this write reached the file.
         const answered = !!e?.answered, wb = gateHere() ? writeBase(answered, written, tick, e?.adopted, holds) : { base: null, cut: null };
         let c = covers(pageSnap(), r.snap, MODULE, wb.base, wb.cut);
@@ -393,8 +404,8 @@ async function settleWrite(e, { written, rev, proof, pre, key, epoch, marks = nu
     }
     // Not in the file, and nothing of this write can land any more: shown not to be there.
     // v0.6.91: a background save of status marks that is not in the file is only reported: nothing of a memory to confirm.
-    if ((!e?.landed || own === null && proof !== null && proof !== undefined) && r.ok && byMarks !== 'unsure') return 'revert';
-    markUnsure({ rev, prevRev: pre?.rev ?? null, written, copies, marks, before: pre?.snap, proof, prevProof: pre?.proof, noAnswer: !!e?.noAnswer, answered: !!e?.answered, tick, adopted: e?.adopted });
+    if ((!e?.landed || status) && r.ok && byMarks !== 'unsure') return 'revert';
+    markUnsure({ rev, prevRev: pre?.rev ?? null, written, copies, marks, before: pre?.snap, proof, prevProof: pre?.proof, noAnswer: !!e?.noAnswer, answered: !!e?.answered, tick, adopted: e?.adopted, status });
     return new Unconfirmed(`저장은 보냈지만 채팅 파일에 들어갔는지 확인하지 못했어요(${e?.message || e}). 확인될 때까지 SavePoint는 새로 저장하지 않아요(자동 저장·QUICK 백업 포함). 잠시 뒤 다시 확인하고, 안 되면 새로고침해서 마지막 기록이 남아 있는지 봐 주세요.`);
 }
 
@@ -1049,7 +1060,9 @@ async function confirmUnsure() {
     // gets after the write (the "unconfirmed" note itself) may be saved over it by SillyTavern.
     // v0.6.80: a room without a memory (no receipt) by the messages and marks written (holdsWrite).
     const wrote = u.proof, had = u.prevProof, now = r.proof, byContent = wrote === null || wrote === undefined;
-    const landed = holdsWrite(r, { copies: u.copies || [u.written], proof: wrote, before: u.before }) || (byContent && marksInFile(u.marks, u.written, r) === 'in');
+    // v0.6.92: one rule with settleWrite (writeHeld). A save of status marks only is never proved by the receipt it kept.
+    const held = x => writeHeld(x, { copies: u.copies || [u.written], proof: u.status ? null : wrote, before: u.before, marks: u.marks, written: u.written, status: u.status });
+    const landed = held(r);
     if (landed) {
         gate.unsure = null; clearTimeout(unsureTimer);
         // v0.6.60: finding the write confirms it, but that file becomes the base for the next writes only
@@ -1061,7 +1074,7 @@ async function confirmUnsure() {
         // before a later copy was sent is in that copy, so it is not taken for a deletion elsewhere.
         // v0.6.90: "newer" is told by a request answered with success (u.answered), not by `gate.seen` being another
         // object: a file read during the write (the same content as before it) is not a copy of this write.
-        const wb = writeBase(u.answered, u.written, u.tick ?? delTick, u.adopted, x => holdsWrite(x, { copies: u.copies || [u.written], proof: wrote, before: u.before }));
+        const wb = writeBase(u.answered, u.written, u.tick ?? delTick, u.adopted, held);
         const c = fileBase(r, wb.base, wb.cut);
         if (c.ok) {
             setSeen(r.snap);
@@ -1076,6 +1089,14 @@ async function confirmUnsure() {
         if (c.why === 'gone' || c.why === 'mem') toastr.warning(`직전 저장은 채팅 파일에 들어가 있어요. 하지만 ${gateMessage()}`, 'SavePoint', { timeOut: 15000 });
         else toastr.success('직전 저장이 채팅 파일에 들어가 있는 걸 확인했어요. 다음 저장 때 채팅 파일을 한 번 더 확인해요.', 'SavePoint');
         return false;
+    }
+    // v0.6.92: a save of status marks only whose memory part is not in the file (still the one before it): nothing of a
+    // memory to confirm, as when it is settled at once (settleWrite 'revert'). The room goes on as before.
+    if (u.status && !u.noAnswer && u.before && (r.snap.meta?.[MODULE] ?? null) === (u.before.meta?.[MODULE] ?? null)) {
+        gate.unsure = null; clearTimeout(unsureTimer);
+        toastr.info('직전 저장(기록 상태 표시만 바뀐 저장)은 채팅 파일에 들어가지 않았어요. 기억은 바뀌지 않아서 다시 평소처럼 저장해요.', 'SavePoint');
+        render(); scheduleAuto();
+        return gateOpen();
     }
     // A file still as it was: the write did not go in. v0.6.80: not for a request that got no answer (it may
     // still be on its way); that one stays unconfirmed.

@@ -36,6 +36,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
 //    2b: the same after a wait for SillyTavern's save (something may have landed): not left unconfirmed either.
 // 3. A first request landed; then a continue starts and SillyTavern saves a middle state of it. The check before sending
 //    again finds the reply running ahead: held back ('busy'), no warning, and the room is open again after the reply.
+// (5–7: v0.6.92, below.)
 // 4. A background save held back by a reply (it was reading the file when the reply started) goes through after the reply
 //    even when a message event opens the room before the recheck timer.
 (async () => {
@@ -162,6 +163,74 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         const f = await ev(() => ({ sends: M.saveBodies.length, note: M.serverFiles.chatA[0].chat_metadata.savePoint?.note ?? null }));
         ok(during === 0 && f.sends >= 1 && f.note === 'held-change',
             `4. 답변 중 미룬 백그라운드 저장은 메시지 이벤트가 먼저 방을 열어도 답변 뒤 저장 (+${phase}ms: 답변 중 ${during}회 → ${JSON.stringify(f)})`);
+        await page.close();
+    }
+
+    // 5–5b. v0.6.92: a status-only save; SillyTavern saved the new status and the 13th first. 5: another tab then deletes
+    //    the 13th and SavePoint's request gets the 500: the file holds this save (the new status), so the 13th is a
+    //    deletion elsewhere (blocked). 5b: no deletion: nothing said, the 🔶 saves.
+    // 6. v0.6.92: a status-only save gets the 500 while the 13th is only on the page, and the first read after it fails.
+    //    A later read finds the old status: not "in the file … deleted elsewhere"; the room goes on and the 🔶 saves the 13th.
+    for (const kind of ['5', '5b', '6']) {
+        const { page, ev } = await session();
+        await ev(([kind, m]) => { M.noStSave = true; M.chat.push(m);
+            const f = window.fetch; let armed = false;
+            window.fetch = async (u, o) => {
+                if (String(u) === '/api/chats/get' && armed && M.readFailOnce) { M.readFailOnce = false; return new Response('x', { status: 500 }); }
+                const r = await f(u, o); if (String(u) === '/api/chats/save') armed = true; return r; };
+            M.beforeChatSave = async () => { M.beforeChatSave = null; M.failOnce = true;
+                if (kind === '6') { M.readFailOnce = true; return; }
+                M.serverFiles.chatA = JSON.parse(JSON.stringify([{ chat_metadata: M.meta }, ...M.chat]));   // SillyTavern saved first
+                if (kind === '5') M.serverFiles.chatA.pop(); };                                              // another tab deletes the 13th
+        }, [kind, msg('Thirteenth.')]);
+        await ev(() => { __savePoint.state().autoLast = { at: Date.now(), result: 'ok', status: '' }; __savePoint.persistSoon(); });
+        await page.waitForTimeout(kind === '6' ? 5000 : 2000);
+        const t = await toasts(ev);
+        const r = await keep(ev, 5);
+        await page.waitForTimeout(300);
+        const f = await ev(() => ({ n: M.serverFiles.chatA.length - 1, has13: M.serverFiles.chatA.some(x => x.mes === 'Thirteenth.'), k5: !!M.serverFiles.chatA[6].extra?.savepointKeep }));
+        const said = JSON.stringify(t.map(x => x.slice(0, 40)));
+        if (kind === '5') ok(t.some(x => /다른 곳에서 지운/.test(x)) && /다른 곳에서 지운/.test(r) && !f.has13 && !f.k5,
+            `5. 실리태번이 새 상태와 13번째를 먼저 저장한 뒤 다른 탭 삭제: 이번 저장이 파일에 있다고 보고 13번째를 되살리지 않음 (${said}, 🔶 ${r.slice(0, 30)}, ${JSON.stringify(f)})`);
+        else if (kind === '5b') ok(!t.some(x => /지운|거절|확인하지 못했어요/.test(x)) && r === 'ok' && f.has13 && f.k5,
+            `5b. 같은 순서에 삭제가 없으면 아무 안내 없이 이어서 🔶 저장 (${said}, 🔶 ${r.slice(0, 30)}, ${JSON.stringify(f)})`);
+        else ok(!t.some(x => /들어가 있어요|지운/.test(x)) && t.some(x => /들어가지 않았어요.*평소처럼/.test(x)) && r === 'ok' && f.has13 && f.k5,
+            `6. 상태만 바꾼 저장 실패 + 첫 읽기 실패: 나중 확인도 예전 상태면 "들어가 있어요·지운" 없이 다시 저장, 🔶가 13번째와 저장 (${said}, 🔶 ${r.slice(0, 30)}, ${JSON.stringify(f)})`);
+        await page.close();
+    }
+    // 7–7b. v0.6.92: a room without a memory. 🔶 waits for SillyTavern; meanwhile the last message is edited and a 13th comes,
+    //    and SillyTavern saves the page (the 🔶 mark and 13). SavePoint reads that file before sending; then a 14th comes,
+    //    another tab deletes the 13th, and the request gets the 500. The file read during the write holds it by the marks
+    //    (the same rule as the file after it), so it is the base: the 13th is not written back. 7: at once, 7b: later.
+    for (const [name, readFails] of [['7', false], ['7b', true]]) {
+        const { page, ev } = await session({ run: false });
+        await ev(([readFails, m13, m14]) => { M.noStSave = true; M.serverReadDelay = 400; M.readFailOnce = false; M.m13 = m13;
+            const f = window.fetch; let armed = false;
+            window.fetch = async (u, o) => {
+                if (String(u) === '/api/chats/get' && armed && M.readFailOnce) { M.readFailOnce = false; return new Response('x', { status: 500 }); }
+                const r = await f(u, o);
+                if (String(u) === '/api/chats/get' && M.after13 && !M.pushed14) { M.pushed14 = true; M.chat.push(m14); }
+                if (String(u) === '/api/chats/save') armed = true;
+                return r; };
+            M.beforeChatSave = async () => { M.beforeChatSave = null; M.serverFiles.chatA.pop(); M.failOnce = true; M.readFailOnce = readFails; };
+        }, [readFails, msg('Thirteenth.'), msg('Fourteenth.')]);
+        const p1 = ev(() => __savePoint.toggleKeep(5).then(() => 'ok', e => `${e.name}: ${e.message}`));
+        await page.waitForTimeout(200);
+        await ev(() => M.stScript.setChatSaving(true));
+        await page.waitForTimeout(400);
+        await ev(() => { M.chat.at(-1).mes += ' (edited)'; M.chat.push(M.m13);
+            M.serverFiles.chatA = JSON.parse(JSON.stringify([{ chat_metadata: M.meta }, ...M.chat]));
+            M.after13 = true; M.stScript.setChatSaving(false); });
+        const r1 = await p1;
+        await ev(() => { M.serverReadDelay = 0; });
+        if (readFails) await page.waitForTimeout(3500);
+        const r2 = await keep(ev, 7);
+        await page.waitForTimeout(300);
+        const r3 = await keep(ev, 8);
+        await page.waitForTimeout(300);
+        const f = await ev(() => ({ pushed14: !!M.pushed14, has13: M.serverFiles.chatA.some(x => x.mes === 'Thirteenth.'), k5: !!M.serverFiles.chatA[6].extra?.savepointKeep }));
+        ok(f.pushed14 && !f.has13 && f.k5 && /다른 곳에서 지운/.test(r2) && /다른 곳에서 지운/.test(r3) && (readFails ? /Unconfirmed/.test(r1) : /RoomBlocked: 이번 변경은 채팅 파일에 저장했어요/.test(r1)),
+            `${name}. 기억 없는 방: 저장 중 읽은 파일도 🔶 표시로 판단해 기준으로, 다른 탭이 지운 13번째를 다음 🔶 두 번 모두 되살리지 않음 (${r1.slice(0, 30)} / ${r2.slice(0, 30)} / ${r3.slice(0, 30)}, ${JSON.stringify(f)})`);
         await page.close();
     }
 
