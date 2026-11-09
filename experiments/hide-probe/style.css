@@ -1,0 +1,5 @@
+#hp_panel .hp-row { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 4px 0; }
+#hp_panel #hp_ids { flex: 1 1 8em; min-width: 6em; }
+#hp_panel .hp-log { white-space: pre-wrap; font-size: 0.85em; max-height: 18em; overflow: auto; margin: 4px 0 0; padding: 6px; border-radius: 6px; background: rgba(0, 0, 0, 0.2); }
+#chat .mes.hp-hidden { outline: 2px dashed rgba(255, 170, 60, 0.8); outline-offset: -2px; opacity: 0.75; }
+#chat .mes.hp-hidden .mes_text::before { content: '🧪 AI 요청에서 뺌(실험)'; display: block; font-size: 0.75em; opacity: 0.9; padding: 2px 6px; }

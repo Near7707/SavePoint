@@ -1,0 +1,12 @@
+{
+    "display_name": "SavePoint Hide Probe (실험)",
+    "loading_order": 1000,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "Near7707",
+    "version": "0.1.0",
+    "generate_interceptor": "savepointHideProbe",
+    "homePage": "https://github.com/Near7707/SavePoint/tree/main/experiments/hide-probe"
+}
