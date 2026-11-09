@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.92';
+const VERSION = '0.6.93';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -339,8 +339,17 @@ function writeHeld(x, { copies, proof, before, marks, written, status }) {
     // save wrote (it differs from the one before it), so SillyTavern saved the page after this change.
     if (holdsWrite(x, { copies, proof, before }) || ((proof === null || proof === undefined) && marksInFile(marks, written, x) === 'in')) return true;
     if (!status || !x?.ok || !before) return false;
+    // v0.6.93: 'status' (truthy) — held by the status value alone. That value was on the page before the check that came
+    // before this save, so SillyTavern may have saved it then: a message the page got after that check is not proved to
+    // have been in the file (see vagueFrom).
     const mod = v => v?.meta?.[MODULE] ?? null, had = mod(before);
-    return (copies || []).some(c => c && mod(c) !== had && mod(x.snap) === mod(c));
+    return (copies || []).some(c => c && mod(c) !== had && mod(x.snap) === mod(c)) ? 'status' : false;
+}
+function vagueFrom(how, before) {
+    // v0.6.93: a write held only by its status value (writeHeld 'status') proves nothing of the messages after the file read
+    // before it: one of them missing from the file now may be deleted elsewhere or never saved yet. From that message on,
+    // a 'gone' is told as unclear (gateMessage), never with "reload" (that would lose a message only this page has).
+    return how === 'status' && Array.isArray(before?.plain) ? before.plain.length : null;
 }
 function marksInFile(changes, written, r) {
     // v0.6.85: SavePoint's own marks a change set (changedMarks), looked up in the file: each message must be the
@@ -384,7 +393,8 @@ async function settleWrite(e, { written, rev, proof, pre, key, epoch, marks = nu
     const status = own === null && proof !== null && proof !== undefined;
     const byMarks = own === null ? marksInFile(marks, written, r) : null;
     const holds = x => writeHeld(x, { copies, proof: own, before: pre?.snap, marks, written, status });
-    if (holds(r)) {
+    const how = holds(r);
+    if (how) {
         // v0.6.90: judged against writeBase, not a file read before this write reached the file.
         const answered = !!e?.answered, wb = gateHere() ? writeBase(answered, written, tick, e?.adopted, holds) : { base: null, cut: null };
         let c = covers(pageSnap(), r.snap, MODULE, wb.base, wb.cut);
@@ -396,7 +406,7 @@ async function settleWrite(e, { written, rev, proof, pre, key, epoch, marks = nu
         if (c.ok && gateHere()) setSeen(r.snap);
         if (c.ok && !(gateHere() && gate.pending)) return null;
         // v0.6.90: blocked, what was written stays the base, so the next check finds the same deletion again.
-        if (!c.ok && gateHere() && wb.written) seenSince(written, tick);
+        if (!c.ok && gateHere() && wb.written) { seenSince(written, tick); gate.vague = vagueFrom(how, pre?.snap); }
         if (!c.ok) blockRoom(genBusy(c) ? 'busy' : c.why, c.at);
         // v0.6.91: a difference the reply being made explains: the change is in the file; checked again after the reply.
         if (gateHere() && gate.status === 'busy' && !gate.pending) return null;
@@ -834,8 +844,8 @@ class Unconfirmed extends Error { constructor(m) { super(m); this.name = 'Unconf
 // `seen` was read (null: none); see covers.
 // v0.6.83: `pending` — a write request of this room that got no answer (it may land at any time): no more
 // SavePoint writes until the room is opened again.
-const gate = { key: null, epoch: -1, status: 'idle', check: null, unsure: null, pending: null, warned: false, readied: false, changedAt: 0, seen: null, cut: null, cuts: [], why: '', at: null, held: false };
-function setSeen(snap) { gate.seen = snap; gate.cut = null; gate.cuts = []; }
+const gate = { key: null, epoch: -1, status: 'idle', check: null, unsure: null, pending: null, warned: false, readied: false, changedAt: 0, seen: null, cut: null, cuts: [], why: '', at: null, held: false, vague: null };
+function setSeen(snap) { gate.seen = snap; gate.cut = null; gate.cuts = []; gate.vague = null; }
 // SillyTavern tells extensions after it deleted messages here (the count left). A deletion made on this
 // page is not one made elsewhere.
 // v0.6.85: each deletion is kept with its turn (`delTick`), so a copy answered with success becomes the base
@@ -884,6 +894,7 @@ function gateMessage() {
     if (!gateHere() || gate.status === 'checking') return '방이 아직 다 열리지 않았어요. 잠시 뒤 다시 눌러 주세요.';
     if (gate.status === 'unknown') return '서버에서 이 방의 채팅 파일을 찾지 못해서(새 방인지 읽기 실패인지 알 수 없어요) 저장하지 않았어요. 방을 다시 열어 주세요.';
     if (gate.status === 'unread') return '서버에서 이 방의 채팅 파일을 읽지 못해서 저장하지 않았어요. 잠시 뒤 다시 하거나 방을 다시 열어 주세요.';
+    if (gate.why === 'gone' && gate.vague !== null && Number.isInteger(gate.at) && gate.at >= gate.vague) return `이 화면의 메시지 중 채팅 파일에 없는 것이 있어요(#${gate.at}). 다른 곳에서 지웠는지, 아직 채팅 파일에 저장되기 전인지 알 수 없어서 SavePoint는 저장하지 않았어요. 이 화면에만 있는 메시지일 수 있으니 새로고침하지 말고, 실리태번이 이 방을 저장한 뒤(메시지를 보내거나 편집하면) 다시 눌러 주세요. 다른 곳에서 지웠다면 방을 다시 열어 주세요.`;
     if (gate.why === 'gone') return '다른 곳에서 지운 메시지가 이 화면에는 남아 있어서 저장하지 않았어요(저장하면 그 메시지가 되살아나요). 방을 다시 열거나 새로고침해 주세요.';
     if (gate.why === 'integrity') return '서버의 채팅 파일이 이 방과 다른 파일이라서(고유값 다름) 저장하지 않았어요. 방을 다시 열거나 새로고침해 주세요.';
     if (gate.why === 'mem') return '다른 기기에서 이 방의 SavePoint 기억을 저장해서 이 화면의 기억이 오래됐어요. 덮어쓰지 않도록 저장하지 않았어요. 방을 다시 열거나 새로고침해 주세요.';
@@ -1003,7 +1014,7 @@ function fileBase(r, base, cut = gateHere() ? gate.cut : null) {
 }
 function startRoomCheck() {
     clearTimeout(unsureTimer);
-    Object.assign(gate, { key: roomKey(), epoch: roomEpoch, status: hasChat() ? 'checking' : 'idle', check: null, unsure: null, pending: null, warned: false, readied: false, changedAt: Date.now(), seen: null, cut: null, cuts: [], why: '', at: null, held: false });
+    Object.assign(gate, { key: roomKey(), epoch: roomEpoch, status: hasChat() ? 'checking' : 'idle', check: null, unsure: null, pending: null, warned: false, readied: false, changedAt: Date.now(), seen: null, cut: null, cuts: [], why: '', at: null, held: false, vague: null });
     if (hasChat()) gate.check = verifyRoom();
 }
 async function verifyRoom() {
@@ -1084,7 +1095,7 @@ async function confirmUnsure() {
             return gateOpen();
         }
         // v0.6.87: what was written replaces only the file read before it (a newer base, a copy answered later, stays).
-        if (wb.written) seenSince(u.written, u.tick ?? delTick);
+        if (wb.written) { seenSince(u.written, u.tick ?? delTick); gate.vague = vagueFrom(landed, u.before); }
         blockRoom(genBusy(c) ? 'busy' : c.why, c.at);
         if (c.why === 'gone' || c.why === 'mem') toastr.warning(`직전 저장은 채팅 파일에 들어가 있어요. 하지만 ${gateMessage()}`, 'SavePoint', { timeOut: 15000 });
         else toastr.success('직전 저장이 채팅 파일에 들어가 있는 걸 확인했어요. 다음 저장 때 채팅 파일을 한 번 더 확인해요.', 'SavePoint');
@@ -1095,6 +1106,17 @@ async function confirmUnsure() {
     if (u.status && !u.noAnswer && u.before && (r.snap.meta?.[MODULE] ?? null) === (u.before.meta?.[MODULE] ?? null)) {
         gate.unsure = null; clearTimeout(unsureTimer);
         toastr.info('직전 저장(기록 상태 표시만 바뀐 저장)은 채팅 파일에 들어가지 않았어요. 기억은 바뀌지 않아서 다시 평소처럼 저장해요.', 'SavePoint');
+        render(); scheduleAuto();
+        return gateOpen();
+    }
+    // v0.6.93: a request that was answered (not one that may still land) and a file that is exactly this page: nothing on the
+    // page is missing from the file and nothing in it is foreign, whatever happened to the write (SillyTavern saved a newer
+    // status with the same messages). The file is the base; the room goes on.
+    if (!u.noAnswer && samePage(pageSnap(), r.snap, null)) {
+        gate.unsure = null; clearTimeout(unsureTimer);
+        setSeen(r.snap);
+        if (gate.pending) { toastr.warning(gateMessage(), 'SavePoint', { timeOut: 15000 }); render(); return false; }
+        toastr.success('채팅 파일이 지금 화면과 같아져서 다시 평소처럼 저장해요.', 'SavePoint');
         render(); scheduleAuto();
         return gateOpen();
     }
