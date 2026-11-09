@@ -5,8 +5,8 @@ import { markOf, findMarked, planRemoval, applyRemoval, parseIds } from '../expe
 // The request list as SillyTavern 1.19 builds it before interceptors (public/script.js, Generate):
 // drop `is_system`, drop the last item on a swipe, shallow-copy each item with rewritten text and
 // its own list `index`, then copy again for reasoning.
-function stCore(chat, type) {
-    let core = chat.filter(x => !x.is_system);
+function stCore(chat, type, tools = false) {
+    let core = chat.filter(x => !x.is_system || (tools && Array.isArray(x.extra?.tool_invocations)));
     if (type === 'swipe') core.pop();
     core = core.map((m, index) => ({ ...m, mes: `${m.mes} [regex]`, index }));
     return core.map(m => ({ ...m }));
@@ -20,9 +20,9 @@ function room(n = 10) {
 }
 
 const texts = core => core.map(c => c.mes.replace(' [regex]', ''));
-function run(chat, ids, type, mutate) {
-    const marks = ids.map(i => markOf(chat[i]));
-    const core = stCore(chat, type);
+function run(chat, ids, type, mutate, tools) {
+    const marks = ids.map(i => markOf(chat[i], chat));
+    const core = stCore(chat, type, tools);
     if (mutate) mutate(core);
     const plan = planRemoval(chat, core, marks, type);
     applyRemoval(core, plan.remove);
@@ -117,4 +117,57 @@ test('hide probe: id list parsing', () => {
     assert.deepEqual(parseIds('#7-#6 #1', 10), [1, 6, 7]);
     assert.deepEqual(parseIds('12', 10), []);
     assert.equal(parseIds('two', 10), null);
+});
+
+// 0.1.1 (GPT review of the experiment)
+test('hide probe 0.1.1: chosen A deleted, B with the same date/speaker/role is not removed in its place', () => {
+    const chat = room(6);
+    chat[3].send_date = chat[1].send_date;
+    const mark = markOf(chat[1], chat);
+    chat.splice(1, 1);
+    const core = stCore(chat);
+    const plan = planRemoval(chat, core, [mark]);
+    assert.deepEqual(plan.remove, []);
+    assert.deepEqual(plan.skipped.map(x => x.why), ['ambiguous']);
+    // the same mark still finds A while A is there, by its text
+    assert.equal(findMarked(room(6).map((m, i, a) => (i === 3 ? { ...m, send_date: a[1].send_date } : m)), mark).i, 1);
+});
+
+test('hide probe 0.1.1: an item put in just before the chosen one, carrying its `extra`, removes nothing', () => {
+    const chat = room(6);
+    const { core, plan } = run(chat, [3], 'normal', c => c.splice(3, 0, { ...c[3], mes: 'injected' }));
+    assert.deepEqual(texts(core), ['line 0', 'line 1', 'line 2', 'injected', 'line 3', 'line 4', 'line 5']);
+    assert.deepEqual(plan.skipped.map(x => x.why), ['ambiguous']);
+});
+
+test('hide probe 0.1.1: same date and speaker put in by another interceptor (no `extra`) removes nothing', () => {
+    const chat = room(6);
+    chat.forEach(m => delete m.extra);
+    let { core, plan } = run(chat, [3], 'normal', c => c.splice(3, 0, { ...c[3], mes: 'injected' }));
+    assert.equal(core.length, 7);
+    assert.deepEqual(plan.skipped.map(x => x.why), ['ambiguous']);
+    // put in further up (before earlier messages): the in-order walk has passed it, the chosen one is still found
+    ({ core, plan } = run(chat, [3], 'normal', c => c.splice(1, 0, { ...c[3], mes: 'injected' })));
+    assert.deepEqual(texts(core), ['line 0', 'injected', 'line 1', 'line 2', 'line 4', 'line 5']);
+});
+
+test('hide probe 0.1.1: a tool call message SillyTavern keeps in the request is reported as kept, not as hidden', () => {
+    const chat = room(6);
+    chat[2].is_system = true; chat[2].extra.tool_invocations = [{}];
+    const { core, plan } = run(chat, [2], 'normal', null, true);
+    assert.equal(core.length, 6);
+    assert.deepEqual(plan.skipped.map(x => x.why), ['tool-kept']);
+});
+
+test('hide probe 0.1.1: continue keeps the chat\'s last message even when another interceptor appended after it', () => {
+    const chat = room(6);
+    const { core, plan } = run(chat, [5, 2], 'continue', c => c.push({ mes: 'tail', name: 'Keeper' }));
+    assert.deepEqual(texts(core), ['line 0', 'line 1', 'line 3', 'line 4', 'line 5', 'tail']);
+    assert.deepEqual(plan.skipped.map(x => [x.i, x.why]), [[5, 'continue-target']]);
+});
+
+test('hide probe 0.1.1: huge numbers do not hang the parser', () => {
+    assert.deepEqual(parseIds('9007199254740992', 20), null);
+    assert.deepEqual(parseIds('9007199254740990', 20), []);
+    assert.deepEqual(parseIds('3-900000000', 6), [3, 4, 5]);
 });

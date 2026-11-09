@@ -17,7 +17,12 @@ export function fp(text) {
 
 export function keyOf(m) { return [m?.send_date ?? '', m?.name ?? '', m?.is_user ? 1 : 0].join('\u0001'); }
 
-export function markOf(m) { return { date: m?.send_date ?? null, name: m?.name ?? '', user: !!m?.is_user, fp: fp(m?.mes) }; }
+// `dup`: another message in the chat had the same date, speaker and role when it was chosen. Then the text
+// fingerprint must match too, even when only one candidate is left (the chosen one may be the one deleted).
+export function markOf(m, chat = []) {
+    const dup = chat.some(x => x && x !== m && keyOf(x) === keyOf(m));
+    return { date: m?.send_date ?? null, name: m?.name ?? '', user: !!m?.is_user, fp: fp(m?.mes), ...(dup ? { dup: true } : {}) };
+}
 
 const sameKey = (m, mark) => (m?.send_date ?? null) === mark.date && (m?.name ?? '') === mark.name && !!m?.is_user === mark.user;
 
@@ -25,7 +30,7 @@ const sameKey = (m, mark) => (m?.send_date ?? null) === mark.date && (m?.name ??
 export function findMarked(chat, mark) {
     const hits = [];
     chat.forEach((m, i) => { if (m && sameKey(m, mark)) hits.push(i); });
-    if (hits.length === 1) return { i: hits[0] };
+    if (hits.length === 1) return !mark.dup || fp(chat[hits[0]].mes) === mark.fp ? { i: hits[0] } : { miss: 'ambiguous' };
     if (!hits.length) return { miss: 'gone' };
     const exact = hits.filter(i => fp(chat[i].mes) === mark.fp);
     return exact.length === 1 ? { i: exact[0] } : { miss: 'ambiguous' };
@@ -41,13 +46,20 @@ export function pairCore(chat, core) {
     let k = 0;
     chat.forEach((m, i) => {
         if (!m) return;
+        // 0.1.1: on the list side too, two candidates (another interceptor put in an item carrying the same `extra`
+        // or the same date and speaker) mean no pair: nothing is removed rather than the wrong item.
+        const after = test => { const js = []; for (let j = k; j < core.length; j++) if (test(core[j])) js.push(j); return js; };
         let p = -1;
         if (m.extra && typeof m.extra === 'object') {
-            for (let j = k; j < core.length; j++) if (core[j]?.extra === m.extra) { p = j; break; }
+            const js = after(c => c?.extra === m.extra);
+            if (js.length > 1) { unsure.add(i); return; }
+            if (js.length === 1) p = js[0];
         }
         if (p < 0) {
             if (counts.get(keyOf(m)) > 1) { unsure.add(i); return; }
-            for (let j = k; j < core.length; j++) if (keyOf(core[j]) === keyOf(m)) { p = j; break; }
+            const js = after(c => keyOf(c) === keyOf(m));
+            if (js.length > 1) { unsure.add(i); return; }
+            if (js.length === 1) p = js[0];
         }
         if (p >= 0) { pair.set(i, p); k = p + 1; }
     });
@@ -65,11 +77,13 @@ export function planRemoval(chat, core, marks, type) {
         const i = at.i;
         if (seen.has(i)) continue;
         seen.add(i);
-        if (chat[i].is_system) { skipped.push({ mark, i, why: 'already-hidden' }); continue; }
+        // 0.1.1: a hidden message SillyTavern still sends (a tool call's message, when tools are on) stays and says so.
+        if (chat[i].is_system) { skipped.push({ mark, i, why: pair.has(i) ? 'tool-kept' : 'already-hidden' }); continue; }
         if (unsure.has(i)) { skipped.push({ mark, i, why: 'ambiguous' }); continue; }
         if (!pair.has(i)) { skipped.push({ mark, i, why: 'not-in-request' }); continue; }
         const p = pair.get(i);
-        if (type === 'continue' && p === core.length - 1) { skipped.push({ mark, i, why: 'continue-target' }); continue; }
+        // 0.1.1: the message being continued is the chat's last one, wherever other interceptors left it in the list.
+        if (type === 'continue' && i === chat.length - 1) { skipped.push({ mark, i, why: 'continue-target' }); continue; }
         remove.push(p);
         removed.push({ mark, i });
     }
@@ -89,9 +103,10 @@ export function parseIds(text, max) {
         const r = part.match(/^#?(\d+)(?:-#?(\d+))?$/);
         if (!r) return null;
         let a = Number(r[1]), b = r[2] === undefined ? a : Number(r[2]);
+        if (!Number.isSafeInteger(a) || !Number.isSafeInteger(b)) return null;
         if (a > b) [a, b] = [b, a];
-        if (b - a > 2000) return null;
-        for (let n = a; n <= b; n++) if (n < max) out.add(n);
+        // 0.1.1: only numbers the chat has (a huge number no longer loops forever).
+        for (let n = a, end = Math.min(b, max - 1); n <= end; n++) out.add(n);
     }
     return [...out].sort((a, b) => a - b);
 }

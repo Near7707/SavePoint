@@ -37,6 +37,7 @@ const WHY = {
     'already-hidden': '이미 숨김(/hide·SavePoint) — 실리태번이 먼저 뺌',
     'not-in-request': '요청 목록에 없음(스와이프 대상 등)',
     'continue-target': '이어쓰기 대상이라 남김',
+    'tool-kept': '도구 호출 메시지 — 실리태번이 요청에 넣어서 남김(실험 대상 아님)',
     ambiguous: '같은 시각·이름 메시지가 여럿이라 구분 못 해 남김',
     gone: '메시지를 찾지 못함(지워짐)',
 };
@@ -92,7 +93,7 @@ function hideIds(ids) {
         const m = chat[i];
         if (!m) continue;
         if (list.some(mk => findMarked(chat, mk).i === i)) continue;
-        list.push(markOf(m));
+        list.push(markOf(m, chat));
     }
     setMarks(list);
 }
@@ -111,7 +112,7 @@ function readIds() {
 
 function resultText() {
     const s = store();
-    const lines = ['Hide Probe 0.1.0', `방: ${roomKey() ?? '-'}`, `실험 숨김: ${listText().join(', ') || '없음'}`, ''];
+    const lines = ['Hide Probe 0.1.1', `방: ${roomKey() ?? '-'}`, `실험 숨김: ${listText().join(', ') || '없음'}`, ''];
     for (const e of s.log) {
         lines.push(`[${e.at}] ${e.type}${e.error ? ` 오류: ${e.error}` : ` · 목록 ${e.before} → ${e.after}`}`);
         for (const r of e.removed ?? []) lines.push(`  뺌 ${r}`);
