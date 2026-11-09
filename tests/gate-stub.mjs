@@ -17,5 +17,7 @@ export function gateBox() {
         // v0.6.83: every failed write is settled by reading the file; here, as before: one that may have landed
         // stays (its error), any other is taken back.
         stIdle: async () => false, settleWrite: async e => (e?.landed ? e : 'revert'),
+        // v0.6.87: a file read back becomes the base (always, here).
+        fileBase: () => ({ ok: true }),
     };
 }

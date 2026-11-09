@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.86';
+const VERSION = '0.6.87';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -279,7 +279,7 @@ async function writeChatFile() {
             if (r.status === 500 || [408, 502, 503, 504].includes(r.status)) throw lost(new Error(text), tSnap);
             throw fail(new Error(text));
         }
-        // v0.6.85: success is SillyTavern's own answer ({ ok: true }; before 1.12.x { result: 'ok' }). Anything else
+        // v0.6.85: success is SillyTavern's own answer ({ ok: true }; a single chat up to 1.14.x: { result: 'ok' }). Anything else
         // with 200 (a login page of a proxy, an empty answer) may not come from SillyTavern: as no answer.
         let body = null;
         try { body = await r.json(); } catch { /* not json */ }
@@ -363,6 +363,9 @@ async function settleWrite(e, { written, rev, proof, pre, key, epoch, marks = nu
         let c = covers(pageSnap(), r.snap, MODULE, gateHere() ? gate.seen : null, gateHere() ? gate.cut : null);
         // The file is a copy this page sent (it landed over a newer save of SillyTavern's): nothing foreign.
         if (!c.ok && c.why !== 'gone' && copies.some(x => ownCopy(x, r.snap))) c = { ok: true };
+        // v0.6.87: the change being in the file does not make the file a base for the next write: a memory there that
+        // another device wrote (found by the marks, in a room without one) blocks the room instead of becoming `seen`.
+        if (c.ok && foreignMemory(r, pageSnap(), gateHere() ? gate.seen : null)) c = { ok: false, why: 'mem' };
         if (c.ok && gateHere()) setSeen(r.snap);
         if (c.ok && !(gateHere() && gate.pending)) return null;
         if (!c.ok) blockRoom(c.why);
@@ -605,7 +608,15 @@ async function writeEntry(queue, entry) {
             if (result === 'failed') { if (gateHere()) setSeen(post.snap); throw new Error('실리태번은 저장을 마쳤다고 했지만 채팅 파일은 그대로예요'); }
             if (result === 'moved') unsure = { moved: true };
             else if (result === 'unsure') unsure = { rev, prevRev: pre.rev, written, before: pre.snap, proof, prevProof: pre.proof };
-            else if (gateHere()) setSeen(post.snap);
+            else if (gateHere()) {
+                // v0.6.87: the file read back becomes the base only when the page covers it against the base so far (the copy
+                // last answered with success): a message deleted elsewhere since, or another device's memory, blocks the room
+                // (the change itself is in the file). Anything that may still settle (SillyTavern not done saving the page)
+                // leaves the base as it is.
+                const c = fileBase(post, gate.seen);
+                if (c.ok) setSeen(post.snap);
+                else if (c.why === 'gone' || c.why === 'mem') { blockRoom(c.why); const err = new RoomBlocked(`이번 변경은 채팅 파일에 저장했어요. 하지만 ${gateMessage()}`); err.kept = true; throw err; }
+            }
         }
     } catch (e) {
         if (e?.kept) throw e;
@@ -853,7 +864,7 @@ async function readServerChat() {
 // lacks now was deleted elsewhere ('gone'), and a SavePoint memory in the file that is neither the one
 // last confirmed nor this page's, and that this page did not write, was saved by another device ('mem').
 // Neither goes away by waiting.
-async function serverCovered(page = pageSnap, tries = [0, 500, 1500]) {
+async function serverCovered(page = pageSnap, tries = [0, 500, 1500], { adopt = true } = {}) {
     const key = roomKey(), epoch = roomEpoch;
     const moved = () => roomKey() !== key || roomEpoch !== epoch;
     let last = { ok: false, why: 'error' };
@@ -866,7 +877,9 @@ async function serverCovered(page = pageSnap, tries = [0, 500, 1500]) {
         const seen = gateHere() ? gate.seen : null, now = page();
         const c = covers(now, r.snap, MODULE, seen, gateHere() ? gate.cut : null);
         if (c.ok && foreignMemory(r, now, seen)) return { ok: false, why: 'mem' };
-        if (c.ok) { if (gateHere()) setSeen(r.snap); return r; }
+        // v0.6.87: `adopt: false` — a look before a change takes its turn (a load's questions): a write of this room may
+        // be on its way, so the file is not made the base (its turn checks again).
+        if (c.ok) { if (adopt && gateHere()) setSeen(r.snap); return r; }
         last = { ok: false, why: c.why, at: c.at };
         if (c.why === 'gone') return last;
     }
@@ -887,6 +900,15 @@ function foreignMemory(r, page, seen) {
     if (!seen) return gateHere() && !!r.snap.meta && mod !== (page.meta?.[MODULE] ?? null);
     if (mod === (seen.meta?.[MODULE] ?? null) || mod === (page.meta?.[MODULE] ?? null)) return false;
     return r.by !== SESSION;
+}
+function fileBase(r, base) {
+    // v0.6.87: may a file read after a write become what the file was last seen to be? Only when the page covers it
+    // against `base` (the base so far: the copy last answered with success, or the file last confirmed) and its
+    // memory is not another device's. { ok } or { ok: false, why }.
+    const now = pageSnap();
+    const c = covers(now, r.snap, MODULE, base, gateHere() ? gate.cut : null);
+    if (!c.ok) return c;
+    return foreignMemory(r, now, base) ? { ok: false, why: 'mem' } : { ok: true };
 }
 function startRoomCheck() {
     clearTimeout(unsureTimer);
@@ -952,7 +974,11 @@ async function confirmUnsure() {
         // v0.6.60: finding the write confirms it, but that file becomes the base for the next writes only
         // when the page still covers it. What was written is the file as last confirmed: a message it had
         // that the file has lost since was deleted elsewhere (even when it was edited here meanwhile).
-        const c = covers(pageSnap(), r.snap, MODULE, u.written, gate.cut);
+        // v0.6.87: against what was written and against the base so far (a copy answered with success after it, see
+        // writeChatFile), and never over another device's memory.
+        let c = covers(pageSnap(), r.snap, MODULE, u.written, gate.cut);
+        if (c.ok && gate.seen && gate.seen !== u.written) c = fileBase(r, gate.seen);
+        else if (c.ok) c = fileBase(r, u.written);
         if (c.ok) {
             setSeen(r.snap);
             if (gate.pending) { toastr.warning(`직전 저장은 채팅 파일에 들어가 있어요. 하지만 ${gateMessage()}`, 'SavePoint', { timeOut: 15000 }); render(); return false; }
@@ -960,9 +986,10 @@ async function confirmUnsure() {
             render(); scheduleAuto();
             return gateOpen();
         }
-        gate.seen = u.written;
+        // v0.6.87: what was written replaces only the file read before it (a newer base, a copy answered later, stays).
+        if (!gate.seen || gate.seen === u.before) gate.seen = u.written;
         blockRoom(c.why);
-        if (c.why === 'gone') toastr.warning(`직전 저장은 채팅 파일에 들어가 있어요. 하지만 ${gateMessage()}`, 'SavePoint', { timeOut: 15000 });
+        if (c.why === 'gone' || c.why === 'mem') toastr.warning(`직전 저장은 채팅 파일에 들어가 있어요. 하지만 ${gateMessage()}`, 'SavePoint', { timeOut: 15000 });
         else toastr.success('직전 저장이 채팅 파일에 들어가 있는 걸 확인했어요. 다음 저장 때 채팅 파일을 한 번 더 확인해요.', 'SavePoint');
         return false;
     }
@@ -2762,7 +2789,7 @@ async function loadSave(id) {
     // exactly the messages on the page (none, or the one greeting the question showed).
     const changedNote = '확인하는 사이 대화나 기억이 바뀌어서 아무것도 바꾸지 않았어요. 다시 불러와 주세요.';
     if (!gateOpen() || !samePage(asked, pageSnap(), MODULE) || !memSame()) { toastr.info(gateOpen() ? changedNote : gateMessage(), 'SavePoint', { timeOut: 10000 }); return; }
-    const server = await serverCovered(pageSnap, [0]);
+    const server = await serverCovered(pageSnap, [0], { adopt: false });
     if (!here()) return moved();
     if (!server.ok) { blockRoom(server.why); toastr.warning(`${gateMessage()} 이 방은 바꾸지 않았어요.`, 'SavePoint', { timeOut: 12000 }); return; }
     if (!gateOpen() || !samePage(asked, pageSnap(), MODULE) || !memSame()) { toastr.info(gateOpen() ? changedNote : gateMessage(), 'SavePoint', { timeOut: 10000 }); return; }
