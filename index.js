@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.90';
+const VERSION = '0.6.91';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -224,11 +224,11 @@ async function writeChatFile() {
     // whose answer cannot be told from SillyTavern's own) may still land at any time, even after the file shows
     // the same copy (SillyTavern saves the whole page too): the room is `pending` and SavePoint writes nothing
     // more there until it is opened again.
-    let sent = null, sentSnap = null, landed = false;
+    let sent = null, sentSnap = null, landed = false, adopted = null;
     const sents = [];
     // v0.6.90: `answered` — a request of this write was answered with success (its copy became `gate.seen`, seenSent).
     // Without one, `gate.seen` is still a file read before any copy of this write was in it (settleWrite, confirmUnsure).
-    const fail = e => { if (e && typeof e === 'object') { e.sents = sents; e.answered = sentSnap !== null; if (landed) { e.landed = true; e.sent = sentSnap; } } return e; };
+    const fail = e => { if (e && typeof e === 'object') { e.sents = sents; e.answered = sentSnap !== null; e.adopted = adopted; if (landed) { e.landed = true; e.sent = sentSnap; } } return e; };
     const moved = () => roomKey() !== key || roomEpoch !== epoch;
     const lost = (e, snap) => {
         const err = fail(e);
@@ -251,6 +251,8 @@ async function writeChatFile() {
                     : c.why === 'busy' ? `${BUSY_TEXT} 그래서 더 저장하지 않았어요.`
                     : `서버의 채팅 파일에 이 화면에 없는 내용이 생겨서 더 저장하지 않았어요.${whyDetail(c.why, c.at)}`));
             }
+            // v0.6.91: the file just read (and made `gate.seen`) — a base for settleWrite when it holds this write.
+            adopted = c.r;
             // SillyTavern started writing again during the read: wait for it and look again.
             if (stScript?.isChatSaving) continue;
         }
@@ -366,10 +368,14 @@ async function settleWrite(e, { written, rev, proof, pre, key, epoch, marks = nu
     // v0.6.85: a room without a memory has no receipt. Where the file differs from every copy sent (SillyTavern
     // saved the page with this change and something more), the marks this change set decide: all there → in
     // the file; all as before → not there; anything else (moved, partly there) → cannot tell, nothing taken back.
-    const byMarks = proof === null || proof === undefined ? marksInFile(marks, written, r) : null;
-    if (holdsWrite(r, { copies, proof, before: pre?.snap }) || byMarks === 'in') {
+    // v0.6.91: a receipt proves this write only when this write changed it. A background save of status marks only keeps
+    // the file's receipt: there the content decides (the file must hold what was written), never the receipt.
+    const own = proof !== null && proof !== undefined && proof !== pre?.proof ? proof : null;
+    const byMarks = own === null ? marksInFile(marks, written, r) : null;
+    const holds = x => holdsWrite(x, { copies, proof: own, before: pre?.snap });
+    if (holds(r) || byMarks === 'in') {
         // v0.6.90: judged against writeBase, not a file read before this write reached the file.
-        const answered = !!e?.answered, wb = gateHere() ? writeBase(answered, written, tick) : { base: null, cut: null };
+        const answered = !!e?.answered, wb = gateHere() ? writeBase(answered, written, tick, e?.adopted, holds) : { base: null, cut: null };
         let c = covers(pageSnap(), r.snap, MODULE, wb.base, wb.cut);
         // The file is a copy this page sent (it landed over a newer save of SillyTavern's): nothing foreign.
         if (!c.ok && c.why !== 'gone' && copies.some(x => ownCopy(x, r.snap))) c = { ok: true };
@@ -379,13 +385,16 @@ async function settleWrite(e, { written, rev, proof, pre, key, epoch, marks = nu
         if (c.ok && gateHere()) setSeen(r.snap);
         if (c.ok && !(gateHere() && gate.pending)) return null;
         // v0.6.90: blocked, what was written stays the base, so the next check finds the same deletion again.
-        if (!c.ok && gateHere() && !answered && written) seenSince(written, tick);
-        if (!c.ok) blockRoom(c.why, c.at);
+        if (!c.ok && gateHere() && wb.written) seenSince(written, tick);
+        if (!c.ok) blockRoom(genBusy(c) ? 'busy' : c.why, c.at);
+        // v0.6.91: a difference the reply being made explains: the change is in the file; checked again after the reply.
+        if (gateHere() && gate.status === 'busy' && !gate.pending) return null;
         return new RoomBlocked(`이번 변경은 채팅 파일에 저장했어요. 하지만 ${gateMessage()}`);
     }
     // Not in the file, and nothing of this write can land any more: shown not to be there.
-    if (!e?.landed && r.ok && byMarks !== 'unsure') return 'revert';
-    markUnsure({ rev, prevRev: pre?.rev ?? null, written, copies, marks, before: pre?.snap, proof, prevProof: pre?.proof, noAnswer: !!e?.noAnswer, answered: !!e?.answered, tick });
+    // v0.6.91: a background save of status marks that is not in the file is only reported: nothing of a memory to confirm.
+    if ((!e?.landed || own === null && proof !== null && proof !== undefined) && r.ok && byMarks !== 'unsure') return 'revert';
+    markUnsure({ rev, prevRev: pre?.rev ?? null, written, copies, marks, before: pre?.snap, proof, prevProof: pre?.proof, noAnswer: !!e?.noAnswer, answered: !!e?.answered, tick, adopted: e?.adopted });
     return new Unconfirmed(`저장은 보냈지만 채팅 파일에 들어갔는지 확인하지 못했어요(${e?.message || e}). 확인될 때까지 SavePoint는 새로 저장하지 않아요(자동 저장·QUICK 백업 포함). 잠시 뒤 다시 확인하고, 안 되면 새로고침해서 마지막 기록이 남아 있는지 봐 주세요.`);
 }
 
@@ -843,10 +852,13 @@ const seenSent = seenSince;
 // (that copy, or a file read since and checked against it). Without one, `gate.seen` is a file read before the write
 // reached the file (even a read during the write, while SillyTavern saved): what was written is the base then, with
 // the deletions made here after it. { base, cut }.
-function writeBase(answered, written, tick) {
+function writeBase(answered, written, tick, adopted = null, holds = () => false) {
     if (answered || !written) return { base: gate.seen, cut: gate.cut };
+    // v0.6.91: a file read during this write that holds it (SillyTavern saved the page after the change: everything the
+    // page had then) is newer than what was written; it stays the base while nothing replaced it.
+    if (adopted && gate.seen === adopted.snap && holds(adopted)) return { base: gate.seen, cut: gate.cut };
     const later = delLog.filter(x => x.tick > tick && x.key === gate.key && x.epoch === gate.epoch);
-    return { base: written, cut: later.length ? Math.min(...later.map(x => x.n)) : null };
+    return { base: written, cut: later.length ? Math.min(...later.map(x => x.n)) : null, written: true };
 }
 const wait = ms => new Promise(r => setTimeout(r, ms));
 function gateHere() { return hasChat() && gate.key === roomKey() && gate.epoch === roomEpoch; }
@@ -885,8 +897,6 @@ function recheckAfterReply() {
         if (gate.key !== key || gate.epoch !== epoch || gate.status !== 'busy' || !gateHere()) return;
         gate.check = verifyRoom();
         if (!(await gate.check) || gate.key !== key || gate.epoch !== epoch) return;
-        // A background save held back by the reply goes through now.
-        if (gate.held) { gate.held = false; persistSoon(); }
         render();
     }, 1500);
 }
@@ -990,7 +1000,8 @@ async function verifyRoom() {
     gate.status = 'checking';
     const r = await serverCovered();
     if (gate.key !== key || gate.epoch !== epoch || r.why === 'moved' || !gateHere()) return false;
-    if (r.ok) { gate.status = 'ready'; gate.why = ''; gate.at = null; } else blockRoom(r.why, r.at);
+    // v0.6.91: a background save held back by a reply goes through once the room is open, whatever opened it.
+    if (r.ok) { gate.status = 'ready'; gate.why = ''; gate.at = null; if (gate.held) { gate.held = false; persistSoon(); } } else blockRoom(r.why, r.at);
     if (r.ok && !gate.readied) { gate.readied = true; roomOpened(); }
     return r.ok;
 }
@@ -1050,7 +1061,7 @@ async function confirmUnsure() {
         // before a later copy was sent is in that copy, so it is not taken for a deletion elsewhere.
         // v0.6.90: "newer" is told by a request answered with success (u.answered), not by `gate.seen` being another
         // object: a file read during the write (the same content as before it) is not a copy of this write.
-        const wb = writeBase(u.answered, u.written, u.tick ?? delTick);
+        const wb = writeBase(u.answered, u.written, u.tick ?? delTick, u.adopted, x => holdsWrite(x, { copies: u.copies || [u.written], proof: wrote, before: u.before }));
         const c = fileBase(r, wb.base, wb.cut);
         if (c.ok) {
             setSeen(r.snap);
@@ -1060,8 +1071,8 @@ async function confirmUnsure() {
             return gateOpen();
         }
         // v0.6.87: what was written replaces only the file read before it (a newer base, a copy answered later, stays).
-        if (!u.answered && u.written) seenSince(u.written, u.tick ?? delTick);
-        blockRoom(c.why, c.at);
+        if (wb.written) seenSince(u.written, u.tick ?? delTick);
+        blockRoom(genBusy(c) ? 'busy' : c.why, c.at);
         if (c.why === 'gone' || c.why === 'mem') toastr.warning(`직전 저장은 채팅 파일에 들어가 있어요. 하지만 ${gateMessage()}`, 'SavePoint', { timeOut: 15000 });
         else toastr.success('직전 저장이 채팅 파일에 들어가 있는 걸 확인했어요. 다음 저장 때 채팅 파일을 한 번 더 확인해요.', 'SavePoint');
         return false;
