@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.88';
+const VERSION = '0.6.89';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -605,6 +605,10 @@ async function writeEntry(queue, entry) {
             const result = !post || moved() ? 'moved' : post.ok ? writeResult(written, pre.snap, post.snap, MODULE) : 'unsure';
             // v0.6.83: the copy answered with success never got in (the file is exactly as before): what the file
             // was last seen to be goes back to the file itself (that copy is not a base for deletions).
+            // v0.6.89 (kept after review): a file exactly as before this write was written by someone who never saw it —
+            // every write here changes the memory's rev or a message's marks, so a copy that saw it cannot equal the
+            // file before. Messages this page has beyond it (sent with the write) were not deleted by anyone: the next
+            // write puts them back. Blocking would leave them out of the file with the room stopped.
             if (result === 'failed') { if (gateHere()) setSeen(post.snap); throw new Error('실리태번은 저장을 마쳤다고 했지만 채팅 파일은 그대로예요'); }
             if (result === 'moved') unsure = { moved: true };
             else if (result === 'unsure') unsure = { rev, prevRev: pre.rev, written, before: pre.snap, proof, prevProof: pre.proof };
@@ -974,11 +978,12 @@ async function confirmUnsure() {
         // v0.6.60: finding the write confirms it, but that file becomes the base for the next writes only
         // when the page still covers it. What was written is the file as last confirmed: a message it had
         // that the file has lost since was deleted elsewhere (even when it was edited here meanwhile).
-        // v0.6.87: against what was written and against the base so far (a copy answered with success after it, see
-        // writeChatFile), and never over another device's memory.
-        let c = covers(pageSnap(), r.snap, MODULE, u.written, gate.cut);
-        if (c.ok && gate.seen && gate.seen !== u.written) c = fileBase(r, gate.seen);
-        else if (c.ok) c = fileBase(r, u.written);
+        // v0.6.87: never over another device's memory. v0.6.89: against one base — the newest copy known to be meant
+        // for the file: a copy answered with success during this write (or a file read since) when there is one
+        // (`gate.seen` moved on from the file read before the write), else what was written. A deletion this page made
+        // before a later copy was sent is in that copy, so it is not taken for a deletion elsewhere.
+        const newer = gate.seen && gate.seen !== u.before ? gate.seen : null;
+        const c = fileBase(r, newer ?? u.written);
         if (c.ok) {
             setSeen(r.snap);
             if (gate.pending) { toastr.warning(`직전 저장은 채팅 파일에 들어가 있어요. 하지만 ${gateMessage()}`, 'SavePoint', { timeOut: 15000 }); render(); return false; }
