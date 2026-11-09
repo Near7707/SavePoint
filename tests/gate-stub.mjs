@@ -19,5 +19,7 @@ export function gateBox() {
         stIdle: async () => false, settleWrite: async e => (e?.landed ? e : 'revert'),
         // v0.6.87: a file read back becomes the base (always, here).
         fileBase: () => ({ ok: true }),
+        // v0.6.90: the turn of the last deletion on the page (none here), passed to settleWrite with what was written.
+        delTick: 0,
     };
 }
