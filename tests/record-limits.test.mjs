@@ -86,6 +86,26 @@ test('a new entity declared with "id" ("new1", or an id that does not exist) is 
     assert.ok(out.errors.some(e => /looks like an id/.test(e)));
 });
 
+// v0.6.99 (review P2): an existing id with spaces around it must not become a new entity's ref.
+test('an existing id with spaces (" e1 ") is not read as a new ref, and a new ref may never be an existing id', () => {
+    const s = story();
+    s.step({ scene: 'new', outline: 'Start.' }, [], [{ ref: 'a', type: 'person', name: 'Ari', aliases: [] }]);
+    const ari = s.mem.entities.find(e => e.name === 'Ari').id;
+    assert.equal(ari, 'e1');
+    const out = s.step({ scene: 'continue', outline: 'More.', who: [ari] },
+        [{ op: 'add', type: 'item', entity: 'sh', holder: ari, text: 'A black shirt.' }],
+        [{ id: ` ${ari} `, type: 'person', name: 'Bo', aliases: [] }, { ref: 'sh', type: 'item', name: 'black shirt', aliases: [] }], { expectErrors: true });
+    assert.ok(!out.fixes.some(f => f.startsWith('ref:')), 'not read as a ref');
+    assert.ok(out.errors.some(e => /unknown entity id " e1 "/.test(e)), 'asked again, as before v0.6.96');
+    assert.deepEqual(s.mem.entities.map(e => e.name), ['Ari']);
+    // Validation alone also refuses a ref (read from "id") that is an existing id.
+    const d = { scenes: [{ scene: 'continue', title: 'T', outline: 'x', where: 'Road', who: ['e1'], ended: false, notes: '',
+        points: [{ text: 'x.', kind: 'moment', key: false, msgs: [9] }] }], entities: [{ ref: 'e1', type: 'person', name: 'Bo', aliases: [] }], changes: [] };
+    Object.defineProperty(d.entities[0], 'refFromId', { value: true });
+    const errors = validateResult(d, { mem: s.mem, chunk: { from: 9, to: 9, indices: [9], text: '#9 x', texts: { 9: 'x' } } });
+    assert.ok(errors.some(e => /"e1" is already the id of an existing entity/.test(e)), errors.join('\n'));
+});
+
 test('adding an item that already has a live record updates that record instead of adding a second one', () => {
     const s = story();
     s.step({ scene: 'new', outline: 'Start.' }, [{ op: 'add', type: 'item', entity: 'sh', holder: 'a', text: 'A black shirt, clean.' }],

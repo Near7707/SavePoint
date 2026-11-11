@@ -378,9 +378,12 @@ export function normalizeResult(data, { mem, chunk } = {}) {
     // v0.6.96: a new entity declared with "id" instead of "ref" ("id": "new1", or an id that does not exist such as "e20",
     // with a type and a name): read as its ref, so the reply is not asked again for it. An id that exists is left as it is
     // (an update of that entity); the same-name check still applies to the new one.
+    // v0.6.99: the existing-id check uses the trimmed id, so " e1 " is never read as a new entity's ref "e1"
+    // (that ref would take every "e1" in the reply away from the existing entity). It stays an unknown id and is asked again.
     for (const [i, e] of (Array.isArray(data.entities) ? data.entities : []).entries()) {
-        if (!plain(e) || !str(e.id) || str(e.ref) || (mem?.entities || []).some(x => x.id === e.id)) continue;
+        if (!plain(e) || !str(e.id) || str(e.ref)) continue;
         const id = e.id.trim(), idLike = /^[sgerSGER]\d+$/.test(id);
+        if ((mem?.entities || []).some(x => x.id === id)) continue;
         if (idLike && !(ENTITY_TYPES.includes(e.type) && str(e.name))) continue;
         e.ref = id; delete e.id;
         if (idLike) Object.defineProperty(e, 'refFromId', { value: true });
@@ -533,6 +536,7 @@ export function validateResult(data, { mem, chunk, expectContinue }) {
         const ref = str(e.ref);
         if (!ref) { errors.push(`${w}.ref is missing.`); continue; }
         if (/^[sgerSGER]\d+$/.test(ref) && !e.refFromId) errors.push(`${w}.ref "${ref}" looks like an id; invent a ref such as "new1".`);
+        else if (mem.entities.some(x => x.id === ref)) errors.push(`${w}.ref "${ref}" is already the id of an existing entity; invent a ref such as "new1".`);
         if (declared.has(ref)) errors.push(`${w}.ref "${ref}" is declared twice.`);
         if (!ENTITY_TYPES.includes(e.type)) errors.push(`${w}.type must be person, item or place.`);
         if (!str(e.name)) errors.push(`${w}.name is missing.`);
