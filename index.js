@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.93';
+const VERSION = '0.6.94';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -347,8 +347,9 @@ function writeHeld(x, { copies, proof, before, marks, written, status }) {
 }
 function vagueFrom(how, before) {
     // v0.6.93: a write held only by its status value (writeHeld 'status') proves nothing of the messages after the file read
-    // before it: one of them missing from the file now may be deleted elsewhere or never saved yet. From that message on,
-    // a 'gone' is told as unclear (gateMessage), never with "reload" (that would lose a message only this page has).
+    // before it: one of them missing from the file now may be deleted elsewhere or never saved yet. Until a file is the
+    // base again (setSeen), every block is told as unclear (gateMessage, vagueWhy; v0.6.94: whatever is found first, not
+    // only a 'gone' from this message on), never with "reload" (that would lose a message only this page has).
     return how === 'status' && Array.isArray(before?.plain) ? before.plain.length : null;
 }
 function marksInFile(changes, written, r) {
@@ -894,12 +895,20 @@ function gateMessage() {
     if (!gateHere() || gate.status === 'checking') return '방이 아직 다 열리지 않았어요. 잠시 뒤 다시 눌러 주세요.';
     if (gate.status === 'unknown') return '서버에서 이 방의 채팅 파일을 찾지 못해서(새 방인지 읽기 실패인지 알 수 없어요) 저장하지 않았어요. 방을 다시 열어 주세요.';
     if (gate.status === 'unread') return '서버에서 이 방의 채팅 파일을 읽지 못해서 저장하지 않았어요. 잠시 뒤 다시 하거나 방을 다시 열어 주세요.';
-    if (gate.why === 'gone' && gate.vague !== null && Number.isInteger(gate.at) && gate.at >= gate.vague) return `이 화면의 메시지 중 채팅 파일에 없는 것이 있어요(#${gate.at}). 다른 곳에서 지웠는지, 아직 채팅 파일에 저장되기 전인지 알 수 없어서 SavePoint는 저장하지 않았어요. 이 화면에만 있는 메시지일 수 있으니 새로고침하지 말고, 실리태번이 이 방을 저장한 뒤(메시지를 보내거나 편집하면) 다시 눌러 주세요. 다른 곳에서 지웠다면 방을 다시 열어 주세요.`;
+    if (gate.status === 'bad' && gate.vague !== null) return `채팅 파일과 이 화면이 맞지 않아서 SavePoint는 저장하지 않았어요.${vagueWhy()} 다른 곳에서 지운 메시지가 있을 수도 있고, 이 화면의 최근 메시지가 아직 채팅 파일에 저장되기 전일 수도 있어요. 새로고침하거나 방을 다시 열면 이 화면에만 있는 메시지가 사라질 수 있으니, 그 전에 최근 메시지를 복사해 두세요. 실리태번이 이 방을 저장한 뒤(메시지를 보내거나 편집하면) 다시 누르면 다시 확인해요.`;
     if (gate.why === 'gone') return '다른 곳에서 지운 메시지가 이 화면에는 남아 있어서 저장하지 않았어요(저장하면 그 메시지가 되살아나요). 방을 다시 열거나 새로고침해 주세요.';
     if (gate.why === 'integrity') return '서버의 채팅 파일이 이 방과 다른 파일이라서(고유값 다름) 저장하지 않았어요. 방을 다시 열거나 새로고침해 주세요.';
     if (gate.why === 'mem') return '다른 기기에서 이 방의 SavePoint 기억을 저장해서 이 화면의 기억이 오래됐어요. 덮어쓰지 않도록 저장하지 않았어요. 방을 다시 열거나 새로고침해 주세요.';
     if (gate.status === 'busy') return `${BUSY_TEXT} 그동안은 저장하지 않고, 답변이 끝나면 다시 확인해요. 답변이 끝난 뒤 다시 해 주세요.`;
     return `서버의 채팅 파일에 이 화면에 없는 내용이 있어서 저장하지 않았어요.${whyDetail(gate.why, gate.at)} 다른 기기에서 이어졌거나 방이 덜 열렸을 수 있어요. 방을 다시 열거나 새로고침해 주세요.`;
+}
+function vagueWhy() {
+    // v0.6.94: while gate.vague stands (a status-only save left messages that may never have been saved), every block that
+    // would say "reopen or reload" says this instead, whatever was found first: a reload loses what only this page has.
+    if (gate.why === 'gone') return Number.isInteger(gate.at) ? ` (채팅 파일에 없는 메시지: #${gate.at})` : '';
+    if (gate.why === 'mem') return ' (다른 기기에서 이 방의 SavePoint 기억을 저장했어요)';
+    if (gate.why === 'integrity') return ' (채팅 파일의 고유값이 이 방과 달라요)';
+    return whyDetail(gate.why, gate.at);
 }
 function blockRoom(why, at = null) {
     if (why === 'moved' || !gateHere()) return;

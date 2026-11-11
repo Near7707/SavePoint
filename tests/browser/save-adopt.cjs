@@ -36,7 +36,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
 //    2b: the same after a wait for SillyTavern's save (something may have landed): not left unconfirmed either.
 // 3. A first request landed; then a continue starts and SillyTavern saves a middle state of it. The check before sending
 //    again finds the reply running ahead: held back ('busy'), no warning, and the room is open again after the reply.
-// (5–7: v0.6.92, 8–9: v0.6.93, below.)
+// (5–7: v0.6.92, 8–9: v0.6.93, 8e–8f: v0.6.94, below.)
 // 4. A background save held back by a reply (it was reading the file when the reply started) goes through after the reply
 //    even when a message event opens the room before the recheck timer.
 (async () => {
@@ -58,7 +58,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     }
     const keep = (ev, i) => ev(i => __savePoint.toggleKeep(i).then(() => 'ok', e => `${e.name}: ${e.message}`), i);
     const toasts = ev => ev(() => toastr.log.slice(M.toastLog).map(x => String(x.msg ?? x)));
-    const VAGUE = /채팅 파일에 없는 것이 있어요\(#12\)\. 다른 곳에서 지웠는지, 아직 채팅 파일에 저장되기 전인지.*새로고침하지 말고/;
+    const VAGUE = /채팅 파일과 이 화면이 맞지 않아서 SavePoint는 저장하지 않았어요\..*저장되기 전일 수도 있어요\. 새로고침하거나 방을 다시 열면 .*최근 메시지를 복사해 두세요/;
+const HARD = /방을 다시 열거나 새로고침해 주세요/;  // the usual block messages (v0.6.94: never while a message may be unsaved)
 const msg = t => ({ name: 'Me', is_user: true, is_system: false, mes: t, swipe_id: 0, extra: {} });
 
     // 1–1c.
@@ -192,7 +193,7 @@ const msg = t => ({ name: 'Me', is_user: true, is_system: false, mes: t, swipe_i
         const f = await ev(() => ({ n: M.serverFiles.chatA.length - 1, has13: M.serverFiles.chatA.some(x => x.mes === 'Thirteenth.'), k5: !!M.serverFiles.chatA[6].extra?.savepointKeep }));
         const said = JSON.stringify(t.map(x => x.slice(0, 40)));
         // v0.6.93: the file is the same as in 8 (13th never saved): blocked as before, told as unclear, no "reload".
-        if (kind === '5') ok(t.some(x => VAGUE.test(x)) && VAGUE.test(r) && !t.some(x => /다른 곳에서 지운/.test(x)) && !f.has13 && !f.k5,
+        if (kind === '5') ok(t.some(x => VAGUE.test(x)) && VAGUE.test(r) && !t.some(x => HARD.test(x)) && !HARD.test(r) && !f.has13 && !f.k5,
             `5. 실리태번이 새 상태와 13번째를 먼저 저장한 뒤 다른 탭 삭제: 13번째를 되살리지 않고, 지웠는지 저장 전인지 모른다고 안내 (${said}, 🔶 ${r.slice(0, 30)}, ${JSON.stringify(f)})`);
         else if (kind === '5b') ok(!t.some(x => /지운|거절|확인하지 못했어요/.test(x)) && r === 'ok' && f.has13 && f.k5,
             `5b. 같은 순서에 삭제가 없으면 아무 안내 없이 이어서 🔶 저장 (${said}, 🔶 ${r.slice(0, 30)}, ${JSON.stringify(f)})`);
@@ -240,8 +241,10 @@ const msg = t => ({ name: 'Me', is_user: true, is_system: false, mes: t, swipe_i
     //    status with the 12 messages; then a 13th comes on the page and SavePoint's request gets the 500. The file (new
     //    status + 12) is the same as in 5: the 13th may never have been saved. Blocked, but told as unclear with no "reload".
     //    8: at once, 8b: by a later read. 8c: SillyTavern then saves the page: the next 🔶 saves (the 13th stays).
-    //    8d: a message the file had before (#11) is missing too: that one is a deletion elsewhere (the usual message).
-    for (const kind of ['8', '8b', '8c', '8d']) {
+    //    8d: a message the file had before (#11) is missing too (v0.6.94: still the unclear message, see below).
+    //    8e/8f (v0.6.94): after the unclear block, this page deletes #11 / #5 and SillyTavern's save of it fails: the next
+    //    check finds a 'diff' first; still the unclear message, never "reload".
+    for (const kind of ['8', '8b', '8c', '8d', '8e', '8f']) {
         const { page, ev } = await session();
         await ev(([kind, m]) => { M.noStSave = true; M.readFailOnce = false;
             const f = window.fetch; let armed = false;
@@ -258,6 +261,8 @@ const msg = t => ({ name: 'Me', is_user: true, is_system: false, mes: t, swipe_i
             __savePoint.state().autoLast = { at: Date.now(), result: 'ok', status: '' }; M.trap = true; __savePoint.persistSoon();
         }, [kind, msg('Thirteenth.')]);
         await page.waitForTimeout(kind === '8b' ? 5000 : 2000);
+        if (kind === '8e' || kind === '8f') await ev(i => { M.chat.splice(i, 1); SillyTavern.getContext().eventSource.emit('message_deleted', M.chat.length); }, kind === '8e' ? 11 : 5);
+        await page.waitForTimeout(kind === '8e' || kind === '8f' ? 500 : 0);
         const t = await toasts(ev);
         const r1 = await keep(ev, 5);
         if (kind === '8c') await ev(() => { M.noStSave = false; M.stSave(); });
@@ -265,11 +270,13 @@ const msg = t => ({ name: 'Me', is_user: true, is_system: false, mes: t, swipe_i
         await page.waitForTimeout(300);
         const f = await ev(() => ({ has13: M.serverFiles.chatA.some(x => x.mes === 'Thirteenth.'), k5: !!M.serverFiles.chatA.some((x, i) => i && x.extra?.savepointKeep), page13: M.chat.some(x => x.mes === 'Thirteenth.') }));
         const said = JSON.stringify(t.map(x => x.slice(0, 50)));
-        if (kind === '8d') ok(t.some(x => /다른 곳에서 지운/.test(x)) && /다른 곳에서 지운/.test(r1) && !t.some(x => VAGUE.test(x)) && !f.has13 && !f.k5,
-            `8d. 같은 순서에 저장 전부터 파일에 있던 #11도 없으면 그건 다른 곳 삭제로 안내 (${said}, 🔶 ${r1.slice(0, 30)}, ${JSON.stringify(f)})`);
+        // v0.6.94 (review of v0.6.93): 8d used to expect the usual "deleted elsewhere … reload" (the first message missing is
+        // #11, one the file had): a reload would lose the 13th, which may never have been saved. Now the unclear message.
+        if (kind === '8d' || kind === '8e' || kind === '8f') ok(t.some(x => VAGUE.test(x)) && VAGUE.test(r1) && !t.some(x => HARD.test(x)) && !HARD.test(r1) && !f.has13 && !f.k5 && f.page13,
+            `${kind}. ${{ '8d': '같은 순서에 다른 탭이 저장 전부터 있던 #11도 지움', '8e': '애매 안내 뒤 이 화면에서 #11을 지움(실리태번 저장 실패)', '8f': '애매 안내 뒤 이 화면에서 #5를 지움(실리태번 저장 실패)' }[kind]}: 먼저 찾은 차이와 상관없이 새로고침 대신 애매 안내 (${said}, 🔶 ${r1.slice(0, 30)}, ${JSON.stringify(f)})`);
         else if (kind === '8c') ok(VAGUE.test(r1) && r2 === 'ok' && f.has13 && f.k5 && f.page13,
             `8c. 실리태번이 13번째를 저장하면 다음 🔶는 저장 (🔶 ${r1.slice(0, 30)} → ${r2.slice(0, 30)}, ${JSON.stringify(f)})`);
-        else ok(t.some(x => VAGUE.test(x)) && VAGUE.test(r1) && !t.some(x => /다른 곳에서 지운/.test(x)) && !f.has13 && !f.k5 && f.page13
+        else ok(t.some(x => VAGUE.test(x)) && VAGUE.test(r1) && !t.some(x => HARD.test(x)) && !HARD.test(r1) && !f.has13 && !f.k5 && f.page13
                 && (kind === '8' || t.some(x => /확인하지 못했어요/.test(x))),
             `${kind}. 저장 전 읽기가 늦는 사이 실리태번이 새 상태와 12개를 저장, 13번째는 화면에만: 막되 "지운 메시지·새로고침" 대신 지웠는지 저장 전인지 모른다고 안내${kind === '8b' ? '(나중 확인)' : ''} (${said}, 🔶 ${r1.slice(0, 30)}, ${JSON.stringify(f)})`);
         await page.close();
