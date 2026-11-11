@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.95';
+const VERSION = '0.6.96';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -1767,7 +1767,7 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
         const why = attempt ? lastKind : '';
         const requestPrompt = attempt ? prompt + retryNote(groupErrors(errors), lang) + extractionRepairNote(chunk, data) : prompt;
         try {
-            assertPromptFits(requestPrompt, num('inputChars', 5000, 1000000));
+            assertPromptFits(requestPrompt, num('inputChars', 5000, 1000000), attempt ? { ...built.parts, retry: requestPrompt.length - prompt.length } : built.parts);
             run.lootAttempted = lootForChunk(chunk).map(x => x.id);
             raw = await llm(requestPrompt, run, { attempt, why, parts: attempt ? { ...built.parts, retry: requestPrompt.length - prompt.length } : built.parts });
         }
@@ -1779,7 +1779,7 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
                 throw fail(`${e.message} 이 구간(#${chunk.from}–#${chunk.to})은 취소했고 저장하지 않았어요.`, ['부분 응답과 늦게 도착하는 응답은 저장하지 않아요. 결과 복사의 마지막 요청에서 수신 여부를 확인할 수 있어요.']);
             }
             tries.push(`${fmtSec(Date.now() - start)} · 요청 오류: ${errorText(e)}`);
-            throw fail(`요약 AI 요청이 실패했어요 (#${chunk.from}–#${chunk.to}): ${errorText(e)}`, []);
+            throw fail(`요약 AI 요청이 실패했어요 (#${chunk.from}–#${chunk.to}): ${errorText(e)}`, partsLines(e?.parts, e?.chars));
         }
         if (run.cancelled) throw new Cancelled('중지했어요.');
         const took = `${fmtSec(Date.now() - start)} · 입력 ${requestPrompt.length.toLocaleString()}자 (원문 ${chunk.text.length.toLocaleString()}자) · 응답 ${String(raw ?? '').length.toLocaleString()}자`;
@@ -2004,7 +2004,7 @@ async function summarize({ close = false, auto = false } = {}) {
             stage = 'collect';
             // Planning can fail before llm runs. Never borrow an earlier chunk's request.
             run.requestRecord = null;
-            const chunk = nextMessageChunk(msgs.slice(cursor), c => extractPrompt(st.mem, c), num('inputChars', 5000, 1000000), { sourceLimit: num('sourceChars', 2000, 200000) });
+            const chunk = nextMessageChunk(msgs.slice(cursor), c => extractPromptParts(st.mem, c), num('inputChars', 5000, 1000000), { sourceLimit: num('sourceChars', 2000, 200000) });
             const last = cursor + chunk.indices.length === msgs.length;
             ui.progress = `${auto ? '체크포인트' : close ? '장면 닫기' : '퀵세이브'} ${done + 1}구간 #${chunk.from}–#${chunk.to} · ${cursor}/${msgs.length}메시지 완료`;
             render();
@@ -2072,6 +2072,8 @@ async function summarize({ close = false, auto = false } = {}) {
             ui.lastError.request = requestLines(run.requestRecord);
             ui.lastError.requestOk = run.requestRecord?.status === 'received';
             if (!run.requestRecord && e?.name === 'InputLimitError') ui.lastError.requestNote = '요청 전 입력 검사에서 중단 · AI 호출 없음';
+            // v0.6.96: what filled the input of a request stopped before it was sent.
+            if (e?.name === 'InputLimitError' && e.parts && !e.detail) ui.lastError.detail.push(...partsLines(e.parts, e.chars));
         }
         const where = unconfirmed ? (done ? ` 그 앞 ${done}개 구간은 저장을 확인했어요.` : '')
             : done ? ` ${done}개 구간(${cursor}개 메시지)은 저장했고, 남은 ${msgs.length - cursor}개 메시지의 원문은 그대로 남겨 뒀어요.` : ' 기억과 원문은 바뀌지 않았어요.';
@@ -2369,15 +2371,25 @@ const timeoutLabel = e => e?.kind === 'idle' ? '새 출력 없음 → 대기 제
 const TIMEOUT_KIND = { idle: '새 출력 없음', total: '전체 최대 시간 초과', limit: '제한 시간 안에 응답 없음' };
 function requestLines(r) {
     if (!r) return [];
-    const parts = r.parts ? Object.entries(r.parts).filter(([, n]) => n > 0) : [];
-    const sum = parts.reduce((a, [, n]) => a + n, 0);
-    if (parts.length && sum !== r.chars) parts.push(['other', r.chars - sum]);
+    const parts = partList(r.parts, r.chars);
     const when = ms => (ms === null || ms === undefined ? '없음' : fmtSec(ms));
     return [`${r.task} · ${r.profile}${r.model ? ' · ' + r.model : ''} · ${r.status || '진행 중'} · ${fmtSec(r.ms || 0)}`,
         `입력 ${r.chars.toLocaleString()}자 (확장이 만든 요청 기준) · 응답 상한 ${r.maxTokens}토큰 · ${r.stream ? '실시간 수신' : '일괄 응답'} · 추론 요청: ${r.effort}`,
-        ...(parts.length ? [`입력 내역: ${parts.map(([k, n]) => `${PROMPT_PART_LABELS[k] || k} ${n.toLocaleString()}`).join(' · ')}`] : []),
+        ...(parts.length ? [partsText(parts)] : []),
         `수신 본문 ${r.textChars.toLocaleString()}자 / 사고 ${r.reasoningChars.toLocaleString()}자 · 첫 사고 수신 ${when(r.firstReasoningMs)} · 첫 본문 수신 ${when(r.firstTextMs)} · 종료 사유 ${r.finishReason || 'API에서 제공하지 않음'}`,
         ...(r.limitMode ? [`시간 제한: ${r.limitMode === 'idle' ? `새 출력 대기 ${fmtLimit(r.idleMs)} · 전체 최대 ${fmtLimit(r.totalMs)} · 마지막 출력 ${when(r.lastOutputMs)}` : `전체 제한 ${fmtLimit(r.totalMs)} (실시간 수신 확인 불가)`}${r.timeoutKind ? ` · 중단 이유: ${TIMEOUT_KIND[r.timeoutKind] || r.timeoutKind}` : ''}`] : [])];
+}
+function partList(raw, chars) {
+    const parts = raw ? Object.entries(raw).filter(([, n]) => n > 0) : [];
+    const sum = parts.reduce((a, [, n]) => a + n, 0);
+    if (parts.length && Number.isFinite(chars) && sum !== chars) parts.push(['other', chars - sum]);
+    return parts;
+}
+function partsText(parts) { return `입력 내역: ${parts.map(([k, n]) => `${PROMPT_PART_LABELS[k] || k} ${n.toLocaleString()}`).join(' · ')}`; }
+function partsLines(raw, chars) {
+    // v0.6.96: the input breakdown of a request stopped by the input limit (no request record exists for it).
+    const parts = partList(raw, chars);
+    return parts.length ? [partsText(parts)] : [];
 }
 function reportText(st) {
     const out = [`SavePoint v${VERSION} · 요약 AI: ${profileLabel()}`];

@@ -109,6 +109,8 @@ test('oversized first message makes no model call and changes no memory or origi
     assert.equal(JSON.stringify(h.st.mem), memory);
     assert.equal(h.chat[0].mes, original);
     assert(h.sandbox.ui.lastError.detail[0].includes('入力') || h.sandbox.ui.lastError.detail[0].includes('입력 한도'));
+    // v0.6.96: the failure details say what filled the input (no request record exists for it).
+    assert(h.sandbox.ui.lastError.detail.some(l => /^입력 내역: .*지침·출력 형식 [\d,]+.*새 원문 [\d,]+/.test(l)), JSON.stringify(h.sandbox.ui.lastError.detail));
 });
 
 test('review orchestration reads message tails, splits calls and never changes saved memory', async () => {

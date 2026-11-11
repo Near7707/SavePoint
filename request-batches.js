@@ -2,17 +2,21 @@
 // mark a partly-read message as collected. Limits count the complete extension prompt.
 import { chunkMessages } from './core.js';
 
+// v0.6.96: `parts` (section → characters, as buildExtractPromptParts counts them) travels with the error, so a request
+// stopped before it was sent still shows what filled the input.
 export class InputLimitError extends Error {
-    constructor(message, chars, limit) {
+    constructor(message, chars, limit, parts = null) {
         super(message);
-        this.name = 'InputLimitError'; this.chars = chars; this.limit = limit;
+        this.name = 'InputLimitError'; this.chars = chars; this.limit = limit; this.parts = parts;
     }
 }
 
-export function assertPromptFits(prompt, limit) {
+export function assertPromptFits(prompt, limit, parts = null) {
     if (prompt.length > limit) throw new InputLimitError(
-        `요청 입력이 ${prompt.length.toLocaleString()}자로 설정 한도 ${limit.toLocaleString()}자를 넘어요. 원문을 자르지 않고 요청을 멈췄어요.`, prompt.length, limit);
+        `요청 입력이 ${prompt.length.toLocaleString()}자로 설정 한도 ${limit.toLocaleString()}자를 넘어요. 원문을 자르지 않고 요청을 멈췄어요.`, prompt.length, limit, parts);
 }
+// makePrompt may give the prompt text or { text, parts }.
+const promptOf = built => typeof built === 'string' ? { text: built, parts: null } : { text: String(built?.text ?? ''), parts: built?.parts || null };
 
 // The original fill-first planner remains the safety baseline. A single longer
 // message is allowed when its COMPLETE prompt fits; its text is never cropped.
@@ -23,10 +27,10 @@ function greedyMessageChunk(messages, makePrompt, limit, { sourceLimit = 12000, 
     for (let n = 1; n <= Math.min(messages.length, maxMessages); n++) {
         const chunk = chunkMessages(messages.slice(0, n), Infinity)[0];
         if (n > 1 && chunk.text.length > sourceLimit) break;
-        const chars = makePrompt(chunk).length;
+        const built = promptOf(makePrompt(chunk)), chars = built.text.length;
         if (chars > limit) {
             if (!best) throw new InputLimitError(
-                `메시지 #${chunk.from} 전체와 수집 지침·기존 기억을 보내려면 ${chars.toLocaleString()}자가 필요해요 (입력 한도 ${limit.toLocaleString()}자). 이 메시지는 자르거나 저장하지 않았어요. 입력 한도를 늘린 뒤 다시 눌러 주세요.`, chars, limit);
+                `메시지 #${chunk.from} 전체와 수집 지침·기존 기억을 보내려면 ${chars.toLocaleString()}자가 필요해요 (입력 한도 ${limit.toLocaleString()}자). 이 메시지는 자르거나 저장하지 않았어요. 입력 한도를 늘린 뒤 다시 눌러 주세요.`, chars, limit, built.parts);
             break;
         }
         if (n > 1 && chars > target) break;

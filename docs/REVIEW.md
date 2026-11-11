@@ -1,3 +1,23 @@
+# v0.6.96 · 기록: 개요 길이 제한 / 한도 초과 입력 내역 / "id"를 ref로 받기 / 같은 아이템 합치기
+
+기준: v0.6.95 `9e09be8`. 사용자 보고(메시지 511개 방, #424에서 `65,710자가 필요해요 (입력 한도 65,000자)`로 멈춤, 그 전부터 구간이 메시지 1개씩, 같은 아이템 기록이 여러 개). 원인은 v0.6.92 코드로 확인해 둔 것을 이번 코드로 다시 확인함. 저장 쪽(`writeChatFile` 등)은 건드리지 않음.
+
+바뀐 것
+1. 🔴 `core.js` 새 `outlineTail(s, maxChars)`: 장면 개요를 마지막 부분부터 `maxChars`까지, 빠진 앞부분은 `(N earlier parts not shown)`. 부분 하나가 상한보다 길면 끝쪽만(`…`). `promptContext`의 진행 장면 `Outline so far`(`openOutlineChars` 4000)와 최근 장면 4개(`recentOutlineChars` 각 1500)가 씀. 지금까지 상한이 없어서 장면 1이 #0~#424로 안 닫히면 개요가 계속 커져 원문 자리가 줄었음. 저장된 개요(`sceneOutlineText`)·주입(`buildInjection`, 예산 안에서 고름)은 그대로.
+2. 🔴 `request-batches.js`: `makePrompt`가 `{ text, parts }`를 돌려줘도 됨(문자열도 그대로). `InputLimitError`·`assertPromptFits`에 `parts`. `index.js`: 기록 구간 계획은 `extractPromptParts`를 넘기고, 요청 전에 한도로 멈추면 실패 기록(`ui.lastError.detail`)에 `입력 내역: 지침·출력 형식 … · 진행 장면 … · 새 원문 …`(요청 기록과 같은 형식, 새 `partList`·`partsText`·`partsLines`를 `requestLines`가 같이 씀). `extractChunk`의 `assertPromptFits` 실패도 같은 줄.
+3. 🟡 `normalizeResult`: `entities[i]`에 `ref`가 없고 `id`가 기존 항목이 아니면 — `id`가 id 모양이 아니면(`new1`) 그대로 `ref`로, id 모양(`e20`)이면 `type`·`name`이 있을 때만 `ref`로(숨은 표시 `refFromId`, `validateResult`의 "looks like an id" 오류를 그 항목만 건너뜀). 고침 메모 `ref:N`. 같은 응답의 다른 곳이 `"e20"`을 가리켜도 `applyResult`의 `resolve`가 선언 ref를 먼저 봐서 새 항목으로 이어짐. 같은 이름의 기존 항목이 있으면 지금처럼 `already exists as …` 오류(재요청). 종류·이름 없는 없는 번호는 지금처럼 `unknown entity id`.
+4. 🟡 `applyResult`: `add` + `item`이고 같은 물건(`entity`)의 지금 쓰는 기록(`!stored && !gone`)이 있으면 그 기록(여럿이면 마지막)을 고침 — 설명(바뀌면 `ko` 지움)·소지자·근거(`src`·`msgs` 최근 12개)·`stamp`. 보관함·사라진 기록 쪽 규칙은 그대로(지금 쓰는 기록이 없을 때만). 이미 쌓인 중복은 자동 삭제 안 함.
+
+★ 특히 봐 줄 곳
+- ★ 1: 상한 4000/1500이 요약 품질에 충분한지(진행 장면은 별도로 최근 포인트 8,000자·60개를 보냄).
+- ★ 3: 기억 번호를 헷갈려(e2 → e20) 이름을 조금 다르게 적으면 새 항목이 생길 수 있음(지금은 재요청). 사용자에게 설명함.
+- ★ 4: 같은 물건이 정말 둘(같은 이름의 다른 셔츠)인 경우 — 요약 지침상 다른 물건은 다른 이름의 다른 항목이어야 해서(`give it a distinguishing name`) 같은 `entity`면 같은 물건으로 봄.
+
+바뀐 기대(기존 검사): 없음. `request-flow.test.mjs` "oversized first message…"에 입력 내역 확인 한 줄 추가.
+검사 준비: 없음.
+
+검사: 새 `tests/record-limits.test.mjs`(5개). 일부러 망가뜨리기(커밋 안 함): 진행 장면 개요 상한 없앰 → 1 / 최근 장면 상한 없앰 → 1 / 오류에 `parts` 안 넣음 → 3 / `id`를 `ref`로 안 바꿈 → 4 / "looks like an id" 예외 없앰 → 4 / 지금 쓰는 아이템 합치기 없앰 → 5 / 실패 기록에 입력 내역 안 넣음 → request-flow 5 실패. Node 487개, 브라우저 49묶음 통과.
+
 # v0.6.95 · 저장 쪽: 애매 안내는 전송·편집을 권하지 않음 / 읽기 실패·빈 파일·응답 없음 안내에도 복사 안내 (GPT 리뷰 v0.6.94)
 
 기준: v0.6.94 `875cf31`. 레포 밖에서 먼저 재현함(브라우저 모의 환경).

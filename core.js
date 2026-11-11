@@ -176,6 +176,21 @@ export function refreshProvisionalOutlines(mem) {
 // A scene's outline is the outlines of its parts in order; nothing written earlier is rewritten.
 export const sceneOutlineParts = s => s.segs.map(g => g.outline).filter(Boolean);
 export const sceneOutlineText = s => sceneOutlineParts(s).join(' ') || s.title;
+// v0.6.96: the outline sent to the collector, newest parts first within maxChars (a scene left open for hundreds of
+// messages grew it without limit until the request no longer fit). The stored outline is unchanged.
+export function outlineTail(s, maxChars) {
+    const parts = sceneOutlineParts(s);
+    if (!parts.length) return s.title;
+    const shown = [];
+    let size = 0;
+    for (let i = parts.length - 1; i >= 0; i--) {
+        const len = parts[i].length + 1;
+        if (shown.length && size + len > maxChars) break;
+        shown.unshift(parts[i].length > maxChars ? `…${parts[i].slice(-maxChars)}` : parts[i]); size += len;
+    }
+    const hidden = parts.length - shown.length;
+    return `${hidden ? `(${hidden} earlier parts not shown) ` : ''}${shown.join(' ')}`;
+}
 export const pointInjected = p => p.pin === true || (p.keyUser ?? p.key ?? true);
 export const pointSymbol = p => p.pin === true ? '⚓' : pointInjected(p) ? '●' : '○';
 // The open scene's points shown to the AI (newest first within limits); the AI re-judges these.
@@ -225,7 +240,7 @@ function capLines(lines, maxChars) {
     return out;
 }
 // Context sent with each extraction: only what this chunk can touch, with a size cap.
-export function promptContext(mem, chunkText, { stateChars = 12000, entityChars = 6000 } = {}) {
+export function promptContext(mem, chunkText, { stateChars = 12000, entityChars = 6000, openOutlineChars = 4000, recentOutlineChars = 1500 } = {}) {
     const open = openScene(mem);
     const relevant = new Set(mentionedEntities(mem, chunkText).keys());
     for (const id of open?.who || []) relevant.add(id);
@@ -252,12 +267,12 @@ export function promptContext(mem, chunkText, { stateChars = 12000, entityChars 
     let openText = '(none)';
     if (open) {
         const { shown, hidden } = openPoints(open);
-        openText = [`${open.id} "${open.title}"${open.where ? ` @ ${open.where}` : ''}`, `Outline so far: ${sceneOutlineText(open)}`,
+        openText = [`${open.id} "${open.title}"${open.where ? ` @ ${open.where}` : ''}`, `Outline so far: ${outlineTail(open, openOutlineChars)}`,
             'Points recorded so far (id: text):', ...(hidden ? [`(${hidden} earlier points not shown)`] : []),
             ...shown.map(x => `${x.id}: ${x.p.text}`)].join('\n');
     }
     const recent = mem.scenes.filter(s => s !== open).slice(-4)
-        .map(s => `${s.id} "${s.title}"${s.where ? ` @ ${s.where}` : ''}: ${sceneOutlineText(s)}`);
+        .map(s => `${s.id} "${s.title}"${s.where ? ` @ ${s.where}` : ''}: ${outlineTail(s, recentOutlineChars)}`);
     return {
         entities: entityLines.length ? capLines(entityLines, entityChars).join('\n') : '(none yet)',
         state: (stateLines.length ? capLines(stateLines, stateChars).join('\n') : '(empty)')
@@ -359,6 +374,17 @@ export function normalizeResult(data, { mem, chunk } = {}) {
             sc.outlinePending = true;
             notes.push(`outline:${i + 1}`);
         }
+    }
+    // v0.6.96: a new entity declared with "id" instead of "ref" ("id": "new1", or an id that does not exist such as "e20",
+    // with a type and a name): read as its ref, so the reply is not asked again for it. An id that exists is left as it is
+    // (an update of that entity); the same-name check still applies to the new one.
+    for (const [i, e] of (Array.isArray(data.entities) ? data.entities : []).entries()) {
+        if (!plain(e) || !str(e.id) || str(e.ref) || (mem?.entities || []).some(x => x.id === e.id)) continue;
+        const id = e.id.trim(), idLike = /^[sgerSGER]\d+$/.test(id);
+        if (idLike && !(ENTITY_TYPES.includes(e.type) && str(e.name))) continue;
+        e.ref = id; delete e.id;
+        if (idLike) Object.defineProperty(e, 'refFromId', { value: true });
+        notes.push(`ref:${i + 1}`);
     }
     // A later scene marked "continue" can only mean "the scene just before goes on": merge it into
     // that scene (points and notes appended, outlines joined). No boundary is invented and nothing is lost.
@@ -506,7 +532,7 @@ export function validateResult(data, { mem, chunk, expectContinue }) {
         if (str(e.id)) { if (!mem.entities.some(x => x.id === e.id)) errors.push(`${w}: unknown entity id "${e.id}".`); continue; }
         const ref = str(e.ref);
         if (!ref) { errors.push(`${w}.ref is missing.`); continue; }
-        if (/^[sgerSGER]\d+$/.test(ref)) errors.push(`${w}.ref "${ref}" looks like an id; invent a ref such as "new1".`);
+        if (/^[sgerSGER]\d+$/.test(ref) && !e.refFromId) errors.push(`${w}.ref "${ref}" looks like an id; invent a ref such as "new1".`);
         if (declared.has(ref)) errors.push(`${w}.ref "${ref}" is declared twice.`);
         if (!ENTITY_TYPES.includes(e.type)) errors.push(`${w}.type must be person, item or place.`);
         if (!str(e.name)) errors.push(`${w}.name is missing.`);
@@ -856,7 +882,17 @@ export function applyResult(mem, data, chunk, { close = false, room = null, boxM
     for (const c of data.changes || []) {
         const msgs = numEvidence(c.msgs);
         const src = segFor(msgs);
-        if (c.op === 'add' && c.type === 'item' && resolve(c.entity) && next.records.some(x => x.type === 'item' && (x.stored || x.gone) && x.entity === resolve(c.entity))) {
+        const liveItem = c.op === 'add' && c.type === 'item' && resolve(c.entity)
+            ? [...next.records].reverse().find(x => x.type === 'item' && !x.stored && !x.gone && x.entity === resolve(c.entity)) : null;
+        if (liveItem) {
+            // v0.6.96: the same item already in the current state: that record is brought up to date (description, holder,
+            // evidence) instead of a second record being added. Records doubled before are left for the user to remove.
+            const r = liveItem;
+            if (str(c.text) && str(c.text) !== r.text) { r.text = str(c.text); delete r.ko; }
+            if (c.holder !== undefined) r.holder = resolve(c.holder);
+            r.src = uniq([...(r.src || []), src]); r.msgs = uniq([...(r.msgs || []), ...msgs]).slice(-12);
+            stamp(next, r);
+        } else if (c.op === 'add' && c.type === 'item' && resolve(c.entity) && next.records.some(x => x.type === 'item' && (x.stored || x.gone) && x.entity === resolve(c.entity))) {
             // The same item, in the storage box or gone: update that record rather than add a second one.
             const r = next.records.find(x => x.type === 'item' && (x.stored || x.gone) && x.entity === resolve(c.entity));
             if (str(c.text)) { r.text = str(c.text); delete r.ko; }
