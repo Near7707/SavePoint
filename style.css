@@ -768,13 +768,6 @@ label.sp-has-reset { position: relative; padding-right: 30px; }
     .sp-window[data-theme="gingerbread"]:not(#sp_loot_dialog) .sp-top, .sp-window[data-theme="xmasknit"]:not(#sp_loot_dialog) .sp-top { margin: 0 -10px 8px; }
 }
 
-/* v0.6.24: while a save runs, 중지 stays at the end of the action row in every theme instead of
-   dropping to a line of its own on narrower windows (very small phones still wrap rather than cut the labels) */
-@media (min-width: 390px) and (max-width: 560px) {
-    .sp-window .sp-actions:has(> [data-act="stop"]) { flex-wrap: nowrap; gap: 4px; }
-    .sp-window .sp-actions:has(> [data-act="stop"]) > .sp-btn { flex: 1 1 auto; min-width: 0; padding-left: 4px; padding-right: 4px; font-size: 12px; letter-spacing: -.02em; overflow: hidden; text-overflow: ellipsis; }
-    .sp-window .sp-actions:has(> [data-act="stop"]) > [data-act="stop"] { flex: 0 0 auto; padding-left: 8px; padding-right: 8px; }
-}
 /* 세이브 배너 오른쪽에 작은 장식 하나 */
 #sp_save_banner[data-theme="gingerbread"]::after, #sp_save_banner[data-theme="xmasknit"]::after { content: ''; flex: 0 0 26px; height: 24px; background: center / contain no-repeat; }
 #sp_save_banner[data-theme="gingerbread"]::after { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 28'%3E%3Ccircle cx='14' cy='14' r='12' fill='%23b9743c'/%3E%3Cpath d='M8 18 q6 5 12 0' stroke='%23fff' stroke-width='1.6' fill='none' stroke-linecap='round'/%3E%3Ccircle cx='10' cy='11' r='1.8' fill='%234a2814'/%3E%3Ccircle cx='18' cy='11' r='1.8' fill='%234a2814'/%3E%3Ccircle cx='7' cy='16' r='1.8' fill='%23e88a7a' opacity='.8'/%3E%3Ccircle cx='21' cy='16' r='1.8' fill='%23e88a7a' opacity='.8'/%3E%3Cpath d='M5 6 q9 -6 18 0' stroke='%23fff' stroke-width='1.6' fill='none' stroke-dasharray='2 2'/%3E%3C/svg%3E"); }
@@ -1042,7 +1035,13 @@ details.sp-st-alert[open] > summary { margin-bottom: 6px; }
 
 /* v0.6.55: one row of buttons (퀵세이브 · 리와인드 · 👻 하이드 · 번역) at any width; the 👻 count keeps its width. */
 .sp-actions { flex-wrap: nowrap; }
-.sp-actions > .sp-btn, .sp-actions > .sp-langwrap { flex: 1 1 auto; min-width: 0; }
+/* v0.6.98: each button keeps a fixed share of the row (not its label's width), and 중지 takes 퀵세이브's
+   share, so starting or stopping a save never resizes or moves a button. The shares follow the labels'
+   lengths so 👻 하이드 999+ still fits on a 360px phone. (The v0.6.24 rule that shrank 중지 is gone.) */
+.sp-actions > .sp-btn, .sp-actions > .sp-langwrap { flex: 10 1 0; min-width: 0; }
+.sp-actions > [data-act="undo"] { flex-grow: 11; }
+.sp-actions > [data-act="hide-now"] { flex-grow: 13; }
+.sp-actions > .sp-langwrap { flex-grow: 8; }
 @media (max-width: 420px) { .sp-window:not(#sp_loot_dialog) .sp-actions { gap: 4px; } .sp-window:not(#sp_loot_dialog) .sp-actions .sp-btn { padding-left: 3px; padding-right: 3px; letter-spacing: -.02em; } }
 .sp-actions .sp-btn { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sp-actions .sp-langwrap .sp-langbtn { width: 100%; }
