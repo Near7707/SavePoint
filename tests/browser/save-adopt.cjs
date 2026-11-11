@@ -36,7 +36,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
 //    2b: the same after a wait for SillyTavern's save (something may have landed): not left unconfirmed either.
 // 3. A first request landed; then a continue starts and SillyTavern saves a middle state of it. The check before sending
 //    again finds the reply running ahead: held back ('busy'), no warning, and the room is open again after the reply.
-// (5–7: v0.6.92, 8–9: v0.6.93, 8e–8f: v0.6.94, below.)
+// (5–7: v0.6.92, 8–9: v0.6.93, 8e–8f: v0.6.94, 10a–10f: v0.6.95, below.)
 // 4. A background save held back by a reply (it was reading the file when the reply started) goes through after the reply
 //    even when a message event opens the room before the recheck timer.
 (async () => {
@@ -304,6 +304,49 @@ const msg = t => ({ name: 'Me', is_user: true, is_system: false, mes: t, swipe_i
         const f = await ev(() => ({ has13: M.serverFiles.chatA.some(x => x.mes === 'Thirteenth.'), k5: !!M.serverFiles.chatA[6].extra?.savepointKeep }));
         ok(t.some(x => /지금 화면과 같아져서.*평소처럼/.test(x)) && !t.some(x => /지운|들어가 있어요/.test(x)) && r === 'ok' && f.has13 && f.k5,
             `9. 상태만 바꾼 저장 실패 + 첫 읽기 실패 뒤 실리태번이 더 새 상태와 13개를 저장: 파일이 화면과 같으면 첫 재확인에서 풀리고 🔶 저장 (${JSON.stringify(t.map(x => x.slice(0, 40)))}, 🔶 ${r.slice(0, 30)}, ${JSON.stringify(f)})`);
+        await page.close();
+    }
+
+    // 10a–10f. v0.6.95 (review of v0.6.94): after the unclear block (as in 8), the next 🔶 finds something else.
+    //    10a–10c: another device added a message / saved a SavePoint memory / the file has another integrity: still blocked,
+    //    and the message never asks to send or edit (SillyTavern's save of this page would write over the other device's
+    //    change, or be refused for the integrity). 10d–10e: the file cannot be read / comes back empty: the "reopen" message
+    //    still says to copy the recent messages first. 10f: the status-only save gets no answer: the pending message too.
+    const SEND = /메시지를 보내거나|편집하면/, COPY = /최근 메시지를 복사해 두세요/;
+    for (const kind of ['10a', '10b', '10c', '10d', '10e', '10f']) {
+        const { page, ev } = await session();
+        await ev(([kind, m]) => { M.noStSave = true; M.after = null;
+            const f = window.fetch;
+            window.fetch = async (u, o) => {
+                if (String(u) === '/api/chats/get' && M.after === 'fail') return new Response('x', { status: 500 });
+                if (String(u) === '/api/chats/get' && M.after === 'empty') return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } });
+                if (String(u) === '/api/chats/save' && M.noAns) { M.noAns = false; throw new TypeError('Failed to fetch'); }
+                const r = await f(u, o);
+                if (String(u) === '/api/chats/get' && M.trap) { M.trap = false; const text = await r.text();
+                    M.serverFiles.chatA = JSON.parse(JSON.stringify([{ chat_metadata: M.meta }, ...M.chat]));   // SillyTavern saved it meanwhile
+                    M.chat.push(m); if (kind === '10f') M.noAns = true; else M.failOnce = true;                  // then a 13th on the page
+                    return new Response(text, { status: 200 }); }
+                return r; };
+            __savePoint.state().autoLast = { at: Date.now(), result: 'ok', status: '' }; M.trap = true; __savePoint.persistSoon();
+        }, [kind, msg('Thirteenth.')]);
+        await page.waitForTimeout(2500);
+        const r0 = kind === '10f' ? '' : await keep(ev, 5);
+        await ev(([kind, m]) => {
+            const F = M.serverFiles.chatA;
+            if (kind === '10a') F.push(m);
+            if (kind === '10b') { F[0].chat_metadata = JSON.parse(JSON.stringify(F[0].chat_metadata)); F[0].chat_metadata.savePoint = { ...(F[0].chat_metadata.savePoint || {}), other: Date.now() }; }
+            if (kind === '10c') F[0].chat_metadata = { ...F[0].chat_metadata, integrity: 'other-file' };
+            if (kind === '10d') M.after = 'fail';
+            if (kind === '10e') M.after = 'empty';
+        }, [kind, msg('From another device.')]);
+        const r1 = await keep(ev, 6);
+        await ev(() => { M.after = null; });
+        const t = await toasts(ev);
+        const f = await ev(() => ({ has13: M.serverFiles.chatA.some(x => x.mes === 'Thirteenth.'), page13: M.chat.some(x => x.mes === 'Thirteenth.'), k: M.serverFiles.chatA.filter((x, i) => i && x.extra?.savepointKeep).length }));
+        const all = [...t, r0, r1].filter(Boolean);
+        ok(/^RoomBlocked/.test(r1) && COPY.test(r1) && !all.some(x => SEND.test(x)) && (kind === '10f' || COPY.test(r0)) && !f.has13 && f.page13 && !f.k
+                && (kind !== '10d' || /읽지 못해서/.test(r1)) && (kind !== '10e' || /찾지 못해서/.test(r1)) && (kind !== '10f' || /응답을 받지 못한/.test(r1)),
+            `${kind}. 애매 안내 뒤 ${{ '10a': '다른 기기가 메시지 추가', '10b': '다른 기기가 기억 저장', '10c': '채팅 파일 고유값이 바뀜', '10d': '파일 읽기 실패', '10e': '빈 파일 응답', '10f': '(상태만 바꾼 저장이 응답 없음)' }[kind]}: 막고, 복사 안내는 남기고, 전송·편집은 권하지 않음 (🔶 ${r1.slice(0, 60)}, ${JSON.stringify(f)})`);
         await page.close();
     }
 
