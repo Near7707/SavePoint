@@ -1,3 +1,20 @@
+# v0.6.97 · 장면 지침: 하루가 지나면 장소가 같아도 장면을 닫음
+
+기준: v0.6.96 `e693fed`. 사용자 보고: 장소가 안 바뀌면 장면 1이 #0~#424로 닫히지 않음(v0.6.96의 개요가 커진 원인). 지침 문장만 바꿈, 코드 판단은 그대로.
+
+바뀐 것
+1. `prompts.js` `DEFAULT_GUIDE`의 `SCENES:`와 장면 경계 지침 `SCENE_END_RULE`에 같은 문장 추가: `A new story day always ends the scene, even in the same place with the same people: where the messages reach the next day (after a night's sleep, "the next morning", a later date), …a new scene starts at that message.` 지금까지는 "장소와 시간이 함께 바뀌거나, 하던 일이 끝나고 다른 일 시작(… a later day starts)"이라 같은 장소에서 하루가 지나도 "같은 일이 이어짐"으로 읽힐 수 있었음.
+2. v0.6.96 기본 지침 해시 `7lvgk81d3nkee4fh`를 `OLD_GUIDE_HASHES`에. 고치지 않은 지침은 새 기본으로 바뀜(직접 고친 지침은 그대로).
+
+★ 특히 봐 줄 곳
+- ★ "하루"의 경계: 밤샘으로 날짜만 넘어간 경우(같은 활동이 자정을 넘김)도 새 장면이 되는지 — 문장은 "다음 날에 이르면"이라 그렇게 읽힐 수 있음. 장면이 조금 더 잘게 나뉘는 쪽은 기억 손실이 없어서 받아들일 만하다고 봄.
+- ★ `buildBoundaryPrompt`(같은 규칙을 씀)는 지금 본체에서 부르지 않음. 그 안의 `Outline so far`도 상한이 없지만 쓰이지 않아서 그대로 둠.
+
+바뀐 기대(기존 검사): 없음.
+검사 준비: 없음.
+
+검사: `prompt-parts.test.mjs`에 지침 두 곳의 새 문장과 예전 해시 확인 1개. Node 488개, 브라우저 49묶음 통과(고정 지침이 길어져 입력 한도가 빡빡한 검사도 그대로 통과).
+
 # v0.6.96 · 기록: 개요 길이 제한 / 한도 초과 입력 내역 / "id"를 ref로 받기 / 같은 아이템 합치기
 
 기준: v0.6.95 `9e09be8`. 사용자 보고(메시지 511개 방, #424에서 `65,710자가 필요해요 (입력 한도 65,000자)`로 멈춤, 그 전부터 구간이 메시지 1개씩, 같은 아이템 기록이 여러 개). 원인은 v0.6.92 코드로 확인해 둔 것을 이번 코드로 다시 확인함. 저장 쪽(`writeChatFile` 등)은 건드리지 않음.

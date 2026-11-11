@@ -24,3 +24,11 @@ test('record check: same core meaning passes; settledness, intent, relation, own
     assert.match(p, /Never report a statement only because its exact words do not appear/);
     for (const k of ['suspects vs knows', 'offered vs accepted', 'intent', 'a relationship', 'holding something for now vs owning it', 'a result']) assert.ok(p.includes(k), k);
 });
+
+test('v0.6.97: a new story day ends the scene even in the same place; the previous default guide is still recognised', async () => {
+    const p = await import('../prompts.js');
+    assert.match(p.DEFAULT_GUIDE, /A new story day always ends the scene, even in the same place/);
+    assert.match(p.SCENE_END_RULE, /A new story day always ends the scene, even in the same place/);
+    assert.ok(p.OLD_GUIDE_HASHES.includes('7lvgk81d3nkee4fh'), 'the v0.6.96 default guide is replaced, not kept as an edited copy');
+    assert.ok(!p.OLD_GUIDE_HASHES.includes(p.guideHash(p.DEFAULT_GUIDE)));
+});

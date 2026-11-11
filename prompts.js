@@ -8,7 +8,7 @@ export function guideHash(text) {
     for (let i = 0; i < t.length; i++) { const n = t.charCodeAt(i); a = Math.imul(a ^ n, 16777619); b = Math.imul(b, 33) ^ n; }
     return (a >>> 0).toString(36) + (b >>> 0).toString(36) + t.length.toString(36);
 }
-export const OLD_GUIDE_HASHES = ['5ou1fys5ubzw1ux', '1egpjhool9w7i225', '36fl7y13xf8tq3i3', '1d0rnmfp52dmx43e', 'ly3aqj1ha5hnz45u', '1gvz32h1cw4kin4fo', '1osodnkjcehcg4gw'];
+export const OLD_GUIDE_HASHES = ['5ou1fys5ubzw1ux', '1egpjhool9w7i225', '36fl7y13xf8tq3i3', '1d0rnmfp52dmx43e', 'ly3aqj1ha5hnz45u', '1gvz32h1cw4kin4fo', '1osodnkjcehcg4gw', '7lvgk81d3nkee4fh'];
 
 export const DEFAULT_GUIDE = `You keep the save file of an ongoing roleplay between {{char}} and {{user}}. Read the NEW MESSAGES and record what happened and what is now different: a scene journal plus the current state of people, items, open threads and the world.
 
@@ -42,7 +42,7 @@ STATE LISTS
 - A "secret" is something deliberately kept from someone, with "knownBy" listing who knows. Public acts (a public post, an announcement) are not secrets; they go in the journal.
 - QUESTS are only firm promises, confirmed goals, debts, and real unresolved mysteries, never passing wishes or idle remarks. Close a quest (status "done" or "failed") when the messages show it.
 
-SCENES: a scene ends only when the story clearly moves on: the place and the time change together, or the main activity is finished and a different one begins (they part ways, go to sleep, a later day starts). A brief change of topic, a short move within the same outing, or a pause after which the same activity continues does not end a scene. Several scenes may appear in one batch. The last scene is "ended": false if it is still going on at the last message.
+SCENES: a scene ends only when the story clearly moves on: the place and the time change together, or the main activity is finished and a different one begins (they part ways, go to sleep, a later day starts). A brief change of topic, a short move within the same outing, or a pause after which the same activity continues does not end a scene. A new story day always ends the scene, even in the same place with the same people: where the messages reach the next day (after a night's sleep, "the next morning", a later date), the scene before ends and a new scene starts at that message. Several scenes may appear in one batch. The last scene is "ended": false if it is still going on at the last message.
 
 Placeholders in the examples above (lantern, key, sign, ferry, ticket, Mara, Theo) are not part of this story; never record them.`;
 
@@ -168,7 +168,7 @@ Items:
 `;
 
 // Step 1 of automatic collection: only find where scenes start and whether they are over.
-export const SCENE_END_RULE = `A scene ends only when the story clearly moves on: the place and the time change together, or the main activity of the scene is finished and a different one begins (for example they part ways, go to sleep, or a later day starts). These do NOT end a scene: a brief change of topic, a short move within the same outing (walking to the next stall, stepping outside for a moment), or a pause or interruption after which the same activity continues.`;
+export const SCENE_END_RULE = `A scene ends only when the story clearly moves on: the place and the time change together, or the main activity of the scene is finished and a different one begins (for example they part ways, go to sleep, or a later day starts). These do NOT end a scene: a brief change of topic, a short move within the same outing (walking to the next stall, stepping outside for a moment), or a pause or interruption after which the same activity continues. A new story day always ends the scene, even in the same place with the same people: where the messages reach the next day (after a night's sleep, "the next morning", a later date), a new scene starts at that message.`;
 
 export function buildBoundaryPrompt({ names, open, from, to, text }) {
     const openText = open
