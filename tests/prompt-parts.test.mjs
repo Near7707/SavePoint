@@ -32,3 +32,11 @@ test('v0.6.97: a new story day ends the scene even in the same place; the previo
     assert.ok(p.OLD_GUIDE_HASHES.includes('7lvgk81d3nkee4fh'), 'the v0.6.96 default guide is replaced, not kept as an edited copy');
     assert.ok(!p.OLD_GUIDE_HASHES.includes(p.guideHash(p.DEFAULT_GUIDE)));
 });
+
+test('v0.6.100: morning after the night is a new story day for scenes even without the words "next day"', async () => {
+    const p = await import('../prompts.js');
+    for (const text of [p.DEFAULT_GUIDE, p.SCENE_END_RULE]) assert.match(text, /The words "next day" need not appear: when the night passes and morning comes/);
+    assert.match(p.OUTPUT_FORMAT, /only about day counts in time stamps; scenes still end when the night passes into morning/);
+    assert.ok(p.OLD_GUIDE_HASHES.includes('9xq4qk1r2f34q4m8'), 'the v0.6.97 default guide is replaced, not kept as an edited copy');
+    assert.ok(!p.OLD_GUIDE_HASHES.includes(p.guideHash(p.DEFAULT_GUIDE)));
+});

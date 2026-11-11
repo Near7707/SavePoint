@@ -1,3 +1,21 @@
+# v0.6.100 · 장면 지침: 아침 묘사도 새날 (사용자 보고, 리뷰 안 받고 올림)
+
+기준: v0.6.99 `5aee4e2`. `prompts.js`만, 코드 동작은 그대로.
+
+바뀐 것
+1. 사용자 보고: 기본 지침(v0.6.97 문장 있음)을 쓰는데도, 날짜가 정해지지 않은 세계관에서 "다음 날"이라는 말 없이 아침이 왔다는 묘사만 있는 메시지에서 장면이 닫히지 않음. 저널의 그 구간 시간은 시작·끝 모두 미확인, 근거 인용은 아침이 올 때까지를 뜻하는 구절 → 요약 AI가 "같은 밤이 아침까지 이어짐"으로 읽음.
+2. `DEFAULT_GUIDE` `SCENES:`와 `SCENE_END_RULE`에 `The words "next day" need not appear: when the night passes and morning comes (dawn breaks, the sun comes up, they wake in the morning), that is a new story day for scenes.`
+3. `OUTPUT_FORMAT` 시간 규칙의 `Never increment a day merely because night changed to dawn` 뒤에 `(this is only about day counts in time stamps; scenes still end when the night passes into morning)`. 이 문장이 장면 판단을 "아직 새날 아님" 쪽으로 기울였을 수 있어서.
+4. v0.6.97 기본 지침 해시 `9xq4qk1r2f34q4m8`를 `OLD_GUIDE_HASHES`에. 새 기본 지침 해시 `19vglwm189lsr04r1`.
+
+★ 특히 봐 줄 곳
+- ★ 밤새 같은 활동(예: 싸움)이 새벽까지 이어지는 경우에도 장면이 나뉠 수 있음. 기억은 잃지 않고 장면이 둘이 될 뿐이라 받아들임.
+
+바뀐 기대(기존 검사): 없음.
+검사 준비: 없음.
+
+검사: `prompt-parts.test.mjs`에 1개(두 지침의 새 문장, 시간 규칙 괄호, 예전 해시). v0.6.99 `prompts.js`로 돌리면 실패. Node 490개, 브라우저 50묶음 통과.
+
 # v0.6.99 · 기록: 기존 id에 공백이 붙으면 새 항목으로 받던 문제 (GPT 리뷰 v0.6.95~98 P2)
 
 기준: v0.6.98 `40e791e`(요청서 `65d16a0`). 리뷰 P2 한 건, P1·P3 없음. `core.js`만, 저장 쪽·화면은 그대로.
