@@ -117,7 +117,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => __savePoint.toggleKeep(3).catch(e => { M.keepErr = e.message; }));
     r = await ev(() => ({ mark: !!M.chat[3].extra?.savepointKeep, err: M.keepErr || '', saves: M.saves - M.saves0, file: M.serverFiles.chatD.length - 1 }));
     ok(!r.mark && r.err.includes('이 화면에 없는 내용') && r.saves === 0 && r.file === 22, '5. 🔖 원문 유지도 화면을 바꾸기 전에 막힘');
-    // a middle message edited on another device, another extension's metadata, a swipe: also blocked
+    // a middle message edited on another device, a swipe, an attachment: also blocked (another extension's metadata: v0.6.101)
     for (const [label, change] of [['다른 기기에서 고친 중간 메시지', f => { f[6].mes += ' (edited)'; }],
                                    ['다른 확장의 메타데이터', f => { f[0].chat_metadata.otherExt = { v: 2 }; }],
                                    ['다른 스와이프 본문', f => { f[4].swipes.push('A new swipe.'); }],
@@ -128,7 +128,9 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         const changed = JSON.parse(JSON.stringify(base)); change(changed);
         await ev(([f, id]) => { M.serverFiles[id] = f; M.saves0 = M.saves; toastr.log.length = 0; }, [changed, 'chatX' + label.length]);
         await ev(() => __savePoint.toggleKeep(1).catch(() => {}));
-        r = await ev(() => ({ saves: M.saves - M.saves0, mark: !!M.chat[1].extra?.savepointKeep }));
+        r = await ev(id => ({ saves: M.saves - M.saves0, mark: !!M.chat[1].extra?.savepointKeep, ext: JSON.stringify(M.serverFiles[id][0].chat_metadata.otherExt) }), 'chatX' + label.length);
+        // v0.6.101: another extension's metadata is sent as the file has it, so it no longer blocks (the file keeps { v: 2 }).
+        if (label === '다른 확장의 메타데이터') { ok(r.saves === 1 && r.mark && r.ext === '{"v":2}', `5. ${label}는 막지 않고 파일 값 그대로 저장 (${JSON.stringify(r)})`); continue; }
         ok(r.saves === 0 && !r.mark, `5. ${label}가 서버에만 있으면 쓰지 않음`);
     }
 

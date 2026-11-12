@@ -3,7 +3,7 @@
 // SillyTavern writes the whole chat (messages and chat metadata) on every save, so a write from a
 // screen that does not hold everything the file holds loses the rest. Before writing, the file must be
 // "covered" by the page: every message in the file is on the page with the same content, and every
-// metadata key in the file has the same value on the page. The page may have more (messages not saved
+// metadata key SavePoint sends from the page (PAGE_KEYS) has the same value on the page. The page may have more (messages not saved
 // yet). SavePoint's own parts are left out of that comparison: its memory (chat metadata `module`),
 // its marks on messages and swipes (`own` keys in `extra`), and `is_system` (the hide state).
 // After writing, the file is read again and compared with what was written.
@@ -101,9 +101,12 @@ export function splitFile(data) {
     if (head && (!head.chat_metadata || typeof head.chat_metadata !== 'object')) return null;
     return { meta: head ? head.chat_metadata : null, messages: head ? data.slice(1) : data };
 }
-// v0.6.59: author's-note keys SillyTavern fills with defaults when a room opens and the file has no value.
-const DEFAULTED = ['note_prompt', 'note_interval', 'note_depth', 'note_position', 'note_role'];
-const NULL_HASH = hashOf(null);
+// v0.6.101: the chat metadata keys SavePoint sends as the page has them (besides its memory `module`): the file's
+// identity and the mark of a carried-over first message. Every other key (another extension's state, the author's note)
+// is sent as the file last read has it (index.js sendMeta), so SavePoint never writes the page's value of a key it does
+// not own, and such a key never stops a write. (v0.6.59–0.6.100 compared every key; an extension that changes its key on
+// the page and saves it later, or never, blocked SavePoint in that room until SillyTavern saved the page.)
+export const PAGE_KEYS = ['integrity', 'tainted'];
 // Does the page hold everything the file holds (SavePoint's parts aside)?
 // { ok } or { ok: false, why: 'more' (the file has more messages) | 'diff' (a message differs) | 'meta'
 // | 'gone' (a message the file had when it was last read is no longer in it), at }.
@@ -118,9 +121,8 @@ export function covers(page, file, module, seen = null, cut = null) {
     for (let i = 0; i < file.plain.length; i++) if (file.plain[i] !== page.plain[i]) return { ok: false, why: 'diff', at: i };
     if (seen) for (let i = file.plain.length; i < Math.min(page.plain.length, seen.plain.length); i++)
         if (page.plain[i] === seen.plain[i] || !(cut !== null && cut <= i)) return { ok: false, why: 'gone', at: i };
-    if (file.meta) for (const k of Object.keys(file.meta)) {
-        if (k === module) continue;
-        if (file.meta[k] === NULL_HASH && DEFAULTED.includes(k)) continue;
+    if (file.meta) for (const k of PAGE_KEYS) {
+        if (!Object.hasOwn(file.meta, k)) continue;
         if (!page.meta || page.meta[k] !== file.meta[k]) return { ok: false, why: 'meta', at: k };
     }
     return { ok: true };

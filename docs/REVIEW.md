@@ -1,3 +1,34 @@
+# v0.6.101 · 저장: SavePoint 것이 아닌 채팅 정보는 파일 값 그대로 보냄 (사용자 보고, 설계 GPT 확인)
+
+기준: v0.6.100 `8fc0834`. 저장 쪽(`guard.js`, `index.js`)만.
+
+바뀐 것
+1. 사용자 보고: 다른 확장이 `chat_metadata.<자기 키>`를 화면에서 고치고 저장은 debounce로 미루거나 아예 안 함(예: 상태를 읽을 때마다 빠진 항목을 채우고 값 모양을 고치는데, 처음 만들 때만 저장 호출). `covers`의 메타 비교가 `why: 'meta'`로 막고, 방을 다시 열어도 그 확장이 또 고쳐서 계속 막힘. 실리태번이 화면을 저장해야 풀림.
+2. 설계(구현 전 GPT에 물음): "파일 값이 `seen`과 같으면 화면 값을 허용"(제안)은 방을 연 직후 기준이 없고, `writeBase`가 `written`으로 돌아가는 경로에서 다른 기기 값을 덮을 수 있음(GPT 지적) → GPT 제안대로 **SavePoint 것이 아닌 키는 마지막으로 읽은 파일 값을 실어 보냄**.
+3. `guard.js` 새 `PAGE_KEYS = ['integrity', 'tainted']`. `covers`의 메타 비교는 이 두 키만(파일에 있을 때, 화면 값이 같아야 함). v0.6.59 `DEFAULTED`(작가 노트 기본값 예외)는 비교 자체가 없어져서 지움.
+4. `index.js`:
+   - `readServerChat`이 읽은 방의 메타를 `lastFile`(방·차례별)에 담고 결과에 `meta`도 돌려줌.
+   - 새 `sendMeta(page, file)`: 파일 메타에서 SavePoint 것이 아닌 키를 그대로 + `MODULE`·`PAGE_KEYS`는 화면 값. 화면에만 있는 키는 빠지고, 파일에만 있는 키는 남음. 파일을 아직 안 읽었거나 머리말 없는 파일(예전 그룹 채팅)이면 화면 메타(지금까지와 같음).
+   - `chatTarget`이 `sendMeta`로 보내고, 실제로 보낸 사본 `snap`을 돌려줌. `writeChatFile`의 `tSnap`(→ `sents`, `seenSent`, `ownCopy`)은 `pageSnap()` 대신 이 사본(GPT 지적: `seen`과 `ownCopy`가 같은 사본을 가리켜야 함).
+   - `writeEntry`·`guardedSave`의 `written`은 새 `sendSnap()`(보낼 모양).
+   - `confirmUnsure`의 "파일이 지금 화면과 같음"(v0.6.93)은 `sendSnap(r.meta)`과 비교(그 파일 위에 지금 보낼 내용).
+5. 다시 보낼 때(`landed`)는 `fileAllows`가 다시 읽으므로 그때 파일 값이 실림.
+
+★ 특히 봐 줄 곳
+- ★ SavePoint가 파일을 읽은 뒤(`serverCovered`) 실리태번이 화면 전체(확장의 새 값 포함)를 저장하고 그 저장이 `stIdle` 검사 전에 끝나면, SavePoint 요청이 그 키를 읽었던 파일 값(옛 값)으로 되돌림. 화면에는 새 값이 남아 실리태번의 다음 저장 때 다시 들어감. 그 전에 방을 옮기면 옛 값으로 남음 — 메시지 쪽의 기존 열린 문제(v0.6.76)와 같은 틈이고, 이 수정으로 새로 생긴 손실 경로가 있는지 봐 줘.
+- ★ `PAGE_KEYS`에 더 넣어야 할 키가 있는지(SavePoint가 화면에서 바꾸는 메타는 기억 `savePoint`와 이어하기 `tainted`뿐으로 확인). `main_chat`·`chat_id_hash` 같은 실리태번 키를 파일 값으로 보내는 게 문제 되는 순서가 있는지.
+- ★ `lastFile`은 "이 방에서 마지막으로 끝난 읽기"(덮였는지와 상관없이). 동시에 두 읽기가 돌 때 더 오래된 파일 값이 남는 순서가 의미 있는지.
+- ★ 화면과 파일의 다른 확장 키가 달라도 이제 막지 않아서, 그 키로만 드러나던 "다른 기기에서 이어진 방"은 메시지·`integrity`·SavePoint 기억 검사로만 찾음.
+
+바뀐 기대(기존 검사)
+- `tests/guard.test.mjs` "the file holding more, or other content, is never covered": 다른 키(`ext`) 값 차이·파일에만 있는 키 → `meta`였던 것을 `ok`로. 같은 자리에 `integrity` 값 차이·파일에만 있는 `tainted` → `meta` 추가.
+- `tests/guard.test.mjs` "author's note keys saved as null…": 작가 노트 값 차이(`note_prompt`)·다른 키(`other_ext`) → `meta`였던 것을 `ok`로(비교하지 않음).
+- `tests/browser/room-gate.cjs` 5 "다른 확장의 메타데이터가 서버에만 있으면 쓰지 않음": 이제 막지 않고 🔶 저장 1회, 파일의 `otherExt`는 `{ v: 2 }` 그대로. (중간 메시지·스와이프·첨부는 지금처럼 막힘.)
+
+검사 준비: `tests/gate-stub.mjs`에 `sendSnap: () => null`.
+
+검사: 새 `tests/browser/save-foreign.cjs`(1·1b·2·3·4·5·6). v0.6.100 코드로는 1·2·4(첫 차이 키 이름)·5·6 실패. 일부러 망가뜨리기(커밋 안 함): `sendMeta`가 화면 메타를 돌리면 1·2·3·5·6, `tSnap`을 `pageSnap()`으로 되돌리면 5, `PAGE_KEYS`에서 `tainted`를 빼면 4가 실패. `written`을 `pageSnap()`으로, `confirmUnsure`를 `pageSnap()`으로 되돌려도 잡는 검사는 없음(앞은 `writeResult`가 메타를 안 보고 `ownCopy`는 `sents`가 맞춰서, 뒤는 그 경로 전에 `writeHeld`로 풀려서) — 일관성 때문에 바꾼 것. Node 490개, 브라우저 51묶음 통과.
+
 # v0.6.100 · 장면 지침: 아침 묘사도 새날 (사용자 보고, 리뷰 안 받고 올림)
 
 기준: v0.6.99 `5aee4e2`. `prompts.js`만, 코드 동작은 그대로.

@@ -34,8 +34,11 @@ test('the file holding more, or other content, is never covered', () => {
         const f = copy(base.slice(0, 2)); change(f);
         assert.equal(covers(page, snap({}, f), MOD).why, 'diff', name);
     }
-    assert.equal(covers(snap({ ext: { v: 1 } }, base), snap({ ext: { v: 2 } }, base), MOD).why, 'meta');
-    assert.equal(covers(snap({}, base), snap({ ext: { v: 2 } }, base), MOD).why, 'meta', 'a key only the file has');
+    // v0.6.101: only the keys SavePoint sends from the page are compared (others are sent as the file has them).
+    assert.equal(covers(snap({ integrity: 'a' }, base), snap({ integrity: 'b' }, base), MOD).why, 'meta');
+    assert.equal(covers(snap({}, base), snap({ tainted: true }, base), MOD).why, 'meta', 'a key only the file has');
+    assert.equal(covers(snap({ ext: { v: 1 } }, base), snap({ ext: { v: 2 } }, base), MOD).ok, true, 'another key: not compared');
+    assert.equal(covers(snap({}, base), snap({ ext: { v: 2 } }, base), MOD).ok, true, 'another key only the file has');
     assert.equal(covers(snap({ ext: 1, mine: 2 }, base), snap({ ext: 1 }, base), MOD).ok, true, 'a key only the page has is fine');
 });
 
@@ -97,8 +100,9 @@ test("author's note keys saved as null are filled with defaults on the page", ()
     const list = [msg(0)];
     const file = snap({ note_prompt: null, note_interval: null, note_depth: null, note_position: null, note_role: null }, list);
     assert.equal(covers(snap({ note_prompt: '', note_interval: 1, note_depth: 4, note_position: 1, note_role: 0 }, list), file, MOD).ok, true);
-    assert.equal(covers(snap({ note_prompt: 'kept here' }, list), snap({ note_prompt: 'written elsewhere' }, list), MOD).why, 'meta');
-    assert.equal(covers(snap({ other_ext: 1 }, list), snap({ other_ext: null }, list), MOD).why, 'meta', 'only those keys');
+    // v0.6.101: those keys (and every key SavePoint does not own) are no longer compared: SavePoint sends the file's value.
+    assert.equal(covers(snap({ note_prompt: 'kept here' }, list), snap({ note_prompt: 'written elsewhere' }, list), MOD).ok, true);
+    assert.equal(covers(snap({ other_ext: 1 }, list), snap({ other_ext: null }, list), MOD).ok, true);
 });
 
 test('a write is never confirmed from a file without the memory (older group chats)', () => {
