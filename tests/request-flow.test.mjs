@@ -183,3 +183,39 @@ test('a stored checkpoint failure keeps its original range after a partial quick
     assert.equal(h.st.autoFail, undefined);
 });
 
+
+// v0.6.103: a place label ("where") still not in English after the retry is left out (the range is saved without it);
+// any other field still not in English, or a "where" fixed by the retry, keeps the rules as before.
+function langHarness(replies) {
+    const h = harness({ count: 6, chars: 100, limit: 60000 });
+    let k = 0;
+    h.sandbox.llm = async prompt => {
+        h.calls.push(prompt);
+        const text = prompt.split(/\[NEW MESSAGES\][^\n]*\n/)[1].split('\n\nReturn ONLY')[0];
+        const nums = [...text.matchAll(/^#(\d+) /gm)].map(m => Number(m[1]));
+        const r = replies[Math.min(k++, replies.length - 1)];
+        return JSON.stringify({ scenes: [{ scene: 'new', title: r.title ?? 'A walk', where: r.where, who: [],
+            outline: `They walked from ${nums[0]} to ${nums.at(-1)}.`, notes: 'They walked together.', ended: false,
+            points: [{ text: 'They shared a quiet walk.', kind: 'moment', key: false, msgs: [nums[0]] }] }], entities: [], changes: [] });
+    };
+    return h;
+}
+test('a place still not in English after the retry is left out and the range is saved', async () => {
+    const h = langHarness([{ where: '뒷골목 시장' }, { where: '뒷골목 시장' }]);
+    await h.summarize();
+    assert.equal(h.st.lastIndex, 5);
+    assert.equal(h.calls.length, 2);
+    assert.match(h.calls[1], /"where" is not a name field/);
+    assert.equal(h.st.mem.scenes[0].where, '');
+    assert.match(h.sandbox.ui.lastFix.text, /장소가 영어로 오지 않아 1곳을 비워 두었어요/);
+});
+test('a place fixed by the retry is kept, and other fields not in English still fail', async () => {
+    const ok = langHarness([{ where: '뒷골목 시장' }, { where: 'Back alley market' }]);
+    await ok.summarize();
+    assert.equal(ok.st.lastIndex, 5);
+    assert.equal(ok.st.mem.scenes[0].where, 'Back alley market');
+    const bad = langHarness([{ where: '뒷골목 시장', title: '골목 산책' }, { where: '뒷골목 시장', title: '골목 산책' }]);
+    await bad.summarize().catch(() => {});
+    assert.equal(bad.st.lastIndex, -1);
+    assert(bad.sandbox.ui.lastError.detail.some(l => /Not English: .*scenes\[0\]\.title/.test(l)), JSON.stringify(bad.sandbox.ui.lastError.detail));
+});

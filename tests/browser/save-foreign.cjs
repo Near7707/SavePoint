@@ -148,6 +148,64 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         ok(r1 === 'ok' && r.saved === 12 && r.ext === '{"v":2}' && !['room', 'unsure'].includes(r.blocked), `7. 읽는 사이 실리태번이 저장한 새 값을 옛 값으로 되돌리지 않음 (${r1.slice(0, 60)}, ${JSON.stringify(r)})`);
         await page.close();
     }
+    {   // 8
+        const { page, ev } = await session();
+        await openRoom(ev, 'roomN');
+        await page.waitForTimeout(600);
+        // v0.6.103 (review P2): as 7, but the read made again fails (503). v0.6.102 then sent the first read's { v: 1 } over
+        // the { v: 2 } SillyTavern had saved, and called it a success. Now that read is a failed read: the next try reads
+        // the file again and keeps { v: 2 }, or the save stops; { v: 1 } is never sent.
+        await ev(() => { M.meta.extState = { v: 2 }; const f = window.fetch; let k = 0;
+            window.fetch = async (u, o) => {
+                if (String(u) === '/api/chats/get') {
+                    k++;
+                    if (k === 1) { const r = await f(u, o); const body = await r.text(); M.stSave(); return new Response(body, { status: 200 }); }
+                    if (k === 2) return new Response('busy', { status: 503 });
+                }
+                return f(u, o); }; });
+        const r1 = await run(ev, page), r = await look(ev, 'roomN');
+        ok(r.ext === '{"v":2}', `8. 두 번째 읽기가 실패해도 첫 읽기의 옛 값을 보내지 않음 (${r1.slice(0, 60)}, ${JSON.stringify(r)})`);
+        await page.close();
+    }
+    // 9. (v0.6.103, review P3) A resend's check in room A reads A's file; the room changes to B before that read is answered.
+    //    The read must change nothing of B (its base for later checks). B here is a branch of A (the same integrity and
+    //    messages), whose file has only the first 10 of them so far. v0.6.101–0.6.102 made A's file B's base, so B's own
+    //    unsaved messages looked deleted elsewhere ('gone') and B's next save was blocked. a: the extension's value is the
+    //    same on the page and in the file (one read); b: it differs on B's page (the read is made again, v0.6.102: that
+    //    second read was made for B's file and became B's base before the room change was noticed).
+    for (const [tag, same] of [['a', true], ['b', false]]) {
+        const { page, ev } = await session();
+        await openRoom(ev, 'roomA' + tag);
+        await ev(() => { M.meta.extState = { v: 1 }; delete M.meta.pageOnly; M.meta.integrity = 'i-shared'; M.serverFiles[M.chatId][0].chat_metadata.integrity = 'i-shared'; });
+        await page.waitForTimeout(600);
+        const orig = await ev(() => JSON.parse(JSON.stringify(M.serverFiles[M.chatId].slice(1))));
+        await ev(() => { M.noStSave = true; const f = window.fetch; let saved = false, held = false;
+            window.__release = null;
+            window.fetch = async (u, o) => {
+                if (String(u) === '/api/chats/save' && !saved) { saved = true; const r = await f(u, o);
+                    M.chat[5].mes = 'Edited after the copy left.'; M.stScript.setChatSaving(true); setTimeout(() => M.stScript.setChatSaving(false), 150); return r; }
+                if (String(u) === '/api/chats/get' && saved && !held) { held = true; const r = await f(u, o);
+                    await new Promise(res => { window.__release = res; }); return r; }
+                return f(u, o); }; });
+        const done = ev(() => __savePoint.toggleKeep(3).then(() => 'ok', e => `${e.name}: ${e.message}`));
+        await page.waitForFunction(() => !!window.__release, null, { timeout: 5000 }).catch(() => {});
+        const held = await ev(() => !!window.__release);
+        await ev(([tag, same, orig]) => {
+            const meta = { integrity: 'i-shared', extState: { v: 1 } };
+            M.serverFiles['roomB' + tag] = JSON.parse(JSON.stringify([{ chat_metadata: meta }, ...orig.slice(0, 10)]));
+            const pageMeta = JSON.parse(JSON.stringify(meta)); if (!same) pageMeta.extState.fix = [];
+            return M.switchChat('roomB' + tag, JSON.parse(JSON.stringify(orig)), pageMeta);
+        }, [tag, same, orig]);
+        await page.waitForTimeout(800);
+        await ev(() => { window.__release?.(); });
+        await done; await page.waitForTimeout(600);
+        await ev(() => { M.add(2); toastr.log.length = 0; });
+        await page.waitForTimeout(300);
+        const r1 = await run(ev, page), r = await look(ev, 'roomB' + tag);
+        ok(held && r1 === 'ok' && r.saved === 14 && !['room', 'unsure'].includes(r.blocked),
+            `9${tag}. 방을 옮긴 뒤 끝난 이전 방의 읽기가 새 방의 비교 기준을 바꾸지 않음 (${held}, ${r1.slice(0, 120)}, ${JSON.stringify(r)})`);
+        await page.close();
+    }
     await browser.close(); srv.close();
     console.log(failures ? `${failures} FAILED` : 'ALL PASS');
     process.exit(failures ? 1 : 0);

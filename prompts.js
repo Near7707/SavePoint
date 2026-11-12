@@ -8,11 +8,11 @@ export function guideHash(text) {
     for (let i = 0; i < t.length; i++) { const n = t.charCodeAt(i); a = Math.imul(a ^ n, 16777619); b = Math.imul(b, 33) ^ n; }
     return (a >>> 0).toString(36) + (b >>> 0).toString(36) + t.length.toString(36);
 }
-export const OLD_GUIDE_HASHES = ['5ou1fys5ubzw1ux', '1egpjhool9w7i225', '36fl7y13xf8tq3i3', '1d0rnmfp52dmx43e', 'ly3aqj1ha5hnz45u', '1gvz32h1cw4kin4fo', '1osodnkjcehcg4gw', '7lvgk81d3nkee4fh', '9xq4qk1r2f34q4m8'];
+export const OLD_GUIDE_HASHES = ['5ou1fys5ubzw1ux', '1egpjhool9w7i225', '36fl7y13xf8tq3i3', '1d0rnmfp52dmx43e', 'ly3aqj1ha5hnz45u', '1gvz32h1cw4kin4fo', '1osodnkjcehcg4gw', '7lvgk81d3nkee4fh', '9xq4qk1r2f34q4m8', '19vglwm189lsr04r1'];
 
 export const DEFAULT_GUIDE = `You keep the save file of an ongoing roleplay between {{char}} and {{user}}. Read the NEW MESSAGES and record what happened and what is now different: a scene journal plus the current state of people, items, open threads and the world.
 
-LANGUAGE: write every field in English, even when the story is in another language. Translate; never copy sentences from the story. Only entity names and the "aliases" lists keep the story's original spelling.
+LANGUAGE: write every field in English, even when the story is in another language. Translate; never copy sentences from the story. Only entity names and the "aliases" lists keep the story's original spelling. "where" is not a name: write it in English.
 
 WHAT TO KEEP
 1. Changes: anything that alters the current state: who holds what, the condition of an item, injuries or lasting status, a relationship shifting because of something someone did or said, a promise made, kept or broken, a decision, a secret revealed, a new name. Record the start and the result of an action together, so the final outcome is never lost ("picked up the broken lantern, refitted the handle and returned it to its owner", not only "picked up the lantern"). If a later action changes the meaning of an earlier one, write the final outcome.
@@ -58,7 +58,7 @@ export const OUTPUT_FORMAT = `Return ONLY one JSON object, with the fields in th
       "scene": "continue" | "new",
       "start": <first message number of this scene; omit for the first scene>,
       "title": "short label",
-      "where": "place",
+      "where": "place in English",
       "who": ["entity ids or new refs involved"],
       "time": { "mode": "present" | "flashback", "start": <time stamp>, "end": <time stamp> },
       "points": [ { "text": "one line, about 20 words", "kind": "change" | "moment", "key": true | false, "msgs": [<message numbers>] } ],
@@ -143,7 +143,7 @@ export function buildExtractPrompt(args) { return buildExtractPromptParts(args).
 export function retryNote(errors, languageIssues) {
     const lines = ['', '', 'YOUR PREVIOUS REPLY WAS REJECTED. Fix these problems and return the complete JSON again. For each problem, reread the message it cites and write what that message actually shows; do not just swap fields to pass the check:'];
     for (const e of errors.slice(0, 25)) lines.push('- ' + e);
-    if (languageIssues.length) lines.push(`- These fields were not written in English: ${languageIssues.slice(0, 15).join(', ')}. Translate them into English; only names and aliases keep the original spelling.`);
+    if (languageIssues.length) lines.push(`- These fields were not written in English: ${languageIssues.slice(0, 15).join(', ')}. Translate them into English; only entity names and aliases keep the original spelling. "where" is not a name field: write the place in English, romanizing a proper name.`);
     return lines.join('\n');
 }
 

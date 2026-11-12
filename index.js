@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.102';
+const VERSION = '0.6.103';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -333,13 +333,20 @@ const ownCopy = (sentSnap, file) => samePage(sentSnap, file, null);
 // saved the page (with another extension's new value) while the first read was on its way back: that read still has the
 // older value, which SavePoint would send (sendMeta) over the newer one. The second read is used when it succeeds.
 // An extension that keeps a value on the page only (never saved) costs one more read per write.
+// v0.6.103 (review P2): when that second read fails, the read fails (the caller's read error: it reads again or stops);
+// the first read's older value is never used. (review P3): a read answered after the room changed is { why: 'moved' },
+// and no second read is made for the other room.
+const movedSince = (key, epoch) => roomKey() !== key || roomEpoch !== epoch;
 async function readSettled(page = pageSnap) {
+    const key = roomKey(), epoch = roomEpoch;
     const r = await readServerChat();
+    if (movedSince(key, epoch)) return { ok: false, why: 'moved' };
     if (!r.ok || !foreignDiff(page(), r.snap)) return r;
     const again = await readServerChat();
-    return again.ok ? again : r;
+    return movedSince(key, epoch) ? { ok: false, why: 'moved' } : again;
 }
 async function fileAllows(sentSnap = null) {
+    // v0.6.103 (review P3): nothing of a read answered after the room changed reaches the room open now (`gate.seen`).
     const r = await readSettled();
     if (!r.ok) return { ok: false, why: r.why };
     const seen = gateHere() ? gate.seen : null, cut = gateHere() ? gate.cut : null, now = pageSnap();
@@ -1826,7 +1833,14 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
         try { data = parseJson(raw); parsed = true; fixes = normalizeResult(data, { mem, chunk }); errors = validateResult(data, { mem, chunk, expectContinue }); }
         catch (e) { data = null; errors = [parsed ? `Could not read the reply: ${e.message}` : 'The reply was not valid JSON.']; }
         lang = data ? resultLanguageIssues(data) : [];
-        lastKind = kind || (!parsed ? 'JSON 해석 실패' : !data ? '응답 처리 오류' : errors.length ? `검사 실패 ${errors.length}건` : lang.length ? `영어 아님 ${lang.length}곳` : '통과');
+        // v0.6.103: on the last try, a place label ("where") still not in English is left out instead of losing the whole
+        // range: the scene keeps the place it had (a continued scene) or has none. Any other problem still fails.
+        let dropped = 0;
+        if (attempt === 1 && !errors.length && lang.length && lang.every(w => /^scenes\[\d+\]\.where$/.test(w))) {
+            for (const w of lang) delete data.scenes[Number(/\d+/.exec(w)[0])].where;
+            dropped = lang.length; lang = [];
+        }
+        lastKind = kind || (!parsed ? 'JSON 해석 실패' : !data ? '응답 처리 오류' : errors.length ? `검사 실패 ${errors.length}건` : lang.length ? `영어 아님 ${lang.length}곳` : dropped ? `통과 (영어 아닌 장소 ${dropped}곳 비움)` : '통과');
         tries.push(`${took} · ${lastKind}`);
         if (!errors.length && !lang.length) {
             const merged = fixes.filter(f => f.startsWith('merged:')).length;
@@ -1835,6 +1849,7 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
             const titles = fixes.filter(f => f.startsWith('title:')).length, outlines = fixes.filter(f => f.startsWith('outline:')).length;
             if (titles) said.push(`제목 ${titles}개를 임시로 보완했어요`);
             if (outlines) said.push(`개요 ${outlines}개를 포인트로 임시 보완했어요`);
+            if (dropped) said.push(`장소가 영어로 오지 않아 ${dropped}곳을 비워 두었어요`);
             if (said.length) ui.lastFix = { at: Date.now(), range: `#${chunk.from}–#${chunk.to}`, text: said.join(' · ') };
             Object.defineProperty(data, 'lootWhy', { value: attachLoot(data, lootForChunk(chunk)).why, enumerable: false });
             return data;

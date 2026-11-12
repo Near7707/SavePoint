@@ -1,3 +1,30 @@
+# v0.6.103 · v0.6.102 리뷰 반영 (P2 1건, P3 1건) + 장소 영어 (사용자 보고)
+
+기준: v0.6.102 `50d6034`(리뷰 요청 `2968dda`). `index.js`, `prompts.js`.
+
+| 리뷰 항목 | 처리 |
+|---|---|
+| P2 (파일을 `1`로 읽는 사이 실리태번이 `2`를 저장, 두 번째 읽기만 503 → v0.6.102는 첫 읽기의 `1`을 보내고 성공) | `readSettled`: 두 번째 읽기 결과를 그대로 돌림(실패면 실패). 호출한 쪽의 기존 읽기 오류 처리로 감: `serverCovered`는 다음 시도에서 다시 읽고, `fileAllows`는 `error`로 저장을 멈춤. |
+| P3 (A의 재전송 확인 읽기가 늦게 끝나고 B를 연 뒤 — 값이 다르면 B를 한 번 더 읽어 B의 기준 갱신, 같으면 A의 사본이 B의 기준 `gate.seen`) | 새 `movedSince(key, epoch)`. `readSettled`가 시작할 때 방을 기억하고, 첫 읽기 뒤와 두 번째 읽기 뒤에 방이 바뀌었으면 `{ ok: false, why: 'moved' }`(두 번째 읽기는 하지 않음). `fileAllows`는 그 결과로 `setSeen` 전에 끝나고, `writeChatFile`이 바로 뒤 `moved()`로 처리(기존 그대로). |
+
+바뀐 것 (사용자 보고: 체크포인트 재요청 실패)
+1. 결과 복사: 첫 요청은 이름 대신 엔티티 id 미사용(재요청에서 해결), 재요청은 `Not English: scenes[0].where, scenes[1].where`. 지침의 `LANGUAGE:`가 "Only entity names and the aliases lists keep the story's original spelling"이라 장소 고유명을 원문 표기로 둘 여지가 있었고, 재요청 안내(`retryNote`)도 "only names and aliases keep the original spelling"이라 같은 판단을 되풀이했을 것으로 봄(실제 장소 값은 결과 복사에 없어서 추정).
+2. `DEFAULT_GUIDE` `LANGUAGE:` 끝에 `"where" is not a name: write it in English.` / 출력 형식 `"where": "place in English"` / `retryNote`의 언어 줄에 `"where" is not a name field: write the place in English, romanizing a proper name.` 지침 문장은 짧게 함(`request-flow.test.mjs`의 입력 한도 22,500자 검사들이 길이에 민감해서, 긴 문장으로는 4개가 실패했음).
+3. v0.6.100 기본 지침 해시 `19vglwm189lsr04r1`를 `OLD_GUIDE_HASHES`에. 새 기본 지침 해시 `62nyax1v207mx4s9`.
+4. `extractPrompt`(체크포인트·퀵세이브 응답 검사): 마지막 시도(재요청)에서 다른 오류가 없고 영어 아님이 **모두** `scenes[i].where`면 그 `where`를 지우고 통과. 시도 줄은 `통과 (영어 아닌 장소 N곳 비움)`, 자동 보정에 `장소가 영어로 오지 않아 N곳을 비워 두었어요`. 이어지는 장면은 `where`가 없으면 원래 장소 유지(`core.js` 기존 동작), 새 장면은 장소 없음.
+
+★ 특히 봐 줄 곳
+- ★ P2 수정으로 "다른 확장 값이 화면과 다른 방 + 두 번째 읽기 실패"에서는 저장이 성공 대신 다시 읽기/멈춤이 됨. `serverCovered`의 재시도(0·500·1500ms)가 충분한지.
+- ★ P3: 방 확인을 `readSettled` 안에서만 함. `fileAllows`·`serverCovered` 말고 `readServerChat`을 바로 쓰는 곳(`confirmUnsure`, `settleWrite` 등)은 각자의 기존 방 확인에 맡김 — 같은 틈이 남은 곳이 있는지.
+- ★ 장소 비우기가 첫 요청에는 적용되지 않음(첫 요청은 기존처럼 재요청). 장소 말고 다른 칸(제목·개요·포인트)은 그대로 실패.
+
+바뀐 기대(기존 검사): 없음. 검사 준비: 없음.
+
+검사
+- `save-foreign.cjs` 8(두 번째 읽기 503), 9a(값 같음: 같은 고유값·같은 메시지로 시작하는 갈래 방 B, 파일엔 앞 10개만), 9b(B 화면 값이 다름). v0.6.102 `index.js`로는 8(파일 `{"v":1}`)·9a(B가 'gone'으로 막힘) 실패, 9b는 통과(이 순서에서는 두 번째 읽기가 B 파일이라 기준이 B 자신의 파일).
+- `request-flow.test.mjs` 2개: 재요청 뒤에도 장소만 영어 아님 → 저장·장소 비움·자동 보정 문구 / 재요청에서 장소가 고쳐지면 유지, 제목도 영어 아니면 여전히 실패. v0.6.102 `index.js`로는 첫 번째 실패.
+- 망가뜨리기(커밋 안 함): 두 번째 읽기 실패 시 첫 읽기를 쓰게 되돌리면 8 실패. 첫 읽기 뒤 방 확인을 지우면 9a 실패.
+
 # v0.6.102 · v0.6.100~101 리뷰 반영 (P2 1건, P3 1건)
 
 기준: v0.6.101 `3656e2a`(리뷰 요청 `b0b99ef`). `index.js`만.
