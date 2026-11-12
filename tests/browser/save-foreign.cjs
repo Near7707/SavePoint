@@ -38,6 +38,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
 //    (the file is that copy, the page edited #3 since), so the page goes on and the edit is sent again.
 // 6. A failed write later confirmed: the file equals what SavePoint would send now → no longer unconfirmed.
 // 7. (v0.6.102) A read answered after SillyTavern saved a newer value of such a key is read again, so that value stays.
+// 8–9c: see each below.
 (async () => {
     const srv = await serve();
     const browser = await chromium.launch();
@@ -204,6 +205,38 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         const r1 = await run(ev, page), r = await look(ev, 'roomB' + tag);
         ok(held && r1 === 'ok' && r.saved === 14 && !['room', 'unsure'].includes(r.blocked),
             `9${tag}. 방을 옮긴 뒤 끝난 이전 방의 읽기가 새 방의 비교 기준을 바꾸지 않음 (${held}, ${r1.slice(0, 120)}, ${JSON.stringify(r)})`);
+        await page.close();
+    }
+    // 9c. (v0.6.104, review P3) As 9a, but the room changes right after readSettled found room A unchanged and before
+    //     fileAllows used that read (here: the moment the page's metadata is next read, which is readSettled's compare).
+    //     v0.6.103 made A's file B's base there, and B's next save was blocked as in 9.
+    {
+        const { page, ev } = await session();
+        await openRoom(ev, 'roomAc');
+        await ev(() => { M.meta.extState = { v: 1 }; delete M.meta.pageOnly; M.meta.integrity = 'i-shared'; M.serverFiles[M.chatId][0].chat_metadata.integrity = 'i-shared'; });
+        await page.waitForTimeout(600);
+        const orig = await ev(() => JSON.parse(JSON.stringify(M.serverFiles[M.chatId].slice(1))));
+        await ev(orig => { M.noStSave = true; const f = window.fetch; let saved = false, armed = false;
+            window.__where = '';
+            const toB = () => { const meta = { integrity: 'i-shared', extState: { v: 1 } };
+                M.serverFiles.roomBc = JSON.parse(JSON.stringify([{ chat_metadata: meta }, ...orig.slice(0, 10)]));
+                M.switchChat('roomBc', JSON.parse(JSON.stringify(orig)), JSON.parse(JSON.stringify(meta))); };
+            const arm = () => { const m = M.meta, v = m.extState;
+                Object.defineProperty(m, 'extState', { configurable: true, enumerable: true, get() {
+                    delete m.extState; m.extState = v; window.__where = new Error().stack.split('\n').slice(1).map(l => l.trim().split(' ')[1]).join(' < '); toB(); return v; } }); };
+            window.fetch = async (u, o) => {
+                if (String(u) === '/api/chats/save' && !saved) { saved = true; const r = await f(u, o);
+                    M.chat[5].mes = 'Edited after the copy left.'; M.stScript.setChatSaving(true); setTimeout(() => M.stScript.setChatSaving(false), 150); return r; }
+                if (String(u) === '/api/chats/get' && saved && !armed) { armed = true; const r = await f(u, o); arm(); return r; }
+                return f(u, o); }; }, orig);
+        const r0 = await ev(() => __savePoint.toggleKeep(3).then(() => 'ok', e => `${e.name}: ${e.message}`));
+        await page.waitForTimeout(900);
+        const where = await ev(() => ({ where: window.__where, id: M.chatId }));
+        await ev(() => { M.add(2); toastr.log.length = 0; });
+        await page.waitForTimeout(300);
+        const r1 = await run(ev, page), r = await look(ev, 'roomBc');
+        ok(where.id === 'roomBc' && /readSettled/.test(where.where) && r1 === 'ok' && r.saved === 14 && !['room', 'unsure'].includes(r.blocked),
+            `9c. 읽기 확인 직후 방을 옮겨도 이전 방의 파일이 새 방의 비교 기준이 되지 않음 (${r0.slice(0, 60)}, ${JSON.stringify(where)}, ${r1.slice(0, 120)}, ${JSON.stringify(r)})`);
         await page.close();
     }
     await browser.close(); srv.close();

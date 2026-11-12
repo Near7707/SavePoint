@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.103';
+const VERSION = '0.6.104';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -278,6 +278,8 @@ async function writeChatFile(fileMeta = null) {
                     : `서버의 채팅 파일에 이 화면에 없는 내용이 생겨서 더 저장하지 않았어요.${whyDetail(c.why, c.at)}`));
             }
             // v0.6.91: the file just read (and made `gate.seen`) — a base for settleWrite when it holds this write.
+            // v0.6.104: made `gate.seen` here, after `moved()` above (no longer in fileAllows).
+            if (gateHere()) setSeen(c.r.snap);
             adopted = c.r;
             fileMeta = c.r.meta ?? null;   // v0.6.102: a resend carries the metadata of the read that cleared it
             // SillyTavern started writing again during the read: wait for it and look again.
@@ -353,7 +355,8 @@ async function fileAllows(sentSnap = null) {
     let c = covers(now, r.snap, MODULE, seen, cut);
     if (!c.ok && c.why !== 'gone' && sentSnap && ownCopy(sentSnap, r.snap)) c = { ok: true };
     if (c.ok && foreignMemory(r, now, seen)) return { ok: false, why: 'mem' };
-    if (c.ok && gateHere()) setSeen(r.snap);
+    // v0.6.104 (review P3): the caller makes this file the base (`gate.seen`; today only writeChatFile), after its own check that the
+    // room is still the one whose file was read: the room can change between readSettled's check and this line.
     if (genBusy(c)) return { ok: false, why: 'busy' };
     return c.ok ? { ok: true, r } : { ok: false, why: c.why, at: c.at };
 }

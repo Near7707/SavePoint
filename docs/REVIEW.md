@@ -1,3 +1,22 @@
+# v0.6.104 · v0.6.103 리뷰 반영 (P3 1건)
+
+기준: v0.6.103 `724888d`(리뷰 요청 `4982af5`). `index.js`만. 리뷰 결과: 지난 P2 해결, 장소 처리 정상, P1·새 P2 없음.
+
+| 리뷰 항목 | 처리 |
+|---|---|
+| P3 (`readSettled`가 A의 읽기를 통과시킨 직후, `fileAllows`가 그 결과를 쓰기 직전에 B로 옮기면 A의 사본이 B의 기준 `gate.seen` → B의 저장 안 된 메시지가 "다른 곳에서 지움"으로 보여 B 저장이 막힘) | 리뷰 제안대로 `fileAllows`의 `setSeen`을 지우고, `writeChatFile`이 `fileAllows` 뒤의 기존 방 확인(`moved()`)과 `!c.ok` 처리를 지난 뒤 `if (gateHere()) setSeen(c.r.snap)`. 새 상태·새 확인 없음. `fileAllows`가 `ok`를 돌리는 경우와 `setSeen` 하던 경우는 같음(`foreignMemory`·`busy`는 그 전에 끝남). |
+
+★ 특히 봐 줄 곳
+- ★ `fileAllows`를 부르는 곳은 `writeChatFile` 하나뿐(지금). 앞으로 다른 곳에서 부르면 기준 갱신을 그쪽이 해야 함(주석에 적음).
+- ★ `serverCovered`는 `readSettled` 바로 뒤에 자기 방 확인을 하고 나서 `setSeen`이라 같은 틈이 없다고 봄.
+
+바뀐 기대(기존 검사): 없음. 검사 준비: 없음.
+
+검사
+- `save-foreign.cjs` 9c: 9a와 같은 방 A·갈래 방 B. 다시 보내기 확인의 읽기가 끝난 뒤, `readSettled`가 화면 메타를 비교하려고 읽는 순간(`readSettled`의 방 확인 뒤) B로 옮김(검사가 그 순간의 호출 위치에 `readSettled`가 있는지도 확인). v0.6.103 `index.js`로는 B가 `room`(다른 곳에서 지운 메시지)으로 막혀 실패, 지금은 통과.
+- 망가뜨리기(커밋 안 함): `setSeen`을 `fileAllows` 바로 뒤(방 확인 전)로 되돌리면 9c 실패.
+- 이 수정은 따로 리뷰를 받지 않고 v0.7.0 첫 단계 리뷰에 같이 넣기로 함(사용자 동의).
+
 # v0.6.103 · v0.6.102 리뷰 반영 (P2 1건, P3 1건) + 장소 영어 (사용자 보고)
 
 기준: v0.6.102 `50d6034`(리뷰 요청 `2968dda`). `index.js`, `prompts.js`.
