@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.101';
+const VERSION = '0.6.102';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -175,7 +175,7 @@ function ensureState() {
     return st;
 }
 function hasMemory(mem) { return !!(mem && (mem.scenes.length || mem.records.length)); }
-async function persist() { if (hasChat()) await writeChatFile(); }
+async function persist(fileMeta) { if (hasChat()) await writeChatFile(fileMeta); }
 // v0.6.72: SavePoint writes the chat file itself, for the room open at the moment of the call. SillyTavern's
 // saveMetadata()/saveChatConditional() wait at least 0.1 s and then save whatever room is open by then: a
 // room switch in that moment sent the next room's name with no messages and metadata without `integrity`
@@ -187,26 +187,33 @@ async function persist() { if (hasChat()) await writeChatFile(); }
 let stScript = null;
 try { import('../../../../script.js').then(m => { stScript = m; }, () => {}); } catch { /* not in SillyTavern */ }
 // v0.6.101: the chat metadata SavePoint sends. Its own keys (the memory, PAGE_KEYS) as the page has them; every other key as
-// the file last read for this room has it (a key only on the page is left out, one only in the file is kept). Another
-// extension's change on the page is saved when SillyTavern saves the page, as without SavePoint, and another device's value
-// in the file is never written over by SavePoint. No file read yet, or a file without a metadata header: the page's, as before.
-let lastFile = null;
+// the file has it (a key only on the page is left out, one only in the file is kept). Another extension's change on the page
+// is saved when SillyTavern saves the page, as without SavePoint, and another device's value in the file is never written
+// over by SavePoint. A file without a metadata header (or none given): the page's, as before.
+// v0.6.102: `file` is the metadata of the very read that cleared this write (serverCovered before the first request,
+// fileAllows before a resend), passed along — not the room's last read, which a read started earlier could set later.
 const OWN_META = [MODULE, ...PAGE_KEYS];
-function fileMetaHere() { return lastFile && lastFile.key === roomKey() && lastFile.epoch === roomEpoch ? lastFile.meta : null; }
-function sendMeta(page, file = fileMetaHere()) {
+function sendMeta(page, file) {
     if (!file || typeof file !== 'object' || !page || typeof page !== 'object') return page;
     const out = {};
     for (const k of Object.keys(file)) if (!OWN_META.includes(k)) out[k] = file[k];
     for (const k of OWN_META) if (Object.hasOwn(page, k)) out[k] = page[k];
     return out;
 }
-// The page as SavePoint would write it now (over file metadata `file`, by default the one last read).
+// The page as SavePoint would write it now over file metadata `file`.
 function sendSnap(file) { return snapshot(sendMeta(ctx().chatMetadata, file), chat(), OWN_KEYS); }
-function chatTarget() {
+// v0.6.102: does a key SavePoint does not own differ between the page and the file? (snapshots)
+function foreignDiff(page, file) {
+    if (!file?.meta) return false;
+    const a = page?.meta || {}, b = file.meta;
+    for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) if (!OWN_META.includes(k) && a[k] !== b[k]) return true;
+    return false;
+}
+function chatTarget(fileMeta) {
     const c = ctx(), list = c.chat, page = c.chatMetadata, file = chatId();
     if (!Array.isArray(list) || !list.length || !page || typeof page !== 'object' || !page.integrity) return null;
     if (file === null || file === undefined || file === '') return null;
-    const meta = sendMeta(page);
+    const meta = sendMeta(page, fileMeta);
     const head = { chat_metadata: meta, user_name: 'unused', character_name: 'unused' };
     // v0.6.101: `snap` — the copy actually sent (its metadata is not the page's), for `sents` and `gate.seen`.
     const snap = snapshot(meta, list, OWN_KEYS);
@@ -224,7 +231,7 @@ async function stIdle() {
 }
 // The answer of SillyTavern's chat save handler to any error inside it (src/endpoints/chats.js).
 const ST_SAVE_500 = 'An error has occurred, see the console logs for more information.';
-async function writeChatFile() {
+async function writeChatFile(fileMeta = null) {
     const key = roomKey(), epoch = roomEpoch;
     // A copy is taken at one moment, so a newer page SillyTavern saves while it is on its way could land
     // first and be overwritten by it. When the page changed meanwhile, the room as it is now is sent again
@@ -259,7 +266,7 @@ async function writeChatFile() {
         if (await stIdle()) landed = true;
         if (moved()) { if (sent !== null) return; throw fail(new RoomBlocked('채팅방이 바뀌어서 저장하지 않았어요.')); }
         if (landed) {
-            const t0 = chatTarget();
+            const t0 = chatTarget(fileMeta);
             if (sent !== null && (!t0 || t0.body === sent)) return;
             const c = await fileAllows(sentSnap);
             if (moved()) { if (sent !== null) return; throw fail(new RoomBlocked('채팅방이 바뀌어서 저장하지 않았어요.')); }
@@ -272,11 +279,12 @@ async function writeChatFile() {
             }
             // v0.6.91: the file just read (and made `gate.seen`) — a base for settleWrite when it holds this write.
             adopted = c.r;
+            fileMeta = c.r.meta ?? null;   // v0.6.102: a resend carries the metadata of the read that cleared it
             // SillyTavern started writing again during the read: wait for it and look again.
             if (stScript?.isChatSaving) continue;
         }
         // From here to the request nothing waits: the room checked is the room whose file is sent.
-        const t = chatTarget(), tSnap = t ? t.snap : null;
+        const t = chatTarget(fileMeta), tSnap = t ? t.snap : null;
         if (sent !== null && (!t || t.body === sent)) return;
         if (!t) throw fail(new RoomBlocked('채팅방이 아직 다 열리지 않아서(메시지나 채팅 파일 고유값이 없음) 저장하지 않았어요.'));
         // v0.6.83: the request is made ready first; an error there sent nothing.
@@ -321,8 +329,18 @@ async function writeChatFile() {
 // v0.6.80: the very copy sent (every message, mark and metadata key the same), not only something that copy
 // covers: a file that lost a message since (deleted on another device) is not this page's copy.
 const ownCopy = (sentSnap, file) => samePage(sentSnap, file, null);
-async function fileAllows(sentSnap = null) {
+// v0.6.102: a read whose keys SavePoint does not own differ from the page's is read once more. SillyTavern may have
+// saved the page (with another extension's new value) while the first read was on its way back: that read still has the
+// older value, which SavePoint would send (sendMeta) over the newer one. The second read is used when it succeeds.
+// An extension that keeps a value on the page only (never saved) costs one more read per write.
+async function readSettled(page = pageSnap) {
     const r = await readServerChat();
+    if (!r.ok || !foreignDiff(page(), r.snap)) return r;
+    const again = await readServerChat();
+    return again.ok ? again : r;
+}
+async function fileAllows(sentSnap = null) {
+    const r = await readSettled();
     if (!r.ok) return { ok: false, why: r.why };
     const seen = gateHere() ? gate.seen : null, cut = gateHere() ? gate.cut : null, now = pageSnap();
     let c = covers(now, r.snap, MODULE, seen, cut);
@@ -651,10 +669,10 @@ async function writeEntry(queue, entry) {
     }
     if (applied === false) return false;
     let unsure = null, settled = false;
-    const written = sendSnap(), rev = state()?.rev ?? null, proof = proofOf(ctx().chatMetadata?.[MODULE]), marks = changedMarks(entry), tick = delTick;
+    const written = sendSnap(pre.meta), rev = state()?.rev ?? null, proof = proofOf(ctx().chatMetadata?.[MODULE]), marks = changedMarks(entry), tick = delTick;
     try {
         // v0.6.76: a failure after the change may already be in the file is not taken back (settleWrite).
-        try { await persist(); }
+        try { await persist(pre.meta); }
         catch (e) {
             const err = await settleWrite(e, { written, rev, proof, pre, key: entry.key, epoch: entry.epoch, marks, tick });
             if (err === 'revert') throw e;
@@ -796,7 +814,7 @@ function persistSoon() {
     persistTimer = setTimeout(function save() {
         if (roomKey() !== key || roomEpoch !== epoch) return;
         if (mainBusy()) { persistTimer = setTimeout(save, 1500); return; }
-        guardedSave(() => { mark(); return persist(); });
+        guardedSave(pre => { mark(); return persist(pre.meta); });
     }, 300);
 }
 function saveChatSoon() {
@@ -805,7 +823,7 @@ function saveChatSoon() {
     chatSaveTimer = setTimeout(function save() {
         if (roomKey() !== key || roomEpoch !== epoch) return;
         if (mainBusy()) { chatSaveTimer = setTimeout(save, 1500); return; }
-        guardedSave(() => persist());
+        guardedSave(pre => persist(pre.meta));
     }, 500);
 }
 // v0.6.58: the small saves outside the queue (status notes, 🔖 repairs) follow the same rule: only a
@@ -830,9 +848,9 @@ function guardedSave(write) {
             if (pre.why === 'busy') gate.held = true; else warnBlocked();
             return;
         }
-        const written = sendSnap(), rev = state()?.rev ?? null, proof = proofOf(ctx().chatMetadata?.[MODULE]), tick = delTick;
+        const written = sendSnap(pre.meta), rev = state()?.rev ?? null, proof = proofOf(ctx().chatMetadata?.[MODULE]), tick = delTick;
         // v0.6.72: a save stopped because the room moved meanwhile is not an error of the new room.
-        try { await write(); } catch (e) {
+        try { await write(pre); } catch (e) {
             let err = await settleWrite(e, { written, rev, proof, pre, key, epoch, tick });
             if (err === 'revert') err = e;
             if (err && roomKey() === key && roomEpoch === epoch) reportError(err);
@@ -972,7 +990,6 @@ function warnBlocked() {
 }
 // The room's chat file as the server has it. { ok, snap, count, rev } or { ok: false, why: 'empty' | 'error' }.
 async function readServerChat() {
-    const key = roomKey(), epoch = roomEpoch;
     try {
         const c = ctx(), file = typeof c.getCurrentChatId === 'function' ? c.getCurrentChatId() : c.chatId;
         if (file === null || file === undefined || file === '') return { ok: false, why: 'error' };
@@ -988,8 +1005,6 @@ async function readServerChat() {
         const parts = splitFile(await r.json());
         if (!parts) return { ok: false, why: 'empty' };
         const mod = parts.meta?.[MODULE];
-        // v0.6.101: the metadata SavePoint keeps for keys it does not own (sendMeta).
-        if (roomKey() === key && roomEpoch === epoch) lastFile = { key, epoch, meta: parts.meta };
         return { ok: true, meta: parts.meta, snap: snapshot(parts.meta, parts.messages, OWN_KEYS), count: parts.messages.length, first: parts.messages[0], messages: parts.messages, rev: mod?.rev ?? null, by: mod?.by ?? null,
             proof: parts.meta ? proofOf(mod) : undefined };
     } catch { return { ok: false, why: 'error' }; }
@@ -1006,7 +1021,7 @@ async function serverCovered(page = pageSnap, tries = [0, 500, 1500], { adopt = 
     for (const ms of tries) {
         if (ms) await wait(ms);
         if (moved()) return { ok: false, why: 'moved' };
-        const r = await readServerChat();
+        const r = await readSettled(page);
         if (moved()) return { ok: false, why: 'moved' };
         if (!r.ok) { last = r; continue; }
         const seen = gateHere() ? gate.seen : null, now = page();

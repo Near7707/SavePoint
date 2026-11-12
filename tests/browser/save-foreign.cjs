@@ -37,6 +37,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
 // 5. The copy sent (not the page) is the copy SavePoint knows as its own: it landed after SillyTavern's newer save
 //    (the file is that copy, the page edited #3 since), so the page goes on and the edit is sent again.
 // 6. A failed write later confirmed: the file equals what SavePoint would send now → no longer unconfirmed.
+// 7. (v0.6.102) A read answered after SillyTavern saved a newer value of such a key is read again, so that value stays.
 (async () => {
     const srv = await serve();
     const browser = await chromium.launch();
@@ -131,6 +132,20 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         await page.waitForTimeout(800);
         const r = await look(ev, 'roomJ');
         ok(u === 'unsure' && r2 === 'ok' && !['room', 'unsure'].includes(r.blocked) && r.ext === '{"v":1,"fix":[]}', `6. 미확인 뒤 파일이 SavePoint가 보낼 내용과 같으면 확인 (${u}, ${r2.slice(0, 60)}, ${JSON.stringify(r)})`);
+        await page.close();
+    }
+    {   // 7
+        const { page, ev } = await session();
+        await openRoom(ev, 'roomK');
+        await page.waitForTimeout(600);
+        // v0.6.102 (review P2): the file is read with { v: 1 }; before that answer comes back, SillyTavern saves the page
+        // with the extension's new value { v: 2 } and is done. That read is stale: SavePoint reads again and keeps { v: 2 }.
+        await ev(() => { M.meta.extState = { v: 2 }; const f = window.fetch; let armed = true;
+            window.fetch = async (u, o) => { const r = await f(u, o);
+                if (armed && String(u) === '/api/chats/get') { armed = false; const body = await r.text(); M.stSave(); return new Response(body, { status: 200 }); }
+                return r; }; });
+        const r1 = await run(ev, page), r = await look(ev, 'roomK');
+        ok(r1 === 'ok' && r.saved === 12 && r.ext === '{"v":2}' && !['room', 'unsure'].includes(r.blocked), `7. 읽는 사이 실리태번이 저장한 새 값을 옛 값으로 되돌리지 않음 (${r1.slice(0, 60)}, ${JSON.stringify(r)})`);
         await page.close();
     }
     await browser.close(); srv.close();

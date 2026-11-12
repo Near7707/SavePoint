@@ -1,3 +1,21 @@
+# v0.6.102 · v0.6.100~101 리뷰 반영 (P2 1건, P3 1건)
+
+기준: v0.6.101 `3656e2a`(리뷰 요청 `b0b99ef`). `index.js`만.
+
+| 리뷰 항목 | 처리 |
+|---|---|
+| P2 (파일을 `extState=1`로 읽는 응답이 오기 전에 같은 탭의 실리태번이 `2`를 저장하고 끝나면, v0.6.101은 그 읽기를 통과시켜 `1`을 보냄 — 화면 2·파일 1인데 성공) | 새 `readSettled`: 읽은 파일의 SavePoint 것이 아닌 키가 화면과 다르면(`foreignDiff`) 한 번 더 읽고, 성공하면 두 번째 읽기를 씀. `serverCovered`(첫 전송 전)와 `fileAllows`(다시 보내기 전) 모두. 리뷰 재현 순서를 브라우저 검사로 만듦(7). |
+| P3 (먼저 시작한 읽기가 늦게 끝나면 공유 `lastFile`이 옛 값으로 바뀜) | `lastFile`·`fileMetaHere` 지움. 첫 전송은 `serverCovered`가 돌려준 결과의 `meta`(`writeEntry`의 `pre`, `guardedSave`가 `write(pre)`로 넘김 → `persist(meta)` → `writeChatFile(fileMeta)`), 다시 보내기는 `fileAllows`가 돌려준 `c.r.meta`. `written`도 `sendSnap(pre.meta)`. `sendMeta`는 넘겨받은 값만 씀(없으면 화면 메타). |
+
+★ 특히 봐 줄 곳
+- ★ 다른 확장이 값을 화면에만 두는 방(저장 안 함)은 저장할 때마다 읽기가 한 번 늘어요(채팅 파일 전체). 긴 방에서 부담이 되는지.
+- ★ 두 번째 읽기가 실패하면 첫 읽기를 씀(그 경우 P2 틈이 남음). 실패로 막는 쪽이 나은지.
+- ★ 두 읽기 사이에 방이 바뀌면 두 번째는 다른 방 파일일 수 있음 — 호출한 쪽이 바로 뒤에 `moved()`로 버림(`serverCovered`는 직후 검사, `fileAllows`는 `writeChatFile`이 직후 검사).
+
+바뀐 기대(기존 검사): 없음. 검사 준비: 없음.
+
+검사: `save-foreign.cjs`에 7 추가. v0.6.101 `index.js`로는 7 실패(파일이 `{"v":1}`). 다시 보내기의 `fileMeta = c.r.meta`를 지워도 잡는 검사는 없음(검사 5에서 두 읽기의 다른 확장 값이 같아서). P3의 응답 순서를 강제하는 검사는 만들지 않음 — 공유 값이 없어져 그 경로가 구조적으로 없음. Node 490개, 브라우저 51묶음 통과.
+
 # v0.6.101 · 저장: SavePoint 것이 아닌 채팅 정보는 파일 값 그대로 보냄 (사용자 보고, 설계 GPT 확인)
 
 기준: v0.6.100 `8fc0834`. 저장 쪽(`guard.js`, `index.js`)만.
