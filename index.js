@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.7.0-a1';
+const VERSION = '0.7.0-a2';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -191,6 +191,20 @@ function tidyQueued() {
     // A memory left untidy by a failed write is tidied again at the next change (state() at its turn).
     const job = () => tidyNow().catch(e => console.warn('[SavePoint] memory tidy-up not saved', e?.message || e));
     Promise.resolve().then(job).finally(() => { if (tidyAsked === id) tidyAsked = null; });
+}
+// v0.7.0-a2 (review P2-2): the page's own memory, for work that changes it after a wait (an AI request). A memory
+// read through a tidied copy gets its tidy-up written first; null when that cannot be done (said with `what`, unless
+// the room changed meanwhile).
+async function pageState(what) {
+    const key = roomKey(), epoch = roomEpoch, own = () => ctx().chatMetadata?.[MODULE];
+    let st = state();
+    if (!st || st === own()) return st;
+    let why = '';
+    try { await tidyNow(); } catch (e) { why = ` · ${errorText(e)}`; }
+    if (roomKey() !== key || roomEpoch !== epoch) return null;
+    st = state();
+    if (st && st !== own()) { toastr.warning(`기억 정리를 저장하지 못해서 ${what} 시작하지 않았어요${why}`, 'SavePoint', { timeOut: 10000 }); return null; }
+    return st;
 }
 const storyTimesChecked = new WeakSet();
 const oldViews = new WeakMap();
@@ -1471,8 +1485,17 @@ function syncHide({ rehide = false } = {}) {
             for (const k of [VISIBLE_KEY, HELD_KEY]) if (Object.hasOwn(m.extra, k)) { delete m.extra[k]; changed = true; }
             return;
         }
+        // v0.7.0-a2 (review P3-1): what was shown only for a changed original still waiting for its turn (live) is hidden
+        // again in manual mode when that change is gone (the original put back exactly) and it is still in the range.
+        // Only these: a message the user opened themselves is left as it is.
+        if (!live && liveShown.has(m)) {
+            liveShown.delete(m);
+            if (can && mode === 'manual' && !mark && !m.is_system && i <= reach) { m.extra ||= {}; m.extra[HIDE_KEY] = 1; setHidden(m, i, true); changed = true; return; }
+        }
         if (mark && m.is_system && i > floor) {
-            setHidden(m, i, false); delete m.extra[HIDE_KEY]; dropHeld(m); changed = true; return;
+            setHidden(m, i, false); delete m.extra[HIDE_KEY]; dropHeld(m); changed = true;
+            if (live) liveShown.add(m);
+            return;
         }
         if (rescan && i <= cutoff) {
             // Recheck from #0 on every saved batch. A manually opened message
@@ -1508,6 +1531,7 @@ function syncHide({ rehide = false } = {}) {
     if (changed) { ctx().swipe?.refresh?.(); saveChatSoon(); }
     return changed;
 }
+const liveShown = new WeakSet();
 // The manual hidden range as it should be now: { h, changed }.
 // Messages that went back to unrecorded (rewind, a rolled-back record, even all of them) leave the range for good:
 // recorded again, they stay shown until the button is pressed again.
@@ -1924,9 +1948,12 @@ function newRun(st, end, kind = '') {
     updateSaveBanner();
     return run;
 }
+// v0.7.0-a2 (review P2-1): the fingerprints already in the run's memory are those of the messages the run read (a
+// recorded message edited before the run began is never saved over with its new fingerprint).
+function baseMatches(run) { return (run.st?.hashes || []).every((h, i) => h === run.hashes[i]); }
 function assertValid(run, upTo) {
     const ok = !run.cancelled && run.key === roomKey() && run.epoch === roomEpoch && state() === run.st &&
-        !run.st.review && firstMismatch(run.hashes.slice(0, upTo + 1)) === -1 && !(run.viaMain && mainBusy());
+        !run.st.review && firstMismatch(run.hashes.slice(0, upTo + 1)) === -1 && baseMatches(run) && !(run.viaMain && mainBusy());
     if (!ok) { run.cancelled = true; throw new Cancelled('대화나 채팅방이 바뀌어서 이 구간은 저장하지 않았어요.'); }
 }
 // v0.6.60: at the turn of a run's write in the room's queue, right before its result is applied: the run is
@@ -1935,7 +1962,7 @@ function assertValid(run, upTo) {
 function assertStill(run, upTo, base) {
     // v0.7.0-a1 (review P2-1): the run's memory must be the page's own (never a tidied copy read through state()).
     const ok = !run.cancelled && run.key === roomKey() && run.epoch === roomEpoch && state() === run.st && run.st === ctx().chatMetadata?.[MODULE] && run.st.mem === base &&
-        !run.st.review && firstMismatch(run.hashes.slice(0, upTo + 1)) === -1;
+        !run.st.review && firstMismatch(run.hashes.slice(0, upTo + 1)) === -1 && baseMatches(run);
     if (!ok) { run.cancelled = true; throw new Cancelled('기록하는 사이 대화나 기억이 바뀌어서 이 구간은 저장하지 않았어요. 다시 세이브해 주세요.'); }
     return true;
 }
@@ -2261,6 +2288,17 @@ async function summarize({ close = false, auto = false } = {}) {
             return;
         }
     }
+    // v0.7.0-a2 (review of v0.7.0-a1, P2-1): the waits above (the start mark, the tidy-up) can outlast an edit of a
+    // recorded message. Checked again right before anything is read for the request: otherwise the old memory went out
+    // with the new messages and was saved with fresh fingerprints, so the edit was never found again.
+    if (st.review || firstMismatch(st.hashes) >= 0) {
+        const again = await reconcileNow();
+        if (!here()) return;
+        if (!again) { render(); toastr.warning('예전 원문이 바뀌었어요. 창 위쪽 안내에서 먼저 처리해 주세요.'); return; }
+        if (ui.run) { toastr.info('이미 기록 중이에요.'); return; }
+        st = state();
+        if (!st || st !== ctx().chatMetadata?.[MODULE] || st.review || firstMismatch(st.hashes) >= 0) return;
+    }
     const latest = chat().length - 1;
     const start = st.lastIndex + 1;
     const pending = collect(start, latest);
@@ -2274,7 +2312,8 @@ async function summarize({ close = false, auto = false } = {}) {
         if (!msgs.length && !queued.length) {
             const result = `체크포인트 · 기록할 메시지 없음 · 최근 ${held}개 여유분`;
             await noteAuto(st, result, { end: latest, status: 'empty', room: { key, epoch } });
-            flashSaveBanner(result, { tone: 'info' });
+            // v0.7.0-a2 (review P3-2): the banner only in the room the checkpoint ran in.
+            if (here()) flashSaveBanner(result, { tone: 'info' });
             return;
         }
     }
@@ -2902,8 +2941,10 @@ function applyTranslation(mem, id, ko) {
 async function translate() {
     if (ui.run) return;
     if (!(await queueIdle()) || ui.run) return;
-    const st = state();
-    if (!st || !hasMemory(st.mem)) { toastr.info('번역할 기억이 없어요.'); return; }
+    if (!state() || !hasMemory(state().mem)) { toastr.info('번역할 기억이 없어요.'); return; }
+    const st = await pageState('한국어 보기를');
+    if (!st || ui.run) return;
+    if (!hasMemory(st.mem)) { toastr.info('번역할 기억이 없어요.'); return; }
     const items = translationTargets(st.mem);
     if (!items.length) { toastr.info('모든 항목에 한국어 보기가 있어요.'); return; }
     const batches = [];
@@ -2927,7 +2968,7 @@ async function translate() {
         await transact(() => {
             const before = st.mem;
             st.mem = next; pushHistory(st, before, next, { kind: 'edit' });
-        }, { still: () => run.cancelled || ui.run !== run ? '중지했어요.' : state() !== st || st.rev !== rev ? '기억이 바뀌어서 번역을 적용하지 않았어요.' : true });
+        }, { still: () => run.cancelled || ui.run !== run ? '중지했어요.' : state() !== st || st !== ctx().chatMetadata?.[MODULE] || st.rev !== rev ? '기억이 바뀌어서 번역을 적용하지 않았어요.' : true });
         // v0.6.39: the view language stays whatever the user chose last (🌐 원문 during the request wins).
         toastr.success(`${count}개 항목의 한국어 보기를 만들었어요.`);
     } catch (e) {
@@ -2940,8 +2981,9 @@ async function translate() {
 async function rekeyScenes(ids) {
     if (ui.run || !ids.length) { if (!ids.length) toastr.info('다시 고를 장면이 없어요.'); return; }
     if (!(await queueIdle()) || ui.run) return;
-    const st = state();
-    if (!st) return;
+    if (!state()) return;
+    const st = await pageState('주입 포인트 고르기를');
+    if (!st || ui.run) return;
     const run = newRun(st, -1, 'other');
     const rev = st.rev;
     const results = [];
@@ -2973,7 +3015,7 @@ async function rekeyScenes(ids) {
                 let next = before;
                 for (const [sid, keys] of results) next = applyRekey(next, sid, keys);
                 st.mem = next; pushHistory(st, before, next, { kind: 'edit' });
-            }, { still: () => run.cancelled || ui.run !== run ? '중지했어요.' : state() !== st || st.rev !== rev ? '기억이 바뀌어서 적용하지 않았어요.' : true });
+            }, { still: () => run.cancelled || ui.run !== run ? '중지했어요.' : state() !== st || st !== ctx().chatMetadata?.[MODULE] || st.rev !== rev ? '기억이 바뀌어서 적용하지 않았어요.' : true });
         }
         refreshInjection();
         toastr[failed ? 'warning' : 'success'](`주입 포인트를 다시 골랐어요 (장면 ${results.length}개${failed ? `, 실패 ${failed}개` : ''}). 직접 지정한 포인트는 그대로예요.`);
@@ -3895,13 +3937,22 @@ function lootNextStep(st, item, changed) {
 // queue only after the memory is saved; the run blocks a second click.
 async function retryLoot(id) {
     if (ui.run) { toastr.info('이미 기록 중이에요.'); return; }
-    const st = state(); if (!st) return;
-    const item = (st.lootQueue || []).find(x => x.id === id); if (!item) return;
+    let st = state(); if (!st) return;
+    let item = (st.lootQueue || []).find(x => x.id === id); if (!item) return;
     // v0.6.59: the source check below can change the room's memory: only in a confirmed room.
     const key = roomKey(), epoch = roomEpoch;
     const ready = (gateOpen() || await roomReady()) && await queueIdle();
-    if (roomKey() !== key || roomEpoch !== epoch || state() !== st || ui.run) return;
+    if (roomKey() !== key || roomEpoch !== epoch || ui.run) return;
     if (!ready) { toastr.warning(gateMessage(), 'SavePoint', { timeOut: 10000 }); return; }
+    // v0.7.0-a2 (review P2-2): on the page's own memory (a tidied copy is written first).
+    // A copy that became the page's memory (its tidy-up written meanwhile) is the same memory line; anything else is not.
+    const cur = state();
+    if (!cur || (cur !== st && (!st.line || cur.line !== st.line))) return;
+    if (cur !== st || st !== ctx().chatMetadata?.[MODULE]) {
+        st = await pageState('루팅 다시 반영을');
+        if (!st || roomKey() !== key || roomEpoch !== epoch || ui.run) return;
+        item = (st.lootQueue || []).find(x => x.id === id); if (!item) return;
+    }
     if (!(await reconcileNow())) { render(); toastr.warning('예전 원문이 바뀌었어요. 창 위쪽 안내에서 먼저 처리해 주세요.'); return; }
     if (roomKey() !== key || roomEpoch !== epoch || state() !== st || ui.run) return;
     if (lootStatus(item, roomKey(), chat(), fingerprint, viewHash) || item.msg > st.lastIndex || !lootTarget(st.mem, item.msg)) { render(true); return; }

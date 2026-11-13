@@ -24,5 +24,7 @@ export function gateBox() {
         // v0.7.0-a: the room's turn (none changes here), the source check waited for (always fine here), a record
         // check running (shown on screen only), loot reasons kept on screen only (none here).
         roomEpoch: 0, reconcileNow: async () => true, checkRunning: () => false, lootShown: st => st?.lootQueue || [], lootNotesHere: () => null,
+        // v0.7.0-a2: the recorded messages are unchanged here (the second source check before a save's request).
+        firstMismatch: () => -1,
     };
 }
