@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.7.0-a3';
+const VERSION = '0.7.0-a4';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -1498,6 +1498,8 @@ function syncHide({ rehide = false } = {}) {
             liveShown.delete(m);
             if (can && mode === 'manual' && !mark && !m.is_system && i <= reach) { m.extra ||= {}; m.extra[HIDE_KEY] = 1; setHidden(m, i, true); changed = true; return; }
         }
+        // v0.7.0-a4 (review of v0.7.0-a3, P2): while the change is still there, no hide (auto, a save's rescan, 👻) takes it back.
+        if (liveShown.has(m) && sourcePending && !m.is_system) return;
         if (mark && m.is_system && i > floor) {
             setHidden(m, i, false); delete m.extra[HIDE_KEY]; dropHeld(m); changed = true;
             if (live) liveShown.add(m);

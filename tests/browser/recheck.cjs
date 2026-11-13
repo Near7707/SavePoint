@@ -230,6 +230,34 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.calls === 0 && !t.includes('만들었어요'), `6. 정리 저장 응답을 확인하지 못하면 번역 요청 없음 (요청 ${r.calls}개, 기억 정리 화면 적용 ${r.mem === 1}, ${r.gate})`);
     await ev(() => { M.noAns = false; });
 
+    // 7. [v0.7.0-a4, review of v0.7.0-a3 P2] Auto hides (the default): a hidden recorded #0 is edited, a reply starts
+    //    (#0 shown), 🔶 on #7 is pressed and its write's answer is lost, then the next reply starts: #0 stays shown.
+    await ev(() => { M.settings.savePoint.hideMode = 'auto'; M.settings.savePoint.keepRecent = 4; M.confirm = 1; });
+    await fresh();
+    await ev(() => M.add(22));
+    await ev(() => __savePoint.handle('run'));
+    await wait(1500);
+    const h7 = await hidden();
+    r = await ev(async () => {
+        M.chat[0].mes = 'An edited first message, auto mode.'; M.stSave();
+        await SillyTavern.getContext().eventSource.emit('message_edited', 0);
+        await SillyTavern.getContext().eventSource.emit('generation_started', 'normal', {}, false);
+        return M.chat[0].is_system;
+    });
+    ok(h7.startsWith('HHHHHHHH') && r === false, `7. 준비: 자동 하이드 → #0 고치고 생성 시작 → #0 보임 (${h7})`);
+    await ev(() => { M.noAns = true; M.kErr = ''; });
+    await ev(() => __savePoint.toggleKeep(7).catch(e => { M.kErr = e.message; }));
+    await wait(800);
+    await ev(() => { M.noAns = false; });
+    r = await ev(() => ({ h0: M.chat[0].is_system, last: M.meta.savePoint.lastIndex, gate: __savePoint.autoBlocked() }));
+    ok(r.h0 === false, `7. 🔶 저장 응답이 끊겨도 #0은 보임 (기억 #${r.last}, ${r.gate})`);
+    r = await ev(async () => {
+        await SillyTavern.getContext().eventSource.emit('generation_started', 'normal', {}, false);
+        return { h0: M.chat[0].is_system, sent: !M.chat[0].is_system };
+    });
+    ok(r.h0 === false, '7. 다음 답변 시작 때도 고친 #0이 하이드로 빠지지 않음');
+    await ev(() => { M.settings.savePoint.hideMode = 'off'; });
+
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();
     process.exit(failures ? 1 : 0);
