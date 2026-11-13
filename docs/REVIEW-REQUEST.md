@@ -1,30 +1,29 @@
-# 리뷰 요청 · v0.7.0-a1 (v0.7.0-a 리뷰 반영)
+# 리뷰 요청 · v0.7.0-a2 (v0.7.0-a1 리뷰 반영)
 
-- 범위: `35c7860`(v0.7.0-a 요청서) → `3aa1182`(v0.7.0-a1). `git diff 35c7860 3aa1182`.
-- 계획: [docs/PLAN-v0.7.md](PLAN-v0.7.md) "v0.7.0-a1" 줄(정한 것).
-- 바뀐 것, ★ 항목, 망가뜨리기 결과: [docs/REVIEW.md](REVIEW.md) 맨 위 항목(v0.7.0-a1).
-- 검사: `node --test tests/*.test.mjs`(506개) + `for f in tests/browser/*.cjs; do node $f; done`(54묶음, 검사 모드) 모두 통과. 새 묶음 `wait-room.cjs`·`note-fail.cjs`·`edit-generate.cjs`.
+- 범위: `ced27c0`(v0.7.0-a1 요청서) → `fedbd89`(v0.7.0-a2). `git diff ced27c0 fedbd89`.
+- 계획: [docs/PLAN-v0.7.md](PLAN-v0.7.md) "v0.7.0-a2" 줄(정한 것).
+- 바뀐 것, ★ 항목, 망가뜨리기 결과: [docs/REVIEW.md](REVIEW.md) 맨 위 항목(v0.7.0-a2).
+- 검사: `node --test tests/*.test.mjs`(506개) + `for f in tests/browser/*.cjs; do node $f; done`(55묶음, 검사 모드) 모두 통과. 새 묶음 `recheck.cjs`.
 
 | 버전 | 커밋 | 영역 | 파일 |
 |---|---|---|---|
-| v0.7.0-a1 | `3aa1182` | 저장 차례(v0.7.0-a 리뷰 P1·P2·P3) | `index.js`, `memfile.js` |
+| v0.7.0-a2 | `fedbd89` | 세이브 직전 원문 재확인·정리 사본·하이드 복원·배너(v0.7.0-a1 리뷰 P2·P3) | `index.js` |
 
-## 지난 리뷰 항목 처리 (v0.7.0-a 리뷰 → v0.7.0-a1)
+## 지난 리뷰 항목 처리 (v0.7.0-a1 리뷰 → v0.7.0-a2)
 
 | 항목 | 처리 |
 |---|---|
-| P1 기다리는 사이 다른 방에서 저장이 이어짐(시작 표시·원문 변경 대기·실패 메모) | `summarize`가 시작한 방을 잡고 기다림마다 확인. `noteMem({ room })`, `noteAuto`·`recordAutoFail`에 실행의 방. 검사 `wait-room.cjs` 1·2·3. |
-| P2-1 정리 사본을 고쳐 "완료" | 세이브 전 정리를 먼저 저장(`tidyNow`), 안 되면 시작 안 함. `assertStill`이 화면 기억 자체인지 확인. 검사 `note-fail.cjs` 1·1b. |
-| P2-2 원문 고친 직후 답변에 옛 기억·하이드 | `liveState()`: 기다리는 원문 변경이 남길 기억(사본)으로 브리핑·하이드 계산, 생성 시작 때 하이드 맞춤. 검사 `edit-generate.cjs`. |
-| P2-3 확인 결과 저장 실패 표시 없음 / 결과 메모 실패로 자동 확인 건너뜀 | 화면에 "결과를 저장하지 못했어요"(`ui.checkUnsaved`) + 알림. "이 세이브가 쓴 기억"을 쓰기 영수증(`wid`)으로 판단. 검사 `note-fail.cjs` 2·3. |
-| P3 `classifyUpload` 판정이 넓음 | 요청한 파일 이름이 든 2xx만 성공, 쓰기 전 거절이 확실한 7가지만 거절, 나머지는 응답 없음. 검사 `memfile.test.mjs` 2개. |
+| P2-1 시작 표시 저장 중 원문 수정 → 옛 기억 + 새 지문 | 시작 표시·정리 대기 뒤, 요청 직전에 원문 변경 재확인(`reconcileNow`). 방어로 `baseMatches`(기억의 지문 = 실행이 읽은 지문)를 `assertValid`·`assertStill`에. 검사 `recheck.cjs` 1. |
+| P2-2 한국어 보기·주입 포인트의 정리 사본 거짓 완료 | `pageState()`(정리 먼저 저장, 안 되면 시작 안 함)를 `translate`·`rekeyScenes`·`retryLoot`에. 두 작업의 `still`에 화면 기억 확인. 검사 `recheck.cjs` 2·2b. |
+| P3-1 원문을 되돌려도 수동 하이드가 풀린 채 | 기다리는 원문 변경 때문에 푼 메시지만 화면 메모리(`liveShown`)에 두고, 변경이 사라지면 수동 모드에서 그것만 다시 숨김. 검사 `recheck.cjs` 3. |
+| P3-2 빈 체크포인트 배너가 다른 방에 | 메모 대기 뒤 `here()`. 검사 `recheck.cjs` 4. |
+| (확인만) memfile.js 거절 목록 | 그대로. |
 
 ## 특히 봐 줄 곳
 
-1. `liveState()`(P2-2): 차례를 기다리는 동안 하이드를 화면에서 먼저 풀고 기억은 차례에서 바꾸는 것. 그 사이 파일이 "옛 기억 + 풀린 하이드"가 될 수 있는 것, 쓰는 곳을 `refreshInjection`·`syncHide`로 한정한 것.
-2. P1을 `summarize`와 메모에서 막은 범위: 시작한 방에 묶이지 않은 채 기다리는 다른 작업이 남았는지(`retryLoot`·`loadSave`는 원래 묶여 있음).
-3. P2-1: `state()`의 정리 사본을 쥐고 차례 안에서 그 객체를 고치는 곳이 `summarize` 말고 남았는지.
-4. P2-3: 실패·일부 저장 경로는 여전히 객체 비교(전과 같음)인 것, 화면에만 두는 확인 결과 표시가 사라지는 조건.
-5. P3: 거절로 보는 상태 코드 목록.
+1. P2-1 재확인 뒤 `newRun`까지 기다림이 없는지, `baseMatches`가 정상 실행(일부 저장·되감기 뒤 다시 세이브·불러오기 뒤)에서 잘못 막는 경우가 없는지.
+2. `pageState`가 필요한데 아직 `state()` 사본을 쥐고 AI 요청 뒤 고치는 곳이 남았는지.
+3. `liveShown`: 다시 숨기는 조건(수동 모드, 범위 안, 보이는 상태, SavePoint 표시 없음)이 너무 넓거나 좁은지. 사용자가 그 사이 그 메시지를 직접 열었다 닫은 경우.
+4. 이번에도 실제 실리태번에서는 돌려 보지 않았어요.
 
-결과는 P1/P2/P3로 나눠서, 재현 방법과 함께 주세요. 아직 실제 실리태번에서는 돌려 보지 않았어요.
+결과는 P1/P2/P3로 나눠서, 재현 방법과 함께 주세요.
