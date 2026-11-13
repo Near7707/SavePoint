@@ -1,13 +1,13 @@
 # 리뷰 요청 · v0.7.0-a1 (v0.7.0-a 리뷰 반영)
 
-- 범위: `35c7860`(v0.7.0-a 요청서) → `COMMIT_A1`(v0.7.0-a1). `git diff 35c7860 COMMIT_A1`.
+- 범위: `35c7860`(v0.7.0-a 요청서) → `3aa1182`(v0.7.0-a1). `git diff 35c7860 3aa1182`.
 - 계획: [docs/PLAN-v0.7.md](PLAN-v0.7.md) "v0.7.0-a1" 줄(정한 것).
 - 바뀐 것, ★ 항목, 망가뜨리기 결과: [docs/REVIEW.md](REVIEW.md) 맨 위 항목(v0.7.0-a1).
 - 검사: `node --test tests/*.test.mjs`(506개) + `for f in tests/browser/*.cjs; do node $f; done`(54묶음, 검사 모드) 모두 통과. 새 묶음 `wait-room.cjs`·`note-fail.cjs`·`edit-generate.cjs`.
 
 | 버전 | 커밋 | 영역 | 파일 |
 |---|---|---|---|
-| v0.7.0-a1 | `COMMIT_A1` | 저장 차례(v0.7.0-a 리뷰 P1·P2·P3) | `index.js`, `memfile.js` |
+| v0.7.0-a1 | `3aa1182` | 저장 차례(v0.7.0-a 리뷰 P1·P2·P3) | `index.js`, `memfile.js` |
 
 ## 지난 리뷰 항목 처리 (v0.7.0-a 리뷰 → v0.7.0-a1)
 
