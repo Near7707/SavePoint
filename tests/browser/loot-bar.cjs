@@ -189,16 +189,20 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     // 11. when the chat file itself cannot be written, the item keeps its reason on screen
     await ev(async () => { M.failMeta = true; try { await __savePoint.summarize(); } catch {} });
     await sleep(300);
-    r = await ev(() => { M.failMeta = false; const q = __savePoint.state().lootQueue || []; const x = q.find(i => i.text === 'The ferry horn sounded'); return { err: x?.error || '', fails: x?.fails || 0 }; });
+    // v0.7.0-a: on screen only (lootShown), never in the page's memory, which SillyTavern could save in its own time.
+    r = await ev(() => { M.failMeta = false; const q = __savePoint.lootShown(__savePoint.state()); const x = q.find(i => i.text === 'The ferry horn sounded');
+        const kept = (__savePoint.state().lootQueue || []).find(i => i.text === 'The ferry horn sounded');
+        return { err: x?.error || '', fails: x?.fails || 0, inMemory: kept?.error || '' }; });
     ok(r.err.includes('500') && r.fails === 1, `11. 파일 저장 실패에도 항목별 이유와 횟수가 남음 (${r.err} · ${r.fails})`);
+    ok(!r.inMemory.includes('500'), `11. (v0.7.0-a) 저장 못 한 이유는 화면에만, 기억에는 넣지 않음 (${r.inMemory})`);
     // 12. the same for ↻: a failed file write updates that item's reason and count
     await ev(async () => { M.failMeta = false; await __savePoint.handle('tab', 'queue'); });
-    r = await ev(() => { const x = (__savePoint.state().lootQueue || []).find(i => i.error && i.msg <= __savePoint.state().lastIndex && document.querySelector(`[data-act=loot-retry][data-id="${i.id}"]`)); return x ? { id: x.id, fails: x.fails || 0 } : null; });
+    r = await ev(() => { const x = __savePoint.lootShown(__savePoint.state()).find(i => i.error && i.msg <= __savePoint.state().lastIndex && document.querySelector(`[data-act=loot-retry][data-id="${i.id}"]`)); return x ? { id: x.id, fails: x.fails || 0 } : null; });
     if (r) {
         await ev(() => { M.supplementLinks = true; M.failMeta = true; });
         await page.click(`[data-act=loot-retry][data-id="${r.id}"]`);
         await sleep(600);
-        const after = await ev(id => { M.failMeta = false; M.supplementLinks = false; const x = __savePoint.state().lootQueue.find(i => i.id === id); return x ? { err: x.error, fails: x.fails } : null; }, r.id);
+        const after = await ev(id => { M.failMeta = false; M.supplementLinks = false; const x = __savePoint.lootShown(__savePoint.state()).find(i => i.id === id); return x ? { err: x.error, fails: x.fails } : null; }, r.id);
         ok(after && after.err.includes('500') && after.fails === r.fails + 1, `12. ↻ 중 파일 저장 실패도 이유·횟수 갱신, 항목 보존 (${after?.fails})`);
     } else ok(false, '12. ↻ 버튼이 있는 실패 항목을 찾지 못함');
     // 13. a re-translated on-screen text is only a warning: ↻ stays available

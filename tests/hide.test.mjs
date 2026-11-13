@@ -28,7 +28,7 @@ function harness({ count = 10, lastIndex = 9, keepRecent = 2 } = {}) {
         $(selector) { const index = Number(selector.match(/mesid="(\d+)"/)[1]); return { attr(k, value) { dom.set(index, value); } }; },
         saveChatSoon() {}, refreshInjection() {}, render() {}, autosave() {}, async quickSave() { return null; }, announceReturns() {},
         async persist() { writes.push(structuredClone({ meta, chat })); },
-        hasChat: () => true, mainBusy: () => false, ensureState: () => meta.savePoint, reconcile: () => true,
+        hasChat: () => true, mainBusy: () => false, ensureState: () => meta.savePoint, reconcile: () => true, reconcileNow: async () => true,
         collect: (a, b) => chat.map((m, index) => ({ index, name: m.name, text: m.mes })).filter(m => m.index >= a && m.index <= b),
         openScene, closeOpenScene: mem => ({ ...mem, scenes: mem.scenes.map(s => ({ ...s, status: 'closed' })) }),
         nextMessageChunk: msgs => chunkMessages(msgs, Infinity)[0], extractPrompt: () => 'prompt',
@@ -288,7 +288,7 @@ test('manual: a rewind of every record empties the range, so a new save hides no
     assert.equal(shown(h), '..........');
 });
 
-test('manual: off -> manual never reads "opened by the user" marks as a hidden range', () => {
+test('manual: off -> manual never reads "opened by the user" marks as a hidden range', async () => {
     const h = harness({ count: 10, lastIndex: 9, keepRecent: 2 });
     h.syncHide({ rehide: true });
     h.chat[3].is_system = false; h.syncHide();          // the user opens #3
@@ -300,6 +300,9 @@ test('manual: off -> manual never reads "opened by the user" marks as a hidden r
     h.settings.hideMode = 'manual'; h.settings.hideManualAt = Date.now();
     h.syncHide();
     assert.equal(shown(h), 'HHH.HHHH..');
+    // v0.7.0-a (plan P2-3): the range is memory, so syncHide outside the room queue asks for a queued change that writes it.
+    assert.equal(h.meta.savePoint.hideManual, undefined, 'not changed outside the room queue');
+    await new Promise(r => setTimeout(r, 20));
     assert.equal(h.meta.savePoint.hideManual.to, 7, 'the range is what is really hidden, never the opened mark');
 });
 

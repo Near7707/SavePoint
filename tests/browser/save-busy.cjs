@@ -67,7 +67,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     // 1.
     {
         const { page, ev } = await session();
-        await ev(() => { M.serverReadDelay = 400; __savePoint.persistSoon(); });
+        await ev(() => { M.serverReadDelay = 400; __savePoint.adoptPage(); __savePoint.persistSoon(); });
         await page.waitForTimeout(450);
         await startReply(ev);
         await page.waitForTimeout(4500);

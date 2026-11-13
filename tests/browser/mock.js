@@ -12,6 +12,7 @@ const event_types = {
     GENERATION_STARTED: 'generation_started', GENERATION_ENDED: 'generation_ended', GENERATION_STOPPED: 'generation_stopped',
     CHAT_RENAMED: 'chat_renamed', CHAT_DELETED: 'chat_deleted', GROUP_CHAT_DELETED: 'group_chat_deleted', CHAT_CREATED: 'chat_created',
 };
+window.__spStrict = true;   // v0.7.0-a: a memory change outside the room queue is an error (index.js checkQueue)
 const M = window.M = { files: new Map(Object.entries(window.__presetFiles || {})), fileLog: [], serverDown: !!window.__presetServerDown, chatId: 'chatA', chat: [], meta: {}, settings: window.__presetSettings || {}, prompts: {}, calls: [], popupInput: 'Save', confirm: 1, eventSource, event_types, chatSaves: 0 };
 
 // Older suites expect the window to open on the journal; 💠 메인 as the first tab is tested on its own.

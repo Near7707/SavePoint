@@ -91,7 +91,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
 
     // 6. deleting a record asks first (it cannot be rewound)
     await ev(() => { M.popups.length = 0; M.confirm = 0; });
-    const rec = await ev(() => { const st = __savePoint.state(); st.mem.records.push({ id: 'rx1', type: 'world', kind: 'rule', text: 'Doors close at dusk.', src: [], msgs: [] }); return 'rx1'; });
+    const rec = await ev(() => { const st = __savePoint.state(); st.mem.records.push({ id: 'rx1', type: 'world', kind: 'rule', text: 'Doors close at dusk.', src: [], msgs: [] }); __savePoint.adoptPage(); return 'rx1'; });
     await ev(id => __savePoint.handle('del-rec', id), rec);
     r = { q: await lastPopup(), still: await ev(() => !!__savePoint.state().mem.records.find(x => x.id === 'rx1')) };
     ok(r.q.includes('지울까요') && r.still, `6. 🗑는 확인 후 지움 (${r.q})`);
@@ -104,7 +104,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
 
     // 8. (v0.6.56) a delete question open while the room changes: the other room (same ids) is left alone
     const ask = () => ev(() => { M.confirm = new Promise(res => { window.__answer = res; }); });
-    await ev(() => { const st = __savePoint.state(); st.mem.records.push({ id: 'rx2', type: 'world', kind: 'rule', text: 'Lamps stay lit.', src: [], msgs: [] }); });
+    await ev(() => { const st = __savePoint.state(); st.mem.records.push({ id: 'rx2', type: 'world', kind: 'rule', text: 'Lamps stay lit.', src: [], msgs: [] }); __savePoint.adoptPage(); });
     const roomA = await ev(() => ({ chat: M.chat, meta: M.meta, id: M.chatId }));
     const copyB = await ev(() => structuredClone({ chat: M.chat, meta: M.meta }));
     for (const what of ['rec', 'point']) {

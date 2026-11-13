@@ -102,7 +102,7 @@ const msg = t => ({ name: 'Me', is_user: true, is_system: false, mes: t, swipe_i
         const { page, ev } = await session();
         await ev(m => { M.noStSave = true; M.chat.push(m); M.failOnce = true; }, msg('Thirteenth.'));
         // 2b: SillyTavern starts saving while the background save reads the file (its own save does not land: the file stays as it was).
-        await ev(st => { __savePoint.state().autoLast = { at: Date.now(), result: 'ok', status: '' }; __savePoint.persistSoon();
+        await ev(st => { __savePoint.state().autoLast = { at: Date.now(), result: 'ok', status: '' }; __savePoint.adoptPage(); __savePoint.persistSoon();
             if (st) { M.serverReadDelay = 400; setTimeout(() => { M.stScript.setChatSaving(true); setTimeout(() => { M.stScript.setChatSaving(false); M.serverReadDelay = 0; }, 600); }, 500); } }, stSaving);
         await page.waitForTimeout(2500);
         const t = await toasts(ev);
@@ -148,7 +148,7 @@ const msg = t => ({ name: 'Me', is_user: true, is_system: false, mes: t, swipe_i
         const { page, ev } = await session();
         await ev(m => { M.chat.push(m); M.stSave(); }, msg('Thirteenth.'));
         await page.waitForTimeout(500);
-        await ev(() => { M.serverReadDelay = 400; __savePoint.state().note = 'held-change'; __savePoint.persistSoon(); });
+        await ev(() => { M.serverReadDelay = 400; __savePoint.state().note = 'held-change'; __savePoint.adoptPage(); __savePoint.persistSoon(); });
         await page.waitForTimeout(450);
         await ev(() => { SillyTavern.getContext().eventSource.emit('generation_started', 'continue', {}, false);
             const m = M.chat.at(-1); M.grow = setInterval(() => { m.mes += ' more'; }, 100); });
@@ -185,7 +185,7 @@ const msg = t => ({ name: 'Me', is_user: true, is_system: false, mes: t, swipe_i
                 M.serverFiles.chatA = JSON.parse(JSON.stringify([{ chat_metadata: M.meta }, ...M.chat]));   // SillyTavern saved first
                 if (kind === '5') M.serverFiles.chatA.pop(); };                                              // another tab deletes the 13th
         }, [kind, msg('Thirteenth.')]);
-        await ev(() => { __savePoint.state().autoLast = { at: Date.now(), result: 'ok', status: '' }; __savePoint.persistSoon(); });
+        await ev(() => { __savePoint.state().autoLast = { at: Date.now(), result: 'ok', status: '' }; __savePoint.adoptPage(); __savePoint.persistSoon(); });
         await page.waitForTimeout(kind === '6' ? 5000 : 2000);
         const t = await toasts(ev);
         const r = await keep(ev, 5);
@@ -258,7 +258,7 @@ const msg = t => ({ name: 'Me', is_user: true, is_system: false, mes: t, swipe_i
                     M.chat.push(m); M.failOnce = true; M.readFailOnce = kind === '8b';                          // then a 13th on the page
                     return new Response(text, { status: 200 }); }
                 return r; };
-            __savePoint.state().autoLast = { at: Date.now(), result: 'ok', status: '' }; M.trap = true; __savePoint.persistSoon();
+            __savePoint.state().autoLast = { at: Date.now(), result: 'ok', status: '' }; M.trap = true; __savePoint.adoptPage(); __savePoint.persistSoon();
         }, [kind, msg('Thirteenth.')]);
         await page.waitForTimeout(kind === '8b' ? 5000 : 2000);
         if (kind === '8e' || kind === '8f') await ev(i => { M.chat.splice(i, 1); SillyTavern.getContext().eventSource.emit('message_deleted', M.chat.length); }, kind === '8e' ? 11 : 5);
@@ -292,10 +292,10 @@ const msg = t => ({ name: 'Me', is_user: true, is_system: false, mes: t, swipe_i
                 if (String(u) === '/api/chats/get' && armed && M.readFailOnce) { M.readFailOnce = false; return new Response('x', { status: 500 }); }
                 const r = await f(u, o); if (String(u) === '/api/chats/save') armed = true; return r; };
             M.beforeChatSave = async () => { M.beforeChatSave = null; M.failOnce = true; M.readFailOnce = true; };
-            __savePoint.state().autoLast = { at: Date.now(), result: 'ok', status: '' }; __savePoint.persistSoon();
+            __savePoint.state().autoLast = { at: Date.now(), result: 'ok', status: '' }; __savePoint.adoptPage(); __savePoint.persistSoon();
         }, msg('Thirteenth.'));
         await page.waitForTimeout(1500);
-        await ev(() => { __savePoint.state().autoLast = { at: Date.now() + 5, result: 'ok', status: '' };
+        await ev(() => { __savePoint.state().autoLast = { at: Date.now() + 5, result: 'ok', status: '' }; __savePoint.adoptPage();
             M.serverFiles.chatA = JSON.parse(JSON.stringify([{ chat_metadata: M.meta }, ...M.chat])); });
         await page.waitForTimeout(3500);
         const t = await toasts(ev);
@@ -327,7 +327,7 @@ const msg = t => ({ name: 'Me', is_user: true, is_system: false, mes: t, swipe_i
                     M.chat.push(m); if (kind === '10f') M.noAns = true; else M.failOnce = true;                  // then a 13th on the page
                     return new Response(text, { status: 200 }); }
                 return r; };
-            __savePoint.state().autoLast = { at: Date.now(), result: 'ok', status: '' }; M.trap = true; __savePoint.persistSoon();
+            __savePoint.state().autoLast = { at: Date.now(), result: 'ok', status: '' }; M.trap = true; __savePoint.adoptPage(); __savePoint.persistSoon();
         }, [kind, msg('Thirteenth.')]);
         await page.waitForTimeout(2500);
         const r0 = kind === '10f' ? '' : await keep(ev, 5);

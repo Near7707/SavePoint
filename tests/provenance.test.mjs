@@ -181,7 +181,9 @@ function reviewHarness(mem) {
     const chat = new Proxy(Array.from({ length: 60 }, (_, n) => ({ name: 'Current', mes: n === 0 ? 'Participant returned the borrowed token.' : n === 48 ? 'UNRELATED CURRENT ROOM MESSAGE 48' : `Current event ${n}.` })), {
         get(target, key) { if (/^\d+$/.test(String(key))) reads.push(Number(key)); return target[key]; },
     });
-    const box = { ...core, ...provenance, ...batches, buildCheckPrompt, names: () => ({}), state: () => st, chat: () => chat,
+    // v0.7.0-a: the result is written as a note at the room's turn (noteMem), on the memory there.
+    const box = { ...gateBox(), roomKey: () => 'room', async noteMem(change) { return change(st) !== false; },
+        ...core, ...provenance, ...batches, buildCheckPrompt, names: () => ({}), state: () => st, chat: () => chat,
         eligible: () => true, speaker: m => m.name, cleanText: s => s, msgText: m => m?.mes ?? "", ui: {}, num: () => 60000,
         newRun: () => ({ cancelled: false }), assertValid() {}, assertStill: () => true, endRun() {}, render() {}, persistSoon() {}, gateOpen: () => true, roomReady: async () => true,
         errorText: e => e.message, fmtSec: () => '0초', replyKind: () => null, parseJson: JSON.parse,
@@ -274,15 +276,23 @@ test('unknown legacy sources are explicitly labelled instead of displaying activ
     assert(api.priorTermsLabel(mem.records[0].terms).includes('이전 방·출처 미상'));
 });
 
-test('opening existing chat metadata migrates old evidence once and schedules persistence', () => {
+test('opening existing chat metadata migrates old evidence once and schedules persistence', async () => {
     const meta = { savePoint: { v: 1, mem: legacyMixed() } };
     let saves = 0;
-    const state = vm.runInNewContext(section('function state() {', '\nfunction freshState') + ';state', {
-        MODULE: 'savePoint', gateOpen: () => true, ctx: () => ({ chatMetadata: meta }), upgradeEvidence: provenance.upgradeEvidence, foldLegacyOutline: core.foldLegacyOutline, normalizeRecordNames: core.normalizeRecordNames, upgradeStoryTimes, ui: {}, persistSoon: () => saves++,
-    });
+    // v0.7.0-a (plan P2-3): read outside the room queue, the memory is shown through a tidied copy and one queued
+    // change tidies the page's memory and saves it (before: tidied on the page at once, saved later by persistSoon).
+    const box = { MODULE: 'savePoint', gateOpen: () => true, ctx: () => ({ chatMetadata: meta }), upgradeEvidence: provenance.upgradeEvidence, foldLegacyOutline: core.foldLegacyOutline, normalizeRecordNames: core.normalizeRecordNames, upgradeStoryTimes, ui: {},
+        inApply: 0, clone: structuredClone, roomKey: () => 'room', roomEpoch: 0, console: { warn() {} },
+        async transact(fn) { box.inApply++; try { if (fn() !== false) saves++; } finally { box.inApply--; } } };
+    const state = vm.runInNewContext(section('function state() {', '\nfunction freshState') + ';state', box);
     assert.equal(state().mem.records[0].msgs.length, 0);
     assert.equal(state().mem.records[0].terms.source.room, null);
-    state();
+    assert.notEqual(meta.savePoint.mem.evidenceVersion, 1, 'the page memory is not changed outside the queue');
+    await new Promise(r => setTimeout(r, 0));
+    assert.equal(saves, 1);
+    assert.equal(meta.savePoint.mem.evidenceVersion, 1);
+    assert.equal(meta.savePoint.mem.records[0].terms.source.room, null);
+    state(); await new Promise(r => setTimeout(r, 0));
     assert.equal(saves, 1);
 });
 

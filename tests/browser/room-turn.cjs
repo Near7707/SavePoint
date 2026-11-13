@@ -67,7 +67,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     //    is edited and a second one is saved. The edited first message is never replaced.
     const greet = { name: 'Ari', is_user: false, is_system: false, mes: 'Hello! This is the very first greeting.', swipe_id: 0, swipes: ['Hello! This is the very first greeting.'], extra: {} };
     await open('roomP', [greet]);
-    await ev(() => { M.confirm = 1; toastr.log.length = 0; M.metaDelay = 900; __savePoint.persistSoon(); });
+    await ev(() => { M.confirm = 1; toastr.log.length = 0; M.metaDelay = 900; __savePoint.adoptPage(); __savePoint.persistSoon(); });
     await wait(450);                                 // the small save holds the queue
     await ev(id => { M.p = __savePoint.loadSave(id); }, qid);
     await wait(250);                                 // asked, checked and waiting its turn
@@ -119,7 +119,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const arr = msgs(6, 'Ar');
     await ev(() => { toastr.log.length = 0; });
     await open('roomR', arr, { savePoint: older }, file(arr, { savePoint: newer }));
-    await ev(() => { M.saves0 = M.saves; __savePoint.persistSoon(); });
+    await ev(() => { M.saves0 = M.saves; __savePoint.adoptPage(); __savePoint.persistSoon(); });
     await wait(700);
     await ev(() => __savePoint.toggleKeep(1).catch(e => { M.rErr = e.message; }));
     r = await ev(() => ({ scenes: M.serverFiles.roomR[0].chat_metadata.savePoint.mem.scenes.length, saves: M.saves - M.saves0, err: M.rErr || '' }));
@@ -134,8 +134,11 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     // 4. [P2] a quick save whose last unrecorded message is edited (and saved) while the save waits for its
     //    file check: nothing is recorded from the old text, and no "done".
     await open('roomS', msgs(6, 'Ess'));
-    await ev(() => { M.readDelayFor = { roomS: 900 }; M.delay = 200; toastr.log.length = 0; M.p = __savePoint.summarize(); });
-    await wait(550);                                 // the AI answered; the write waits for its file read
+    await ev(() => { M.readDelayFor = { roomS: 900 }; M.delay = 200; toastr.log.length = 0; M.c4 = M.calls.length; M.p = __savePoint.summarize(); });
+    // v0.7.0-a: a room with no memory makes it at a turn of the room's queue first (after the room check), so the
+    // request goes out later than before; the edit is made once the AI answered and the write waits for its file read.
+    await page.waitForFunction(() => M.calls.length > M.c4, null, { timeout: 10000 });
+    await wait(350);
     await ev(() => { const m = M.chat[5]; m.mes = 'The last line, rewritten while saving.'; m.swipes = [m.mes]; M.stSave(); });
     await ev(() => M.p);
     await wait(200);

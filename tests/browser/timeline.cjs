@@ -62,7 +62,7 @@ async function storyMemory() {
     await page.waitForFunction(() => !!globalThis.__savePoint);
     const ev = (fn, arg) => page.evaluate(fn, arg);
     await ev(m => { for (let i = 0; i < 8; i++) M.chat.push({ name: i % 2 ? 'User' : 'Char', is_user: i % 2 === 1, mes: 'Message ' + i, extra: {} });
-        M.meta.savePoint = { v: 1, roomKey: null, mem: m, lastIndex: -1, hashes: [], history: [], floor: -1, linkedSave: null, undo: null, review: null, rev: 0, lootQueue: [] }; }, mem);
+        M.meta.savePoint = { v: 1, roomKey: null, mem: m, lastIndex: -1, hashes: [], history: [], floor: -1, linkedSave: null, undo: null, review: null, rev: 0, lootQueue: [] }; __savePoint.adoptPage(); }, mem);
     await page.click('#sp_open');
     const injBefore = await ev(() => { __savePoint.refreshInjection(); return M.prompts.savepoint?.v || ''; });
     const memBefore = await ev(() => JSON.stringify(__savePoint.state().mem));

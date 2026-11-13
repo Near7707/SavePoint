@@ -160,6 +160,14 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r = await ev(() => ({ hid: M.chat.map(m => m.is_system ? 'H' : '.').join(''), last: __savePoint.state().lastIndex, n: M.chat.length }));
     ok(r.hid.slice(0, r.n - 4).split('').every(c => c === 'H') && r.hid.slice(r.n - 4) === '....', `10. 자동으로 바꾸면 바로 자동 규칙 (${JSON.stringify(r)})`);
 
+    // 11. (v0.7.0-a, plan P2-3) choosing manual again starts a new range from what is hidden now. The range is memory:
+    //     found outside the room's queue (the settings change), it is written by a queued change, never on the page
+    //     first (strict mode turns that into a page error), and the file gets it.
+    const at11 = await ev(() => { const sel = document.querySelector('#sp_settings [data-set=hideMode]'); sel.value = 'manual'; $(sel).trigger('change'); return M.settings.savePoint.hideManualAt; });
+    await page.waitForTimeout(900);
+    r = await ev(() => ({ page: __savePoint.state().hideManual, file: M.serverFiles[M.chatId][0].chat_metadata.savePoint.hideManual }));
+    ok(r.page?.at >= at11 && r.file?.at === r.page.at && r.file?.to === r.page.to, `11. (v0.7.0-a) 수동으로 다시 바꾸면 새 범위가 대기열 차례에 저장됨 (${JSON.stringify(r)})`);
+
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();

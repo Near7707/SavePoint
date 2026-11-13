@@ -158,7 +158,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r=await ev(()=>({scenes:__savePoint.state().mem.scenes,injection:M.prompts.savepoint.v}));
     ok(r.scenes.every(s=>s.segs[0].time.start.day===4&&s.segs.at(-1).time.end.day===4)&&r.injection.includes('Last recorded story time: 2026-10-28'),'13. 앞 장면 삭제 후 끝 시간만 고쳐도 남은 시작·끝 날짜와 일 수 유지');
     ok(await ev(()=>__savePoint.state().undoInfo?.kind!=='edit'),'13. 장면 삭제·시간 수정은 리와인드 지점을 바꾸지 않음');
-    await ev(s=>{M.meta.savePoint=s;__savePoint.refreshInjection();__savePoint.render(true);},__snap13);
+    await ev(s=>{M.meta.savePoint=s;__savePoint.adoptPage();__savePoint.refreshInjection();__savePoint.render(true);},__snap13);
     await ev(id=>__savePoint.handle('del-scene',id),await ev(()=>__savePoint.state().mem.scenes[0].id));
     ok(await ev(json=>JSON.stringify(__savePoint.state().mem.scenes.map(s=>s.id))===JSON.stringify(JSON.parse(json).scenes.map(s=>s.id)),remaining),'13. (검사용 복원 뒤) 삭제만 다시 적용한 상태');
     await ev(()=>{M.timeCase='bad-count';M.add(2,()=> '그날 밤 우리는 다음에 만나자고 했다.');});await ev(()=>__savePoint.handle('run'));

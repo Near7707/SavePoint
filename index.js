@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.6.104';
+const VERSION = '0.7.0-a';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -149,16 +149,45 @@ function state() {
         oldViews.set(st, { src: st.mem, view });
         return view;
     }
-    if (st.mem.evidenceVersion !== 1) { st.mem = upgradeEvidence(st.mem); persistSoon(); }
-    if (foldLegacyOutline(st.mem)) persistSoon();
-    if (normalizeRecordNames(st.mem)) persistSoon();
-    // Re-read saved time claims once per memory object with the current rules (weekday dates,
-    // quoted "same"). Not during a run: the run's own results already use these rules.
+    // v0.7.0-a (plan P2-3): the tidy-ups change the memory, so they are made only at a turn of the room's queue
+    // (inApply), on the page's memory there. Read anywhere else, a memory that needs one is read through a tidied copy
+    // and one queued change (tidyQueued) makes it on the page and saves it; until then nothing is written from the copy.
+    if (inApply) { tidyMem(st, true); return st; }
+    const story = !ui.run && !storyTimesChecked.has(st.mem);
+    if (basicTidied.has(st.mem) && !story) return st;
+    const cached = tidyViews.get(st);
+    if (cached && cached.src === st.mem && cached.rev === st.rev) return cached.view;
+    const view = clone(st);
+    if (!tidyMem(view, false)) { basicTidied.add(st.mem); if (story) storyTimesChecked.add(st.mem); return st; }
+    tidyViews.set(st, { src: st.mem, rev: st.rev, view });
+    tidyQueued();
+    return view;
+}
+// Upgrades an old memory in `st` in place; true when something changed. `mark`: remember this memory object as
+// done. The time claims are read again once per memory object with the current rules, not during a run (its own
+// results already use them).
+function tidyMem(st, mark) {
+    let changed = false;
+    if (st.mem.evidenceVersion !== 1) { st.mem = upgradeEvidence(st.mem); changed = true; }
+    if (foldLegacyOutline(st.mem)) changed = true;
+    if (normalizeRecordNames(st.mem)) changed = true;
     if (!storyTimesChecked.has(st.mem) && !ui.run) {
-        storyTimesChecked.add(st.mem);
-        if (upgradeStoryTimes(st.mem)) persistSoon();
+        if (upgradeStoryTimes(st.mem)) changed = true;
+        if (mark) storyTimesChecked.add(st.mem);
     }
-    return st;
+    if (mark) basicTidied.add(st.mem);
+    return changed;
+}
+const basicTidied = new WeakSet(), tidyViews = new WeakMap();
+let tidyAsked = null;
+function tidyQueued() {
+    const id = `${roomKey()}|${roomEpoch}`;
+    if (tidyAsked === id) return;
+    tidyAsked = id;
+    // A memory left untidy by a failed write is tidied again at the next change (state() at its turn).
+    const job = () => transact(() => { const st = ctx().chatMetadata?.[MODULE]; return st && st.v === 1 && tidyMem(st, true) ? undefined : false; }, { undoable: false, autosave: false })
+        .catch(e => console.warn('[SavePoint] memory tidy-up not saved', e?.message || e));
+    Promise.resolve().then(job).finally(() => { if (tidyAsked === id) tidyAsked = null; });
 }
 const storyTimesChecked = new WeakSet();
 const oldViews = new WeakMap();
@@ -232,6 +261,7 @@ async function stIdle() {
 // The answer of SillyTavern's chat save handler to any error inside it (src/endpoints/chats.js).
 const ST_SAVE_500 = 'An error has occurred, see the console logs for more information.';
 async function writeChatFile(fileMeta = null) {
+    checkQueue('chat file write');
     const key = roomKey(), epoch = roomEpoch;
     // A copy is taken at one moment, so a newer page SillyTavern saves while it is on its way could land
     // first and be overwritten by it. When the page changed meanwhile, the room as it is now is sent again
@@ -489,17 +519,29 @@ async function settleWrite(e, { written, rev, proof, pre, key, epoch, marks = nu
 // `still(pre)` is asked at its turn, after the file check and right before it is applied. Anything but
 // true stops it with nothing changed (Stale; a string is the reason shown). The change itself works from
 // the room's state at its turn (state()), never from objects taken before the wait.
-async function transact(change, { undoable = false, undoKind = '', autosave: doAutosave = true, rehide = false, replay = false, snapshot = false, verify = false, still = null, stale = '' } = {}) {
+async function transact(change, { undoable = false, undoKind = '', autosave: doAutosave = true, rehide = false, replay = false, snapshot = false, verify = false, still = null, stale = '', hides = true } = {}) {
     const key = roomKey(), epoch = roomEpoch;
     const ready = gateOpen() || await roomReady();
     if (roomKey() !== key || roomEpoch !== epoch) throw new RoomBlocked('채팅방이 바뀌어서 이번 변경은 하지 않았어요.');
     if (!ready) throw new RoomBlocked(gateMessage());
-    const entry = { change, undoable, undoKind, autosave: doAutosave, rehide, replay, snapshot, verify, still, stale, key, epoch };
+    const entry = { change, undoable, undoKind, autosave: doAutosave, rehide, replay, snapshot, verify, still, stale, hides, key, epoch };
     const queue = saveQueue(key, epoch);
     queue.pending.push(entry);
     const done = queue.chain.then(() => writeEntry(queue, entry)).finally(() => { const i = queue.pending.indexOf(entry); if (i >= 0) queue.pending.splice(i, 1); });
     queue.chain = done.catch(() => {});
     return done;
+}
+// v0.7.0-a (plan P2-3): a small change to the room's memory that is no ⏪ point (a status note, a mark), at its turn in
+// the room's queue and worked out from the memory there then: `change(st)` gets state() at that turn and returns
+// false to change nothing (the run that asked is over, the memory it was about was replaced). Before v0.7.0 these
+// were made on the page at once and saved later (persistSoon), so SillyTavern could save them first in its own time.
+// A note that cannot be written (the room is blocked, the write failed) is left out (console only): what it noted
+// is shown again by the next one, as with a failed write before.
+// `hides`: also bring the hide flags in line at that turn (the manual range needs it; a note does not).
+function noteMem(change, why = 'note', { hides = false } = {}) {
+    if (!hasChat()) return Promise.resolve(false);
+    return transact(() => { const st = state(); return st ? change(st) : false; }, { undoable: false, autosave: false, hides })
+        .catch(e => { console.warn(`[SavePoint] ${why} not saved`, e?.message || e); return false; });
 }
 // v0.6.44: changes are written in order, one room queue at a time.
 // v0.6.59: a change waiting in the queue is applied only at its turn. When a write fails, that change is
@@ -511,6 +553,37 @@ function saveQueue(key, epoch) {
     if (!saveQueues.has(id)) saveQueues.set(id, { chain: Promise.resolve(), pending: [] });
     return saveQueues.get(id);
 }
+// v0.7.0-a (plan P2-3, pass mark 2): every change to the room's memory is made at its turn in the room's queue
+// (applyEntry/restoreEntry). In test mode (`globalThis.__spStrict`, set by the browser mock) a memory that changed
+// anywhere else is an error: the page's memory is compared with the one the queue last left (`by`, which only says
+// which page wrote it, does not count). Checked before each queued change, before each chat file write and every 100 ms.
+// A room loaded anew (another metadata object or room) is taken as it is.
+const STRICT = !!globalThis.__spStrict;
+let qTrust = { meta: null, key: null, sig: null };
+function memSig(meta) {
+    const st = meta?.[MODULE];
+    if (!st || typeof st !== 'object') return 'none';
+    const { by: _by, ...rest } = st;
+    return JSON.stringify(rest);
+}
+function trustQueue() { if (STRICT) { const meta = ctx().chatMetadata; qTrust = { meta, key: roomKey(), sig: memSig(meta) }; } }
+function checkQueue(where) {
+    if (!STRICT) return;
+    const meta = ctx().chatMetadata;
+    if (meta !== qTrust.meta || roomKey() !== qTrust.key) { trustQueue(); return; }
+    const sig = memSig(meta);
+    if (sig === qTrust.sig) return;
+    let keys = [];
+    try {
+        const a = qTrust.sig === 'none' ? {} : JSON.parse(qTrust.sig), b = sig === 'none' ? {} : JSON.parse(sig);
+        keys = [...new Set([...Object.keys(a), ...Object.keys(b)])].filter(k => JSON.stringify(a[k]) !== JSON.stringify(b[k]));
+    } catch { /* below */ }
+    qTrust.sig = sig;
+    const e = new Error(`[SavePoint strict] memory changed outside the room queue (${where}: ${keys.join(', ') || '?'})`);
+    (globalThis.__spStrictErrors ||= []).push(e.message);
+    setTimeout(() => { throw e; });
+}
+if (STRICT) setInterval(() => checkQueue('timer'), 100);
 // v0.6.59: which page wrote a memory (see serverCovered: a memory in the file that this page never had).
 const SESSION = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 // Applies one change to the page (memory, hide flags, injection, screen). false = nothing changed.
@@ -531,6 +604,12 @@ function applyEntry(entry) {
     entry.visibility = chat().map(m => ({ m, hadExtra: Object.hasOwn(m, 'extra'), flags: ownFlags(m), swipes: swipeMarks(m) }));
     entry.after = null;
     // v0.6.60: the change gets the file check made at its turn ({ snap, count, first, … }).
+    // v0.7.0-a: `inApply` — memory tidy-ups (state()) and manual-hide bookkeeping (syncHide) happen only here.
+    inApply++;
+    try { return applyChange(entry); } finally { inApply--; }
+}
+let inApply = 0;
+function applyChange(entry) {
     if (entry.change(entry.pre) === false) return false;
     const st = state();
     if (st) {
@@ -543,7 +622,8 @@ function applyEntry(entry) {
         // it carried (memory, position), not by the status marks that change after it (see proofOf).
         st.wid = newId();
     }
-    syncHide({ rehide: entry.rehide });
+    // v0.7.0-a: a note (noteMem) leaves the hide flags as they are; it only marks the memory.
+    if (entry.hides !== false) syncHide({ rehide: entry.rehide });
     entry.after = new Map(chat().map(m => [m, { flags: ownFlags(m), swipes: swipeMarks(m) }]));
     if (roomKey() === entry.key && roomEpoch === entry.epoch) refreshView();
     return true;
@@ -667,9 +747,11 @@ async function writeEntry(queue, entry) {
     // SillyTavern's next own save would write the half-applied state). Only the change and the hide flags
     // count here; refreshing the prompt and the window is kept apart (see applyEntry).
     let applied;
-    try { applied = applyEntry(entry); }
+    checkQueue('before a queued change');
+    try { applied = applyEntry(entry); trustQueue(); }
     catch (e) {
         const here = entry.meta ? restoreEntry(entry) : roomKey() === entry.key && roomEpoch === entry.epoch;
+        trustQueue();
         if (here) {
             try { if (!entry.visibility) syncHide(); else ctx().swipe?.refresh?.(); } catch (x) { console.error('[SavePoint] hide after a failed change', x); }
             refreshView();
@@ -719,6 +801,7 @@ async function writeEntry(queue, entry) {
         if (e?.kept) throw e;
         const error = new Error(`채팅 파일에 저장하지 못해서 이번 변경을 취소했어요. (${e?.message || e})`);
         const here = restoreEntry(entry);
+        trustQueue();
         // Waiting changes: button edits run at their turn on what is there then; the rest are cancelled.
         for (const x of queue.pending) if (x !== entry && !x.replay && !x.cancelled)
             x.cancelled = new Error(`앞선 변경을 채팅 파일에 저장하지 못해서 이 변경도 취소했어요. (${e?.message || e})`);
@@ -1200,7 +1283,8 @@ function roomOpened() {
     const st = state();
     if (st && st.roomKey !== roomKey()) {
         // A branch copies chat metadata; the copy becomes this room's own memory.
-        st.roomKey = roomKey(); st.linkedSave = null; persistSoon();
+        // v0.7.0-a: at its turn in the room's queue (plan P2-3: replaced in v0.7.0-b by the branch decision).
+        noteMem(cur => { if (cur.roomKey === roomKey()) return false; cur.roomKey = roomKey(); cur.linkedSave = null; }, 'branch room key');
     }
     reconcile();
     syncHide();
@@ -1351,13 +1435,12 @@ function syncHide({ rehide = false } = {}) {
     let cutoff = can ? hideLimit(st, list) : -1;
     let changed = false, reach = -1;
     if (st && mode === 'manual') {
-        // Messages that went back to unrecorded (rewind, a rolled-back record, even all of them) leave
-        // the range for good: recorded again, they stay shown until the button is pressed again.
-        const h = st.hideManual, floor = hasMemory(st.mem) ? st.lastIndex : -1;
-        if (freshManual(h, s) && h.to > floor) { h.to = floor; changed = true; }
+        // v0.7.0-a (plan P2-3): the range is memory: changed only at a turn of the room's queue (inApply). Found
+        // anywhere else, this pass uses the new range and a queued change writes it.
+        const m = manualRange(st, s, list, can);
+        if (m.changed) { if (inApply) { st.hideManual = m.h; changed = true; } else manualQueued(); }
         if (can) {
-            if (!freshManual(st.hideManual, s)) { st.hideManual = { to: Math.min(hiddenNow(list), st.lastIndex), at: Date.now() }; changed = true; }
-            reach = Math.min(st.hideManual.to, st.lastIndex);
+            reach = Math.min(m.h.to, st.lastIndex);
             cutoff = Math.min(cutoff, reach);
         }
     }
@@ -1417,36 +1500,93 @@ function syncHide({ rehide = false } = {}) {
     if (changed) { ctx().swipe?.refresh?.(); saveChatSoon(); }
     return changed;
 }
-function unhideAll() {
+// The manual hidden range as it should be now: { h, changed }.
+// Messages that went back to unrecorded (rewind, a rolled-back record, even all of them) leave the range for good:
+// recorded again, they stay shown until the button is pressed again.
+function manualRange(st, s, list, can) {
+    let h = st.hideManual, changed = false;
+    const floor = hasMemory(st.mem) ? st.lastIndex : -1;
+    if (freshManual(h, s) && h.to > floor) { h = { ...h, to: floor }; changed = true; }
+    if (can && !freshManual(h, s)) { h = { to: Math.min(hiddenNow(list), st.lastIndex), at: Date.now() }; changed = true; }
+    return { h, changed };
+}
+let manualAsked = null;
+function manualQueued() {
+    const id = `${roomKey()}|${roomEpoch}`;
+    if (manualAsked === id) return;
+    manualAsked = id;
+    // The change is worked out again at its turn; syncHide there (inApply) writes the range with the change.
+    Promise.resolve().then(() => noteMem(cur => {
+        const s = settings();
+        if (hideModeOf(s) !== 'manual' || !manualRange(cur, s, chat(), s.enabled && !cur.review && hasMemory(cur.mem)).changed) return false;
+    }, 'manual hide range', { hides: true })).finally(() => { if (manualAsked === id) manualAsked = null; });
+}
+function unhideAll(save = true) {
     let changed = false;
     chat().forEach((m, i) => {
         if (!m.extra?.[HIDE_KEY]) return;
         setHidden(m, i, false); delete m.extra[HIDE_KEY]; changed = true;
     });
-    if (changed) { ctx().swipe?.refresh?.(); saveChatSoon(); }
+    // v0.7.0-a: inside a queued change the change's own write saves it.
+    if (changed) { ctx().swipe?.refresh?.(); if (save) saveChatSoon(); }
 }
 
 // ───────── change detection ─────────
 
 // Returns false while the room needs a decision from the user.
+// v0.7.0-a (plan P2-3): a recorded message whose text changed is handled at a turn of the room's queue (the memory
+// rolled back, or put under review with its hidden messages shown, in one write). Found here, the change is asked
+// for and this returns false until it is made (reconcileNow waits for it). While a reply is being made the change
+// waits for it to end (as the save of this change did before).
 function reconcile() {
     const st = state();
     if (!st) return true;
     if (st.review) return false;
     if (st.lastIndex < 0) return true;
-    const k = firstMismatch(st.hashes);
-    if (k < 0) return true;
+    if (firstMismatch(st.hashes) < 0) return true;
     cancelRun();
-    if (rollbackFrom(st, k)) {
-        st.hashes = st.hashes.slice(0, st.lastIndex + 1);
-        st.undo = null; st.undoInfo = null; st.rev++;
-        syncHide(); persistSoon();
-        toastr.warning(`기록된 원문 #${k}이(가) 바뀌어서 그 구간부터 기록을 되감았어요. 다음 체크포인트나 퀵세이브 때 다시 기록돼요.`, 'SavePoint');
-        return true;
-    }
-    st.review = { at: k };
-    unhideAll(); persistSoon();
+    reconcileQueued();
     return false;
+}
+let reconcileJob = null;
+function reconcileQueued() {
+    const id = `${roomKey()}|${roomEpoch}`;
+    if (reconcileJob?.id === id) return reconcileJob.done;
+    const job = { id };
+    job.done = (async () => {
+        for (let i = 0; i < 400 && mainBusy(); i++) await wait(1500);
+        if (`${roomKey()}|${roomEpoch}` !== id) return false;
+        let what = null;
+        try {
+            await transact(() => {
+                const st = state();
+                if (!st || st.review || st.lastIndex < 0) return false;
+                const k = firstMismatch(st.hashes);
+                if (k < 0) return false;
+                if (rollbackFrom(st, k)) {
+                    st.hashes = st.hashes.slice(0, st.lastIndex + 1);
+                    st.undo = null; st.undoInfo = null;
+                    what = { k, rolled: true };
+                    return;
+                }
+                st.review = { at: k };
+                unhideAll(false);
+                what = { k, rolled: false };
+            }, { undoable: false, autosave: false });
+        } catch (e) { if (`${roomKey()}|${roomEpoch}` === id) reportError(e); return false; }
+        if (what?.rolled) toastr.warning(`기록된 원문 #${what.k}이(가) 바뀌어서 그 구간부터 기록을 되감았어요. 다음 체크포인트나 퀵세이브 때 다시 기록돼요.`, 'SavePoint');
+        if (`${roomKey()}|${roomEpoch}` === id) { refreshView(); }
+        return !state()?.review;
+    })().finally(() => { if (reconcileJob === job) reconcileJob = null; });
+    reconcileJob = job;
+    return job.done;
+}
+// The same, waited for: true when the room can go on (nothing changed, or rolled back), false under review.
+async function reconcileNow() {
+    if (reconcile()) return true;
+    if (state()?.review) return false;
+    await reconcileQueued();
+    return reconcile();
 }
 async function acceptCurrentSource() {
     if (!state()) return;
@@ -1871,13 +2011,15 @@ function recordAutoFail(st, { stage, from, to, error, tries = [], detail = [], f
     const cut = l => String(l).slice(0, 300);
     // The record keeps what happened then (the failed request and the range left unsaved);
     // what still needs saving is worked out when it is shown, never by rewriting these numbers.
-    st.autoFail = { at: Date.now(), kind: 'collect', stage, from, to, reason: errorText(error).slice(0, 400),
+    // v0.7.0-a: at its turn in the room's queue, on the same memory line (plan P2-3).
+    const line = st?.line;
+    const autoFail = { at: Date.now(), kind: 'collect', stage, from, to, reason: errorText(error).slice(0, 400),
         ...(error?.chunk ? { request: { from: error.chunk.from, to: error.chunk.to } } : {}),
         failureId, requestNotSent: !requestRecord && error?.name === 'InputLimitError',
         requestLines: requestLines(requestRecord).map(cut), requestOk: requestRecord?.status === 'received',
         attempts: tries.length, tries: tries.map(cut), detail: groupErrors(detail).slice(0, 40).map(cut) };
-    persistSoon();
     toastr.warning(`체크포인트 실패 (#${from}–#${to}) · 해당 구간 원문 유지`, 'SavePoint');
+    return noteMem(cur => { if ((cur.line ?? null) !== (line ?? null)) return false; cur.autoFail = autoFail; }, 'checkpoint failure');
 }
 function settleAutoFail(st) {
     const f = st.autoFail;
@@ -1914,9 +2056,51 @@ async function failPendingLoot(run, items, error) {
 // Counts made inside a write that was rolled back are discarded.
 async function noteLootFailure(run, ids, reason) {
     const want = new Set(ids), base = new Set(run.lootCounted);
-    const mark = () => { const counted = new Set(base); for (const item of state()?.lootQueue || []) if (want.has(item.id)) failLoot(item, reason, counted); return counted; };
-    try { let counted; await transact(() => { counted = mark(); }, { undoable: false, autosave: false }); run.lootCounted = counted; }
-    catch { if (run.key === roomKey() && run.epoch === roomEpoch && state()) { run.lootCounted = mark(); persistSoon(); render(); } }
+    const mark = () => {
+        const counted = new Set(base), shown = lootNotesHere();
+        for (const item of state()?.lootQueue || []) if (want.has(item.id)) {
+            const n = shown?.get(item.id);
+            if (n && (item.fails || 0) < (n.fails || 0)) Object.assign(item, n);   // a reason kept on screen is written now
+            failLoot(item, reason, counted);
+        }
+        return counted;
+    };
+    try {
+        let counted;
+        await transact(() => { counted = mark(); }, { undoable: false, autosave: false });
+        run.lootCounted = counted;
+        for (const id of want) lootNotesHere()?.delete(id);
+    }
+    // v0.7.0-a (plan P2-3): when even this cannot be written, the reasons and counts are kept on screen only (lootNotes),
+    // never in the page's memory (SillyTavern would save that in its own time); they are written with the next failure note.
+    catch {
+        if (run.key !== roomKey() || run.epoch !== roomEpoch || !state()) return;
+        const counted = new Set(base), shown = lootNotesHere(true);
+        for (const item of state()?.lootQueue || []) if (want.has(item.id)) {
+            const copy = { ...(shown.get(item.id) ? { ...item, ...shown.get(item.id) } : item) };
+            failLoot(copy, reason, counted);
+            shown.set(item.id, { error: copy.error, fails: copy.fails });
+        }
+        run.lootCounted = counted;
+        render();
+    }
+}
+// v0.7.0-a: loot failure reasons that could not be written: shown over the room's queue until the room changes.
+function lootNotesHere(make = false) {
+    if (ui.lootNotes?.key !== roomKey() || ui.lootNotes?.epoch !== roomEpoch) {
+        if (!make) return null;
+        ui.lootNotes = { key: roomKey(), epoch: roomEpoch, map: new Map() };
+    }
+    return ui.lootNotes.map;
+}
+// The room's loot queue as shown: an item's reason not yet written is put over it (a copy; never the memory itself).
+function lootShown(st) {
+    const items = st?.lootQueue || [], shown = lootNotesHere();
+    if (!shown?.size) return items;
+    return items.map(x => {
+        const n = shown.get(x.id);
+        return n && (x.fails || 0) < (n.fails || 0) ? { ...x, ...n } : x;
+    });
 }
 function supplementPrompt(seg, items) {
     const originals = [...new Set(items.map(x => x.msg))].map(n => `#${n} ${speaker(chat()[n])}: ${msgText(chat()[n])}`).join('\n\n');
@@ -2001,8 +2185,29 @@ async function summarize({ close = false, auto = false } = {}) {
     if (ui.run) { toastr.info('이미 기록 중이에요.'); return; }
     if (ui.edit) { toastr.warning('편집 중인 항목을 먼저 저장하거나 취소해 주세요.'); return; }
     if (!settings().profileId && mainBusy()) { toastr.info('본편 생성이 끝난 뒤 눌러 주세요. (연결 프로필을 고르면 생성 중에도 세이브할 수 있어요.)'); return; }
-    const st = ensureState();
-    if (!reconcile()) { render(); toastr.warning('예전 원문이 바뀌었어요. 창 위쪽 안내에서 먼저 처리해 주세요.'); return; }
+    if (!(await reconcileNow())) { render(); toastr.warning('예전 원문이 바뀌었어요. 창 위쪽 안내에서 먼저 처리해 주세요.'); return; }
+    // v0.7.0-a (plan P2-3): a new room's memory is made, and a checkpoint's attempt marked (autoMark·autoHold·
+    // autoAttemptAt), at a turn of the room's queue. A checkpoint writes its mark there; a new room's memory is only
+    // made on the page (written with the first result, as before). A manual save's mark is noted when it ends short
+    // of the last message (below): a save that reached it needs none (autoCount starts after lastIndex).
+    // A manual save in a room that already has a memory needs no turn here (its file check comes with its first write).
+    if (auto || !state()) try {
+        await transact(() => {
+            const cur = ensureState(), last = chat().length - 1;
+            if (!auto) return false;
+            cur.autoMark = last; cur.autoHold = null; cur.autoAttemptAt = Date.now();
+        }, { undoable: false, autosave: false });
+    } catch (e) {
+        if (!auto) reportError(e);
+        else if (e instanceof RoomBlocked) console.warn('[SavePoint] checkpoint not started', e?.message || e);
+        // The start mark could not be written (the chat file write failed): no request is sent; said each time, as a
+        // failed checkpoint was before.
+        else toastr.warning(`체크포인트를 시작하지 못했어요 · ${errorText(e)} · 다음 간격에 다시 시도해요`, 'SavePoint');
+        return;
+    }
+    if (ui.run) { toastr.info('이미 기록 중이에요.'); return; }
+    const st = state();
+    if (!st) return;
     const latest = chat().length - 1;
     const start = st.lastIndex + 1;
     const pending = collect(start, latest);
@@ -2013,11 +2218,9 @@ async function summarize({ close = false, auto = false } = {}) {
     // Retained tail messages and their loot never enter an automatic request.
     const queued = (st.lootQueue || []).filter(x => !auto || x.msg <= end);
     if (auto) {
-        st.autoMark = latest; st.autoHold = null; st.autoAttemptAt = Date.now();
-        persistSoon();
         if (!msgs.length && !queued.length) {
             const result = `체크포인트 · 기록할 메시지 없음 · 최근 ${held}개 여유분`;
-            noteAuto(st, result, { end: latest, status: 'empty' });
+            await noteAuto(st, result, { end: latest, status: 'empty' });
             flashSaveBanner(result, { tone: 'info' });
             return;
         }
@@ -2043,13 +2246,12 @@ async function summarize({ close = false, auto = false } = {}) {
         if (!auto && fine && state() === st) await quickSaveChecked(st).catch(reportError);
         return;
     }
-    if (!auto) { st.autoMark = latest; st.autoHold = null; persistSoon(); }
     const run = newRun(st, end, auto ? 'auto' : 'save');
     run.auto = auto;
     const undoPoint = checkpoint(st);
     const memBefore = st.mem;
     let done = 0, cursor = 0;
-    let stage = 'collect';
+    let stage = 'collect', writeFailed = false;
     const oldLoot = queued.filter(x => x.msg <= st.lastIndex);
     const attemptedLoot = new Set();
     let lootFailed = 0, complete = false;
@@ -2109,12 +2311,13 @@ async function summarize({ close = false, auto = false } = {}) {
             const extra = lootFailed ? ` · 루팅 ${lootFailed}개 반영 실패` : '';
             const result = msgs.length ? `체크포인트 완료 · #${start}–#${st.lastIndex} 기록 · 최근 ${held}개 여유분${extra}`
                 : `체크포인트 · 루팅 ${supplement.saved}구간 보충 · 최근 ${held}개 여유분${extra}`;
-            noteAuto(st, result, { end: latest, status: lootFailed ? 'partial' : done ? 'saved' : 'empty' });
+            await noteAuto(st, result, { end: latest, status: lootFailed ? 'partial' : done ? 'saved' : 'empty' });
             run.notice = { text: result, tone: lootFailed ? 'warning' : done ? 'success' : 'info' };
         }
         clearInterrupted(run.key);
         complete = true;
     } catch (e) {
+        if (stage === 'save' && !(e instanceof Cancelled)) writeFailed = true;
         if (queued.length && !(e instanceof Cancelled) && !(e instanceof Unconfirmed) && !(e instanceof RoomBlocked) && run.key === roomKey()) {
             try { lootFailed += await failPendingLoot(run, queued, e); } catch { /* a failed disk write leaves the queue intact */ }
         }
@@ -2141,12 +2344,12 @@ async function summarize({ close = false, auto = false } = {}) {
             if (cur) {
                 const cancelled = e instanceof Cancelled;
                 const detail = Array.isArray(e.detail) ? e.detail : [];
-                if (!cancelled && !unconfirmed) recordAutoFail(cur, { stage, from: msgs[cursor]?.index ?? start, to: end, error: e, failureId, requestRecord: run.requestRecord,
+                if (!cancelled && !unconfirmed) await recordAutoFail(cur, { stage, from: msgs[cursor]?.index ?? start, to: end, error: e, failureId, requestRecord: run.requestRecord,
                     tries: detail.filter(isTry), detail: detail.filter(x => !isTry(x)) });
                 const result = unconfirmed ? '체크포인트 저장 확인 못함 · 확인될 때까지 자동 저장 멈춤' : cursor ? `체크포인트 일부 저장 · #${start}–#${cur.lastIndex} 완료 · #${cur.lastIndex + 1}부터 다음에 다시`
                     : cancelled ? '체크포인트 취소 · 원문 유지 · 다음 간격에 다시'
                     : '체크포인트 실패 · 원문 유지';
-                noteAuto(cur, result, { end: latest, status: unconfirmed ? 'unsure' : cursor ? 'partial' : cancelled ? 'cancelled' : 'failed' });
+                await noteAuto(cur, result, { end: latest, status: unconfirmed ? 'unsure' : cursor ? 'partial' : cancelled ? 'cancelled' : 'failed' });
                 run.notice = { text: result, tone: 'warning' };
             }
         }
@@ -2160,6 +2363,10 @@ async function summarize({ close = false, auto = false } = {}) {
         }
         if (unconfirmed && !auto && run.key === roomKey()) run.notice = { text: '저장 확인 못함 · 확인될 때까지 SavePoint 저장 멈춤', tone: 'warning' };
     } finally {
+        // v0.7.0-a: a manual save that pressed but ended before the last message still counts as an attempt (autoMark).
+        // Not after a failed chat file write: the next write would only add to it (the attempt is said by its error).
+        if (!auto && !writeFailed && run.key === roomKey() && run.epoch === roomEpoch && (msgs.length || queued.length))
+            await noteMem(cur => { if ((cur.line ?? null) !== (st.line ?? null) || cur.lastIndex >= latest || (cur.autoMark ?? -1) >= latest) return false; cur.autoMark = latest; cur.autoHold = null; }, 'save attempt');
         if (lootFailed && run.key === roomKey() && state()) toastr.warning(`⚠ 루팅한 내용 ${lootFailed}개가 반영되지 않았어요.${lootFailNote(state())} 다음 세이브 때 다시 시도해요. 자세한 이유는 ⏳ 대기열에서 볼 수 있어요.`, 'SavePoint', { timeOut: 10000 });
         endRun(run);
         if (done && run.key === roomKey()) { autosave(state()); if (state() === st) { queueCheck(st, memBefore, { auto }); announceReturns(st); } }
@@ -2201,10 +2408,15 @@ function scheduleAuto(delay = 1200) {
         if (!why) autoCollect().catch(reportError);
     }, delay);
 }
+// v0.7.0-a (plan P2-3): written at its turn in the room's queue, on the memory there then (`st` only says which
+// memory the run was about: a memory replaced meanwhile — a load, a reset — gets no note).
 function noteAuto(st, result, { moveMark = true, end = chat().length - 1, status = '' } = {}) {
-    st.autoLast = { at: Date.now(), result, status };
-    if (moveMark) st.autoMark = end;
-    persistSoon(); render();
+    const line = st?.line, at = Date.now();
+    return noteMem(cur => {
+        if ((cur.line ?? null) !== (line ?? null)) return false;
+        cur.autoLast = { at, result, status };
+        if (moveMark) cur.autoMark = end;
+    }, 'checkpoint result');
 }
 async function autoCollect() {
     if (autoBlocked()) return;
@@ -2299,12 +2511,16 @@ async function runCheck(st, scope, { auto = false } = {}) {
     // v0.6.61: the check writes its status into the room's memory, so like any change it starts only in a
     // confirmed room (pressed while the room is still being checked, it waits for that check).
     if (!gateOpen() && !(await roomReady())) { if (!auto) toastr.warning(gateMessage(), 'SavePoint', { timeOut: 10000 }); return; }
-    if (state() !== st) return;
-    if (ui.run) { st.check = { at: Date.now(), status: 'failed', reason: '다른 작업 중이라 건너뜀', scope, issues: [] }; persistSoon(); render(); return; }
+    // v0.7.0-a (plan P2-3): the result is written at its turn in the room's queue; "running" is only on screen (ui.checkRun).
+    // The check starts after the changes already asked for here (the save's own notes), so its memory is theirs.
+    if (state() !== st || !(await queueIdle()) || state() !== st) return;
+    const line = st.line, put = check => noteMem(cur => { if ((cur.line ?? null) !== (line ?? null)) return false; cur.check = check; }, 'record check');
+    if (ui.run) { await put({ at: Date.now(), status: 'failed', reason: '다른 작업 중이라 건너뜀', scope, issues: [] }); render(); return; }
     const end = chat().length - 1;
     const run = newRun(st, end, 'check');
     const rev = st.rev;
-    st.check = { at: Date.now(), status: 'running', scope, issues: [] }; render();
+    let result = null;
+    ui.checkRun = { key: roomKey(), epoch: roomEpoch }; render();
     let stageNow = '검토 준비';
     const cTries = [];
     try {
@@ -2384,18 +2600,22 @@ async function runCheck(st, scope, { auto = false } = {}) {
                 msgs: d.messages, conflict: [], excerpt: [], problem,
                 gaps: d.reason === 'foreign' ? [{ label: '이전 방 근거', how: '현재 방 번호로 조회하지 않음' }] : (d.missing.length ? d.missing : d.messages).map(n => ({ n, how: d.reason === 'missing' ? '원문 없음' : '이 항목의 검토 보류' })) });
         }
-        st.check = { at: Date.now(), status: issues.length ? 'issues' : 'ok', scope, issues, coverage };
+        result = { at: Date.now(), status: issues.length ? 'issues' : 'ok', scope, issues, coverage };
     } catch (e) {
         if (state() === st) {
-            st.check = { at: Date.now(), status: 'failed', kind: 'review', auto, stage: stageNow, attempts: cTries.length, tries: cTries.map(l => l.slice(0, 300)),
+            result = { at: Date.now(), status: 'failed', kind: 'review', auto, stage: stageNow, attempts: cTries.length, tries: cTries.map(l => l.slice(0, 300)),
                 reason: e instanceof Cancelled ? '취소됨 · 전체 검토 미완료' : errorText(e).slice(0, 400), scope, issues: [] };
             if (auto && !(e instanceof Cancelled)) toastr.warning('체크포인트 저장 후 기록 확인 실패 · 기록은 저장됨', 'SavePoint');
         }
     } finally {
+        const written = result && state() === st ? put(result) : null;
+        if (ui.checkRun?.key === roomKey() && ui.checkRun?.epoch === roomEpoch) ui.checkRun = null;
         endRun(run);
-        if (state() === st) { persistSoon(); render(); }
+        if (written) await written;
+        render();
     }
 }
+function checkRunning() { return !!ui.checkRun && ui.checkRun.key === roomKey() && ui.checkRun.epoch === roomEpoch; }
 
 // A quoted message line counts only if it appears in the originals actually sent. Models often copy
 // the "Name: " that precedes each message in the request, so that prefix is ignored.
@@ -2459,13 +2679,13 @@ function reportText(st) {
         if (ui.lastError.requestNote) out.push(ui.lastError.requestNote);
         if (ui.lastError.request?.length) out.push(requestHeading(ui.lastError.requestOk), ...ui.lastError.request.map(l => `  ${l}`));
     }
-    const missed = (st?.lootQueue || []).filter(x => x.error);
+    const missed = lootShown(st).filter(x => x.error);
     if (missed.length) {
         out.push('', `[루팅 반영 실패 ${missed.length}개]`);
         for (const x of missed) out.push(`- #${x.msg}${x.fails > 1 ? ` (${x.fails}번째)` : ''}: ${x.error} · "${String(x.text).slice(0, 80)}${String(x.text).length > 80 ? '…' : ''}"`);
     }
     const c = st?.check;
-    if (c && c.status !== 'running') {
+    if (c && c.status !== 'running' && !checkRunning()) {
         const all = c.issues || [];
         const state = c.status === 'failed' ? `저장 후 검토 실패 (${c.reason || ''}) · 기록은 저장됨${c.stage ? ` · 단계: ${c.stage}` : ''}${c.attempts !== undefined ? ` · 요청 ${c.attempts}회` : ''}` : all.filter(x => !x.ignored && !x.fixed).length ? `확인 필요 ${all.filter(x => !x.ignored && !x.fixed).length}건` : '문제 없음';
         out.push('', `[기록 확인] ${new Date(c.at).toLocaleString()} · ${state}`);
@@ -2520,7 +2740,7 @@ function checkHtml(st) {
     const c = st?.check;
     if (!c || !settings().check) return '';
     const at = new Date(c.at).toLocaleTimeString();
-    if (c.status === 'running') return '';
+    if (c.status === 'running' || checkRunning()) return '';
     if (c.status === 'failed') return `<div class="sp-hud-meta"><span class="sp-warn">저장 후 기록 확인 실패 (${esc(c.reason || '')}) · 기록은 저장됨 · ${at}</span>${btn('check-rerun', '', '다시 확인')}</div>`;
     const open = c.issues.filter(x => !x.ignored && !x.fixed);
     const fixed = c.issues.filter(x => x.fixed).length;
@@ -2746,7 +2966,7 @@ async function undo() {
         if (e instanceof Stale) { toastr.info(e.message, 'SavePoint', { timeOut: 10000 }); return; }
         throw e;
     }
-    if (!reconcile()) { render(); return; }
+    if (!(await reconcileNow())) { render(); return; }
     toastr.info(`⏪ 리와인드: ${what} 전으로 돌아갔어요.`);
 }
 async function clearRoom() {
@@ -2903,8 +3123,14 @@ function announceReturns(st) {
     const fresh = returnNotices(st).filter(r => !told.has(`${r.id}:${r.returnNotice.at}`));
     if (!fresh.length) return;
     toastr.info(`📦 보관함 물건 ${fresh.length}개가 이야기에서 다시 쓰였어요: ${fresh.map(r => entityName(st.mem, r.entity) || '?').join(', ')}. 인벤토리 보관함에서 꺼낼지 정해 주세요.`, 'SavePoint', { timeOut: 9000 });
-    st.returnTold = [...told, ...fresh.map(r => `${r.id}:${r.returnNotice.at}`)].slice(-200);
-    persistSoon();
+    const keys = fresh.map(r => `${r.id}:${r.returnNotice.at}`), line = st.line;
+    // v0.7.0-a: at its turn in the room's queue (plan P2-3).
+    noteMem(cur => {
+        if ((cur.line ?? null) !== (line ?? null)) return false;
+        const had = new Set(cur.returnTold || []);
+        if (keys.every(k => had.has(k))) return false;
+        cur.returnTold = [...had, ...keys.filter(k => !had.has(k))].slice(-200);
+    }, 'storage notice');
 }
 // QUICK: one per room, replaced only after a manual quicksave or scene clear finished completely.
 // v0.6.61: QUICK replaces the room's backup, so it follows the room's rules too: it takes its turn in the
@@ -3602,7 +3828,8 @@ async function retryLoot(id) {
     const ready = (gateOpen() || await roomReady()) && await queueIdle();
     if (roomKey() !== key || roomEpoch !== epoch || state() !== st || ui.run) return;
     if (!ready) { toastr.warning(gateMessage(), 'SavePoint', { timeOut: 10000 }); return; }
-    if (!reconcile()) { render(); toastr.warning('예전 원문이 바뀌었어요. 창 위쪽 안내에서 먼저 처리해 주세요.'); return; }
+    if (!(await reconcileNow())) { render(); toastr.warning('예전 원문이 바뀌었어요. 창 위쪽 안내에서 먼저 처리해 주세요.'); return; }
+    if (roomKey() !== key || roomEpoch !== epoch || state() !== st || ui.run) return;
     if (lootStatus(item, roomKey(), chat(), fingerprint, viewHash) || item.msg > st.lastIndex || !lootTarget(st.mem, item.msg)) { render(true); return; }
     if (!settings().profileId && mainBusy()) { toastr.info('본편 생성이 끝난 뒤 눌러 주세요.'); return; }
     const run = newRun(st, chat().length - 1, 'other');
@@ -3620,7 +3847,7 @@ async function retryLoot(id) {
     }
 }
 function lootFailNote(st) {
-    const first = (st.lootQueue || []).find(x => x.error?.startsWith('반영 실패'));
+    const first = lootShown(st).find(x => x.error?.startsWith('반영 실패'));
     return first ? ` (${first.error.replace(/^반영 실패 · /, '')})` : '';
 }
 function sceneTimeGaps(s) {
@@ -3715,7 +3942,7 @@ function mainHtml(st) {
     const head = (title, tab, label, extra = '') => `<div class="sp-st-h"><span>${title}</span>${extra}${tab ? go(tab, label) : ''}</div>`;
     const basis = `<div class="sp-st-title">STATUS</div><div class="sp-st-basis">${Number.isInteger(st.lastIndex) && st.lastIndex >= 0 ? `마지막 저장 기준 <b>#${st.lastIndex}</b>` : '아직 저장 전이에요'}${time ? ` · 이야기 시간 ${esc(time)}` : ''}${pending ? ` · 미저장 <b>${pending}</b>개 — 그 뒤 대화는 아직 반영 전이에요` : ' · 미저장 없음'}</div>`;
     // Alerts: only what needs a decision.
-    const queue = st.lootQueue || [];
+    const queue = lootShown(st);
     const returns = returnNotices(st);
     const found = foundQuests(mem);
     const alerts = [
@@ -3773,7 +4000,7 @@ function mainHtml(st) {
     return basis + (parts.length > 0 ? `<div class="sp-st">${parts.join('')}</div>` : '<div class="sp-empty">세이브하면 지금 장면, 진행 중인 일, 현재 파티와 아이템이 여기에 모여요.</div>');
 }
 function queueHtml(st) {
-    const items = st.lootQueue || [];
+    const items = lootShown(st);
     if (!items.length) return '<div class="sp-empty">⏳ 대기열이 비었어요.<br>채팅창의 💎로 담아 주세요. 구절을 드래그한 뒤 누르면 그 구절만 담겨요.</div>';
     return `<p class="sp-dim">다음 퀵세이브·체크포인트 때 반영해요. 선택한 내용은 기억 주입에 우선 반영해요.</p>` + items.map(item => {
         // A changed original blocks reflection; a re-translated on-screen text is only a warning.
@@ -4315,7 +4542,7 @@ function hudHtml(st) {
         ${autoFailHtml(st)}
         ${checkHtml(st)}
         ${ui.lastFix ? `<div class="sp-hud-meta"><span class="sp-dim">자동 보정 ${esc(ui.lastFix.range)}: ${esc(ui.lastFix.text)} · ${new Date(ui.lastFix.at).toLocaleTimeString()}</span></div>` : ''}
-        ${(ui.lastError || st?.autoFail || st?.lootQueue?.some(x => x.error) || (st?.check && st.check.status !== 'running')) && !busy ? `<div class="sp-row sp-copyrow">${btn('copy-report', '', '📋 결과 복사', '마지막 실패와 기록 확인 결과를 글로 복사해요 (캡처 대신)')}</div>` : ''}
+        ${(ui.lastError || st?.autoFail || st?.lootQueue?.some(x => x.error) || (st?.check && st.check.status !== 'running' && !checkRunning())) && !busy ? `<div class="sp-row sp-copyrow">${btn('copy-report', '', '📋 결과 복사', '마지막 실패와 기록 확인 결과를 글로 복사해요 (캡처 대신)')}</div>` : ''}
         ${err}
         </div>
         <div class="sp-row sp-actions">
@@ -5260,4 +5487,5 @@ jQuery(() => {
 });
 
 // Exposed for regression checks only.
-globalThis.__savePoint = { persistSoon, transact, commitEdit, toggleKeep, paintKeep, repairKeep, state, settings, summarize, listSaves, vault, migrateLocal, autoCollect, autoBlocked, autoCount, scheduleAuto, undo, loadSave, reconcile, syncHide, refreshInjection, handle, ui, render, estTokens, recordLine, reportText, addLoot, queueHtml, installLootBar, openLootDialog, fillSettings };
+// v0.7.0-a: `adoptPage` — tests only: a memory a test wrote on the page itself (setup, not SavePoint's change) is taken as the queue's.
+globalThis.__savePoint = { adoptPage: () => trustQueue(), lootShown, persistSoon, transact, commitEdit, toggleKeep, paintKeep, repairKeep, state, settings, summarize, listSaves, vault, migrateLocal, autoCollect, autoBlocked, autoCount, scheduleAuto, undo, loadSave, reconcile, syncHide, refreshInjection, handle, ui, render, estTokens, recordLine, reportText, addLoot, queueHtml, installLootBar, openLootDialog, fillSettings };

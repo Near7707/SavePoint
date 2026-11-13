@@ -89,7 +89,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         await page.evaluate(() => {
             const st = __savePoint.state(); const extra = [];
             for (let i = 0; i < 30; i++) extra.push({ id: 'sx' + i, title: 'Errand ' + i, where: 'Harbor', who: [], status: 'closed', segs: [{ id: 'gx' + i, from: 0, to: 0, outline: 'They walked the long harbor road and talked about the tides and the lantern routes in detail. They agreed to meet again.', points: [] }] });
-            st.mem.scenes = [...extra, ...st.mem.scenes];
+            st.mem.scenes = [...extra, ...st.mem.scenes]; __savePoint.adoptPage();   // v0.7.0-a: test setup on the page
             if (!__savePoint.ui.open) document.querySelector('#sp_open').click();
             M.settings.savePoint.budget = 900; __savePoint.refreshInjection(); __savePoint.handle('tab', 'inject');
         });
@@ -98,7 +98,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         const r2 = await page.evaluate(() => {
             const st = __savePoint.state();
             const t = document.querySelector('#sp_overlay .sp-window')?.textContent || '';
-            st.mem.scenes = st.mem.scenes.filter(x => !x.id.startsWith('sx')); M.settings.savePoint.budget = 6000; __savePoint.refreshInjection();
+            st.mem.scenes = st.mem.scenes.filter(x => !x.id.startsWith('sx')); __savePoint.adoptPage(); M.settings.savePoint.budget = 6000; __savePoint.refreshInjection();
             return t;
         });
         ok(/장면 \d+개 · .*짧은 개요 \d+/.test(r2) && r2.includes('모든 장면의 개요까지 넣으려면 주입 상한 약') && r2.includes('회상 후보'), '주입 탭: 장면별 단계, 필요한 상한, 회상 안내');

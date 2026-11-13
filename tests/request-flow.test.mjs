@@ -48,7 +48,9 @@ function harness({ count = 40, chars = 1000, limit = 22500, failAt = Infinity, c
         assertValid: run => { if (run.cancelled) throw new Cancelled('Cancelled'); },
         assertStill: run => { if (run.cancelled) throw new Cancelled('Cancelled'); return true; },
         endRun: () => { ui.run = null; }, checkpoint: () => structuredClone(st),
-        async transact(fn) { fn(); st.rev++; }, errorText: e => e.message, fmtSec: n => String(n),
+        async transact(fn) { fn(); st.rev++; },
+        // v0.7.0-a: a note at the room's turn, on the memory there.
+        async noteMem(change) { const changed = change(st) !== false; if (changed) st.rev++; return changed; }, errorText: e => e.message, fmtSec: n => String(n),
         async llm(prompt, run) {
             batches.assertPromptFits(prompt, s.inputChars);
             calls.push(prompt);

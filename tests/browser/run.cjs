@@ -258,6 +258,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         mem.records.push({ ...common, id: 'layout-party', type: 'party', entity: 'layout-person', aspect: 'condition' },
             { ...common, id: 'layout-item-record', type: 'item', entity: 'layout-item', holder: 'layout-place' },
             { ...common, id: 'layout-world', type: 'world', kind: 'secret', knownBy: ['layout-person'] });
+        __savePoint.adoptPage();   // v0.7.0-a: test setup on the page
     });
     const recordLayoutSnapshot = await ev(() => ({ mem: JSON.stringify(__savePoint.state().mem), injection: M.prompts.savepoint?.v }));
     for (const width of [360, 390, 560, 1100]) {
@@ -284,7 +285,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     }
     ok(recordThemes.length > 0 && layoutFailures.length === 0, `상태 본문 전체 너비·하단 근거 번호·긴 물건 이름의 소지자 우측 상단 유지 (${recordThemes.length}개 테마·360–1100px): ${layoutFailures.join(', ') || '정상'}`);
     ok(await ev(before => JSON.stringify(__savePoint.state().mem) === before.mem && M.prompts.savepoint?.v === before.injection, recordLayoutSnapshot), '기록 배치를 바꿔도 기억과 주입은 그대로');
-    await ev(before => { __savePoint.state().mem = before.mem; M.settings.savePoint.theme = before.theme; }, recordLayoutBefore);
+    await ev(before => { __savePoint.state().mem = before.mem; __savePoint.adoptPage(); M.settings.savePoint.theme = before.theme; }, recordLayoutBefore);
     await page.setViewportSize({ width: 390, height: 844 });
 
     if (SHOTS) {

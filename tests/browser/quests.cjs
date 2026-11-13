@@ -88,7 +88,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok((await ev(id => __savePoint.state().mem.records.find(r => r.id === id).track, q2)) === undefined, '4. 다시 추적');
 
     // 5. roles: "Ari → 나" on the card; editable
-    await ev(id => { const st = __savePoint.state(); const r = st.mem.records.find(x => x.id === id); const ari = st.mem.entities.find(e => e.name === 'Ari'); st.mem.entities.push({ id: 'e90', type: 'person', name: 'Me', aliases: [] }); r.by = [ari.id]; r.to = ['e90']; __savePoint.render(true); }, q2);
+    await ev(id => { const st = __savePoint.state(); const r = st.mem.records.find(x => x.id === id); const ari = st.mem.entities.find(e => e.name === 'Ari'); st.mem.entities.push({ id: 'e90', type: 'person', name: 'Me', aliases: [] }); r.by = [ari.id]; r.to = ['e90']; __savePoint.adoptPage(); __savePoint.render(true); }, q2);
     r = await ev(() => $('.sp-q-open .sp-role').first().text());
     ok(r === 'Ari → 나', `5. 약속 방향 표시, 사용자 페르소나는 나 (${r})`);
     await ev(id => __savePoint.handle('edit-rec', id), q2);
@@ -104,7 +104,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.text.includes('❗ 자동 수락 1') && r.goto === 'main-changes', `6. 자동 등록: 배너에 자동 수락 (${r.text})`);
 
     // 7. (fix) going back to 원문 during a translation keeps 원문 when it finishes
-    await ev(() => { $('#sp_wand').trigger('click'); for (const r of __savePoint.state().mem.records) delete r.ko; M.delay = 800; });
+    await ev(() => { $('#sp_wand').trigger('click'); for (const r of __savePoint.state().mem.records) delete r.ko; __savePoint.adoptPage(); M.delay = 800; });
     const tr = ev(() => __savePoint.handle('lang'));
     await page.waitForTimeout(200);
     await ev(() => __savePoint.handle('lang'));
@@ -117,7 +117,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
             { id: 'r901', type: 'item', entity: 'e91', holder: ari.id, text: 'A brass key on a red cord.', src: [], msgs: [], pin: false },
             { id: 'r902', type: 'item', entity: 'e92', holder: ari.id, text: 'A folded map of the harbor.', src: [], msgs: [], pin: false });
         st.mem.entities.push({ id: 'e91', type: 'item', name: 'Brass key', aliases: [] }, { id: 'e92', type: 'item', name: 'Harbor map', aliases: [] });
-        st.mem.scenes.at(-1).who = [ari.id];
+        st.mem.scenes.at(-1).who = [ari.id]; __savePoint.adoptPage(); 
         __savePoint.handle('tab', 'main'); });
     r = await ev(() => { const c = $('.sp-st-p .c')[0]; return { clamp: getComputedStyle(c).webkitLineClamp, h: c.clientHeight, sh: c.scrollHeight }; });
     ok(r.clamp === '3' && r.sh > r.h, `8. 파티 상태는 3줄까지 (${JSON.stringify(r)})`);
@@ -128,14 +128,14 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.who.startsWith('Ari') && r.items === 2, `8. 아이템은 사람마다 묶음, 한 줄에 하나 (${r.who})`);
 
     // 9. (v0.6.40) a scene prop put away by the story shows as 자동 보관 · 정리됨; two keepers are not "서로"
-    await ev(() => { const st = __savePoint.state(); st.mem.records.push({ id: 'r910', type: 'item', entity: 'e91', holder: null, text: 'Half a teapot left on the table.', src: [], msgs: [], pin: false });
+    await ev(() => { const st = __savePoint.state(); st.mem.records.push({ id: 'r910', type: 'item', entity: 'e91', holder: null, text: 'Half a teapot left on the table.', src: [], msgs: [], pin: false }); __savePoint.adoptPage(); 
         const rid = 'r910'; M.add(2); M.addChanges = () => ({ changes: [{ op: 'update', id: rid, text: 'Tea time is over; half a teapot is left.', retire: true, msgs: [M.chat.length - 1] }] }); });
     await ev(() => __savePoint.handle('run'));
     await page.waitForTimeout(1200);
     await ev(() => { __savePoint.ui.savesOpen.set('itembox', true); __savePoint.handle('tab', 'items'); });
     r = await ev(() => ({ stored: __savePoint.state().mem.records.find(x => x.id === 'r910').stored, badge: $('.sp-box .sp-badge').map((i, e) => e.textContent).get().join('|') }));
     ok(r.stored?.reason === 'retired' && r.badge.includes('자동 보관 · 정리됨'), `9. 정리된 소품은 자동 보관 · 정리됨 (${r.badge})`);
-    r = await ev(id => { const st = __savePoint.state(); const q = st.mem.records.find(x => x.id === id); q.to = undefined; delete q.to; q.by = [st.mem.entities.find(e => e.name === 'Ari').id, 'e90']; __savePoint.handle('tab', 'quests'); const a = $('.sp-q-open .sp-role').first().text(); q.mutual = true; __savePoint.render(true); return [a, $('.sp-q-open .sp-role').first().text()]; }, q2);
+    r = await ev(id => { const st = __savePoint.state(); const q = st.mem.records.find(x => x.id === id); q.to = undefined; delete q.to; q.by = [st.mem.entities.find(e => e.name === 'Ari').id, 'e90']; __savePoint.handle('tab', 'quests'); const a = $('.sp-q-open .sp-role').first().text(); q.mutual = true; __savePoint.adoptPage(); __savePoint.render(true); return [a, $('.sp-q-open .sp-role').first().text()]; }, q2);
     ok(r[0] === 'Ari · 나' && r[1] === 'Ari · 나 서로', `9. 여러 명이 지킬 약속은 서로 표시가 있을 때만 서로 (${r.join(' / ')})`);
 
     // 10. (v0.6.43) a choice shows at once even while the chat file is still being written
@@ -211,6 +211,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const setup = () => ev(() => { const st = __savePoint.state();
         for (const id of ['r950', 'r951']) if (!st.mem.records.some(x => x.id === id)) st.mem.records.push({ id, type: 'quest', kind: 'goal', status: 'open', who: [], text: `Thread ${id}.`, src: [], msgs: [], pin: false, questEvents: { created: null } });
         for (const x of st.mem.records) if (['r950', 'r951'].includes(x.id)) x.pin = false;
+        __savePoint.adoptPage(); 
         __savePoint.render(true); });
     const both = () => ev(() => { const st = __savePoint.state(), f = M.serverChat[0].chat_metadata.savePoint;
         const pick = m => ['r950', 'r951'].map(id => { const x = m.records.find(r => r.id === id); return x ? (x.pin ? 'pin' : 'on') : 'gone'; }).join(',');

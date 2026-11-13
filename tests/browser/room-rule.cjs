@@ -129,7 +129,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => { M.readDelayFor = { roomC2: 700 }; toastr.log.length = 0; });
     await ev(id => { M.p = __savePoint.loadSave(id); }, qid);
     await wait(100);
-    await ev(m => { M.meta.savePoint = JSON.parse(JSON.stringify(m)); M.meta.savePoint.mem.scenes[0].title = 'Made meanwhile'; M.stSave(); }, memory);
+    await ev(m => { M.meta.savePoint = JSON.parse(JSON.stringify(m)); M.meta.savePoint.mem.scenes[0].title = 'Made meanwhile'; __savePoint.adoptPage(); M.stSave(); }, memory);
     await ev(() => M.p);
     r = await ev(() => ({ title: M.serverFiles.roomC2[0].chat_metadata.savePoint?.mem?.scenes?.[0]?.title, t: toastr.log.map(x => x[1]).join(' | ') }));
     ok(r.title === 'Made meanwhile' && r.t.includes('바뀌어서'), `3. 그사이 기억이 생겼으면 불러오지 않음 (${r.title}, ${r.t.slice(0, 30)})`);
@@ -138,14 +138,17 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     // 4. [P2] a checkpoint written but not confirmed; SillyTavern then saves the page with the "unconfirmed"
     //    note in it. The write is still found by its receipt.
     await open('roomD', msgs(4, 'Dee'));
-    await ev(() => { M.add(8); M.readFailAfterSave = true; toastr.log.length = 0; });
+    // v0.7.0-a: the checkpoint's start mark is its first write (at the room's turn); reads fail after the record's write.
+    await ev(() => { M.add(8); M.readFailAfterNth = 2; toastr.log.length = 0; });
     await ev(() => __savePoint.summarize({ auto: true }));
     await wait(600);
     r = await ev(() => ({ b: __savePoint.autoBlocked(), last: __savePoint.state().autoLast?.status }));
-    ok(r.b === 'unsure' && r.last === 'unsure', `4. 준비: 체크포인트 저장 확인 불가 (${r.b}, ${r.last})`);
-    await ev(() => { M.readFailAfterSave = false; M.serverError = false; M.add(1); toastr.log.length = 0; });
+    // v0.7.0-a (plan P2-3): the "unsure" result note is a memory change; with the room's writes stopped it is not
+    // made (before: put on the page, then written by SillyTavern's own save — the path this version closes).
+    ok(r.b === 'unsure' && r.last !== 'unsure', `4. 준비: 체크포인트 저장 확인 불가, 결과 메모는 기억에 넣지 않음 (${r.b}, ${r.last})`);
+    await ev(() => { M.readFailAfterNth = 0; M.readFailAfterSave = false; M.serverError = false; M.add(1); toastr.log.length = 0; });
     r = await ev(() => M.serverFiles.roomD[0].chat_metadata.savePoint.autoLast?.status);
-    ok(r === 'unsure', `4. 준비: 실리태번 저장이 확인 불가 표시까지 씀 (${r})`);
+    ok(r !== 'unsure', `4. 실리태번 자체 저장이 SavePoint의 확인 불가 메모를 쓰지 않음 (${r})`);
     await wait(3600);
     r = await ev(() => ({ b: __savePoint.autoBlocked(), t: toastr.log.map(x => x[1]).join(' | ') }));
     ok(r.b !== 'unsure' && r.t.includes('들어가 있는 걸 확인'), `4. 기록이 그대로면 확인 불가가 풀림 (${r.b}, ${r.t.slice(0, 30)})`);

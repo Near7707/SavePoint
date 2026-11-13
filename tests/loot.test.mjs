@@ -30,7 +30,7 @@ function harness({ messages = ['A participant kept a token.'], recorded = false 
         settleWrite = async e => (e?.landed ? e : 'revert');
         queueCheck = (st, before) => checks.push(checkScope(before, st.mem));
         return { ensureState, state, settings, addLoot, summarize, autoCollect, fingerprint, roomKey, ui, handle, journalHtml, queueHtml,
-            supplementLoot, newRun, endRun, checkStatements, reportText, installLootBar, openLootDialog, reconcile, saveRecord,
+            supplementLoot, newRun, endRun, checkStatements, reportText, installLootBar, openLootDialog, reconcile, reconcileNow, saveRecord,
             setSlot(record) { findSave = () => record; readSave = async () => record; confirmBox = async () => true; },
             setModel(fn) { llm = fn; }, sourceChanged: onSourceChanged, loadSave,
             finishSource() { if (sourceTimer) clearTimeout(sourceTimer); }, Cancelled, RequestTimeout };
@@ -384,7 +384,7 @@ test('source rollback returns lost looting with its original note and fingerprin
         const item = structuredClone(h.app.state().lootQueue[0]);
         await h.app.summarize();
         h.context.chat[editIndex].mes += ' An edit.';
-        assert(h.app.reconcile());
+        assert(await h.app.reconcileNow());   // v0.7.0-a: the rollback is a queued change (plan P2-3)
         assert.equal(h.app.state().lastIndex, -1); assert.equal(points(h).length, 0);
         const restored = h.app.state().lootQueue.find(x => x.id === item.id);
         assert(restored); assert.equal(restored.note, item.note); assert.equal(restored.hash, item.hash);
@@ -452,7 +452,7 @@ test('later saves cannot erase the recovery note and original hash stored on old
     h.context.chat.push({ name: 'Participant', mes: 'The journey continued.', is_user: false, extra: {} });
     await h.app.summarize(); assert.equal(h.app.state().undo.lootQueue.length, 0);
     h.context.chat[0].mes += ' An edit.';
-    assert(h.app.reconcile());
+    assert(await h.app.reconcileNow());   // v0.7.0-a: queued (plan P2-3)
     const restored = h.app.state().lootQueue[0];
     assert.equal(restored.hash, item.hash); assert.equal(restored.note, item.note);
     assert.equal(loot.lootStatus(restored, h.app.roomKey(), h.context.chat, h.app.fingerprint), '원문이 바뀜');
@@ -468,7 +468,7 @@ test('legacy loot uses only saved snapshot or recorded hashes for recovery, neve
 
     await h.app.summarize(); delete points(h)[0].loot[0].hash;
     h.app.state().undo = null; h.context.chat[0].mes += ' Changed';
-    assert(h.app.reconcile());
+    assert(await h.app.reconcileNow());   // v0.7.0-a: queued (plan P2-3)
     assert.equal(h.app.state().lootQueue[0].hash, item.hash);
 
     const unknown = loot.restoreLostLoot([], { scenes: [{ segs: [{ points: [{ loot: [{ id: 'old', room: 'room-A', msg: 0, quote: 'Old text' }] }] }] }] }, core.emptyMem(), { room: 'room-A' });

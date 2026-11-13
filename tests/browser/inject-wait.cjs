@@ -57,7 +57,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r = await ev(src => { __savePoint.handle('tab', 'journal'); __savePoint.handle('tab', 'inject'); const h = (new Function(`return (${src})()`))(); return { wait: h.includes('계산하고 있어요'), need: /필요해요|늘려도/.test(h) }; }, body.toString());
     ok(!r.wait && r.need, `2. 기억·설정이 그대로면 다시 열 때 계산하지 않음 (${JSON.stringify(r)})`);
     // 3. memory changed: worked out again; leaving the tab meanwhile stops it, other tabs answer at once
-    r = await ev(src => { __savePoint.state().rev = (__savePoint.state().rev || 0) + 1; __savePoint.handle('tab', 'inject'); const a = (new Function(`return (${src})()`))().includes('계산하고 있어요');
+    r = await ev(src => { __savePoint.state().rev = (__savePoint.state().rev || 0) + 1; __savePoint.adoptPage(); __savePoint.handle('tab', 'inject'); const a = (new Function(`return (${src})()`))().includes('계산하고 있어요');
         const t0 = performance.now(); __savePoint.handle('tab', 'journal'); return { a, ms: performance.now() - t0, tab: __savePoint.ui.tab }; }, body.toString());
     await wait(600);
     const after = await ev(() => ({ n: __savePoint.ui.injNeed, p: __savePoint.ui.injNeedPoints }));
@@ -71,7 +71,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(JSON.stringify(r.ui) === JSON.stringify(r.direct), `4. 나눠서 계산한 값이 한 번에 계산한 값과 같음 (${JSON.stringify(r)})`);
     // 5. v0.6.79 (review P3): working it out, then a room with no memory opens on the same tab: the old room's
     //    calculation stops (its figures never land in the new room).
-    await ev(() => { __savePoint.handle('tab', 'journal'); __savePoint.state().rev = (__savePoint.state().rev || 0) + 1; __savePoint.handle('tab', 'inject'); });
+    await ev(() => { __savePoint.handle('tab', 'journal'); __savePoint.state().rev = (__savePoint.state().rev || 0) + 1; __savePoint.adoptPage(); __savePoint.handle('tab', 'inject'); });
     r = await ev(src => (new Function(`return (${src})()`))().includes('계산하고 있어요'), body.toString());
     await ev(() => M.switchChat('chatEmpty', [{ name: 'Ari', is_user: false, is_system: false, mes: 'Hello there', swipe_id: 0, extra: {} }], {}));
     await ev(() => __savePoint.handle('tab', 'inject'));

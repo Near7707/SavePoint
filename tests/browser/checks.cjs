@@ -89,7 +89,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await page.waitForTimeout(200);
     r = await ev(() => ({ more: $('.sp-hud-more').is(':visible'), hud: $('.sp-hud').text(), fixed: __savePoint.state().check.issues[0].fixed, edit: __savePoint.ui.edit }));
     ok(r.more && r.fixed === true && r.hud.includes('고침 1') && !r.edit, `3. ★ 고쳐서 저장하면 "고침"으로 빠지고 상태칸으로 돌아옴 (${r.hud.match(/기록 확인[^·]*·[^·]*/)?.[0]})`);
-    await ev(() => { __savePoint.state().check.issues[0].fixed = false; __savePoint.render(true); });
+    await ev(() => { __savePoint.state().check.issues[0].fixed = false; __savePoint.adoptPage(); __savePoint.render(true); });   // v0.7.0-a: test setup on the page
     await ev(id => __savePoint.handle('check-ignore', id), issueId);
     ok(!(await ev(() => $('.sp-checks').length)), '3. 무시하면 경고가 사라짐');
     await ev(() => { M.checkIssues = false; });
@@ -154,6 +154,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         st.check = { at: Date.now(), status: 'issues', scope: { records: [], segs: [] }, issues: Array.from({ length: 12 }, (_, i) => ({
             id: 'c' + i, about: st.mem.scenes[0].segs[0].id, kind: 'misread', problem: 'Problem number ' + i + ' '.repeat(3) + 'x'.repeat(120), conflict: ['a sentence', 'another sentence'], msgs: [1], excerpt: ['#1 Ari: some original text '.repeat(4)], ignored: false })) };
         __savePoint.ui.lastError = { at: Date.now(), range: '#0–#55', detail: Array.from({ length: 30 }, (_, i) => `changes[${i}].holder "${i % 2 ? 'Theo' : 'Mara'}" is not a known entity id or a ref declared in "entities".`).concat(Array.from({ length: 25 }, (_, i) => `scenes[0].points[${i}] needs "text".`)) };
+        __savePoint.adoptPage();   // v0.7.0-a: test setup on the page
         M.settings.savePoint.check = true;
         __savePoint.ui.savesOpen.delete('hud-checks');
         __savePoint.render(true);
@@ -173,7 +174,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => __savePoint.render(true));
     ok((await ev(() => $('.sp-checks').prop('open') && $('.sp-err').prop('open'))), '9. 다시 그려도 펼친 상태 유지');
     if (SHOTS) await page.screenshot({ path: path.join(OUT, 'v027_scroll.png') });
-    await ev(() => { __savePoint.ui.lastError = null; __savePoint.state().check = null; __savePoint.render(true); });
+    await ev(() => { __savePoint.ui.lastError = null; __savePoint.state().check = null; __savePoint.adoptPage(); __savePoint.render(true); });
 
     // 10. the check sees the whole event behind a changed record first, and says what was left out
     await ev(() => {

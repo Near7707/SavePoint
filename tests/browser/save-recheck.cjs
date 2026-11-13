@@ -61,7 +61,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     {
         const { page, ev } = await session();
         ok(await ev(() => !!__savePoint.state()?.mem?.scenes?.length), '준비: 방 A에 기억이 있음 (12개)');
-        await ev(() => { M.stScript.setChatSaving(true); __savePoint.state().probe = 'small'; __savePoint.persistSoon(); });
+        await ev(() => { M.stScript.setChatSaving(true); __savePoint.state().probe = 'small'; __savePoint.adoptPage(); __savePoint.persistSoon(); });
         await page.waitForTimeout(800);
         await ev(o => { M.serverFiles.chatA.push(o); }, other);
         await ev(() => M.stScript.setChatSaving(false));
@@ -133,7 +133,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
             M.metaDelay = 400; let n = 0;
             M.beforeChatSave = async name => { if (++n === 1) { M.readDelayFor = { chatA: 150 }; setTimeout(() => M.serverFiles[name].push(window.__other), 450); } };
         });
-        await ev(o => { window.__other = o; __savePoint.state().probe = 'small-resend'; __savePoint.persistSoon(); }, other);
+        await ev(o => { window.__other = o; __savePoint.state().probe = 'small-resend'; __savePoint.adoptPage(); __savePoint.persistSoon(); }, other);
         await page.waitForTimeout(500);
         await ev(m => { M.noStSave = true; M.chat.push(m); }, mine);
         await page.waitForTimeout(1500);

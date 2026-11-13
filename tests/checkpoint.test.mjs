@@ -138,11 +138,18 @@ test('a later batch failure preserves and backs up only the committed prefix, th
 });
 
 test('a disk failure cannot publish a completed record or advance the actual-record timestamp', async () => {
-    const h = harness(); h.failWriteAt = 1; await h.app.autoCollect(); const st = h.app.state();
+    // v0.7.0-a: write 1 is the checkpoint's start mark (autoMark, at its turn in the room queue); write 2 is the record.
+    const h = harness(); h.failWriteAt = 2; await h.app.autoCollect(); const st = h.app.state();
     assert.equal(st.lastIndex, -1); assert.equal(st.lastRecord, undefined);
     assert.equal(st.autoFail.stage, 'save'); assert.equal(st.autoLast.status, 'failed');
     assert.equal(h.app.notice().tone, 'warning'); assert(!h.app.notice().text.includes('완료'));
     assert(h.context.chat.every(m => !m.is_system)); assert.equal(h.backups.length, 0);
+});
+
+test('v0.7.0-a: a checkpoint whose start mark cannot be written makes no model call and changes nothing', async () => {
+    const h = harness(); h.failWriteAt = 1; await h.app.autoCollect(); const st = h.app.state();
+    assert.equal(h.calls.length, 0); assert.equal(st.lastIndex, -1); assert.equal(st.autoMark, undefined);
+    assert(h.context.chat.every(m => !m.is_system));
 });
 
 test('input overflow does not permanently hold checkpoints; the next interval can retry', async () => {

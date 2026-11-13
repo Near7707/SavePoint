@@ -108,7 +108,9 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await sleep(3700);
 
     // 6. a checkpoint whose chat-file write fails shows no "완료"
-    await ev(() => { M.delay = 400; M.settings.savePoint.auto = true; M.settings.savePoint.autoEvery = 5; const b = M.chat.length; M.add(12, i => (i === b + 6 ? 'SCENEBREAK at the gate. ' : '') + `Message ${i}`); M.failMeta = true; });
+    await ev(() => { M.delay = 400; M.settings.savePoint.auto = true; M.settings.savePoint.autoEvery = 5; const b = M.chat.length; M.add(12, i => (i === b + 6 ? 'SCENEBREAK at the gate. ' : '') + `Message ${i}`);
+        // v0.7.0-a: write 1 is the checkpoint's start mark (at the room's turn); the record's write (2) fails.
+        M.failNth = 2; });
     await ev(() => { if (M.chat.at(-1).is_user) M.add(1); });
     const before6 = await ev(() => ({ last: __savePoint.state().lastIndex, calls: M.calls.length }));
     const p6 = ev(() => __savePoint.autoCollect());
@@ -123,7 +125,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.b.shown && r.tone === 'warning', '6. 실패 결과는 경고 배너로 표시');
     await sleep(3700);
     ok((await banner()).shown && (await banner()).text.includes('실패'), '6. 실패 배너는 성공 표시의 3.5초보다 오래 유지');
-    await ev(() => { M.failMeta = false; M.settings.savePoint.auto = false; });
+    await ev(() => { M.failMeta = false; M.failNth = 0; M.settings.savePoint.auto = false; });
 
     await browser.close(); srv.close();
     console.log(failures ? `${failures} FAILED` : 'ALL PASS');

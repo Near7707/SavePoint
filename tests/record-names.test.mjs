@@ -84,15 +84,19 @@ test('legacy import/export and history restoration normalize without changing ev
     assert.equal(core.applyDiff(restored, diff).records[0].text, 'rested');
 });
 
-test('opening old chat metadata persists cleanup once, including a restored undo snapshot', () => {
+test('opening old chat metadata persists cleanup once, including a restored undo snapshot', async () => {
     const meta = { savePoint: { v: 1, mem: fixture() } }; let saves = 0;
-    const state = vm.runInNewContext(section('function state() {', '\nfunction freshState') + ';state', {
-        ...core, upgradeStoryTimes, ui: {}, MODULE: 'savePoint', gateOpen: () => true, ctx: () => ({ chatMetadata: meta }), persistSoon: () => saves++,
-    });
-    state(); state();
+    // v0.7.0-a (plan P2-3): the cleanup is made by one queued change (state() outside the queue shows a tidied copy).
+    const box = { ...core, upgradeStoryTimes, ui: {}, MODULE: 'savePoint', gateOpen: () => true, ctx: () => ({ chatMetadata: meta }),
+        inApply: 0, clone: structuredClone, roomKey: () => 'room', roomEpoch: 0, console: { warn() {} },
+        async transact(fn) { box.inApply++; try { if (fn() !== false) saves++; } finally { box.inApply--; } } };
+    const state = vm.runInNewContext(section('function state() {', '\nfunction freshState') + ';state', box);
+    const flush = () => new Promise(r => setTimeout(r, 0));
+    assert.equal(state().mem.records[0].text, 'tired');
+    state(); await flush();
     assert.equal(saves, 1);
     assert.equal(meta.savePoint.mem.records[0].text, 'tired');
-    meta.savePoint.mem = fixture('테오: rested'); state();
+    meta.savePoint.mem = fixture('테오: rested'); state(); await flush();
     assert.equal(meta.savePoint.mem.records[0].text, 'rested');
     assert.equal(saves, 2);
 });

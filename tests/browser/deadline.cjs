@@ -95,7 +95,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => __savePoint.handle('edit-cancel'));
     // v0.6.55: an edit is not a rewind point (⏪ stays on the last save); the test puts the state back itself.
     ok(await ev(() => !['edit'].includes(__savePoint.state().undoInfo?.kind)), '3. 편집은 리와인드 지점을 바꾸지 않음');
-    await ev(s => { M.meta.savePoint = s; __savePoint.refreshInjection(); __savePoint.render(true); }, await ev(() => window.__beforeDue));
+    await ev(s => { M.meta.savePoint = s; __savePoint.adoptPage(); __savePoint.refreshInjection(); __savePoint.render(true); }, await ev(() => window.__beforeDue));
     r = await ev(() => __savePoint.state().mem.records.find(x => x.type === 'quest').due);
     ok(!r.manual && r.days === 1, '3. (검사용 복원) 직접 지정 전으로');
 

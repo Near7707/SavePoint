@@ -63,7 +63,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
             await ev(() => M.openFile('chatA'));
             await page.waitForFunction(() => __savePoint.autoBlocked() !== 'room', null, { timeout: 5000 }).catch(() => {});
             await page.waitForTimeout(400);
-            await ev(() => { M.saveBodies = []; __savePoint.persistSoon(); });
+            await ev(() => { M.saveBodies = []; __savePoint.adoptPage(); __savePoint.persistSoon(); });
             await page.waitForTimeout(d);
             await ev(() => M.stOpen('chatB'));
             await page.waitForTimeout(900);
@@ -85,7 +85,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         await page.waitForTimeout(1500);
         ok(await ev(() => !!M.stScript), '준비: 실리태번 저장 중 표시를 읽을 수 있음');
         const before = await ev(() => JSON.stringify(M.serverFiles.chatA));
-        await ev(() => { M.saveBodies = []; M.stScript.setChatSaving(true); toastr.log.length = 0; __savePoint.persistSoon(); });
+        await ev(() => { M.saveBodies = []; M.stScript.setChatSaving(true); toastr.log.length = 0; __savePoint.adoptPage(); __savePoint.persistSoon(); });
         await page.waitForTimeout(700);
         const waited = await ev(() => (M.saveBodies || []).length);
         await ev(() => { M.openDelay = 1500; M.stOpen('chatA'); M.stScript.setChatSaving(false); });
@@ -113,7 +113,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         };
         for (const [name, how] of Object.entries(cases)) {
             const saved = await ev(() => JSON.stringify({ chat: M.chat, meta: M.meta, id: M.chatId }));
-            await ev(() => { M.saveBodies = []; M.stScript.setChatSaving(true); __savePoint.persistSoon(); });
+            await ev(() => { M.saveBodies = []; M.stScript.setChatSaving(true); __savePoint.adoptPage(); __savePoint.persistSoon(); });
             await page.waitForTimeout(700);
             await ev(`(${how.toString()})()`);
             await ev(() => M.stScript.setChatSaving(false));
@@ -168,13 +168,13 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         await ev(() => { M.add(12); });
         await ev(() => __savePoint.handle('run'));
         await page.waitForTimeout(1500);
-        await ev(() => { M.saveBodies = []; M.metaDelay = 700; __savePoint.persistSoon(); });
+        await ev(() => { M.saveBodies = []; M.metaDelay = 700; __savePoint.adoptPage(); __savePoint.persistSoon(); });
         await page.waitForTimeout(500);
         await ev(() => M.add(1));
         await page.waitForTimeout(1800);
         const r = await ev(() => ({ n: M.serverFiles.chatA.length - 1, sent: M.saveBodies.map(x => x.count) }));
         ok(r.n === 13 && r.sent.join() === '12,13', `늦게 도착한 예전 사본이 새 메시지를 지우지 않음 — 지금 방을 한 번 더 보냄 (파일 ${r.n}개, 보낸 것 ${r.sent.join(',')})`);
-        await ev(() => { M.metaDelay = 0; M.saveBodies = []; __savePoint.persistSoon(); });
+        await ev(() => { M.metaDelay = 0; M.saveBodies = []; __savePoint.adoptPage(); __savePoint.persistSoon(); });
         await page.waitForTimeout(800);
         ok(await ev(() => M.saveBodies.length) === 1, '그사이 바뀐 게 없으면 한 번만 보냄');
         await page.close();

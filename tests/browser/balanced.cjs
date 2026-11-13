@@ -69,14 +69,18 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => __savePoint.summarize()); r = await snapshot();
     ok(JSON.stringify(r.ranges) === JSON.stringify([[0,12],[13,24]]), 'manual 25 messages -> 13 + 12');
 
-    await ev(() => {
-        const mem = __savePoint.state().mem;
+    // v0.7.0-a: legacy metadata as a room would load it (a new memory object on the page, taken as the queue's: test
+    // setup); its cleanup is a queued change (plan P2-3), so the check waits for the room's queue.
+    await ev(async () => {
+        const st = SillyTavern.getContext().chatMetadata.savePoint, mem = structuredClone(st.mem);
         mem.entities.push({ id: 'e40', type: 'person', name: 'Theo', aliases: ['테오'] });
         mem.records.push({ id: 'r40', type: 'party', entity: 'e40', aspect: 'condition', text: 'Theo: tired', ko: '테오: 피곤함', src: [], msgs: [] });
+        st.mem = mem; __savePoint.adoptPage();
         __savePoint.handle('tab', 'inject');
+        await new Promise(r => setTimeout(r, 300)); await __savePoint.transact(() => false, { autosave: false });
     });
-    const names = await ev(() => ({ rec: __savePoint.state().mem.records.find(x => x.id === 'r40'), injection: M.prompts.savepoint?.v || '' }));
-    ok(names.rec.text === 'tired' && names.rec.ko === '피곤함', 'opening legacy metadata cleans both record languages');
+    const names = await ev(() => ({ page: SillyTavern.getContext().chatMetadata.savePoint.mem.records.find(x => x.id === 'r40'), rec: __savePoint.state().mem.records.find(x => x.id === 'r40'), injection: M.prompts.savepoint?.v || '' }));
+    ok(names.rec.text === 'tired' && names.rec.ko === '피곤함' && names.page.text === 'tired', 'opening legacy metadata cleans both record languages (v0.7.0-a: on the page by a queued change)');
     ok(names.injection.includes('[condition] Theo: tired') && !names.injection.includes('Theo: Theo:'), 'injected state contains a single owner label');
     await browser.close(); srv.close(); console.log(failures ? failures + ' FAILED' : 'ALL PASS'); process.exit(failures ? 1 : 0);
 })().catch(e => { console.error(e); process.exit(1); });

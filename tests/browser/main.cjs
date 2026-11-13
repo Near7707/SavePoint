@@ -101,7 +101,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok((await ev(() => $('.sp-tab.sp-active').attr('data-id'))) === 'party', '5. 열려 있는 동안에는 보던 탭 유지');
 
     // 6. (v0.6.38) a failed translation leaves 🌐 원문 usable; filling is a small separate button
-    await ev(() => { for (const r of __savePoint.state().mem.records) delete r.ko; });
+    await ev(() => { for (const r of __savePoint.state().mem.records) delete r.ko; __savePoint.adoptPage(); });
     await ev(() => { M.throwNext = new Error('translator down'); return __savePoint.handle('lang'); }).catch(() => {});
     await page.waitForTimeout(800);
     r = await ev(() => ({ ko: __savePoint.settings().showKo, main: $('.sp-actions .sp-langbtn').text().trim(), act: $('.sp-actions .sp-langbtn').attr('data-act'), fill: $('.sp-actions .sp-langfill').text().trim(), lit: $('.sp-actions .sp-langbtn').hasClass('sp-on') }));

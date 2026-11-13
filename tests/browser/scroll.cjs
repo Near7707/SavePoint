@@ -53,6 +53,7 @@ const ok = (condition, message) => { console.log(`${condition ? 'PASS' : 'FAIL'}
                     aspect: 'condition', kind: type === 'quest' ? 'goal' : 'rule', status: 'open', who: [person], knownBy: [],
                     text: `Record ${i}: The traveler checked a different route and kept the supplies ready for the journey.`, msgs: [0], src: [], pin: false,
                 });
+                __savePoint.adoptPage();   // v0.7.0-a: test setup on the page
                 __savePoint.render(true);
             });
             for (const theme of THEMES) {

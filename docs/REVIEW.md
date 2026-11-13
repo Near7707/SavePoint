@@ -1,3 +1,59 @@
+# v0.7.0-a · 기억 저장 분리 1단계: 준비 (+ v0.6.104 함께 리뷰)
+
+기준: v0.6.104 `115efbf`. 이 리뷰에는 따로 리뷰 받지 않은 v0.6.104(아래 항목)도 들어가요. 계획: [PLAN-v0.7.md](PLAN-v0.7.md) "P2-3 경로 재분류", "두 기기", 합격 기준 2·7·10·11 ①. 파일: `index.js`, 새 `memfile.js`, 검사.
+
+지난 리뷰 처리: v0.6.103 리뷰의 P3는 v0.6.104에서 처리(아래 v0.6.104 항목). 이번 단계는 리뷰 지적이 아니라 계획대로의 새 작업.
+
+바뀐 것
+1. **대기열 안으로 (계획 P2-3 표)**: 기억을 바꾸던 차례 밖 경로를 `transact` 차례 안으로. 새 `noteMem(change)`: ⏪ 지점이 아닌 작은 메모를 차례에서, 그때의 기억(`state()`)으로 계산(`false` = 안 바꿈). 저장 실패면 메모는 버림(콘솔만). 메모 차례는 숨김 표시를 다시 맞추지 않음(`transact`의 새 `hides` 옵션, 기본은 지금처럼 맞춤; 수동 하이드 범위만 맞춤).
+   - `noteAuto`·`recordAutoFail`: 차례에서 쓰고, 그 실행의 기억 줄(`line`)이 그대로일 때만(불러오기·리셋으로 바뀐 기억에는 안 씀). 부르는 곳은 `await`.
+   - 체크포인트 시작 표시 `autoMark`·`autoHold`·`autoAttemptAt`: `summarize` 시작 때 한 번 차례에서. 그 쓰기가 실패하면 AI 요청 없이 끝내고 "체크포인트를 시작하지 못했어요" 경고(방이 막힌 경우는 콘솔만). 수동 저장은 기억이 이미 있으면 차례를 거치지 않음(첫 쓰기에 파일 확인이 따라옴). 수동 저장이 마지막 메시지 전에 끝나면 `autoMark`를 `finally`에서 메모로(채팅 파일 쓰기가 실패해서 끝난 경우는 빼고, `writeFailed`).
+   - 기록 확인 `runCheck`: "진행 중"은 화면에만(`ui.checkRun`, `checkRunning()`), 결과만 차례에서. 앞서 요청된 메모(저장 결과)가 끝난 뒤 시작(`queueIdle`).
+   - 보관함 알림 `returnTold`, 루팅 실패 횟수 예비 경로(`noteLootFailure`의 catch): 차례에서. 그것도 못 쓰면 이유·횟수는 화면에만(`ui.lootNotes`, `lootShown`), 다음 실패 메모 때 함께 씀.
+   - `state()` 예전 형식 정리(`upgradeEvidence`·`foldLegacyOutline`·`normalizeRecordNames`·`upgradeStoryTimes`): 차례 안(`inApply`)에서만 화면 기억에. 밖에서 읽으면 정리한 **사본**을 돌려주고 차례 하나(`tidyQueued`)를 요청. 같은 기억 객체는 한 번만 검사(`basicTidied`).
+   - 갈래 방 `roomKey` 바꾸기(`roomOpened`): 차례에서(v0.7.0-b에서 분기 판정이 대신).
+   - 원문 변경 감지 `reconcile`: 되감기(또는 확인 대기 + 숨김 풀기)를 차례 하나로(`reconcileQueued`), 답변 생성 중이면 끝날 때까지 기다림. `reconcile()`은 요청만 하고 `false`, 기다려야 하는 곳(`summarize`·`undo`·`retryLoot`)은 새 `reconcileNow()`.
+   - 수동 하이드 범위 `hideManual`(`syncHide`): 차례 안이면 그 쓰기와 함께, 밖이면 새 범위로 이번 숨김을 계산하고 차례 하나(`manualQueued`)로 저장. 계산은 `manualRange`로 뺌.
+   - `unhideAll(save)`: 차례 안에서는 따로 저장하지 않음(그 차례의 쓰기가 저장).
+2. **검사 모드(합격 2)**: `globalThis.__spStrict`(브라우저 모의 환경이 켬)면 화면 기억을 차례가 마지막에 남긴 것과 비교(`by` 제외). 차례 앞, 채팅 파일 쓰기 앞, 100ms마다 확인, 다르면 페이지 오류. 방·메타 객체가 새로 열린 경우는 그대로 받아들임. 검사가 직접 기억을 고치는 준비 단계는 `__savePoint.adoptPage()`로 표시.
+3. **기억 파일 쓰기 장치 `memfile.js`(아직 안 씀)**: `writeMem(io, line, { name, valid, make })` — 마지막으로 본 (rev, wid)(또는 "없음")과 같을 때만 씀, 읽기 실패·손상은 "없음"으로 보지 않음, 업로드가 실리태번 성공 응답이 아니면 "응답 없음"(`pending`) → 그 방 기억 쓰기 멈춤(합격 10, 사용자 동의로 PLAN 10번에 결정 기록), 확실한 거절(408 아닌 4xx)만 `refused`, 다시 읽어 내 영수증이면 `ok`, 남의 영수증이면 `overwritten`(멈춤), 못 읽으면 `unread`(쓴 것으로 보고 다음 쓰기 첫 읽기가 다시 확인). 한 방에 한 번에 하나(`busy`). `serverMemIO`: 시간 초과·예외 = 응답 없음.
+4. 버전 `0.7.0-a`.
+
+★ 특히 봐 줄 곳
+- ★ **차례 밖 경로가 더 남았는지.** 검사 모드가 51묶음 전체에서 오류 없이 통과했지만, 검사가 지나가지 않는 길은 못 잡음. 남은 `persistSoon` 호출은 방 확인 뒤 `gate.held` 한 곳(기억을 바꾸지 않고 저장만).
+- ★ 저장하지 못한 메모를 버리는 선택: 모든 쓰기가 실패하는 방에서 체크포인트 실패·결과 메모(`autoFail`·`autoLast`)가 기억에 남지 않음(알림·배너·결과 복사의 `ui.lastError`에는 남음). 확인 불가(unsure)로 SavePoint 쓰기가 멈춘 방도 같음 — 확인된 뒤에도 그 실행의 `autoLast`는 다시 쓰지 않음.
+- ★ 체크포인트 시작 표시가 이제 별도 쓰기(체크포인트마다 채팅 파일 쓰기 1회 추가, 전에는 `persistSoon`이 나중에 1회). 이 쓰기가 막히면 체크포인트가 시작되지 않음.
+- ★ `state()`가 차례 밖에서 정리된 **사본**을 돌려줄 수 있음: 그 사본을 고쳐도 화면 기억은 안 바뀜. 지금 차례 밖에서 `state()` 결과를 고치는 곳은 없다고 봄(검사 모드가 확인) — 사본을 고친 값이 사라지는 길이 있는지.
+- ★ 메모 차례가 숨김을 맞추지 않게 한 것(`hides: false`): 그 전에는 모든 차례가 숨김 규칙을 맞췄음. 메모 뒤에 숨김이 규칙보다 늦은 채로 남을 수 있음(다음 일반 차례에서 맞춰짐). 처음엔 맞추게 했더니 실패한 저장 뒤의 메모가 숨김을 바꿔서 `run.cjs`의 "실패하면 하이드 그대로" 두 검사가 깨졌음.
+- ★ `reconcileQueued`가 생성 중이면 최대 400×1.5초 기다림. 그동안 `reconcile()`은 `false`라 기록·리와인드가 "원문이 바뀌었어요"로 막힘.
+- ★ `memfile.js`: `unread`를 성공으로 보는 것, 응답 없음 뒤 방을 다시 열 때까지 멈추는 것(다시 여는 처리는 v0.7.0-b). 서버에 비교 후 쓰기가 없어서 읽기~쓰기 사이 다른 기기 쓰기는 못 막음(README 한계 예정, PLAN "두 기기").
+
+바뀐 기대(기존 검사)
+- `checkpoint.test.mjs` "디스크 실패": 실패시키는 쓰기를 1번째 → 2번째로(1번째는 이제 시작 표시). 새 검사: 시작 표시를 못 쓰면 AI 요청 없음·기억 그대로.
+- `hide.test.mjs` "off → manual": `syncHide`가 차례 밖이면 범위를 바로 쓰지 않고 차례 뒤에 씀(기다린 뒤 확인).
+- `provenance.test.mjs`·`record-names.test.mjs` "예전 형식 정리 한 번": 차례 밖 `state()`는 정리한 사본, 화면 기억은 차례 하나 뒤에 정리되고 저장 1회.
+- `loot.test.mjs` 원문 변경 3개: `reconcile()` 대신 `await reconcileNow()`.
+- `autofail.cjs`: 모든 쓰기 실패 → 이제 시작하지 못함 알림(요청 없음, 실패 메모 없음). 새 검사: 시작 표시 뒤 기록 쓰기만 실패 → 실패 메모가 다음 차례에 저장됨(그래서 뒤의 메시지 번호 118 → 138).
+- `room-rule.cjs` 4: 확인 불가 메모(`autoLast: unsure`)가 기억에 들어가지 않고, 실리태번 자체 저장도 그 메모를 쓰지 않음(전에는 둘 다 기대). 읽기 실패 시점을 기록 쓰기 뒤로(`readFailAfterNth = 2`).
+- `save-banner.cjs` 6: 실패시키는 쓰기를 기록 쓰기로(`failNth = 2`).
+- `loot-bar.cjs` 11·12: 못 쓴 실패 이유는 화면(`lootShown`)에만, 기억에는 없음(새 확인 추가).
+- `balanced.cjs`: 예전 형식 기억을 새 객체로 넣고 차례를 기다림, 화면 기억도 정리됐는지 확인 추가.
+- `room-turn.cjs` 4: 기억 없는 방은 이제 기억을 차례에서 만들고(방 확인 뒤) 요청을 보내서 요청이 늦게 나감 → 메시지 고치기를 "AI 응답 뒤, 쓰기가 파일 읽기를 기다리는 동안"에 맞춤(시간 대신 요청 수로 기다림). 기대는 그대로.
+
+검사 준비
+- `mock.js`: `window.__spStrict = true`.
+- 검사가 직접 기억을 고치는 준비 단계에 `__savePoint.adoptPage()` 추가: `checks`, `deadline`, `inject-wait`, `main`, `quests`, `rewind`, `run`, `scroll`, `skins-fix`, `story-time`, `timeline`, `room-rule` 3, `keys`, 그리고 기억을 고친 뒤 `persistSoon`을 직접 부르는 `room-switch-save`, `room-turn`, `save-adopt`, `save-busy`, `save-recheck`.
+- Node 검사 상자: `gate-stub.mjs`에 `roomEpoch`·`reconcileNow`·`checkRunning`·`lootShown`·`lootNotesHere`, `request-flow`·`provenance` 상자에 `noteMem`.
+
+검사와 망가뜨리기 결과
+- Node 504개(새 `memfile.test.mjs` 11개, `checkpoint` 1개 포함), 브라우저 51묶음 전부 통과(검사 모드 켠 채).
+- 새 검사: `memfile.test.mjs` 11개, `checkpoint.test.mjs` 시작 표시 실패, `autofail.cjs` 기록 쓰기만 실패, `hide-manual.cjs` 11(수동으로 다시 바꾸면 새 범위가 차례에 저장, 파일에도), `loot-bar.cjs` 11 추가 확인.
+- 망가뜨리기(커밋 안 함):
+  - `memfile.js` 응답 없음 멈춤 제거 → 합격 10·11 ①·다시 읽기 검사 실패 / 본 것 확인 제거 → 새 파일·두 기기·11 ① 실패 / 읽기 오류를 "없음"으로 → 읽기 실패 검사 실패 / 5xx를 거절로 → 응답 분류 검사 실패.
+  - `noteAuto`를 예전처럼(화면에 바로 + `persistSoon`) → `auto.cjs` 검사 모드 페이지 오류.
+  - `syncHide`가 차례 밖에서 범위를 바로 씀 → `hide-manual.cjs` 11에서 페이지 오류.
+  - `state()`가 차례 밖에서 바로 정리 + `persistSoon` → `balanced.cjs` 페이지 오류.
+
 # v0.6.104 · v0.6.103 리뷰 반영 (P3 1건)
 
 기준: v0.6.103 `724888d`(리뷰 요청 `4982af5`). `index.js`만. 리뷰 결과: 지난 P2 해결, 장소 처리 정상, P1·새 P2 없음.

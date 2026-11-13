@@ -50,7 +50,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         await page.addStyleTag({ content: stCheckbox });
         await ev(() => { M.settings.savePoint.check = false; M.settings.savePoint.hudOpen = true; M.add(8); return __savePoint.handle('run'); });
         await page.waitForTimeout(900);
-        await ev(() => { const st = __savePoint.state(); const sc = st.mem.scenes.at(-1); sc.title = 'A very long scene title that keeps going past the edge of the picture'; sc.where = 'Somewhere far along a long road, then a car, ending at a parking lot by the sea'; $('#sp_wand').trigger('click'); });
+        await ev(() => { const st = __savePoint.state(); const sc = st.mem.scenes.at(-1); sc.title = 'A very long scene title that keeps going past the edge of the picture'; sc.where = 'Somewhere far along a long road, then a car, ending at a parking lot by the sea'; __savePoint.adoptPage(); $('#sp_wand').trigger('click'); });
 
         // 1. quick settings: the checkbox ticks show; the hide mode is there and works
         await ev(() => __savePoint.handle('qs'));
