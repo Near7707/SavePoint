@@ -182,6 +182,54 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r = await ev(() => { const b = document.getElementById('sp_save_banner'); return { shown: !!b && !b.hidden && b.dataset.flash === '1', text: b?.textContent || '' }; });
     ok(!r.text.includes('기록할 메시지 없음'), `4. A방의 빈 체크포인트 배너가 B방에 뜨지 않음 (${r.shown ? r.text.slice(0, 40) : '없음'})`);
 
+    // 5. [v0.7.0-a3, review of v0.7.0-a2 P2] Manual hides: a hidden recorded #0 is edited, a reply starts (#0 shown),
+    //    then 🔶 on #7 is pressed while the edit is still there: its save turn must not hide #0 again.
+    await ev(() => { M.settings.savePoint.hideMode = 'manual'; M.settings.savePoint.hideManualAt = Date.now(); M.settings.savePoint.keepRecent = 4; M.confirm = 1; });
+    await fresh();
+    await ev(() => M.add(22));
+    await ev(() => __savePoint.handle('run'));
+    await wait(1500);
+    await ev(() => __savePoint.handle('hide-now'));
+    await wait(500);
+    const h5 = await hidden();
+    r = await ev(async () => {
+        M.chat[0].mes = 'An edited first message, still edited.'; M.stSave();
+        await SillyTavern.getContext().eventSource.emit('message_edited', 0);
+        await SillyTavern.getContext().eventSource.emit('generation_started', 'normal', {}, false);
+        return M.chat[0].is_system;
+    });
+    ok(h5.startsWith('HHHHHHHH') && r === false, `5. 준비: 수동 하이드 → #0 고치고 생성 시작 → #0 보임 (${h5})`);
+    await ev(() => __savePoint.toggleKeep(7).catch(e => { M.kErr = e.message; }));
+    await wait(800);
+    r = await ev(() => ({ h0: M.chat[0].is_system, f0: M.serverFiles.chatA[1].is_system, last: M.meta.savePoint.lastIndex, err: M.kErr || '' }));
+    ok(r.last === 29 && !r.err, `5. 🔶 저장 차례는 끝남, 기억은 아직 그대로 (#${r.last}${r.err ? ', ' + r.err : ''})`);
+    ok(r.h0 === false && r.f0 === false, `5. 원문이 아직 바뀐 채면 🔶 저장 차례가 #0을 다시 숨기지 않음 (화면 ${r.h0}, 파일 ${r.f0})`);
+    await ev(() => SillyTavern.getContext().eventSource.emit('generation_ended', M.chat.length));
+    await wait(2500);
+    r = await ev(() => ({ h0: M.chat[0].is_system, last: M.meta.savePoint.lastIndex }));
+    ok(r.last < 0 && r.h0 === false, `5. 답변이 끝나면 평소처럼 되감기, #0은 보임 (#${r.last})`);
+    await ev(() => { M.settings.savePoint.hideMode = 'off'; });
+
+    // 6. [v0.7.0-a3, review P3] The tidy-up is shown but its write cannot be confirmed: 한국어 보기 sends no request.
+    await oldRoom();
+    await ev(() => {
+        M.c0 = M.calls.length; M.noAns = true;
+        if (!M.fetchWrapped) {
+            M.fetchWrapped = true;
+            const f = window.fetch;
+            window.fetch = async (u, o) => {
+                if (String(u) === '/api/chats/save' && M.noAns) { M.noAns = false; await f(u, o); throw new TypeError('Failed to fetch'); }
+                return f(u, o);
+            };
+        }
+    });
+    await ev(() => __savePoint.handle('translate'));
+    await wait(1500);
+    r = await ev(() => ({ calls: M.calls.length - M.c0, gate: __savePoint.autoBlocked(), what: M.calls.slice(M.c0).map(p => p.slice(0, 60)).join(' / '), mem: M.meta.savePoint.mem.evidenceVersion }));
+    t = await toasts();
+    ok(r.calls === 0 && !t.includes('만들었어요'), `6. 정리 저장 응답을 확인하지 못하면 번역 요청 없음 (요청 ${r.calls}개, 기억 정리 화면 적용 ${r.mem === 1}, ${r.gate})`);
+    await ev(() => { M.noAns = false; });
+
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();
     process.exit(failures ? 1 : 0);

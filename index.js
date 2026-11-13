@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.7.0-a2';
+const VERSION = '0.7.0-a3';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -202,6 +202,9 @@ async function pageState(what) {
     let why = '';
     try { await tidyNow(); } catch (e) { why = ` · ${errorText(e)}`; }
     if (roomKey() !== key || roomEpoch !== epoch) return null;
+    // v0.7.0-a3 (review P3): a tidy-up shown but its write unconfirmed blocks SavePoint's writes (the turn may end
+    // without an error): no request whose result could not be saved.
+    if (!gateOpen()) { toastr.warning(gateMessage(), 'SavePoint', { timeOut: 10000 }); return null; }
     st = state();
     if (st && st !== own()) { toastr.warning(`기억 정리를 저장하지 못해서 ${what} 시작하지 않았어요${why}`, 'SavePoint', { timeOut: 10000 }); return null; }
     return st;
@@ -1452,6 +1455,7 @@ function manualHidePlan(st, list = chat()) {
 function syncHide({ rehide = false } = {}) {
     // v0.7.0-a1 (review P2-2): while a changed original waits for its turn, the hides follow the memory it will leave.
     const st = liveState(), live = st !== state(), s = settings(), list = chat();
+    const own = state(), sourcePending = !!own && own.lastIndex >= 0 && firstMismatch(own.hashes) >= 0;
     const mode = hideModeOf(s);
     const can = s.enabled && mode !== 'off' && st && !st.review && hasMemory(st.mem);
     let cutoff = can ? hideLimit(st, list) : -1;
@@ -1488,7 +1492,9 @@ function syncHide({ rehide = false } = {}) {
         // v0.7.0-a2 (review P3-1): what was shown only for a changed original still waiting for its turn (live) is hidden
         // again in manual mode when that change is gone (the original put back exactly) and it is still in the range.
         // Only these: a message the user opened themselves is left as it is.
-        if (!live && liveShown.has(m)) {
+        // v0.7.0-a3 (review of v0.7.0-a2, P2): "gone" is checked on the memory itself: inside a save turn liveState()
+        // gives the memory as it is (not live) while the change is still there.
+        if (!live && liveShown.has(m) && !sourcePending) {
             liveShown.delete(m);
             if (can && mode === 'manual' && !mark && !m.is_system && i <= reach) { m.extra ||= {}; m.extra[HIDE_KEY] = 1; setHidden(m, i, true); changed = true; return; }
         }
