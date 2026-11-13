@@ -23,7 +23,9 @@ function harness({ count = 10, lastIndex = 9, keepRecent = 2 } = {}) {
     const ui = {};
     const box = { ...gateBox(), clearInterrupted() {},
         MODULE: 'savePoint', HIDE_KEY, VISIBLE_KEY, HELD_KEY, KEEP_KEY, ui, roomEpoch: 0,
-        clone: structuredClone, roomKey: () => 'room', state: () => meta.savePoint, ctx: () => ({ chatMetadata: meta, swipe: { refresh() {} } }),
+        clone: structuredClone, roomKey: () => 'room', state: () => meta.savePoint,
+        // v0.7.0-a1: no changed original waits for its turn here (the hides follow the room's memory itself).
+        liveState: () => meta.savePoint, ctx: () => ({ chatMetadata: meta, swipe: { refresh() {} } }),
         chat: () => chat, settings: () => settings, num: k => settings[k], hasMemory: mem => !!(mem.scenes.length || mem.records.length),
         $(selector) { const index = Number(selector.match(/mesid="(\d+)"/)[1]); return { attr(k, value) { dom.set(index, value); } }; },
         saveChatSoon() {}, refreshInjection() {}, render() {}, autosave() {}, async quickSave() { return null; }, announceReturns() {},

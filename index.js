@@ -25,7 +25,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.7.0-a';
+const VERSION = '0.7.0-a1';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -180,13 +180,16 @@ function tidyMem(st, mark) {
 }
 const basicTidied = new WeakSet(), tidyViews = new WeakMap();
 let tidyAsked = null;
+// v0.7.0-a1: the tidy-up as one queued change, waited for (a save needs it written before it starts).
+function tidyNow() {
+    return transact(() => { const st = ctx().chatMetadata?.[MODULE]; return st && st.v === 1 && tidyMem(st, true) ? undefined : false; }, { undoable: false, autosave: false });
+}
 function tidyQueued() {
     const id = `${roomKey()}|${roomEpoch}`;
     if (tidyAsked === id) return;
     tidyAsked = id;
     // A memory left untidy by a failed write is tidied again at the next change (state() at its turn).
-    const job = () => transact(() => { const st = ctx().chatMetadata?.[MODULE]; return st && st.v === 1 && tidyMem(st, true) ? undefined : false; }, { undoable: false, autosave: false })
-        .catch(e => console.warn('[SavePoint] memory tidy-up not saved', e?.message || e));
+    const job = () => tidyNow().catch(e => console.warn('[SavePoint] memory tidy-up not saved', e?.message || e));
     Promise.resolve().then(job).finally(() => { if (tidyAsked === id) tidyAsked = null; });
 }
 const storyTimesChecked = new WeakSet();
@@ -538,10 +541,14 @@ async function transact(change, { undoable = false, undoKind = '', autosave: doA
 // A note that cannot be written (the room is blocked, the write failed) is left out (console only): what it noted
 // is shown again by the next one, as with a failed write before.
 // `hides`: also bring the hide flags in line at that turn (the manual range needs it; a note does not).
-function noteMem(change, why = 'note', { hides = false } = {}) {
+// v0.7.0-a1 (review P1): `room` ({ key, epoch }): the room the note is about. Asked after a room change, it is left
+// out: the same memory line can be in a branched room, so the line alone does not say the room.
+function noteMem(change, why = 'note', { hides = false, room = null } = {}) {
     if (!hasChat()) return Promise.resolve(false);
+    if (room && (room.key !== roomKey() || room.epoch !== roomEpoch)) return Promise.resolve(false);
+    // v0.7.0-a1: resolves to null when the note could not be written (false: nothing to change; else written).
     return transact(() => { const st = state(); return st ? change(st) : false; }, { undoable: false, autosave: false, hides })
-        .catch(e => { console.warn(`[SavePoint] ${why} not saved`, e?.message || e); return false; });
+        .catch(e => { console.warn(`[SavePoint] ${why} not saved`, e?.message || e); return null; });
 }
 // v0.6.44: changes are written in order, one room queue at a time.
 // v0.6.59: a change waiting in the queue is applied only at its turn. When a write fails, that change is
@@ -1429,7 +1436,8 @@ function manualHidePlan(st, list = chat()) {
 // `rehide`: true for a save (in manual mode it no longer rescans: the range is the button's), 'button'
 // for the 👻 button (rescans the range, like a save in auto mode).
 function syncHide({ rehide = false } = {}) {
-    const st = state(), s = settings(), list = chat();
+    // v0.7.0-a1 (review P2-2): while a changed original waits for its turn, the hides follow the memory it will leave.
+    const st = liveState(), live = st !== state(), s = settings(), list = chat();
     const mode = hideModeOf(s);
     const can = s.enabled && mode !== 'off' && st && !st.review && hasMemory(st.mem);
     let cutoff = can ? hideLimit(st, list) : -1;
@@ -1438,7 +1446,7 @@ function syncHide({ rehide = false } = {}) {
         // v0.7.0-a (plan P2-3): the range is memory: changed only at a turn of the room's queue (inApply). Found
         // anywhere else, this pass uses the new range and a queued change writes it.
         const m = manualRange(st, s, list, can);
-        if (m.changed) { if (inApply) { st.hideManual = m.h; changed = true; } else manualQueued(); }
+        if (m.changed) { if (inApply) { st.hideManual = m.h; changed = true; } else if (!live) manualQueued(); }
         if (can) {
             reach = Math.min(m.h.to, st.lastIndex);
             cutoff = Math.min(cutoff, reach);
@@ -1548,6 +1556,24 @@ function reconcile() {
     reconcileQueued();
     return false;
 }
+// v0.7.0-a1 (review P2-2): what the queued change above will leave, worked out now on a copy (nothing on the page
+// changes): the memory rolled back from the changed message, or put under review. The briefing and the hides use it
+// while the change waits (a reply being made, an earlier write), as they did when the change was made at once
+// (v0.6.104). At a turn of the queue (inApply) and with nothing changed, it is the room's memory itself.
+const liveViews = new WeakMap();
+function liveState() {
+    const st = state();
+    if (!st || inApply || st.review || st.lastIndex < 0) return st;
+    const k = firstMismatch(st.hashes);
+    if (k < 0) return st;
+    const cached = liveViews.get(st);
+    if (cached && cached.k === k && cached.mem === st.mem && cached.rev === st.rev) return cached.view;
+    const view = clone(st);
+    if (rollbackFrom(view, k)) view.hashes = view.hashes.slice(0, view.lastIndex + 1);
+    else view.review = { at: k };
+    liveViews.set(st, { k, mem: st.mem, rev: st.rev, view });
+    return view;
+}
 let reconcileJob = null;
 function reconcileQueued() {
     const id = `${roomKey()}|${roomEpoch}`;
@@ -1647,7 +1673,8 @@ function startNeedJob(st, { outline, points }) {
     needJob.timer = setTimeout(step, 0);
 }
 function refreshInjection() {
-    const st = state(), s = settings();
+    // v0.7.0-a1 (review P2-2): a reply started while a changed original waits for its turn gets the memory it will leave.
+    const st = liveState(), s = settings();
     let text = '';
     ui.inj = null;
     if (s.enabled && st && hasChat() && !st.review && hasMemory(st.mem)) {
@@ -1906,7 +1933,8 @@ function assertValid(run, upTo) {
 // still on, the memory is the one the result was worked out from, and the messages it read are unchanged
 // (a message edited while the write waited for its file check is not recorded from its old text).
 function assertStill(run, upTo, base) {
-    const ok = !run.cancelled && run.key === roomKey() && run.epoch === roomEpoch && state() === run.st && run.st.mem === base &&
+    // v0.7.0-a1 (review P2-1): the run's memory must be the page's own (never a tidied copy read through state()).
+    const ok = !run.cancelled && run.key === roomKey() && run.epoch === roomEpoch && state() === run.st && run.st === ctx().chatMetadata?.[MODULE] && run.st.mem === base &&
         !run.st.review && firstMismatch(run.hashes.slice(0, upTo + 1)) === -1;
     if (!ok) { run.cancelled = true; throw new Cancelled('기록하는 사이 대화나 기억이 바뀌어서 이 구간은 저장하지 않았어요. 다시 세이브해 주세요.'); }
     return true;
@@ -2007,7 +2035,7 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
 // checkpoint or a quick save; a partial save keeps the part that is still unrecorded.
 const FAIL_STAGE = { boundary: '장면 경계 확인', collect: '장면 기록', save: '채팅 파일 저장' };
 const isTry = l => /^(첫 요청|재요청):/.test(l);
-function recordAutoFail(st, { stage, from, to, error, tries = [], detail = [], failureId, requestRecord = null }) {
+function recordAutoFail(st, { stage, from, to, error, tries = [], detail = [], failureId, requestRecord = null, room = null }) {
     const cut = l => String(l).slice(0, 300);
     // The record keeps what happened then (the failed request and the range left unsaved);
     // what still needs saving is worked out when it is shown, never by rewriting these numbers.
@@ -2018,8 +2046,9 @@ function recordAutoFail(st, { stage, from, to, error, tries = [], detail = [], f
         failureId, requestNotSent: !requestRecord && error?.name === 'InputLimitError',
         requestLines: requestLines(requestRecord).map(cut), requestOk: requestRecord?.status === 'received',
         attempts: tries.length, tries: tries.map(cut), detail: groupErrors(detail).slice(0, 40).map(cut) };
+    if (room && (room.key !== roomKey() || room.epoch !== roomEpoch)) return Promise.resolve(false);
     toastr.warning(`체크포인트 실패 (#${from}–#${to}) · 해당 구간 원문 유지`, 'SavePoint');
-    return noteMem(cur => { if ((cur.line ?? null) !== (line ?? null)) return false; cur.autoFail = autoFail; }, 'checkpoint failure');
+    return noteMem(cur => { if ((cur.line ?? null) !== (line ?? null)) return false; cur.autoFail = autoFail; }, 'checkpoint failure', { room });
 }
 function settleAutoFail(st) {
     const f = st.autoFail;
@@ -2178,14 +2207,21 @@ async function supplementLoot(run, items, undoPoint = checkpoint(run.st)) {
 async function summarize({ close = false, auto = false } = {}) {
     if (ui.run) { toastr.info('이미 기록 중이에요.'); return; }
     if (!hasChat()) { toastr.warning('채팅방을 먼저 열어 주세요.'); return; }
+    // v0.7.0-a1 (review P1): the save belongs to the room it was pressed in. Each wait below (room check, queue, a
+    // source change, the start mark) can outlast a room change; then it stops there, with nothing read or sent from the
+    // other room (the run itself checks its room from newRun on).
+    const key = roomKey(), epoch = roomEpoch;
+    const here = () => roomKey() === key && roomEpoch === epoch;
     // v0.6.58: before any AI call, the room must be confirmed against its chat file.
-    if (!gateOpen() && !(await roomReady())) { if (!auto) toastr.warning(gateMessage(), 'SavePoint', { timeOut: 10000 }); return; }
-    if (!(await queueIdle())) return;
+    if (!gateOpen() && !(await roomReady())) { if (here() && !auto) toastr.warning(gateMessage(), 'SavePoint', { timeOut: 10000 }); return; }
+    if (!(await queueIdle()) || !here()) return;
     if (!gateOpen()) { if (!auto) toastr.warning(gateMessage(), 'SavePoint', { timeOut: 10000 }); return; }
     if (ui.run) { toastr.info('이미 기록 중이에요.'); return; }
     if (ui.edit) { toastr.warning('편집 중인 항목을 먼저 저장하거나 취소해 주세요.'); return; }
     if (!settings().profileId && mainBusy()) { toastr.info('본편 생성이 끝난 뒤 눌러 주세요. (연결 프로필을 고르면 생성 중에도 세이브할 수 있어요.)'); return; }
-    if (!(await reconcileNow())) { render(); toastr.warning('예전 원문이 바뀌었어요. 창 위쪽 안내에서 먼저 처리해 주세요.'); return; }
+    const fixed = await reconcileNow();
+    if (!here()) return;
+    if (!fixed) { render(); toastr.warning('예전 원문이 바뀌었어요. 창 위쪽 안내에서 먼저 처리해 주세요.'); return; }
     // v0.7.0-a (plan P2-3): a new room's memory is made, and a checkpoint's attempt marked (autoMark·autoHold·
     // autoAttemptAt), at a turn of the room's queue. A checkpoint writes its mark there; a new room's memory is only
     // made on the page (written with the first result, as before). A manual save's mark is noted when it ends short
@@ -2202,12 +2238,29 @@ async function summarize({ close = false, auto = false } = {}) {
         else if (e instanceof RoomBlocked) console.warn('[SavePoint] checkpoint not started', e?.message || e);
         // The start mark could not be written (the chat file write failed): no request is sent; said each time, as a
         // failed checkpoint was before.
-        else toastr.warning(`체크포인트를 시작하지 못했어요 · ${errorText(e)} · 다음 간격에 다시 시도해요`, 'SavePoint');
+        else if (here()) toastr.warning(`체크포인트를 시작하지 못했어요 · ${errorText(e)} · 다음 간격에 다시 시도해요`, 'SavePoint');
         return;
     }
+    if (!here()) return;
     if (ui.run) { toastr.info('이미 기록 중이에요.'); return; }
-    const st = state();
+    let st = state();
     if (!st) return;
+    // v0.7.0-a1 (review P2-1): an old-format memory is read through a tidied copy until its tidy-up is written. A save
+    // works on the page's memory itself (its writes change `st`), so the tidy-up is written first; if it cannot be,
+    // nothing is asked (a save made on the copy would say "saved" while the page kept the old memory).
+    if (st !== ctx().chatMetadata?.[MODULE]) {
+        let why = '';
+        try { await tidyNow(); } catch (e) { why = ` · ${errorText(e)}`; }
+        if (!here()) return;
+        if (ui.run) { toastr.info('이미 기록 중이에요.'); return; }
+        st = state();
+        if (!st) return;
+        if (st !== ctx().chatMetadata?.[MODULE]) {
+            const text = `기억 정리를 저장하지 못해서 ${auto ? '체크포인트' : '세이브'}를 시작하지 않았어요${why}`;
+            if (auto) console.warn('[SavePoint]', text); else toastr.warning(text, 'SavePoint', { timeOut: 10000 });
+            return;
+        }
+    }
     const latest = chat().length - 1;
     const start = st.lastIndex + 1;
     const pending = collect(start, latest);
@@ -2220,7 +2273,7 @@ async function summarize({ close = false, auto = false } = {}) {
     if (auto) {
         if (!msgs.length && !queued.length) {
             const result = `체크포인트 · 기록할 메시지 없음 · 최근 ${held}개 여유분`;
-            await noteAuto(st, result, { end: latest, status: 'empty' });
+            await noteAuto(st, result, { end: latest, status: 'empty', room: { key, epoch } });
             flashSaveBanner(result, { tone: 'info' });
             return;
         }
@@ -2307,11 +2360,13 @@ async function summarize({ close = false, auto = false } = {}) {
         run.news = done ? saveNews(st, run.id, qn) : '';
         run.goto = qn?.found ? 'main-quests' : run.news ? 'main-changes' : '';
         if (done) run.doneText = `${close ? '저장 완료 · 장면 닫음' : '저장 완료'}${st.lastIndex >= run.from ? ` · #${run.from}–#${st.lastIndex}` : ''}`;
+        // v0.7.0-a1 (review P2-3): the receipt of the memory this save wrote, before any note after it.
+        run.wid = st.wid;
         if (auto) {
             const extra = lootFailed ? ` · 루팅 ${lootFailed}개 반영 실패` : '';
             const result = msgs.length ? `체크포인트 완료 · #${start}–#${st.lastIndex} 기록 · 최근 ${held}개 여유분${extra}`
                 : `체크포인트 · 루팅 ${supplement.saved}구간 보충 · 최근 ${held}개 여유분${extra}`;
-            await noteAuto(st, result, { end: latest, status: lootFailed ? 'partial' : done ? 'saved' : 'empty' });
+            await noteAuto(st, result, { end: latest, status: lootFailed ? 'partial' : done ? 'saved' : 'empty', room: run });
             run.notice = { text: result, tone: lootFailed ? 'warning' : done ? 'success' : 'info' };
         }
         clearInterrupted(run.key);
@@ -2344,12 +2399,12 @@ async function summarize({ close = false, auto = false } = {}) {
             if (cur) {
                 const cancelled = e instanceof Cancelled;
                 const detail = Array.isArray(e.detail) ? e.detail : [];
-                if (!cancelled && !unconfirmed) await recordAutoFail(cur, { stage, from: msgs[cursor]?.index ?? start, to: end, error: e, failureId, requestRecord: run.requestRecord,
+                if (!cancelled && !unconfirmed) await recordAutoFail(cur, { stage, from: msgs[cursor]?.index ?? start, to: end, error: e, failureId, requestRecord: run.requestRecord, room: run,
                     tries: detail.filter(isTry), detail: detail.filter(x => !isTry(x)) });
                 const result = unconfirmed ? '체크포인트 저장 확인 못함 · 확인될 때까지 자동 저장 멈춤' : cursor ? `체크포인트 일부 저장 · #${start}–#${cur.lastIndex} 완료 · #${cur.lastIndex + 1}부터 다음에 다시`
                     : cancelled ? '체크포인트 취소 · 원문 유지 · 다음 간격에 다시'
                     : '체크포인트 실패 · 원문 유지';
-                await noteAuto(cur, result, { end: latest, status: unconfirmed ? 'unsure' : cursor ? 'partial' : cancelled ? 'cancelled' : 'failed' });
+                await noteAuto(cur, result, { end: latest, status: unconfirmed ? 'unsure' : cursor ? 'partial' : cancelled ? 'cancelled' : 'failed', room: run });
                 run.notice = { text: result, tone: 'warning' };
             }
         }
@@ -2366,12 +2421,15 @@ async function summarize({ close = false, auto = false } = {}) {
         // v0.7.0-a: a manual save that pressed but ended before the last message still counts as an attempt (autoMark).
         // Not after a failed chat file write: the next write would only add to it (the attempt is said by its error).
         if (!auto && !writeFailed && run.key === roomKey() && run.epoch === roomEpoch && (msgs.length || queued.length))
-            await noteMem(cur => { if ((cur.line ?? null) !== (st.line ?? null) || cur.lastIndex >= latest || (cur.autoMark ?? -1) >= latest) return false; cur.autoMark = latest; cur.autoHold = null; }, 'save attempt');
+            await noteMem(cur => { if ((cur.line ?? null) !== (st.line ?? null) || cur.lastIndex >= latest || (cur.autoMark ?? -1) >= latest) return false; cur.autoMark = latest; cur.autoHold = null; }, 'save attempt', { room: run });
         if (lootFailed && run.key === roomKey() && state()) toastr.warning(`⚠ 루팅한 내용 ${lootFailed}개가 반영되지 않았어요.${lootFailNote(state())} 다음 세이브 때 다시 시도해요. 자세한 이유는 ⏳ 대기열에서 볼 수 있어요.`, 'SavePoint', { timeOut: 10000 });
         endRun(run);
-        if (done && run.key === roomKey()) { autosave(state()); if (state() === st) { queueCheck(st, memBefore, { auto }); announceReturns(st); } }
+        // v0.7.0-a1 (review P2-3): "the memory this save wrote" is told by its write receipt (wid), not by the object: a
+        // note after it that failed puts back a copy of the same written memory (restoreEntry).
+        const now = state(), same = !!now && (now === st || (!!run.wid && now.wid === run.wid && (now.line ?? null) === (st.line ?? null)));
+        if (done && run.key === roomKey()) { autosave(now); if (same) { queueCheck(now, memBefore, { auto }); announceReturns(now); } }
         // A partial, failed or cancelled run keeps the previous QUICK; what it saved is in AUTO.
-        if (complete && !auto && run.key === roomKey() && state() === st) await quickSaveChecked(st).catch(reportError);
+        if (complete && !auto && run.key === roomKey() && same) await quickSaveChecked(now).catch(reportError);
     }
 }
 
@@ -2410,13 +2468,14 @@ function scheduleAuto(delay = 1200) {
 }
 // v0.7.0-a (plan P2-3): written at its turn in the room's queue, on the memory there then (`st` only says which
 // memory the run was about: a memory replaced meanwhile — a load, a reset — gets no note).
-function noteAuto(st, result, { moveMark = true, end = chat().length - 1, status = '' } = {}) {
+// v0.7.0-a1 (review P1): `room` — the run's room ({ key, epoch }); after a room change nothing is noted.
+function noteAuto(st, result, { moveMark = true, end = chat().length - 1, status = '', room = null } = {}) {
     const line = st?.line, at = Date.now();
     return noteMem(cur => {
         if ((cur.line ?? null) !== (line ?? null)) return false;
         cur.autoLast = { at, result, status };
         if (moveMark) cur.autoMark = end;
-    }, 'checkpoint result');
+    }, 'checkpoint result', { room });
 }
 async function autoCollect() {
     if (autoBlocked()) return;
@@ -2611,7 +2670,12 @@ async function runCheck(st, scope, { auto = false } = {}) {
         const written = result && state() === st ? put(result) : null;
         if (ui.checkRun?.key === roomKey() && ui.checkRun?.epoch === roomEpoch) ui.checkRun = null;
         endRun(run);
-        if (written) await written;
+        // v0.7.0-a1 (review P2-3): a result that could not be written is not in the memory: what is shown says so
+        // (on screen only, in this room) instead of showing the earlier result as if it were this one.
+        if (written && (await written) === null && run.key === roomKey() && run.epoch === roomEpoch) {
+            ui.checkUnsaved = { key: run.key, epoch: run.epoch, line, at: result.at, status: result.status, open: result.issues.filter(x => !x.ignored && !x.fixed).length, scope };
+            toastr.warning('기록 확인은 끝났지만 결과를 저장하지 못했어요. 다시 확인해 주세요.', 'SavePoint', { timeOut: 10000 });
+        } else if (written && ui.checkUnsaved?.key === run.key) ui.checkUnsaved = null;
         render();
     }
 }
@@ -2736,7 +2800,17 @@ function autoFailHtml(st) {
     if (!f) return '';
     return `<details class="sp-err" data-group="hud-autofail" ${ui.savesOpen.get('hud-autofail') ? 'open' : ''}><summary>⚠ 체크포인트 실패 · 남은 범위 #${autoFailRemaining(st, f).from}–#${f.to} · ${new Date(f.at).toLocaleTimeString()} — 자세히</summary><ul class="sp-scroll">${autoFailLines(f, st).map(l => `<li>${esc(l)}</li>`).join('')}<li class="sp-dim">해당 구간 원문은 그대로예요. 다음 체크포인트나 퀵세이브로 이 구간이 저장되면 이 기록이 사라져요.</li></ul></details>`;
 }
+// v0.7.0-a1 (review P2-3): the last check of this room whose result could not be written, newer than the one kept.
+function checkUnsavedHere(st) {
+    const u = ui.checkUnsaved;
+    return u && st && u.key === roomKey() && u.epoch === roomEpoch && (u.line ?? null) === (st.line ?? null) && !(st.check?.at >= u.at) ? u : null;
+}
 function checkHtml(st) {
+    const u = checkUnsavedHere(st);
+    if (u && settings().check && !checkRunning()) {
+        const what = u.status === 'failed' ? '검토 실패' : u.open ? `확인 필요 ${u.open}건` : '문제 없음';
+        return `<div class="sp-hud-meta"><span class="sp-warn">기록 확인 결과를 저장하지 못했어요 (${what}) · 기록은 저장됨 · ${new Date(u.at).toLocaleTimeString()}</span>${btn('check-rerun', '', '다시 확인')}</div>`;
+    }
     const c = st?.check;
     if (!c || !settings().check) return '';
     const at = new Date(c.at).toLocaleTimeString();
@@ -4919,7 +4993,7 @@ async function handle(act, id) {
         case 'keep-go': return goToMessage(Number(id));
         case 'keep-off': return chat()[Number(id)] && kept(chat()[Number(id)]) ? toggleKeep(Number(id)) : render(true);
         case 'keep-off-all': return keepOffAll();
-        case 'check-rerun': return st?.check?.scope ? runCheck(st, st.check.scope) : undefined;
+        case 'check-rerun': { const scope = checkUnsavedHere(st)?.scope || st?.check?.scope; return scope ? runCheck(st, scope) : undefined; }
         case 'key-toggle': return commitEdit(m => {
             const { p } = findPoint(m, id);
             if (!p) return false;
@@ -5437,7 +5511,9 @@ function onGenerationStarted(type, options, dryRun) {
     mainGenerating = true;
     if (ui.run?.viaMain) cancelRun();
     // Recall depends on the newest message, so rebuild right before the prompt is assembled.
-    if (gateOpen()) reconcile();
+    // v0.7.0-a1 (review P2-2): a changed original found now waits for the reply; this reply already gets the hides
+    // and the briefing that change will leave (liveState).
+    if (gateOpen() && !reconcile()) syncHide();
     refreshInjection();
 }
 function onGenerationEnded() { mainGenerating = false; render(); scheduleAuto(); }

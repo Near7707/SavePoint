@@ -201,6 +201,45 @@ test('the upload answer: only SillyTavern\'s own success is ok; only a refusal b
     for (const s of [408, 500, 502, 503, 504, 0]) assert.equal(classifyUpload(s, null), PENDING);
 });
 
+// v0.7.0-a1 (review P3): a success names the file asked for; only answers that say nothing was written are refusals.
+test('the upload answer (a1): a success must name the file; a proxy\'s 499/409/429 is no answer, not a refusal', () => {
+    assert.equal(classifyUpload(200, { path: 'user/files/' + NAME }, NAME), MEM_OK);
+    assert.equal(classifyUpload(200, { path: 'user\\files\\' + NAME }, NAME), MEM_OK);
+    assert.equal(classifyUpload(200, { path: 'user/files/other.json' }, NAME), PENDING);
+    assert.equal(classifyUpload(200, { path: 'user/files/x' + NAME }, NAME), PENDING);
+    assert.equal(classifyUpload(204, { path: 'user/files/' + NAME }, NAME), MEM_OK);
+    for (const s of [400, 401, 403, 404, 405, 413, 415]) assert.equal(classifyUpload(s, null, NAME), REFUSED);
+    for (const s of [402, 409, 410, 422, 425, 429, 451, 499]) assert.equal(classifyUpload(s, null, NAME), PENDING, String(s));
+});
+
+// The review's order: a proxy answers 499 while the first request goes on behind it; the next write of the line must
+// not be sent (it would land first and be overwritten by the first one).
+test('a1: a 499 answer whose request lands later never overwrites the next write of the line', async () => {
+    const store = new Map([[NAME, JSON.stringify(first())]]), late = [];
+    let calls = 0;
+    const fetchFn = async (url, opt) => {
+        if (url === '/api/files/upload') {
+            calls++;
+            const { name, data } = JSON.parse(opt.body);
+            const text = Buffer.from(data, 'base64').toString('utf8');
+            if (calls === 1) { late.push(() => store.set(name, text)); return { status: 499, json: async () => null }; }
+            store.set(name, text);
+            return { status: 200, json: async () => ({ path: 'user/files/' + name }) };
+        }
+        const name = decodeURIComponent(String(url).split('?')[0].split('/').pop());
+        return store.has(name) ? { status: 200, text: async () => store.get(name) } : { status: 404, text: async () => 'Not found' };
+    };
+    const io = serverMemIO(fetchFn);
+    const line = memLine({ rev: 0, wid: 'w0' });
+    const r1 = await writeMem(io, line, { name: NAME, valid, make: next('first try') });
+    assert.equal(r1.status, PENDING);
+    const r2 = await writeMem(io, line, { name: NAME, valid, make: next('second') });
+    assert.equal(r2.status, PENDING);
+    assert.equal(calls, 1, 'the second write was not sent');
+    late.shift()();
+    assert.equal(JSON.parse(store.get(NAME)).state.mem.note, 'first try');
+});
+
 test('serverMemIO: a thrown or timed-out request is no answer; reads keep the four kinds', async () => {
     const io = serverMemIO(async () => { throw new TypeError('network'); });
     assert.equal((await io.upload(NAME, '{}')).kind, PENDING);

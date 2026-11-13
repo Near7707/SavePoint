@@ -9,8 +9,9 @@
 //    (wid), or "no file" when none was seen. Anything else (another device wrote, the file is gone) → nothing is
 //    written and the line stops ('conflict'). A file that cannot be read (error, broken) → nothing is written.
 // 3. The next body is made from the file just read (rev + 1, a new receipt) and sent.
-//    - Refused before anything was written (a 4xx other than 408) → 'refused': the caller may take its change back.
-//    - No answer (the connection dropped, a timeout, a gateway's 408/5xx, a 200 that is not SillyTavern's answer)
+//    - Refused before anything was written (400, 401, 403, 404, 405, 413, 415) → 'refused': the caller may take its change back.
+//    - No answer (the connection dropped, a timeout, any other 4xx such as a gateway's 408/499, a 5xx, a 200 that is
+//      not SillyTavern's answer for this file)
 //      → 'pending': may still land; the line stops.
 // 4. Read back: our receipt → 'ok' (this becomes what the line last saw). Another receipt → 'overwritten' (another
 //    device wrote right after us; the line stops). Unreadable → 'unread': the server said it was written, so it is
@@ -34,12 +35,18 @@ export function seenOf(res) {
 }
 const sameSeen = (res, seen) => !!seen && (seen.missing ? res.kind === MISSING : res.kind === OK && canWrite(res.data, seen));
 
-// The upload's answer: 'ok' only for SillyTavern's own success ({ path }); a refusal only when the server answered
-// that it did not take the request (4xx but 408); everything else may still be on its way into the file.
-export function classifyUpload(status, body) {
-    if (status >= 200 && status <= 299) return body && typeof body === 'object' && typeof body.path === 'string' ? MEM_OK : PENDING;
-    if (status >= 400 && status <= 499 && status !== 408) return REFUSED;
-    return PENDING;
+// The upload's answer: 'ok' only for SillyTavern's own success ({ path } naming the file asked for); a refusal only
+// when the answer says the request was turned away before anything was written (a bad request, not allowed, no such
+// route, too large); everything else (another 4xx such as a proxy's 499 or 409, a 408, a 5xx, no answer) may still be
+// on its way into the file.
+// v0.7.0-a1 (review P3): before, any 2xx with a path was a success and every 4xx but 408 a refusal.
+const REFUSED_BEFORE_WRITE = new Set([400, 401, 403, 404, 405, 413, 415]);
+export function classifyUpload(status, body, name = null) {
+    if (status >= 200 && status <= 299) {
+        const path = body && typeof body === 'object' && typeof body.path === 'string' ? body.path.replace(/\\/g, '/') : null;
+        return path !== null && (name === null || path === name || path.endsWith('/' + name)) ? MEM_OK : PENDING;
+    }
+    return REFUSED_BEFORE_WRITE.has(status) ? REFUSED : PENDING;
 }
 function toBase64(text) {
     const bytes = new TextEncoder().encode(text);
@@ -58,7 +65,7 @@ export function serverMemIO(fetchFn, headers = () => ({}), { timeout = 30000 } =
                 const r = await fetchFn('/api/files/upload', { method: 'POST', headers: headers(), body: JSON.stringify({ name, data: toBase64(text) }), signal: ac?.signal });
                 let body = null;
                 try { body = await r.json(); } catch { /* not json */ }
-                return { kind: classifyUpload(r.status, body), status: r.status };
+                return { kind: classifyUpload(r.status, body, name), status: r.status };
             } catch { return { kind: PENDING, status: 0 }; }
             finally { if (timer) clearTimeout(timer); }
         },
