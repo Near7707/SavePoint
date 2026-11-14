@@ -1,3 +1,42 @@
+# v0.7.0-b1d · v0.7.0-b1c 코드 리뷰 반영 (브랜치 `v0.7-b`)
+
+기준: `v0.7-b`의 `3002b35`(b1c 리뷰 요청서, 코드는 `fff7a33`). 파일: `index.js`, 검사, 문서. 리뷰 결과 P1 3 · P2 2 · P3 1. 모든 항목을 코드로 확인했고 전부 반영했어요(재현은 새 검사 30~36).
+
+| 리뷰 항목 | 처리 |
+|---|---|
+| P1-1 (전역 `sendGuard`: A방 저장의 `finally`가 B방 검사를 지움 → B 재전송이 검사 없이 수정된 원문을 숨김) | 🔴 전역 변수를 없애고 검사 함수를 `persist(fileMeta, guard)` → `writeChatFile(fileMeta, guard)`로 넘김. 각 저장이 자기 검사만 씀. |
+| P1-2 (`freeHome()` 뒤 미룬 재확인이 다른 기기 리셋을 연결 → `homeStill()`이 지금 연결된 기억과 비교해 통과 → 옛 기억 기준 하이드 저장) | 🔴 하이드를 만든 저장의 영수증 기준(리뷰의 첫 방법, 재확인을 미루는 것보다 범위가 작음). `homeWrite` 직후(`freeHome` 전) 이 저장이 쓴 기억 `{ box, id, rev, wid }`(`mine`)를 적어 두고 `homeStill(mine)`: 서버 기억 파일이 그 영수증이 아니면 쓰지 않음. 파일이 지금 연결된 기억(재확인 결과)과는 맞으면 방은 멈추지 않고 `relinked`("그사이 이 방의 기억을 다시 확인해서 이번 원문 숨김은 저장하지 않았어요"). 다른 id로 연결됐어도 `relinked`. |
+| P1-3 (이름 변경 기록이 삭제나 20개 한도로 지워지면 `left`도 사라져 사본이 원본 이름표를 연결) | 🔴 "이 이름을 떠났다"는 사실을 따로 보관(`settings().leftNames`, `leftSeen()`, 최대 200). 이름 변경을 따라가고(`to`), 그 방이 원래 이름으로 돌아오면(`to === from`) 지움. 목적지 채팅 삭제는 따라가기만 멈춤(`gone`). 이 기기에서 그 이름의 새 방이 기억을 만들면(`firstWrite` 성공) `clearLeft`. `homeInput`의 `left`는 기존 기록 → 없으면 이 목록. 서버가 이름을 정리한 경우(열린 방 = 정리된 이름)에는 그 이름으로 따라감. |
+| P2-1 (재전송 성공 뒤에도 `entry.verify`가 첫 사본과 비교 → '저장 확인 못함') | 🟡 `writeChatFile`이 마지막으로 성공 응답을 받은 사본(`sentSnap`)을 돌려주고, `writeEntry`는 그것을 `written`으로. 실패 판정(`settleWrite`)은 원래대로 `written` + `e.sents`(보낸 사본 전부)로 구별. |
+| P2-2 (`dropStaleHides`가 메시지의 표시 전체를 되돌려 🔶까지 다시 켬) | 🟡 `restoreEntry(entry, { hideOnly })`: 숨김과 그에 딸린 표시(`is_system`·HIDE·VISIBLE·HELD)만 되돌리고 🔶(KEEP, 메시지와 스와이프)는 그대로. `dropStaleHides`만 `hideOnly`. |
+| P3 (새 숨김을 전부 되돌려도 `changedMarks()`가 `entry.after`를 읽어 POST) | `changedMarks`: 이번 변경이 남긴 값이 지금도 그대로인 표시만 셈(되돌린 표시·그사이 바뀐 표시는 뺌). 재전송 검사가 하이드를 되돌리면 `marks`도 다시 셈(실패 판정용). |
+
+바뀐 것
+1. `writeChatFile(fileMeta, guard)`: 전역 `sendGuard` 삭제, 요청 직전 `guard()`, 성공 사본을 돌려줌(P1-1·P2-1). `persist(fileMeta, guard)`.
+2. `writeEntry`: `mine`(P1-2), `guard`가 `marks`를 다시 셈(P3), `written = last`(P2-1).
+3. `homeStill(mine)`: `relinked`(P1-2). `guardedSave`는 그대로 `homeStill()`.
+4. `leftSeen`·`clearLeft`, `onChatRenamed`·`onChatDeleted`·`homeInput`·`firstWrite`(P1-3).
+5. `restoreEntry`·`restoreMarks`의 `hideOnly`, `dropStaleHides`(P2-2). `changedMarks`(P3).
+6. 검사 상자: `gate-stub.mjs`에서 `sendGuard` 기본값 뺌. 버전 `0.7.0-b1d`.
+
+★ 특히 봐 줄 곳
+- ★ P1-2 `relinked`에서 방을 멈추지 않는 판단: 파일이 재확인이 연결한 기억과 같으면 그 방은 정상이고, 이번 변경의 숨김만 옛 기억에 기대고 있음. 화면 표시는 `restoreMarks`로 되돌리고(기억은 지금 것 그대로), 재확인의 `roomOpened()`가 새 기억 기준으로 맞춤.
+- ★ P1-3 `leftNames`는 `firstWrite` 성공과 "돌아옴"으로만 지워짐. 이 기기에서 이름을 떠난 방의 옛 이름에 다른 기기가 만든 방(같은 이름)은 계속 보류로 끝남(전보다 오래 — 20개 → 200개, 삭제로도 안 지워짐). 덜 알아보는 쪽.
+- ★ P1-3 20개 밖으로 밀린 경우 원래 방(새 이름)도 이름 변경 증거가 없어 보류(검사 33에서 확인, 예전과 같음). 원본 기억을 사본이 쓰는 일만 막음.
+- ★ P3 `changedMarks` 규칙 변경: 그사이 사용자가 직접 바꾼 표시도 이제 "이번 변경이 보낸 표시"에서 빠짐(`settleWrite`의 `marksInFile` 판정). 파일에는 지금 값이 들어가므로 맞는 쪽이라고 봤어요.
+
+바뀐 기대(기존 검사)
+- 없음.
+
+검사 준비
+- `home-link.cjs` 30~36. 30: fresh29에서 🔶 켜기(숨긴 메시지)의 채팅 POST를 붙잡아 두고 b30을 열어 `run`, b30의 첫 POST에서 `setChatSaving(true)` + 숨긴 #0 수정 + fresh29 놓아줌 → b30 재전송. 31: 기억 업로드 때 `home-recheck`, 다시 읽기 뒤 다른 기기 리셋(`lastIndex -1`, `other31`)을 넣고 그다음 기억 읽기(`homeStill`)를 1.5초 늦춤, 모든 채팅 POST 기록. 32: p32 → q32, 사본을 p32로 가져오고 q32 삭제, p32 열기. 33: p33 → q33 뒤 관계없는 이름 변경 21건, 사본을 p33로 가져와 열기. 34: 23과 같은 재전송, 토스트에 "확인하지 못" 없음 + 다음 저장. 35: 숨긴 메시지에 🔶 켬 → 끔(같은 변경이 숨김), 기억 업로드 뒤 채팅 읽기에서 #0 수정 + `M.stSave()`. 36: 22와 같은 수정에서 SavePoint 채팅 저장 횟수.
+
+검사와 망가뜨리기 결과
+- `home-link.cjs` 1~36 모두 통과. 고치기 전 코드(`fff7a33`)에선 30~36 실패(7줄, 리뷰가 말한 그대로).
+- 망가뜨리기: `guard`를 안 넘김 → 23·30 실패. `homeStill()`(영수증 없이) → 31 실패. `leftSeen` 조회 제거 → 32·33 실패. `written = last` 제거 → 34 실패. `hideOnly`에서 KEEP 제외 제거 → 35 실패. `changedMarks`의 지금 값 확인 제거 → 36 실패.
+- Node: 502 통과 / 4 실패(b1과 같은 4개) / 3 건너뜀.
+- 브라우저 묶음 전체(56묶음): 통과 19 / 실패 37, 검사 모드 오류 0. 통과 묶음은 b1b·b1c와 같은 19개(`keys`도 이번엔 한꺼번에 통과). 실패는 b1부터의 기존 기대(기억을 채팅 메타데이터에서 읽음, b2 뒤에 옮김).
+
 # v0.7.0-b1c · v0.7.0-b1b 코드 리뷰 반영 (브랜치 `v0.7-b`)
 
 기준: `v0.7-b`의 `6249fd4`(b1b 리뷰 요청서, 코드는 `82ae85e`). 파일: `index.js`, `home.js`, 검사, 문서. 리뷰 결과 P1 4 · P2 3 · P3 1. 모든 항목을 코드로 확인했고, 반영 범위는 GPT 2차 의견(1·2·3과 같은 경로의 6·7·8, 4는 대기 순서만, 5는 따로)대로 했어요(재현은 새 검사 21~29).

@@ -552,6 +552,171 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r = await ev(() => M.chat.map(m => !!m.is_system));
     ok(h.status === 'linked' && h.last === 4 && r.some(Boolean), `29. 새 방 → 다시 확인으로 연결 → 바로 숨김 맞춤 (${JSON.stringify(h)} ${JSON.stringify(r)})`);
 
+    // ───── v0.7.0-b1d (review of b1c) ─────
+    const linkedRoom = async n => { await newRoom(n); await wait(900); await ev(() => M.add(4)); await ev(() => __savePoint.handle('run')); await wait(2000); return (await H()).id; };
+    const hidOf = list => list.map(m => !!m?.is_system);
+    const newHidesIn = (before, after) => after.filter((m, k) => m?.is_system && !before[k]?.is_system).length;
+    const editHidden = n => { const server = M.serverFiles[M.chatId].slice(1), i = M.chat.findIndex((m, k) => m.is_system && server[k]?.is_system); if (i >= 0) { M.chat[i].mes += ` (edited ${n})`; M.chat[i].swipes && (M.chat[i].swipes[M.chat[i].swipe_id || 0] = M.chat[i].mes); } return i; };
+    // 30. P1-1: room A's chat write (🔶 on a hidden message) is still on its way when room B is opened and saved; B's chat write is sent again
+    // (SillyTavern saved meanwhile) after A's write ended. B's copy sent again still has its own check: no new hide resting on
+    // a message edited in B goes out.
+    await ev(() => { M.settings.savePoint.hideMode = 'auto'; M.settings.savePoint.keepRecent = 2; });
+    await newRoom('b30'); await wait(900);
+    await ev(() => M.add(4)); await ev(() => __savePoint.handle('run')); await wait(2000);
+    await ev(() => M.openFile('fresh29')); await wait(900);
+    const k30 = await ev(() => M.chat.findLastIndex(m => m.is_system));
+    await ev(() => {
+        const f = window.fetch;
+        window.__relA = null; window.__heldA = false; window.__b30 = null; window.__armB = false;
+        window.fetch = async (u, o) => {
+            const s = String(u);
+            if (s === '/api/chats/save' && JSON.parse(o.body).file_name === 'fresh29' && !window.__heldA) {
+                window.__heldA = true;
+                await new Promise(r => { window.__relA = r; });
+            } else if (s === '/api/chats/save' && JSON.parse(o.body).file_name === 'b30' && window.__armB && !window.__b30) {
+                M.stScript.setChatSaving(true);
+                window.__b30 = { i: editHiddenB() };
+                setTimeout(() => window.__relA?.(), 50);
+                setTimeout(() => M.stScript.setChatSaving(false), 600);
+            }
+            return f(u, o);
+        };
+    });
+    await ev(`window.editHiddenB = ${editHidden.toString().replace('n =>', '() =>').replace('${n}', '30')}`);
+    await ev(k => { __savePoint.toggleKeep(k).catch(() => {}); }, k30);
+    for (let i = 0; i < 40 && !(await ev(() => window.__heldA)); i++) await wait(100);
+    await ev(() => M.openFile('b30')); await wait(900);
+    await ev(() => M.add(4)); await wait(600);
+    const before30 = await ev(() => JSON.parse(JSON.stringify(M.serverFiles.b30.slice(1))));
+    await ev(() => { window.__armB = true; return __savePoint.handle('run').catch(() => {}); });
+    await wait(4000);
+    r = await ev(() => ({ b: window.__b30, held: window.__heldA, after: M.serverFiles.b30.slice(1), edited: M.serverFiles.b30.some(m => /edited 30/.test(m.mes || '')) }));
+    ok(k30 >= 0 && r.held && r.b?.i >= 0 && r.edited && newHidesIn(before30, r.after) === 0, `30. 다른 방 저장이 끝난 뒤 다시 보내는 채팅 저장도 자기 검사 → 새 숨김 없음 (${JSON.stringify(r.b)} edited=${r.edited} ${JSON.stringify(hidOf(r.after))} ← ${JSON.stringify(hidOf(before30))})`);
+    await ev(() => __savePoint.handle('home-recheck')).catch(() => {});
+
+    // 31. P1-2: `다시 확인` asked while a change's memory is on its way runs after it, and links another device's reset of
+    // this room's memory just written. The change's new hides rest on its own memory: none goes out; the room stays linked to
+    // the reset (not stopped).
+    await linkedRoom('r31');
+    await ev(() => M.add(4)); await wait(300);
+    const before31 = await ev(() => JSON.parse(JSON.stringify(M.serverFiles.r31.slice(1))));
+    await ev(async () => {
+        const H = await import('/ext/home.js'), hm = __savePoint.home(), name = H.memName(hm.id), f = window.fetch;
+        let step = 'up';
+        window.__posts31 = [];
+        window.fetch = async (u, o) => {
+            const s = String(u);
+            if (s === '/api/chats/save') window.__posts31.push(JSON.parse(o.body).chat.slice(1).map(m => !!m.is_system));
+            if (step === 'up' && s === '/api/files/upload' && JSON.parse(o.body).name === name) { step = 'back'; __savePoint.handle('home-recheck').catch(() => {}); return f(u, o); }
+            if (step === 'back' && s.startsWith('/user/files/' + name)) {
+                step = 'still';
+                const res = await f(u, o);
+                const cur = JSON.parse(M.files.get(name)), rev = cur.rev + 1;
+                const st = { ...cur.state, lastIndex: -1, hashes: [], floor: -1, rev, wid: 'other31', mem: { ...cur.state.mem, scenes: [], records: [] } };
+                M.otherPut(name, H.memBody({ id: hm.id, state: st, rev, wid: 'other31', from: cur.from, home: cur.home }));
+                return res;
+            }
+            if (step === 'still' && s.startsWith('/user/files/' + name)) { step = null; await new Promise(r => setTimeout(r, 1500)); }
+            return f(u, o);
+        };
+    });
+    await ev(() => __savePoint.handle('run').catch(() => {}));
+    await wait(4000);
+    h = await H();
+    r = await ev(() => ({ posts: window.__posts31, wid: __savePoint.state()?.wid ?? null }));
+    ok(r.wid === 'other31' && h.status === 'linked' && !h.stop && r.posts.every(p => newHidesIn(before31, p.map(x => ({ is_system: x }))) === 0), `31. 저장 뒤 다시 확인이 다른 기기 리셋을 연결 → 이전 기억 기준 새 숨김 안 보냄·방은 연결 그대로 (${JSON.stringify(h)} wid=${r.wid} posts=${JSON.stringify(r.posts)} ← ${JSON.stringify(hidOf(before31))})`);
+
+    // 32. P1-3: the room renamed in the list (p32 → q32) and q32 deleted before it was opened; a copy of it under p32 (same
+    // integrity) is still not the room: held, the room's memory is not written.
+    const mem32 = await linkedRoom('p32');
+    const file32 = await memOf(mem32);
+    await ev(() => M.openFile('branchB')); await wait(900);
+    await ev(() => M.renameChat('p32', 'q32'));
+    await ev(() => M.importChat('q32', 'p32'));
+    await ev(() => M.deleteChat('q32'));
+    await ev(() => M.openFile('p32')); await wait(1200);
+    h = await H();
+    r = await memOf(mem32);
+    ok(h.status === 'held' && h.id !== mem32 && r?.wid === file32?.wid, `32. 이름을 바꾼 뒤 새 이름을 지움 → 옛 이름의 사본은 여전히 보류 (${JSON.stringify(h)} ${r?.wid} ${file32?.wid})`);
+
+    // 33. The same with the room's rename pushed out of the last 20 by others (q33 still there): the copy is held.
+    const mem33 = await linkedRoom('p33');
+    const file33 = await memOf(mem33);
+    await ev(() => M.openFile('branchB')); await wait(900);
+    await ev(() => M.renameChat('p33', 'q33'));
+    await ev(async () => { for (let i = 0; i < 21; i++) await M.eventSource.emit(M.event_types.CHAT_RENAMED, { avatarId: 'ari.png', oldFileName: `zz33-${i}.jsonl`, newFileName: `zz33-${i}b.jsonl` }); });
+    await ev(() => M.importChat('q33', 'p33'));
+    await ev(() => M.openFile('p33')); await wait(1200);
+    h = await H();
+    r = { rec: await ev(() => __savePoint.settings().renames.some(x => JSON.parse(x.from)[1] === 'p33')), file: (await memOf(mem33))?.wid };
+    ok(!r.rec && h.status === 'held' && h.id !== mem33 && r.file === file33?.wid, `33. 이름 변경 기록이 20개 밖으로 밀림 → 옛 이름의 사본은 보류 (${JSON.stringify(h)} ${JSON.stringify(r)})`);
+
+    // 34. P2-1: SillyTavern saves during SavePoint's chat write and an earlier hidden message is edited (as 23): the copy sent
+    // again (without the stale hides) is in the file, and the save counts as confirmed (the room is not left unsure).
+    await linkedRoom('r34');
+    await ev(() => M.add(4)); await ev(() => __savePoint.handle('run')); await wait(2000);
+    await ev(() => M.add(4)); await wait(300);
+    await ev(() => {
+        const f = window.fetch; let up = false;
+        window.__i34 = null;
+        window.fetch = async (u, o) => {
+            const s = String(u);
+            if (s === '/api/files/upload' && JSON.parse(o.body).name.startsWith('savepoint-mem-')) up = true;
+            else if (up && s === '/api/chats/save') {
+                window.fetch = f;
+                M.stScript.setChatSaving(true);
+                window.__i34 = editHiddenB();
+                setTimeout(() => M.stScript.setChatSaving(false), 400);
+            }
+            return f(u, o);
+        };
+    });
+    await ev(() => { toastr.log.length = 0; return __savePoint.handle('run').catch(() => {}); });
+    await wait(3000);
+    r = await ev(() => ({ toast: toastr.log.filter(([k, m]) => /확인하지 못/.test(m)).map(([, m]) => m.slice(0, 60)), i: window.__i34, edited: M.serverFiles[M.chatId].some(m => /edited 30/.test(m.mes || '')), alert: document.querySelector('.sp-alert')?.textContent || '' }));
+    const can34 = await ev(() => __savePoint.handle('run').then(() => 'ok', e => e.message));
+    ok(r.i >= 0 && r.edited && !r.toast.length && !/확인하지 못|확인 못/.test(r.alert) && can34 === 'ok', `34. 다시 보낸 사본이 저장됨 → 저장 확인 성공·다음 저장 됨 (${JSON.stringify(r)} next=${can34})`);
+
+    // 35. P2-2: 🔶 turned off on a message the same change then hides; an earlier hidden message is edited before the chat
+    // write: the hide goes back, the 🔶 stays off (as the notice says), on the page and in the file.
+    await ev(() => M.add(4)); await ev(() => __savePoint.handle('run')); await wait(2000);
+    const k35 = await ev(() => { const list = M.chat.map((m, i) => m.is_system ? i : -1).filter(i => i >= 0); return list[list.length - 1]; });
+    await ev(k => __savePoint.toggleKeep(k), k35); await wait(1500);
+    r = { on: await ev(k => ({ keep: !!M.chat[k].extra?.savepointKeep, hid: !!M.chat[k].is_system }), k35) };
+    await ev(() => {
+        const f = window.fetch; let up = false;
+        window.__i35 = null;
+        window.fetch = async (u, o) => {
+            const s = String(u);
+            if (s === '/api/files/upload' && JSON.parse(o.body).name.startsWith('savepoint-mem-')) up = true;
+            else if (up && s === '/api/chats/get') { window.fetch = f; window.__i35 = editHiddenB(); M.stSave(); }
+            return f(u, o);
+        };
+    });
+    const msg35 = await ev(k => __savePoint.toggleKeep(k).then(() => 'ok', e => e.message), k35);
+    await wait(1500);
+    r = { ...r, msg: msg35, i: await ev(() => window.__i35), page: await ev(k => ({ keep: !!M.chat[k].extra?.savepointKeep, hid: !!M.chat[k].is_system }), k35), file: await ev(k => { const m = M.serverFiles[M.chatId][k + 1]; return { keep: !!m.extra?.savepointKeep, hid: !!m.is_system }; }, k35) };
+    ok(r.on.keep && !r.on.hid && r.i >= 0 && r.i < k35 && !r.page.keep && !r.page.hid && !r.file.keep && !r.file.hid, `35. 🔶 끄면서 생긴 숨김만 되돌림 → 🔶는 꺼진 그대로 (${JSON.stringify(r)})`);
+
+    // 36. P3: every mark of a change is a new hide and all of them go back: no chat write.
+    await linkedRoom('r36');
+    await ev(() => M.add(4)); await ev(() => __savePoint.handle('run')); await wait(2000);
+    await ev(() => M.add(4)); await wait(300);
+    const sp36 = await spSaves();
+    await ev(() => {
+        const f = window.fetch; let up = false;
+        window.fetch = async (u, o) => {
+            const s = String(u);
+            if (s === '/api/files/upload' && JSON.parse(o.body).name.startsWith('savepoint-mem-')) up = true;
+            else if (up && s === '/api/chats/get') { window.fetch = f; window.__i36 = editHiddenB(); M.stSave(); }
+            return f(u, o);
+        };
+    });
+    const msg36 = await ev(() => __savePoint.handle('run').then(() => 'ok', e => e.message));
+    await wait(1500);
+    r = { i: await ev(() => window.__i36), sp: [sp36, await spSaves()], msg: msg36, err: await ev(() => __savePoint.ui.lastError?.message || String(__savePoint.ui.lastError || '')) };
+    ok(r.i >= 0 && r.sp[0] === r.sp[1], `36. 새 숨김이 모두 되돌아감 → 채팅 파일 안 씀 (${JSON.stringify(r)})`);
+
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();
     process.exit(failures ? 1 : 0);

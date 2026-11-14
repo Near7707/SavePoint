@@ -30,7 +30,7 @@ export function gateBox() {
         homeWrite: async () => ({ status: 'ok' }), homeStill: async () => ({ ok: true }), fingerprint: m => JSON.stringify([m?.name || '', !!m?.is_user, m?.mes || '', m?.swipe_id ?? null]), homeOpen: () => true, chatOpen: () => true,
         MEM_NOT_WRITTEN: new Set(['refused', 'conflict', 'error', 'moved', 'linking']), MEM_OK: 'ok', UNREAD: 'unread', homeWriteError: w => String(w.status), homeMessage: () => '',
         // v0.7.0-b1c: no decision of the room's memory runs here; the copy checked again before a resend (none here).
-        takeHome: () => true, freeHome() {}, homeSettled: async () => {}, sendGuard: null,
+        takeHome: () => true, freeHome() {}, homeSettled: async () => {}, 
     };
 }
 

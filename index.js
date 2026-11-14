@@ -27,7 +27,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.7.0-b1c';
+const VERSION = '0.7.0-b1d';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -234,7 +234,9 @@ function ensureState() {
     return st;
 }
 function hasMemory(mem) { return !!(mem && (mem.scenes.length || mem.records.length)); }
-async function persist(fileMeta) { if (hasChat()) await writeChatFile(fileMeta); }
+// v0.7.0-b1d (review of b1c, P1-1): `guard` is the check of this write only (each write its own). Returns the copy last
+// answered with success (P2-1), or undefined without a chat.
+async function persist(fileMeta, guard = null) { if (hasChat()) return writeChatFile(fileMeta, guard); }
 // v0.6.72: SavePoint writes the chat file itself, for the room open at the moment of the call. SillyTavern's
 // saveMetadata()/saveChatConditional() wait at least 0.1 s and then save whatever room is open by then: a
 // room switch in that moment sent the next room's name with no messages and metadata without `integrity`
@@ -293,8 +295,10 @@ async function stIdle() {
 // The answer of SillyTavern's chat save handler to any error inside it (src/endpoints/chats.js).
 const ST_SAVE_500 = 'An error has occurred, see the console logs for more information.';
 // v0.7.0-b1c (review of b1b, P1-2): the check a queued change makes on what it sends, for every copy of its chat write.
-let sendGuard = null;
-async function writeChatFile(fileMeta = null) {
+// v0.7.0-b1d (review of b1c, P1-1): given to the write itself (`guard`), not kept for all rooms: a write of another room
+// ending meanwhile can no longer take this one's away.
+// v0.7.0-b1d (review of b1c, P2-1): returns the copy last answered with success (`sentSnap`).
+async function writeChatFile(fileMeta = null, guard = null) {
     checkQueue('chat file write');
     const key = roomKey(), epoch = roomEpoch;
     // A copy is taken at one moment, so a newer page SillyTavern saves while it is on its way could land
@@ -328,12 +332,12 @@ async function writeChatFile(fileMeta = null) {
     };
     for (let round = 0; round < 4; round++) {
         if (await stIdle()) landed = true;
-        if (moved()) { if (sent !== null) return; throw fail(new RoomBlocked('채팅방이 바뀌어서 저장하지 않았어요.')); }
+        if (moved()) { if (sent !== null) return sentSnap; throw fail(new RoomBlocked('채팅방이 바뀌어서 저장하지 않았어요.')); }
         if (landed) {
             const t0 = chatTarget(fileMeta);
-            if (sent !== null && (!t0 || t0.body === sent)) return;
+            if (sent !== null && (!t0 || t0.body === sent)) return sentSnap;
             const c = await fileAllows(sentSnap);
-            if (moved()) { if (sent !== null) return; throw fail(new RoomBlocked('채팅방이 바뀌어서 저장하지 않았어요.')); }
+            if (moved()) { if (sent !== null) return sentSnap; throw fail(new RoomBlocked('채팅방이 바뀌어서 저장하지 않았어요.')); }
             if (!c.ok) {
                 blockRoom(c.why, c.at);
                 throw fail(new RoomBlocked(c.why === 'error' || c.why === 'empty'
@@ -351,9 +355,9 @@ async function writeChatFile(fileMeta = null) {
         }
         // From here to the request nothing waits: the room checked is the room whose file is sent.
         // v0.7.0-b1c (review of b1b, P1-2): a queued change's new hides resting on a message changed since go back first.
-        if (sendGuard && sendGuard.key === key && sendGuard.epoch === epoch) sendGuard.run();
+        if (guard) guard();
         const t = chatTarget(fileMeta), tSnap = t ? t.snap : null;
-        if (sent !== null && (!t || t.body === sent)) return;
+        if (sent !== null && (!t || t.body === sent)) return sentSnap;
         if (!t) throw fail(new RoomBlocked('채팅방이 아직 다 열리지 않아서(메시지나 채팅 파일 고유값이 없음) 저장하지 않았어요.'));
         // v0.6.83: the request is made ready first; an error there sent nothing.
         const headers = serverHeaders();
@@ -390,6 +394,7 @@ async function writeChatFile(fileMeta = null) {
         if (!moved() && gateHere()) seenSent(tSnap, tick);
     }
     if (sent === null) throw fail(new Error('실리태번이 채팅 파일을 계속 저장하고 있어서 저장하지 못했어요.'));
+    return sentSnap;
 }
 // v0.6.76: may this page go on writing over the file as it is now? Yes when the file holds nothing this
 // page lacks (serverCovered's rule), or it is the copy this page itself sent last (that copy landed after
@@ -690,10 +695,13 @@ function changedMarks(entry) {
         const post = entry.after.get(v.m), i = at.get(v.m);
         if (!post || i === undefined) continue;
         const marks = [], swipes = [], info = Array.isArray(v.m.swipe_info) ? v.m.swipe_info : [];
-        v.flags.forEach((f, j) => { if (!sameMark(f, post.flags[j])) marks.push({ j, was: f, now: post.flags[j] }); });
+        // v0.7.0-b1d (review of b1c, P3): only a mark still as the change left it (one taken back since, a stale hide that
+        // went back, is not sent).
+        const cur = ownFlags(v.m);
+        v.flags.forEach((f, j) => { if (!sameMark(f, post.flags[j]) && sameMark(cur[j], post.flags[j])) marks.push({ j, was: f, now: post.flags[j] }); });
         for (const [x, was] of v.swipes) {
             const now = post.swipes.get(x), k = info.indexOf(x);
-            if (now && k >= 0 && !sameMark(was, now)) swipes.push({ k, was, now });
+            if (now && k >= 0 && !sameMark(was, now) && sameMark(swipeKeep(x), now)) swipes.push({ k, was, now });
         }
         if (marks.length || swipes.length) out.push({ i, marks, swipes });
     }
@@ -713,7 +721,9 @@ function refreshView() {
 // v0.6.81: a mark goes back only when it is still what this change left (entry.after); one changed since
 // (by hand, by another change) stays. `extra` is never replaced: other keys in it (a translation) stay.
 // A change that threw while it ran (no entry.after) is put back as it was.
-function restoreEntry(entry) {
+// v0.7.0-b1d (review of b1c, P2-2): `hideOnly` — only the hide and its own marks (HIDE · VISIBLE · HELD) go back; 🔖 (KEEP,
+// on the message and its swipes) stays as the change set it.
+function restoreEntry(entry, { hideOnly = false } = {}) {
     // v0.7.0-b1c (review of b1b, P1-1): the memory goes back only while the one this change put there is still the page's
     // (a decision of the room since put its own memory there: that one stays).
     if (!Object.hasOwn(entry, 'applied') || boxMem(entry.box) === entry.applied) putBoxMem(entry.box, entry.prev);
@@ -729,8 +739,8 @@ function restoreEntry(entry) {
             if (at >= 0) setHidden(v.m, at, !!v.flags[0][1]);
             if (v.flags[0][0]) v.m.is_system = v.flags[0][1]; else delete v.m.is_system;
         }
-        markKeys().forEach((k, j) => { if (mine(j + 1)) putMark(v.m, k, v.flags[j + 1]); });
-        for (const [x, was] of v.swipes) {
+        markKeys().forEach((k, j) => { if (mine(j + 1) && !(hideOnly && k === KEEP_KEY)) putMark(v.m, k, v.flags[j + 1]); });
+        if (!hideOnly) for (const [x, was] of v.swipes) {
             const left = post ? post.swipes.get(x) : was;
             if (!left) continue;                         // that swipe was replaced by the change
             const cur = [!!x.extra && typeof x.extra === 'object' && Object.hasOwn(x.extra, KEEP_KEY), x.extra?.[KEEP_KEY]];
@@ -743,9 +753,9 @@ function restoreEntry(entry) {
     return here;
 }
 // v0.7.0-b1: only the marks of `entry` go back; the memory stays as it is now (it is in its memory file).
-function restoreMarks(entry) {
+function restoreMarks(entry, opts) {
     const keep = boxMem(entry.box);
-    const here = restoreEntry(entry);
+    const here = restoreEntry(entry, opts);
     putBoxMem(entry.box, keep);
     trustQueue();
     return here;
@@ -766,7 +776,8 @@ function dropStaleHides(entry) {
         return post && i !== undefined && i >= first && hid(post.flags[0]) && !hid(v.flags[0]) && hid(ownFlags(v.m)[0]);
     });
     if (!stale.length) return false;
-    restoreMarks({ ...entry, visibility: stale });
+    // v0.7.0-b1d (review of b1c, P2-2): the hide only; a 🔖 changed by the same change stays.
+    restoreMarks({ ...entry, visibility: stale }, { hideOnly: true });
     return true;
 }
 function cancelMoved(queue, entry) {
@@ -823,7 +834,7 @@ async function writeEntry(queue, entry) {
     // outcome then takes back or writes over. One started during the checks above stops the change here (nothing applied).
     const hb = pageBox();
     if (!takeHome(hb)) throw new RoomBlocked('이 방의 기억을 다시 확인하는 중이라 이번 변경은 하지 않았어요. 잠시 뒤 다시 해 주세요.');
-    let applied, unsure = null, settled = false, written, marks, tick, rev, w, saved;
+    let applied, unsure = null, settled = false, written, marks, tick, rev, w, saved, mine = null;
     const proof = null;
     try {
     checkQueue('before a queued change');
@@ -847,6 +858,9 @@ async function writeEntry(queue, entry) {
     // SavePoint's changed) never writes the chat file. Until b2 (H1 order) a change that also hides writes the chat file
     // after its memory: when that fails the memory stays (it is in its file) and only the marks go back.
     w = await homeWrite(entry);
+    // v0.7.0-b1d (review of b1c, P1-2): the memory file this change wrote (its receipt), taken before anything can decide the
+    // room again (freeHome): the chat write below checks the file against this one, not against the memory linked by then.
+    mine = w.status === MEM_OK && entry.box?.line?.seen ? { box: entry.box, id: entry.box.id, ...entry.box.line.seen } : null;
     // v0.7.0-b1a (review P1-1): a room opened while the memory was on its way is never this change's room.
     // v0.7.0-b1a (review of b1a, P3): an error from here on is after the memory was written (`memSaved`: the notice says so).
     saved = e => { if (w.status === MEM_OK || w.status === UNREAD) e.memSaved = true; return e; };
@@ -880,11 +894,11 @@ async function writeEntry(queue, entry) {
     await stIdle();
     if (moved()) { restoreMarks(entry); throw saved(cancelMoved(queue, entry)); }
     // P1-1: the memory file is still the one this room last saw, right before the chat file is written.
-    const still = await homeStill();
+    const still = await homeStill(mine);
     if (!still.ok) {
         restoreMarks(entry);
         if (roomKey() === entry.key && roomEpoch === entry.epoch) { ctx().swipe?.refresh?.(); refreshView(); }
-        throw saved(new RoomBlocked(still.why === 'moved' ? '채팅방이 바뀌어서 원문 숨김은 저장하지 않았어요.' : still.why === 'memRead' ? '기억 파일을 다시 읽지 못해서 원문 숨김은 저장하지 않았어요(기억은 저장했어요).' : `기억은 저장했어요. 하지만 ${homeMessage()}`));
+        throw saved(new RoomBlocked(still.why === 'moved' ? '채팅방이 바뀌어서 원문 숨김은 저장하지 않았어요.' : still.why === 'memRead' ? '기억 파일을 다시 읽지 못해서 원문 숨김은 저장하지 않았어요(기억은 저장했어요).' : still.why === 'relinked' ? '기억은 저장했어요. 하지만 그사이 이 방의 기억을 다시 확인해서, 이번 원문 숨김은 저장하지 않았어요. 다시 세이브하면 맞춰요.' : `기억은 저장했어요. 하지만 ${homeMessage()}`));
     }
     // v0.7.0-b1a (review P1-1): the chat file is checked again right before it is written (the check before the change is
     // older than the memory write: another device may have added a reply since). The write goes out over this read only.
@@ -920,15 +934,18 @@ async function writeEntry(queue, entry) {
         // v0.6.76: a failure after the change may already be in the file is not taken back (settleWrite).
         // v0.7.0-b1c (review of b1b, P1-2): a copy sent again (SillyTavern saved meanwhile) is checked the same way right
         // before its request (writeChatFile).
-        sendGuard = { key: entry.key, epoch: entry.epoch, run: () => { if (dropStaleHides(entry)) { ctx().swipe?.refresh?.(); refreshView(); } } };
-        try { await persist(pre.meta); }
+        // v0.7.0-b1d (review of b1c, P1-1): given to this write only. A hide that goes back here also leaves the marks this write
+        // is judged by (P3).
+        const guard = () => { if (dropStaleHides(entry)) { marks = changedMarks(entry); ctx().swipe?.refresh?.(); refreshView(); } };
+        // v0.7.0-b1d (review of b1c, P2-1): the copy last answered with success is what the read back is compared with (a copy
+        // sent again differs from the first: an old hide went back, or SillyTavern saved the page meanwhile).
+        try { const last = await persist(pre.meta, guard); if (last) written = last; }
         catch (e) {
             const err = await settleWrite(e, { written, rev, proof, pre, key: entry.key, epoch: entry.epoch, marks, tick });
             if (err === 'revert') throw e;
             if (err) { err.kept = true; throw err; }
             settled = true;
         }
-        finally { sendGuard = null; }
         if (entry.verify && !settled) {
             // SillyTavern reports most failed saves on screen and returns normally: read the file back.
             const post = moved() ? null : await readServerChat();
@@ -1517,7 +1534,9 @@ function homeInput(r) {
     // v0.7.0-b1c (review of b1b, P1-4): a rename made by a room that had taken over a name another room left is no proof for
     // that name's tag (`foreign`); a room seen leaving this name (and not back) means a chat here now is another (`left`).
     const addr = roomKey(), seen = renamesSeen(), list = seen.filter(x => x.to === addr && !x.foreign);
-    const left = seen.find(x => x.from === addr && x.to !== addr && !x.foreign)?.to ?? null;
+    // v0.7.0-b1d (review of b1c, P1-3): also from the rooms kept as having left a name (`leftSeen`), which a deleted chat or
+    // the 20-record limit never takes away.
+    const left = seen.find(x => x.from === addr && x.to !== addr && !x.foreign)?.to ?? leftSeen().find(x => x.from === addr && !x.foreign)?.to ?? null;
     return { addr, integrity: typeof meta.integrity === 'string' && meta.integrity ? meta.integrity : null, mainChat: typeof meta.main_chat === 'string' && meta.main_chat ? meta.main_chat : null,
         copy, traces: hasTraces(meta, r.messages || []), prints: (r.messages || []).map(fingerprint), renames: list.map(x => ({ from: x.from, to: x.to })), left, old };
 }
@@ -1528,6 +1547,16 @@ function sameInput(a, b) {
 }
 // Renames seen on this device (SillyTavern tells only the device that renamed), kept in the settings.
 function renamesSeen() { const s = settings(); if (!Array.isArray(s.renames)) s.renames = []; return s.renames; }
+// v0.7.0-b1d (review of b1c, P1-3): rooms seen leaving a name on this device ({ from, to }, `to` following the room's later
+// renames). Only the room coming back to the name (`to` is `from` again) or a new room of that name put in place here
+// (firstWrite, `clearLeft`) takes one away; a deletion of the room's new name only stops `to` following (`gone`). Up to 200.
+function leftSeen() { const s = settings(); if (!Array.isArray(s.leftNames)) s.leftNames = []; return s.leftNames; }
+function clearLeft(addr) {
+    const list = leftSeen(), keep = list.filter(x => x.from !== addr);
+    if (keep.length === list.length) return;
+    list.splice(0, list.length, ...keep);
+    saveSettings();
+}
 function onChatRenamed(data) {
     const n = renameNotice(data);
     if (!n) return;
@@ -1539,6 +1568,10 @@ function onChatRenamed(data) {
     // `n.from`: its record follows it (A → B, then B → C is A → C), so another chat taking the name later (a copy renamed
     // to B) is never taken for it.
     for (const x of list) if (x.to === n.from) x.to = n.to;
+    const left = leftSeen();
+    for (const x of left) if (!x.gone && x.to === n.from) x.to = n.to;
+    left.splice(0, left.length, ...left.filter(x => x.to !== x.from));
+    if (n.from !== n.to) left.push({ from: n.from, to: n.to, at: Date.now(), ...(foreign ? { foreign: true } : {}) });
     // A room seen leaving `n.to` before and still elsewhere: this one takes over its name (A → B, a copy → A). A room coming
     // back to its own name (A → B → A) has its record at `n.to` again by now, so it is not taken for a copy.
     const took = list.some(x => x.from === n.to && x.to !== n.to && !x.foreign);
@@ -1551,10 +1584,16 @@ function onChatRenamed(data) {
     if (addr && addr !== n.to && homeHere() && Date.now() - home.at < 10000) {
         try {
             const [scope, name] = JSON.parse(addr), [toScope, typed] = JSON.parse(n.to);
-            if (scope === toScope && name === cleanName(typed)) list.push({ from: n.from, to: addr, at: Date.now(), ...(foreign ? { foreign: true } : {}) });
+            if (scope === toScope && name === cleanName(typed)) {
+                list.push({ from: n.from, to: addr, at: Date.now(), ...(foreign ? { foreign: true } : {}) });
+                // v0.7.0-b1d: the room is at the name as the server cleaned it: its left record follows it from there.
+                const mineLeft = left[left.length - 1];
+                if (mineLeft && mineLeft.from === n.from && mineLeft.to === n.to) { mineLeft.to = addr; if (addr === n.from) left.pop(); }
+            }
         } catch { /* not an address */ }
     }
     renamesSeen().splice(0, Math.max(0, list.length - 20));
+    left.splice(0, Math.max(0, left.length - 200));
     saveSettings();
     if (!homeHere()) return;
     if (home.status === 'opening') home.again = true;
@@ -1567,8 +1606,12 @@ function onChatRenamed(data) {
 function onChatDeleted(name) {
     const bare = String(name ?? '');
     if (!bare) return;
-    const list = renamesSeen(), keep = list.filter(x => { try { return JSON.parse(x.to)[1] !== bare; } catch { return true; } });
-    if (keep.length === list.length) return;
+    const named = x => { try { return JSON.parse(x.to)[1] === bare; } catch { return false; } };
+    // v0.7.0-b1d (review of b1c, P1-3): the room that left a name still left it; its record only stops following.
+    let touched = false;
+    for (const x of leftSeen()) if (!x.gone && named(x)) { x.gone = true; touched = true; }
+    const list = renamesSeen(), keep = list.filter(x => !named(x));
+    if (keep.length === list.length) { if (touched) saveSettings(); return; }
     list.splice(0, list.length, ...keep);
     saveSettings();
 }
@@ -1826,6 +1869,9 @@ async function firstWrite(h, st, state) {
             // is kept on the page, and the room stops saving until it is opened again.
             if (m.kind === OK && m.data.rev === res.seen.rev && m.data.wid === res.seen.wid && m.data.wid === st.wid && !res.adopted) {
                 lineFor(h, { rev: m.data.rev, wid: m.data.wid }); h.status = 'linked'; h.from = m.data.from;
+                // v0.7.0-b1d (review of b1c, P1-3): this name's tag is this room's now: a room that left it before is no reason to
+                // hold it any more.
+                clearLeft(h.key);
                 return { status: MEM_OK };
             }
             if (m.kind === OK) { lineFor(h, { rev: m.data.rev, wid: m.data.wid }); if (!h.line.pending) h.line.stop = MF_CONFLICT; h.status = 'linked'; return { status: CONFLICT }; }
@@ -1849,15 +1895,22 @@ function homeWriteError(w) {
 }
 // P1-1: right before SavePoint writes the chat file, the memory file must still be the one this room last saw (another
 // device's memory write since → the room writes nothing more). A room without a memory file yet: still none there.
-async function homeStill() {
+// v0.7.0-b1d (review of b1c, P1-2): `mine` — the memory file a change wrote ({ box, id, rev, wid }): the file must be that
+// one. A decision of the room since (`다시 확인`) that linked another memory, or the same one written again: what this change
+// hides rests on its own memory, so nothing goes out (`relinked`); the room itself is not stopped when the file is still
+// the one now linked.
+async function homeStill(mine = null) {
     const h = home;
     if (!homeHere() || !h.line) return { ok: false, why: 'home' };
     if (h.line.pending || h.line.stop) return { ok: false, why: 'home' };
+    if (mine && (mine.box !== h || mine.id !== h.id)) return { ok: false, why: 'relinked' };
     if (!h.id) return { ok: true };
     const r = await readMemFile(h.id);
     if (!homeHere() || home !== h) return { ok: false, why: 'moved' };
-    const seen = h.line.seen;
-    if (r.kind === MISSING ? seen?.missing : r.kind === OK && seen && r.data.rev === seen.rev && r.data.wid === seen.wid) return { ok: true };
+    const seen = h.line.seen, same = x => r.kind === MISSING ? !!x?.missing : r.kind === OK && !!x && r.data.rev === x.rev && r.data.wid === x.wid;
+    if (mine && !same(mine)) {
+        if (same(seen) && mine.id === h.id) return { ok: false, why: 'relinked' };
+    } else if (same(seen)) return { ok: true };
     if (r.kind === OK || r.kind === MISSING) { h.line.stop = MF_CONFLICT; render(); return { ok: false, why: 'memFile' }; }
     return { ok: false, why: 'memRead' };
 }
