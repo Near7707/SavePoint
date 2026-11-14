@@ -94,7 +94,9 @@ export function renameNotice(data) {
     if (!plainObj(data)) return null;
     const scope = data.groupId !== undefined && data.groupId !== null && data.groupId !== '' ? 'group:' + data.groupId : data.avatarId;
     const bare = n => String(n ?? '').replace(/\.jsonl$/i, '');
-    const from = bare(data.oldFileName), to = bare(data.newFileName);
+    // v0.7.0-b1c (review of b1b, P1-4/P2-2): the new name as the server keeps it (cleanName), so a record follows the room
+    // the server made, also through later renames, not the name typed.
+    const from = bare(data.oldFileName), typed = bare(data.newFileName), to = typed ? cleanName(typed) || typed : '';
     if (!str(scope) || !from || !to || from === to) return null;
     return { from: roomAddr(scope, from), to: roomAddr(scope, to) };
 }
@@ -304,6 +306,9 @@ export async function decideRoom(input, read, { readMem = id => read(memName(id)
     const renamedAway = tagRes.kind === OK && tagRes.data.state === 'renamed' ? tagRes.data : null;
     if (tagRes.kind === OK && !renamedAway) {
         const tag = tagRes.data;
+        // v0.7.0-b1c (review of b1b, P1-4): the room of this name was seen leaving it on this device (renamed, never opened
+        // under its new name since): a chat under this name now is another (an imported copy taking the name) → hold.
+        if (input.left) return hold(1, 'renamedAway', { to: input.left });
         if (str(tag.integrity) && str(integrity) && tag.integrity !== integrity) return hold(1, 'integrity');
         if (copy && copy.hash !== tag.copy) return hold(2, 'copyChanged');
         let proof;

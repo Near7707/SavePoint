@@ -354,7 +354,9 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await wait(2500);
     r = { sp: [r, await spSaves()], ...(await ev(() => { const i = window.__edited, m = M.serverFiles[M.chatId][i + 1]; return { i, server: !!m?.is_system, page: !!M.chat[i]?.is_system, edited: /edited here/.test(m?.mes || '') }; })) };
     // The hide SillyTavern's own save carried (`server`) is P1-5 of the b1 review: b2 (H1) sets a hide only after its memory.
-    ok(r.i >= 0 && r.sp[0] === r.sp[1] && !r.page && r.edited, `19. 마지막 확인 중 숨길 원문이 바뀜 → SavePoint는 숨김 저장 안 함·화면 숨김 풀림 (${JSON.stringify(r)})`);
+    // v0.7.0-b1c (review of b1b, P1-2): hides before the edited message rest on unchanged messages and may still go out (a
+    // chat save then); the edited one is never hidden by SavePoint's write.
+    ok(r.i >= 0 && (r.sp[0] === r.sp[1] || !r.server) && !r.page && r.edited, `19. 마지막 확인 중 숨길 원문이 바뀜 → SavePoint는 숨김 저장 안 함·화면 숨김 풀림 (${JSON.stringify(r)})`);
 
     // 20. P1-5: a rename seen before follows the room (A → B → C in the list); an imported copy renamed to B later is not
     // taken for A. Opening C still takes A's memory.
@@ -402,6 +404,153 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const f17 = await memOf(h.id);
     r = { page: await ev(() => __savePoint.state()?.lastIndex ?? null), file: f17?.state?.lastIndex ?? null, scenes: f17?.state?.mem?.scenes?.length ?? 0 };
     ok(h.status === 'linked' && r.page !== null && r.page >= 0 && r.file === r.page && r.scenes > 0, `17. 첫 저장 중 이름 변경 알림 → 다시 판정 안 함, 다음 편집도 기억 유지 (${JSON.stringify(h)} ${JSON.stringify(r)})`);
+
+    // ───── v0.7.0-b1c (review of b1b) ─────
+    const noNewHides = (before, after) => after.every((m, k) => !m?.is_system || !!before[k]?.is_system);
+    // 21. P1-1: `다시 확인` (a rename notice) starts while the first change of a new room reads the chat file before its
+    // memory write, and another device made this room's memory just then. The change is not applied and its outcome never
+    // empties the page: the page keeps the other device's memory and its file stays theirs.
+    await newRoom('fresh21'); await wait(900);
+    const id21 = (await H()).id;
+    await ev(async ([o]) => {
+        const H = await import('/ext/home.js'), hm = __savePoint.home(), addr = JSON.stringify(['ari.png', 'fresh21']);
+        const st = { ...o, roomKey: addr, linkedSave: null, lastIndex: 2, hashes: o.hashes.slice(0, 3), floor: 2, rev: 1, wid: 'other21' };
+        const f = window.fetch; let armed = 'gen';
+        M.lateDone = 0; M.delayOnce = 1;
+        window.fetch = async (u, op) => {
+            const s = String(u);
+            if (armed === 'gen' && M.lateDone && s === '/api/chats/get') {
+                armed = 'mem';
+                M.otherPut(H.memName(hm.id), H.memBody({ id: hm.id, state: st, wid: 'other21', from: hm.from, home: { addr, integrity: 'fresh21-int' } }));
+                M.otherPut(H.tagName(addr), H.tagBody({ addr, integrity: 'fresh21-int', mem: hm.id }));
+                M.eventSource.emit(M.event_types.CHAT_RENAMED, { avatarId: 'ari.png', oldFileName: 'zz-e.jsonl', newFileName: 'zz-f.jsonl' });
+                return f(u, op);
+            }
+            if (armed === 'mem' && s.startsWith('/user/files/' + H.memName(hm.id))) { armed = null; window.fetch = f; await new Promise(r => setTimeout(r, 700)); }
+            return f(u, op);
+        };
+    }, [old]);
+    await ev(() => __savePoint.handle('run'));
+    await wait(3000);
+    h = await H();
+    r = { page: await ev(() => __savePoint.state()?.wid ?? null), last: h.last, file: (await memOf(id21))?.wid ?? null };
+    ok(h.status === 'linked' && r.page === 'other21' && r.last === 2 && r.file === 'other21', `21. 첫 저장 중 다시 확인 → 변경 안 함, 화면은 다른 기기 기억 그대로·파일 안 덮음 (${JSON.stringify(h)} ${JSON.stringify(r)})`);
+
+    // 22. P1-2: an earlier message hidden already is edited during the last chat check (saved by SillyTavern, as 19) while
+    // this change hides later ones: no new hide goes out from SavePoint (they rest on the edited message) and the page
+    // shows them again. (The hides SillyTavern's own save carried are P1-5 of the b1 review: b2.)
+    await ev(() => M.openFile('rC')); await wait(900);
+    await ev(() => M.add(4)); await wait(300);
+    const before22 = await ev(() => M.chat.map(m => ({ is_system: !!m.is_system })));
+    r = await spSaves();
+    await ev(() => {
+        const f = window.fetch; let up = false;
+        window.fetch = async (u, o) => {
+            const s = String(u);
+            if (s === '/api/files/upload' && JSON.parse(o.body).name.startsWith('savepoint-mem-')) up = true;
+            else if (up && s === '/api/chats/get') {
+                window.fetch = f;
+                const server = M.serverFiles[M.chatId].slice(1), i = M.chat.findLastIndex((m, k) => m.is_system && server[k]?.is_system);
+                window.__edited = i;
+                window.__newHides = M.chat.filter((m, k) => m.is_system && !server[k]?.is_system).length;
+                if (i >= 0) { M.chat[i].mes += ' (edited 22)'; M.chat[i].swipes && (M.chat[i].swipes[M.chat[i].swipe_id || 0] = M.chat[i].mes); M.stSave(); }
+            }
+            return f(u, o);
+        };
+    });
+    await ev(() => __savePoint.handle('run'));
+    await wait(2500);
+    r = { sp: [r, await spSaves()], ...(await ev(() => ({ i: window.__edited, n: window.__newHides, page: M.chat.map(m => ({ is_system: !!m.is_system })), server: M.serverFiles[M.chatId].slice(1) }))) };
+    // SavePoint may still write the marks that rest on nothing changed; what it writes then carries no new hide.
+    ok(r.i >= 0 && r.n > 0 && noNewHides(before22, r.page) && (r.sp[0] === r.sp[1] || noNewHides(before22, r.server)), `22. 앞쪽 숨긴 원문이 바뀜 → 뒤쪽 새 숨김도 저장 안 함·화면에서도 풀림 (i=${r.i} n=${r.n} sp=${r.sp} page=${JSON.stringify(r.page.map(m => m.is_system))} server=${JSON.stringify(r.server.map(m => !!m.is_system))})`);
+
+    // 23. P1-2: the same edit while SillyTavern saves during SavePoint's chat write (it sends the room again): the copy sent
+    // again carries no new hide either.
+    await ev(() => M.openFile('rC')); await wait(900);
+    await ev(() => M.add(4)); await wait(300);
+    const before23 = await ev(() => JSON.parse(JSON.stringify(M.serverFiles[M.chatId].slice(1))));
+    await ev(() => {
+        const f = window.fetch; let up = false;
+        window.fetch = async (u, o) => {
+            const s = String(u);
+            if (s === '/api/files/upload' && JSON.parse(o.body).name.startsWith('savepoint-mem-')) up = true;
+            else if (up && s === '/api/chats/save') {
+                window.fetch = f;
+                M.stScript.setChatSaving(true);
+                const server = M.serverFiles[M.chatId].slice(1), i = M.chat.findIndex((m, k) => m.is_system && server[k]?.is_system);
+                window.__edited = i;
+                if (i >= 0) { M.chat[i].mes += ' (edited 23)'; M.chat[i].swipes && (M.chat[i].swipes[M.chat[i].swipe_id || 0] = M.chat[i].mes); }
+                setTimeout(() => M.stScript.setChatSaving(false), 400);
+            }
+            return f(u, o);
+        };
+    });
+    await ev(() => __savePoint.handle('run'));
+    await wait(3000);
+    r = await ev(() => ({ i: window.__edited, after: M.serverFiles[M.chatId].slice(1), edited: M.serverFiles[M.chatId].some(m => /edited 23/.test(m.mes || '')) }));
+    ok(r.i >= 0 && r.edited && noNewHides(before23, r.after), `23. 다시 보내는 채팅 저장도 새 숨김 없음 (i=${r.i} edited=${r.edited} ${JSON.stringify(r.after.map(m => !!m.is_system))} ← ${JSON.stringify(before23.map(m => !!m.is_system))})`);
+    await ev(() => __savePoint.handle('home-recheck')).catch(() => {});
+
+    // 24. P1-4: the room renamed in the list (rC → rD, not opened since); an imported copy of it takes the old name and moves
+    // on (copy → rC → rE). Opening rE never moves the room's memory there.
+    await ev(() => M.openFile('rC')); await wait(900);
+    const mem24 = (await H()).id;
+    const memHome = () => ev(id => JSON.parse(M.files.get('savepoint-mem-' + id + '.json')).home.addr, mem24);
+    await ev(() => M.importChat('rC', 'copy24'));
+    await ev(() => M.openFile('branchB')); await wait(900);
+    await ev(() => M.renameChat('rC', 'rD')); await ev(() => M.renameChat('copy24', 'rC')); await ev(() => M.renameChat('rC', 'rE'));
+    await ev(() => M.openFile('rE')); await wait(1200);
+    h = await H();
+    r = await memHome();
+    ok(h.verdict !== 'rename' && h.id !== mem24 && r === JSON.stringify(['ari.png', 'rC']), `24. 사본이 출발 이름 재사용(사본 → rC → rE) → 원본 기억 안 옮김 (${JSON.stringify(h)} ${r})`);
+    // 25. A copy that takes the old name and is opened under it is not the room either (the tag there is the original's).
+    await ev(() => M.importChat('rD', 'copy25'));
+    await ev(() => M.openFile('branchB')); await wait(900);
+    await ev(() => M.renameChat('copy25', 'rC'));
+    await ev(() => M.openFile('rC')); await wait(1200);
+    h = await H();
+    r = await memHome();
+    ok(h.status === 'held' && r === JSON.stringify(['ari.png', 'rC']), `25. 옛 이름을 가져간 사본을 그 이름으로 열기 → 보류 (${JSON.stringify(h)} ${r})`);
+    await ev(() => M.openFile('rD')); await wait(1200);
+    h = await H();
+    r = await memHome();
+    ok(h.status === 'linked' && h.verdict === 'rename' && h.id === mem24 && r === JSON.stringify(['ari.png', 'rD']), `25. 원래 방(rD) → 기억 이어받음 (${JSON.stringify(h)} ${r})`);
+    // 26. The room itself renamed away and back (rD → rX → rD in the list, not opened between): still its memory.
+    await ev(() => M.openFile('branchB')); await wait(900);
+    await ev(() => M.renameChat('rD', 'rX')); await ev(() => M.renameChat('rX', 'rD'));
+    await ev(() => M.openFile('rD')); await wait(1200);
+    h = await H();
+    ok(h.status === 'linked' && h.id === mem24, `26. 같은 방이 이름을 돌려받음(rD → rX → rD) → 그대로 연결 (${JSON.stringify(h)})`);
+    // 27. P2-2: renamed twice in the list, the second time to a name the server cleans (rD → rG → "rH:x" = rHx): opening rHx
+    // finds the memory.
+    await ev(() => M.openFile('branchB')); await wait(900);
+    await ev(() => M.renameChat('rD', 'rG')); await ev(() => M.renameChat('rG', 'rH:x', { saved: 'rHx' }));
+    await ev(() => M.openFile('rHx')); await wait(1200);
+    h = await H();
+    r = await memHome();
+    ok(h.status === 'linked' && h.verdict === 'rename' && h.id === mem24 && r === JSON.stringify(['ari.png', 'rHx']), `27. 목록에서 두 번 바꾼 특수문자 이름 → 기억 찾음 (${JSON.stringify(h)} ${r})`);
+    // 28. P1-4: SillyTavern names a deleted chat without ".jsonl" (a chat named "d28.jsonl" is sent as that): its record goes.
+    await ev(() => M.eventSource.emit(M.event_types.CHAT_RENAMED, { avatarId: 'ari.png', oldFileName: 'zz-g.jsonl', newFileName: 'd28.jsonl.jsonl' }));
+    const rec28 = () => ev(() => __savePoint.settings().renames.some(x => JSON.parse(x.to)[1] === 'd28.jsonl'));
+    r = [await rec28()];
+    await ev(() => M.deleteChat('d28.jsonl'));
+    r.push(await rec28());
+    ok(r[0] === true && r[1] === false, `28. 확장자처럼 보이는 이름의 방 삭제 → 그 기록 지움 (${JSON.stringify(r)})`);
+
+    // 29. P2-3: a new room finds another device's memory on `다시 확인` (new → linked): the hides follow it at once.
+    await ev(() => { M.settings.savePoint.hideMode = 'auto'; M.settings.savePoint.keepRecent = 2; });
+    await newRoom('fresh29'); await wait(900);
+    await ev(async ([o]) => {
+        const H = await import('/ext/home.js'), hm = __savePoint.home(), addr = JSON.stringify(['ari.png', 'fresh29']);
+        const st = { ...o, roomKey: addr, linkedSave: null, lastIndex: 4, hashes: M.chat.slice(0, 5).map(H.fingerprint), floor: 4, rev: 1, wid: 'other29' };
+        M.otherPut(H.memName(hm.id), H.memBody({ id: hm.id, state: st, wid: 'other29', from: hm.from, home: { addr, integrity: 'fresh29-int' } }));
+        M.otherPut(H.tagName(addr), H.tagBody({ addr, integrity: 'fresh29-int', mem: hm.id }));
+        await M.eventSource.emit(M.event_types.CHAT_RENAMED, { avatarId: 'ari.png', oldFileName: 'zz-h.jsonl', newFileName: 'zz-i.jsonl' });
+    }, [old]);
+    await wait(1500);
+    h = await H();
+    r = await ev(() => M.chat.map(m => !!m.is_system));
+    ok(h.status === 'linked' && h.last === 4 && r.some(Boolean), `29. 새 방 → 다시 확인으로 연결 → 바로 숨김 맞춤 (${JSON.stringify(h)} ${JSON.stringify(r)})`);
 
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();

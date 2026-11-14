@@ -1300,3 +1300,19 @@ test('cleanName keeps a chat file name as the server cleans it', () => {
     assert.equal(cleanName('x'.repeat(250)), 'x'.repeat(250));
     assert.equal(cleanName('my.chat'), 'my.chat');
 });
+
+// v0.7.0-b1c (review of b1b, P1-4 / P2-2): the record of a rename names the room as the server made it.
+test('rename notice: the new name as the server cleans it', () => {
+    assert.deepEqual(renameNotice({ avatarId: 'ari.png', oldFileName: 'a.jsonl', newFileName: 'c:name?.jsonl' }), { from: roomAddr('ari.png', 'a'), to: roomAddr('ari.png', 'cname') });
+    assert.equal(renameNotice({ avatarId: 'ari.png', oldFileName: 'ab.jsonl', newFileName: 'a:b.jsonl' }), null, 'cleaned to the same name: no rename');
+});
+
+// v0.7.0-b1c (review of b1b, P1-4): the room of this name was seen leaving it here (renamed, not opened under its new name
+// since): a chat under this name now is another one (an imported copy that took the name), whatever its integrity.
+test('a linked tag of a name its room was seen leaving → hold (a copy took the name)', async () => {
+    const { files } = linked();
+    let r = await decideRoom(room({ left: B }), world(files).read);
+    assert.deepEqual([r.verdict, r.row, r.why, r.to], ['hold', 1, 'renamedAway', B]);
+    r = await decideRoom(room(), world(files).read);
+    assert.equal(r.verdict, 'link');
+});
