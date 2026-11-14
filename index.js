@@ -27,7 +27,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.7.0-b1e';
+const VERSION = '0.7.0-b1f';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -334,6 +334,9 @@ async function writeChatFile(fileMeta = null, guard = null) {
         if (await stIdle()) landed = true;
         if (moved()) { if (sent !== null) return sentSnap; throw fail(new RoomBlocked('채팅방이 바뀌어서 저장하지 않았어요.')); }
         if (landed) {
+            // v0.7.0-b1f (review of b1e, P1): the check runs before a copy already in the file ends the write too: `다시 확인` may
+            // have linked another memory while the request was answered (its hides then go back and are sent again).
+            if (guard && sent !== null) guard({ sent: true });
             const t0 = chatTarget(fileMeta);
             if (sent !== null && (!t0 || t0.body === sent)) return sentSnap;
             const c = await fileAllows(sentSnap);
@@ -899,7 +902,14 @@ async function writeEntry(queue, entry) {
     if (moved()) { restoreMarks(entry); throw saved(cancelMoved(queue, entry)); }
     // P1-1: the memory file is still the one this room last saw, right before the chat file is written.
     const still = await homeStill(mine);
-    if (!still.ok) {
+    // v0.7.0-b1f (review of b1e, P2-2): another memory linked meanwhile — as right before the request (guard): only the new hides
+    // go back; the other marks of the change (🔖, a hide taken away) still go out.
+    if (!still.ok && still.why === 'relinked') {
+        relinkedLate = true;
+        if (dropStaleHides(entry, { all: true }) && roomKey() === entry.key && roomEpoch === entry.epoch) { ctx().swipe?.refresh?.(); refreshView(); }
+        if (!changedMarks(entry).length) throw saved(new RoomBlocked('기억은 저장했어요. 하지만 그사이 이 방의 기억을 다시 확인해서, 이번 원문 숨김은 저장하지 않았어요. 다시 세이브하면 맞춰요.'));
+        toastr.info('그사이 이 방의 기억을 다시 확인해서, 새로 숨기려던 원문은 숨기지 않았어요. 다시 세이브하면 맞춰요.', 'SavePoint', { timeOut: 8000 });
+    } else if (!still.ok) {
         restoreMarks(entry);
         if (roomKey() === entry.key && roomEpoch === entry.epoch) { ctx().swipe?.refresh?.(); refreshView(); }
         throw saved(new RoomBlocked(still.why === 'moved' ? '채팅방이 바뀌어서 원문 숨김은 저장하지 않았어요.' : still.why === 'memRead' ? '기억 파일을 다시 읽지 못해서 원문 숨김은 저장하지 않았어요(기억은 저장했어요).' : still.why === 'relinked' ? '기억은 저장했어요. 하지만 그사이 이 방의 기억을 다시 확인해서, 이번 원문 숨김은 저장하지 않았어요. 다시 세이브하면 맞춰요.' : `기억은 저장했어요. 하지만 ${homeMessage()}`));
@@ -1559,7 +1569,7 @@ function homeInput(r) {
     const addr = roomKey(), seen = renamesSeen(), list = seen.filter(x => x.to === addr && !x.foreign);
     // v0.7.0-b1d (review of b1c, P1-3): also from the rooms kept as having left a name (`leftSeen`), which a deleted chat or
     // the 20-record limit never takes away.
-    const left = seen.find(x => x.from === addr && x.to !== addr && !x.foreign)?.to ?? leftSeen().find(x => x.from === addr && !x.foreign)?.to ?? null;
+    const left = seen.find(x => x.from === addr && x.to !== addr && !x.foreign && !x.settled)?.to ?? leftSeen().find(x => x.from === addr && !x.foreign)?.to ?? null;
     return { addr, integrity: typeof meta.integrity === 'string' && meta.integrity ? meta.integrity : null, mainChat: typeof meta.main_chat === 'string' && meta.main_chat ? meta.main_chat : null,
         copy, traces: hasTraces(meta, r.messages || []), prints: (r.messages || []).map(fingerprint), renames: list.map(x => ({ from: x.from, to: x.to })), left, old };
 }
@@ -1574,11 +1584,14 @@ function renamesSeen() { const s = settings(); if (!Array.isArray(s.renames)) s.
 // renames). Only the room coming back to the name (`to` is `from` again) or a new room of that name put in place here
 // (firstWrite, `clearLeft`) takes one away; a deletion of the room's new name only stops `to` following (`gone`). Up to 200.
 function leftSeen() { const s = settings(); if (!Array.isArray(s.leftNames)) s.leftNames = []; return s.leftNames; }
+// v0.7.0-b1f (review of b1e, P2-1): a rename seen away from `addr` stays (it may still link the room under its new name) but is
+// no reason any more to hold this name's own tag (`settled`).
 function clearLeft(addr) {
     const list = leftSeen(), keep = list.filter(x => x.from !== addr);
-    if (keep.length === list.length) return;
+    let touched = keep.length !== list.length;
     list.splice(0, list.length, ...keep);
-    saveSettings();
+    for (const x of renamesSeen()) if (x.from === addr && !x.settled) { x.settled = true; touched = true; }
+    if (touched) saveSettings();
 }
 function onChatRenamed(data) {
     const n = renameNotice(data);

@@ -847,6 +847,77 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r = { i: await ev(() => window.__i41), sp: [sp41, await spSaves()], after: await ev(() => M.serverFiles.r41.slice(1)) };
     ok(r.i >= 0 && r.sp[1] > r.sp[0] && newHidesIn(before41, r.after) === 0, `41. 실리태번이 그사이 저장 → 첫 요청 생략 안 하고 보내서 새 숨김 없음 (i=${r.i} sp=${r.sp} ${JSON.stringify(hidOf(r.after))} ← ${JSON.stringify(hidOf(before41))})`);
 
+    // ───── v0.7.0-b1f (review of b1e) ─────
+    // A reset of this room's memory put on the server by another device (rev + 1, nothing recorded).
+    const resetMem = (H, hm, name, wid) => { const cur = JSON.parse(M.files.get(name)), rev = cur.rev + 1; M.otherPut(name, H.memBody({ id: hm.id, state: { ...cur.state, lastIndex: -1, hashes: [], floor: -1, rev, wid, mem: { ...cur.state.mem, scenes: [], records: [] } }, rev, wid, from: cur.from, home: cur.home })); };
+    await ev(`window.resetMem = ${resetMem.toString()}`);
+    // 43. P1: the first chat request (with the new hides) is in the file and `다시 확인` links another device's reset while its
+    // answer is on the way: the write does not end on that copy — the hides go back and are sent again.
+    await linkedRoom('r43');
+    await ev(() => M.add(4)); await wait(300);
+    const before43 = await ev(() => JSON.parse(JSON.stringify(M.serverFiles.r43.slice(1))));
+    await ev(async () => {
+        const H = await import('/ext/home.js'), hm = __savePoint.home(), name = H.memName(hm.id), f = window.fetch;
+        let step = 'up';
+        window.__first43 = null;
+        window.fetch = async (u, o) => {
+            const s = String(u);
+            if (step === 'up' && s === '/api/files/upload' && JSON.parse(o.body).name === name) { step = 'save'; return f(u, o); }
+            if (step === 'save' && s === '/api/chats/save') {
+                step = null;
+                const res = await f(u, o);
+                window.__first43 = M.serverFiles.r43.slice(1).map(m => !!m.is_system);
+                resetMem(H, hm, name, 'other43');
+                __savePoint.handle('home-recheck').catch(() => {});
+                for (let i = 0; i < 40 && __savePoint.state()?.wid !== 'other43'; i++) await new Promise(r => setTimeout(r, 100));
+                return res;
+            }
+            return f(u, o);
+        };
+    });
+    await ev(() => __savePoint.handle('run').catch(() => {}));
+    await wait(5000);
+    h = await H();
+    r = await ev(() => ({ first: window.__first43, wid: __savePoint.state()?.wid ?? null, after: M.serverFiles.r43.slice(1) }));
+    ok(h.last === -1 && h.status === 'linked' && newHidesIn(before43, r.first.map(x => ({ is_system: x }))) > 0 && newHidesIn(before43, r.after) === 0, `43. 첫 저장 응답을 기다리는 사이 다시 확인이 리셋 연결 → 숨김 되돌려 다시 보냄 (${JSON.stringify(h)} wid=${r.wid} first=${JSON.stringify(r.first)} after=${JSON.stringify(hidOf(r.after))} ← ${JSON.stringify(hidOf(before43))})`);
+
+    // 44. P2-1: a room with no memory renamed in the list (a44 → b44); a new room (another integrity) made under a44 saves first
+    // and is opened again: linked to its own memory, not held.
+    await newRoom('a44'); await wait(900);
+    await ev(() => M.openFile('branchB')); await wait(900);
+    await ev(() => M.renameChat('a44', 'b44'));
+    await ev(() => { const list = JSON.parse(JSON.stringify(M.serverFiles.b44.slice(1))); M.serverFiles.a44 = [{ chat_metadata: { integrity: 'a44-new' } }, ...list]; return M.openFile('a44'); });
+    await wait(900);
+    await ev(() => M.add(4)); await ev(() => __savePoint.handle('run')); await wait(2000);
+    const h44 = await H();
+    await ev(() => M.openFile('branchB')); await wait(900);
+    await ev(() => M.openFile('a44')); await wait(1200);
+    h = await H();
+    ok(h44.status === 'linked' && !!h44.id && h.status === 'linked' && h.id === h44.id, `44. 옛 이름에 새로 만든 방 → 첫 저장 뒤 다시 열어도 자기 기억 연결 (${JSON.stringify(h44)} → ${JSON.stringify(h)})`);
+
+    // 45. P2-2: 🔖 turned off on a message the same change hides, and `다시 확인` links another device's reset before the memory
+    // check: only the new hide goes back (as in 37); the 🔖 stays off, on the page and in the file.
+    await linkedRoom('r45');
+    await ev(() => M.add(4)); await ev(() => __savePoint.handle('run')); await wait(2000);
+    const k45 = await ev(() => { const list = M.chat.map((m, i) => m.is_system ? i : -1).filter(i => i >= 0); return list[list.length - 1]; });
+    await ev(k => __savePoint.toggleKeep(k), k45); await wait(1500);
+    r = { on: await ev(k => ({ keep: !!M.chat[k].extra?.savepointKeep, hid: !!M.chat[k].is_system }), k45) };
+    await ev(async () => {
+        const H = await import('/ext/home.js'), hm = __savePoint.home(), name = H.memName(hm.id), f = window.fetch;
+        let step = 'up';
+        window.fetch = async (u, o) => {
+            const s = String(u);
+            if (step === 'up' && s === '/api/files/upload' && JSON.parse(o.body).name === name) { step = 'back'; __savePoint.handle('home-recheck').catch(() => {}); return f(u, o); }
+            if (step === 'back' && s.startsWith('/user/files/' + name)) { step = 'still'; const res = await f(u, o); resetMem(H, hm, name, 'other45'); return res; }
+            if (step === 'still' && s.startsWith('/user/files/' + name)) { step = null; await new Promise(r => setTimeout(r, 1500)); }
+            return f(u, o);
+        };
+    });
+    await ev(k => __savePoint.toggleKeep(k).catch(() => {}), k45);
+    await wait(4000);
+    r = { ...r, wid: await ev(() => __savePoint.state()?.wid ?? null), page: await ev(k => ({ keep: !!M.chat[k].extra?.savepointKeep }), k45), file: await ev(k => { const m = M.serverFiles.r45[k + 1]; return { keep: !!m.extra?.savepointKeep, hid: !!m.is_system }; }, k45) };
+    ok(r.on.keep && !r.on.hid && r.wid === 'other45' && !r.page.keep && !r.file.keep && !r.file.hid, `45. 기억 검사 전에 다시 확인이 리셋 연결 → 새 숨김만 되돌리고 🔖는 꺼진 그대로 저장 (${JSON.stringify(r)})`);
+
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();
     process.exit(failures ? 1 : 0);
