@@ -27,7 +27,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.7.0-b1h';
+const VERSION = '0.7.0-b1i';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -1587,7 +1587,11 @@ function homeInput(r) {
     // v0.7.0-b1d (review of b1c, P1-3): also from the rooms kept as having left a name (`leftSeen`), which a deleted chat or
     // the 20-record limit never takes away.
     const left = seen.find(x => x.from === addr && x.to !== addr && !x.foreign && !x.settled)?.to ?? leftSeen().find(x => x.from === addr && !x.foreign)?.to ?? null;
-    return { addr, integrity: typeof meta.integrity === 'string' && meta.integrity ? meta.integrity : null, mainChat: typeof meta.main_chat === 'string' && meta.main_chat ? meta.main_chat : null,
+    // v0.7.0-b1i (review of b1h, P1): what was seen away from this name when the room was decided (`was`, closed ones too: the
+    // settings may go back). A tag this opening writes here names those renames (`closes`), and once its memory is confirmed on
+    // the server they are settled (clearLeft) — nothing seen later (this room's own A → C) is touched.
+    const was = leftNow(addr);
+    return { addr, was, closes: was.from.map(renameId), integrity: typeof meta.integrity === 'string' && meta.integrity ? meta.integrity : null, mainChat: typeof meta.main_chat === 'string' && meta.main_chat ? meta.main_chat : null,
         copy, traces: hasTraces(meta, r.messages || []), prints: (r.messages || []).map(fingerprint), renames: list.map(x => ({ from: x.from, to: x.to, id: renameId(x) })), left, old };
 }
 // The decision still holds for the chat file read again: the same identity and old copy, the same messages (more may follow).
@@ -1609,11 +1613,15 @@ function leftSeen() { const s = settings(); if (!Array.isArray(s.leftNames)) s.l
 // room's soon). The write confirmed as this room's: they are settled, the takeover marks of renames to `addr` (`took`) and the
 // rooms kept as having left `addr` go. Nothing of this room's written (a read failed, held before the tag): reopened. No
 // answer or not proved either way: they stay closed.
+function leftNow(addr) {
+    const renames = renamesSeen();
+    return { addr, from: renames.filter(x => x.from === addr && x.to !== addr), took: renames.filter(x => x.to === addr && x.took === addr), left: leftSeen().filter(x => x.from === addr) };
+}
 function closeLeft(addr) {
-    const renames = renamesSeen(), closed = renames.filter(x => x.from === addr && x.to !== addr && !x.closed);
+    const was = leftNow(addr), closed = was.from.filter(x => !x.closed);
     for (const x of closed) x.closed = true;
     if (closed.length) saveSettings();
-    return { addr, closed, from: renames.filter(x => x.from === addr && x.to !== addr), took: renames.filter(x => x.to === addr && x.took === addr), left: leftSeen().filter(x => x.from === addr) };
+    return { ...was, closed };
 }
 function reopenLeft(was) {
     for (const x of was.closed) delete x.closed;
@@ -1788,7 +1796,7 @@ async function placed(h, res) {
         if (!mine()) return;
         if (m.kind !== OK || m.data.rev !== res.seen.rev || m.data.wid !== res.seen.wid) { setHome(h, 'readFail'); return; }
         attachHome(h, m.data);
-        return;
+        return true;
     }
     if (h.line?.pending) { setHome(h, 'pending'); return; }
     if (res.hold) { setHome(h, 'held', res.hold); return; }
@@ -1829,11 +1837,13 @@ async function actHome(h, d, input, files) {
     lineFor(h, { missing: true });
     let res;
     if (d.verdict === 'relink') res = await relinkMemory(placeIO(h), d, { addr, integrity, wid: newId() });
-    else if (d.verdict === 'migrate') res = await placeMemory(placeIO(h), { id: d.mem, from: { kind: 'migrate', addr, copy: input.copy.hash }, addr, integrity, copy: input.copy.hash, state: movedState(input.old), wid: newId() });
-    else if (d.verdict === 'branch') res = await placeMemory(placeIO(h), { id: d.mem, from: { kind: 'branch', addr, integrity, parent: d.parent }, addr, integrity, copy: input.copy?.hash ?? null, state: d.state, wid: newId() });
+    // v0.7.0-b1i (review of b1h, P1): a move out or a branch puts a new tag at this name: it names the renames seen away from it
+    // (`closes`), which are settled once the memory read back is the one placed. (relink: b3, with the tag's own `closes`.)
+    else if (d.verdict === 'migrate') res = await placeMemory(placeIO(h), { id: d.mem, from: { kind: 'migrate', addr, copy: input.copy.hash }, addr, integrity, copy: input.copy.hash, state: movedState(input.old), wid: newId(), closes: input.closes });
+    else if (d.verdict === 'branch') res = await placeMemory(placeIO(h), { id: d.mem, from: { kind: 'branch', addr, integrity, parent: d.parent }, addr, integrity, copy: input.copy?.hash ?? null, state: d.state, wid: newId(), closes: input.closes });
     else { setHome(h, 'held', d.why || d.verdict); return; }
     if (!mine()) return;
-    await placed(h, res);
+    if (await placed(h, res) && d.verdict !== 'relink' && mine()) clearLeft(input.was);
 }
 // P2-4, a rename seen here (decideRoom row 5): the memory's home moves to the new address first (its old one kept in
 // `was`), then the new tag, the integrity hint, and last the old tag is marked renamed. Stopped anywhere, the next
@@ -1847,6 +1857,9 @@ async function renameHome(h, d, input, files) {
     data = data.data;
     lineFor(h, { rev: data.rev, wid: data.wid });
     if (h.line.pending) { setHome(h, 'pending'); return; }
+    // v0.7.0-b1i (review of b1h, P1): the renames seen away from this name are settled only over a memory seen on the server at
+    // home here (read so, or written and read back: not UNREAD).
+    let sure = data.home.addr === addr;
     if (data.home.addr !== addr) {
         const wid = newId();
         const w = await writeMem(memIO(), h.line, { name: memName(d.mem), valid: validMem(d.mem), make: f => ({ ...nextMem(f, { ...f.state, roomKey: addr }, wid),
@@ -1854,7 +1867,7 @@ async function renameHome(h, d, input, files) {
         if (!mine()) return;
         if (w.status === PENDING) { setHome(h, 'pending'); return; }
         if (w.status !== MEM_OK && w.status !== UNREAD) { setHome(h, w.status === READ_ERROR ? 'readFail' : 'stopped', w.status); return; }
-        data = w.body;
+        data = w.body; sure = w.status === MEM_OK;
     }
     const step = async (name, valid, make) => {
         const cur = checked(await io.read(name), valid);
@@ -1866,12 +1879,13 @@ async function renameHome(h, d, input, files) {
     };
     const fromTag = checked(files.get(tagName(d.from)), validTag(d.from));
     const copy = fromTag?.kind === OK ? fromTag.data.copy ?? null : null;
-    let why = await step(tagName(addr), validTag(addr), t => !t ? tagBody({ addr, integrity, mem: d.mem, copy, prints: pickPrints(data.state.hashes) }) : sameLink(t, { id: d.mem, integrity, copy }) || null);
+    let why = await step(tagName(addr), validTag(addr), t => !t ? tagBody({ addr, integrity, mem: d.mem, copy, prints: pickPrints(data.state.hashes), closes: input.closes }) : sameLink(t, { id: d.mem, integrity, copy }) || null);
     if (!why && integrity) why = await step(clueName(integrity), validClue(integrity), c => c?.rooms.some(x => x.addr === addr && x.mem === d.mem) ? true : clueWith(c, integrity, addr, d.mem));
     if (!why) why = await step(tagName(d.from), validTag(d.from), t => !t ? true : t.state === 'renamed' ? true : t.mem === d.mem ? renamedTag(t, addr) : null);
     if (!mine()) return;
     if (why) { setHome(h, why === 'read' ? 'readFail' : why === 'tagChanged' ? 'held' : 'stopped', why); return; }
     attachHome(h, data);
+    if (sure) clearLeft(input.was);
 }
 // `다시 확인`: the chat file is read again and the room decided again. Reads only for a line whose write got no answer
 // (P1-2: that room waits to be opened again).

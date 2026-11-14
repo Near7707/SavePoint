@@ -1128,6 +1128,112 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r.blocked = blocked52; r.err = (await ev(() => __savePoint.ui.lastError?.at ?? null)) === err52 ? 'same' : 'new';
     ok(r.blocked === null && r.err === 'same' && r.at !== null && r.at === r.now && r.wid === 'other52' && r.file === 'other52' && r.errors === 0 && r.posts.every(p => !p.some(Boolean)) && h.status === 'linked', `52. 자동 체크포인트 중 리셋 연결 → 새 기억의 자동 저장 기록 그대로·실패로 안 남김 (${JSON.stringify(h)} ${JSON.stringify(r)})`);
 
+    // ───── v0.7.0-b1i (review of b1h) ─────
+    // P1: a tag put at a name another room left (a rename followed there, an old room moved out, a branch) names the renames seen
+    // away from it (`closes`): the room that left never takes that memory by its old rename. Once the memory is confirmed on the
+    // server, those renames are settled: the room is linked again when opened (not held as `renamedAway`).
+    const A = n => JSON.stringify(['ari.png', n]);
+    const tagOf = n => ev(async n => { const H = await import('/ext/home.js'), t = M.files.get(H.tagName(n)); return t ? JSON.parse(t) : null; }, A(n));
+    const leftOf = n => ev(a => ({ settled: M.settings.savePoint.renames.filter(x => x.from === a && x.to !== a).map(x => !!x.settled), left: (M.settings.savePoint.leftNames || []).filter(x => x.from === a).length }), A(n));
+    // a (no memory) → b; an imported copy of b (the same integrity) saves its memory at x; x → a. Opening a follows that rename.
+    async function renamedOnto(a, b, x) {
+        await newRoom(a); await wait(900);
+        await ev(() => M.openFile('branchB')); await wait(900);
+        await ev(([a, b]) => M.renameChat(a, b), [a, b]);
+        await ev(([b, x]) => { M.serverFiles[x] = JSON.parse(JSON.stringify(M.serverFiles[b])); return M.openFile(x); }, [b, x]); await wait(900);
+        await ev(() => M.add(4)); await ev(() => __savePoint.handle('run')); await wait(2000);
+        const hx = await H();
+        await ev(() => M.openFile('branchB')); await wait(900);
+        await ev(([x, a]) => M.renameChat(x, a), [x, a]);
+        return hx;
+    }
+
+    // 53. a rename followed onto a name another room left (x53 → a53, after a53 → b53): b53 does not take it; a53 opened again
+    // is linked.
+    const hx53 = await renamedOnto('a53', 'b53', 'x53');
+    await ev(() => M.openFile('a53')); await wait(1200);
+    const ha53 = await H();
+    await ev(() => M.openFile('b53')); await wait(1200);
+    const hb53 = await H();
+    await ev(() => M.openFile('a53')); await wait(1200);
+    h = await H();
+    r = { home: (await memOf(hx53.id))?.home?.addr === A('a53'), closes: (await tagOf('a53'))?.closes ?? null, ...(await leftOf('a53')) };
+    ok(ha53.verdict === 'rename' && ha53.status === 'linked' && ha53.id === hx53.id && hb53.id !== hx53.id && r.home && Array.isArray(r.closes) && r.closes.length > 0
+        && h.status === 'linked' && h.id === hx53.id && r.settled.every(Boolean) && r.left === 0, `53. 이름 변경으로 온 A의 기억을 옛 A → B 기록으로 B가 안 가져감·A 다시 열면 연결 (a=${JSON.stringify(ha53)} b=${JSON.stringify(hb53)} a again=${JSON.stringify(h)} ${JSON.stringify(r)})`);
+
+    // 54. an old room (its memory in the chat file, the integrity of b54) moved out at a54, after a54 → b54: the same.
+    await newRoom('a54'); await wait(900);
+    await ev(() => M.openFile('branchB')); await wait(900);
+    await ev(() => M.renameChat('a54', 'b54'));
+    // A room of its own with a memory (its state is the old copy put in the chat file at a54, and the parent of 55's branch).
+    await newRoom('p54'); await wait(900);
+    await ev(() => M.add(4)); await ev(() => __savePoint.handle('run')); await wait(2000);
+    await ev(() => { const st = JSON.parse(JSON.stringify(__savePoint.state())); M.serverFiles.a54 = [{ chat_metadata: { integrity: 'a54-int', savePoint: { ...st, roomKey: JSON.stringify(['ari.png', 'a54']), wid: 'old54' } } }, ...JSON.parse(JSON.stringify(M.chat))]; return M.openFile('a54'); });
+    await wait(1200);
+    const ha54 = await H();
+    await ev(() => M.openFile('b54')); await wait(1200);
+    const hb54 = await H();
+    await ev(() => M.openFile('a54')); await wait(1200);
+    h = await H();
+    r = { home: (await memOf(ha54.id))?.home?.addr === A('a54'), closes: (await tagOf('a54'))?.closes ?? null, ...(await leftOf('a54')) };
+    ok(ha54.verdict === 'migrate' && ha54.status === 'linked' && hb54.id !== ha54.id && r.home && Array.isArray(r.closes) && r.closes.length > 0
+        && h.status === 'linked' && h.id === ha54.id && r.settled.every(Boolean) && r.left === 0, `54. 예전 기억을 옮긴 A의 기억을 B가 안 가져감·A 다시 열면 연결 (a=${JSON.stringify(ha54)} b=${JSON.stringify(hb54)} a again=${JSON.stringify(h)} ${JSON.stringify(r)})`);
+
+    // 55. a branch put at a55 (after a55 → b55); b55 has the branch's integrity (a copy of it): the same.
+    await newRoom('a55'); await wait(900);
+    await ev(() => M.openFile('branchB')); await wait(900);
+    await ev(() => M.renameChat('a55', 'b55'));
+    await ev(() => M.openFile('p54')); await wait(1200);
+    await ev(() => { M.branchChat('a55', 9); M.serverFiles.b55[0].chat_metadata.integrity = M.serverFiles.a55[0].chat_metadata.integrity; return M.openFile('a55'); });
+    await wait(1200);
+    const ha55 = await H();
+    await ev(() => M.openFile('b55')); await wait(1200);
+    const hb55 = await H();
+    await ev(() => M.openFile('a55')); await wait(1200);
+    h = await H();
+    r = { home: (await memOf(ha55.id))?.home?.addr === A('a55'), closes: (await tagOf('a55'))?.closes ?? null, ...(await leftOf('a55')) };
+    ok(ha55.verdict === 'branch' && ha55.status === 'linked' && hb55.id !== ha55.id && r.home && Array.isArray(r.closes) && r.closes.length > 0
+        && h.status === 'linked' && h.id === ha55.id && r.settled.every(Boolean) && r.left === 0, `55. 갈래 방 A의 기억을 B가 안 가져감·A 다시 열면 연결 (a=${JSON.stringify(ha55)} b=${JSON.stringify(hb55)} a again=${JSON.stringify(h)} ${JSON.stringify(r)})`);
+
+    // 56. as 53, but the new tag reaches the server and its answer is lost: b56 still does not take the memory, and nothing seen
+    // away from a56 is settled (not confirmed; a56 linking to the tag already there is b3).
+    const hx56 = await renamedOnto('a56', 'b56', 'x56');
+    await ev(async () => {
+        const H = await import('/ext/home.js'), tag = H.tagName(JSON.stringify(['ari.png', 'a56'])), f = window.fetch;
+        window.fetch = async (u, o) => {
+            if (String(u) === '/api/files/upload' && JSON.parse(o.body).name === tag) { window.fetch = f; await f(u, o); return new Response('', { status: 500 }); }
+            return f(u, o);
+        };
+    });
+    await ev(() => M.openFile('a56')); await wait(1200);
+    const ha56 = await H();
+    await ev(() => M.openFile('b56')); await wait(1200);
+    const hb56 = await H();
+    r = { home: (await memOf(hx56.id))?.home?.addr === A('a56'), closes: (await tagOf('a56'))?.closes ?? null, ...(await leftOf('a56')) };
+    ok(ha56.status !== 'linked' && hb56.id !== hx56.id && r.home && Array.isArray(r.closes) && r.closes.length > 0 && r.settled.length > 0 && !r.settled.some(Boolean) && r.left > 0,
+        `56. 이름표 도착·응답 잃음 → B가 안 가져감·옛 기록 정리 안 함 (a=${JSON.stringify(ha56)} b=${JSON.stringify(hb56)} ${JSON.stringify(r)})`);
+
+    // 57. as 53, but the memory written at a57 cannot be read back (UNREAD): the room goes on (linked), b57 does not take it, and
+    // nothing seen away from a57 is settled.
+    const hx57 = await renamedOnto('a57', 'b57', 'x57');
+    await ev(async id => {
+        const H = await import('/ext/home.js'), name = H.memName(id), f = window.fetch;
+        let up = false;
+        window.fetch = async (u, o) => {
+            const s = String(u);
+            if (s === '/api/files/upload' && JSON.parse(o.body).name === name) up = true;
+            else if (up && s.startsWith('/user/files/' + name)) { window.fetch = f; return new Response('', { status: 500 }); }
+            return f(u, o);
+        };
+    }, hx57.id);
+    await ev(() => M.openFile('a57')); await wait(1200);
+    const ha57 = await H();
+    await ev(() => M.openFile('b57')); await wait(1200);
+    const hb57 = await H();
+    r = { home: (await memOf(hx57.id))?.home?.addr === A('a57'), closes: (await tagOf('a57'))?.closes ?? null, ...(await leftOf('a57')) };
+    ok(ha57.verdict === 'rename' && ha57.status === 'linked' && hb57.id !== hx57.id && r.home && Array.isArray(r.closes) && r.closes.length > 0 && r.settled.length > 0 && !r.settled.some(Boolean) && r.left > 0,
+        `57. 기억을 다시 읽지 못한 이름 변경 → B가 안 가져감·옛 기록 정리 안 함 (a=${JSON.stringify(ha57)} b=${JSON.stringify(hb57)} ${JSON.stringify(r)})`);
+
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();
     process.exit(failures ? 1 : 0);
