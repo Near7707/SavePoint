@@ -1,24 +1,23 @@
-# 코드 리뷰 요청 · v0.7.0-b1a (b1 코드 리뷰 반영, 브랜치 `v0.7-b`)
+# 코드 리뷰 요청 · v0.7.0-b1b (b1a 코드 리뷰 반영, 브랜치 `v0.7-b`)
 
-- 범위: `git diff ebde69c 68c1e84` — `index.js`(`writeEntry`, "room home" 구역의 `linkHome`·`linkRounds`·`lineFor`·`recheckHome`·`homeWrite`·`onChatRenamed`, `loadSave`의 #0), `home.js`(`cleanName`), 검사.
-- 처리 표와 자세한 내용: [REVIEW.md](REVIEW.md) 맨 위 v0.7.0-b1a. 계획: [PLAN-v0.7.md](PLAN-v0.7.md)의 "v0.7.0-b1a" 줄.
-- 이번에 하지 않은 것: P1-5(늘리는 숨김도 H1 순서로)는 b2, P2-1(이름 변경 중간 실패·A → B → A)은 b3~b4, P2-2는 그대로(이유는 REVIEW.md 표).
-- 결과는 지난번처럼 P1/P2/P3로 주세요. 브라우저 묶음은 우리 쪽에서 돌려요(`home-link.cjs` 1~15 통과, 전체 56묶음은 b1과 같은 19 통과 / 37 실패, 검사 모드 오류 0).
+- 범위: `git diff 36343f8 82ae85e` — `index.js`(`writeEntry`의 마지막 확인·지문 검사·`memSaved`, `guardedSave` 순서, `homeWrite`/`firstWrite`, `linkHome`·`recheckHome`의 `h.writing`, `onChatRenamed`·`onChatDeleted`), `home.js`(`cleanName`), 검사.
+- 처리 표와 자세한 내용: [REVIEW.md](REVIEW.md) 맨 위 v0.7.0-b1b.
+- 여전히 다음 조각: b1 리뷰 P1-5(H1 순서)는 b2, P2-1(이름 변경 중간 실패)은 b3~b4, #0 이어하기는 b3.
+- 결과는 P1/P2/P3로 주세요. 브라우저 묶음은 우리 쪽에서 돌려요(`home-link.cjs` 1~20 통과, 전체 56묶음은 b1과 같은 19 통과 / 37 실패, 검사 모드 오류 0).
 
-## 지난 리뷰(b1 코드 리뷰) 처리
-| 항목 | b1a |
+## 지난 리뷰(b1a 코드 리뷰) 처리
+| 항목 | b1b |
 |---|---|
-| P1-1 | 기억 쓰기 뒤·`homeStill()` 뒤 `moved()` 확인(표시만 되돌리고 취소). 채팅 쓰기 직전 `stIdle()` → `serverCovered()` 다시, 그 결과로 `written`·`marks`·`tick`을 다시 계산해 그 위에서만 씀. 재전송은 기존 `fileAllows`. |
-| P1-2 | `h.linking`(첫 await 전에 잡음, `recheckHome`도), 겹친 요청은 `h.again`. `lineFor`: 새 `memLine`도 이전 줄의 `pending`을 이어받음. 판정 반복·배치·이름 변경 전에 `pending`이면 끝. |
-| P1-3 | 새 방 첫 생성은 다시 읽은 본체 `wid === st.wid`일 때만 성공, 아니면 `CONFLICT`(통째로 되돌림 + 그 방 멈춤). |
-| P1-4 | 추측 경로를 빼는 대신 좁힘: 지금 방 이름 === `cleanName(입력한 이름)`일 때만. |
-| P2-3 | #0 이어하기를 b3까지 끔(기억만 불러오기 질문 한 번). |
-| P3 | 7·11번 단언 추가. |
+| P1-1 | `firstWrite`: `res.seen.wid !== st.wid`면 다시 읽기 전에 `CONFLICT`. |
+| P1-2 | 첫 저장 동안 `h.writing`, 그동안 `linkHome`·`recheckHome`은 아무것도 안 함(한 대기열로 합치는 대신). |
+| P1-3 | `guardedSave`: `homeStill()` → `stIdle()` → `serverCovered()` → 쓰기. |
+| P1-4 | 원문 쪽: `entry.prints`(적용 직후 지문)와 마지막 확인 뒤 표시를 바꾼 메시지의 지문 비교. 기억 리셋 쪽: ⚪(이유는 REVIEW.md). |
+| P1-5 | 기록이 방을 따라감(`to === from` → `to = 새 이름`), 삭제 알림으로 그 이름의 기록 지움. |
+| P2-1·P2-2·P3 | `roomOpened()` 조건, `cleanName` 확장자, `memSaved`. |
 
 ## 특히 봐 줄 곳
-1. P1-1: `serverCovered()`를 쓰기 직전에 다시 부르면서 `pre`를 바꾼 것 — `settleWrite`·`markUnsure`가 받는 `pre`(snap·rev·proof)와 `written`·`marks`·`tick`이 서로 맞는지. 변경 전 확인(`entry.still`)은 다시 하지 않았는데 괜찮은지.
-2. P1-2: `linkHome`/`linkRounds`/`recheckHome`의 잠금. `verifyRoom`의 `linkHome`이 잠금 때문에 바로 돌아간 경우 `roomOpened()`가 연결 전에 불리고, 연결은 `recheckHome`이 끝낼 때 `roomOpened()`를 다시 부르는 흐름이 빠짐없는지. 잠금이 풀리지 않는 길이 있는지.
-3. P1-2: `pending`이 화면이 그 방을 연 동안 계속 남는 것(새 줄로 바뀌어도). 풀리는 건 방을 다시 열 때뿐인데, 막혀서 못 푸는 경우가 있는지.
-4. P1-3: 다시 읽은 본체가 다른 영수증일 때 "덮임"(화면 기억 남김) 대신 "충돌"(통째로 되돌림)로 한 것. 이번 변경이 실제로 들어갔다가 덮인 경우도 같은 처리가 맞는지.
-5. P1-4: `cleanName`(sanitize-filename 규칙 옮김)이 실리태번 서버와 다를 때 실패 방향(옮기지 않음)이 안전한지. 10초·같은 범위 조건은 그대로.
-6. P2-3: 불러오기 경로에서 `insert`가 늘 거짓이 되며 남은 코드(`putCarried`·`undoMessage`·tainted)가 도달하지 않는지.
+1. P1-4 기억 리셋 쪽 ⚪: 틈을 "채팅 읽기 → 쓰기"에서 "기억 읽기 → 채팅 읽기"로 옮긴 판단과 그 결과(원문은 그대로, 숨김만 기억보다 앞섬, 다음 저장에서 그 방 멈춤)가 받아들일 만한지.
+2. P1-4 지문 검사가 "이번 변경이 표시를 바꾼 메시지"만 보는 것으로 충분한지(다른 메시지의 원문 변경, 스와이프).
+3. P1-2: `h.writing` 동안 버려지는 연결 요청(이름 변경 알림·다시 확인)이 첫 저장 실패(`REFUSED`·`READ_ERROR`, 방이 `new`로 남는 경우) 뒤에도 문제가 없는지.
+4. P1-5: 기록 따라가기와 삭제 알림 처리(이름만으로, 모든 범위)에서 진짜 이름 변경을 놓치는 경우.
+5. `guardedSave`에서 `homeStill()`이 먼저 오면서 생긴 새 틈(기억 확인 → 채팅 확인 사이의 다른 기기 기억 쓰기).
