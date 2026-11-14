@@ -305,6 +305,104 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const home15 = await ev(() => { const t = M.files.get('savepoint-mem-' + __savePoint.home().id + '.json'); return t ? JSON.parse(t).home?.addr : null; });
     ok(h.status === 'linked' && home15 === JSON.stringify(['ari.png', 'cleaned']), `15. 열린 방 이름 변경(서버가 이름 정리) → 그대로 옮겨짐 (${JSON.stringify(h)} ${home15})`);
 
+    // ───── v0.7.0-b1a (review of b1a) ─────
+    const room = () => ev(() => M.chatId);
+    const spSaves = () => ev(() => M.spSaves);
+    // 18. P1-3: a background chat save (a hide set outside a queued change): another device adds a reply while the memory
+    // file is read; the chat file is read after it, so the reply stays and nothing is written.
+    await ev(() => M.openFile('cleaned')); await wait(900);
+    r = await ev(() => {
+        const i = M.chat.findIndex(m => m.is_system && m.extra?.savepointHidden);
+        if (i < 0) return { i };
+        const m = M.chat[i]; delete m.is_system; delete m.extra.savepointHidden;
+        __savePoint.adoptPage();
+        return { i, sp: M.spSaves };
+    });
+    await ev(() => {
+        const f = window.fetch;
+        window.fetch = async (u, o) => {
+            if (String(u).startsWith('/user/files/savepoint-mem-')) { window.fetch = f; M.serverFiles[M.chatId].push({ name: 'Other', is_user: false, mes: 'Another device, background.', send_date: Date.now(), extra: {} }); }
+            return f(u, o);
+        };
+    });
+    await ev(() => __savePoint.syncHide());
+    await wait(2500);
+    r = { ...r, sp2: await spSaves(), kept: await ev(() => M.serverFiles[M.chatId].some(m => m.mes === 'Another device, background.')) };
+    ok(r.i >= 0 && r.sp2 === r.sp && r.kept, `18. 백그라운드 채팅 저장: 기억 파일 읽는 사이 다른 기기 답변 → 채팅 파일 쓰지 않음·답변 그대로 (${JSON.stringify(r)})`);
+
+    // 19. P1-4: a message this change hides is edited on this page (and saved by SillyTavern) during the last chat check:
+    // no hide goes out, the edited message is shown.
+    await ev(() => M.openFile('cleaned')); await wait(900);
+    await ev(() => M.add(4));
+    r = await spSaves();
+    await ev(() => {
+        const f = window.fetch;
+        let up = false;
+        window.fetch = async (u, o) => {
+            const s = String(u);
+            if (s === '/api/files/upload' && JSON.parse(o.body).name.startsWith('savepoint-mem-')) up = true;
+            else if (up && s === '/api/chats/get') {
+                window.fetch = f;
+                const server = M.serverFiles[M.chatId].slice(1), i = M.chat.findIndex((m, k) => m.is_system && !server[k]?.is_system);
+                window.__edited = i;
+                if (i >= 0) { M.chat[i].mes += ' (edited here)'; M.chat[i].swipes && (M.chat[i].swipes[M.chat[i].swipe_id || 0] = M.chat[i].mes); M.stSave(); }
+            }
+            return f(u, o);
+        };
+    });
+    await ev(() => __savePoint.handle('run'));
+    await wait(2500);
+    r = { sp: [r, await spSaves()], ...(await ev(() => { const i = window.__edited, m = M.serverFiles[M.chatId][i + 1]; return { i, server: !!m?.is_system, page: !!M.chat[i]?.is_system, edited: /edited here/.test(m?.mes || '') }; })) };
+    // The hide SillyTavern's own save carried (`server`) is P1-5 of the b1 review: b2 (H1) sets a hide only after its memory.
+    ok(r.i >= 0 && r.sp[0] === r.sp[1] && !r.page && r.edited, `19. 마지막 확인 중 숨길 원문이 바뀜 → SavePoint는 숨김 저장 안 함·화면 숨김 풀림 (${JSON.stringify(r)})`);
+
+    // 20. P1-5: a rename seen before follows the room (A → B → C in the list); an imported copy renamed to B later is not
+    // taken for A. Opening C still takes A's memory.
+    await ev(() => M.openFile('cleaned')); await wait(900);
+    const mem20 = (await H()).id;
+    const copy20 = await ev(() => M.importChat('cleaned', 'copy20'));
+    await ev(() => M.openFile('branchB')); await wait(900);
+    await ev(() => M.renameChat('cleaned', 'rB')); await ev(() => M.renameChat('rB', 'rC')); await ev(() => M.renameChat('copy20', 'rB'));
+    await ev(() => M.openFile('rB')); await wait(1200);
+    h = await H();
+    const home20 = await ev(id => JSON.parse(M.files.get('savepoint-mem-' + id + '.json')).home.addr, mem20);
+    ok(h.status === 'held' && h.verdict !== 'rename' && home20 === JSON.stringify(['ari.png', 'cleaned']), `20. 옛 이름을 이어받은 사본 → 원래 기억을 옮기지 않음 (${JSON.stringify(h)} ${home20})`);
+    await ev(() => M.openFile('rC')); await wait(1200);
+    h = await H();
+    const home20c = await ev(id => JSON.parse(M.files.get('savepoint-mem-' + id + '.json')).home.addr, mem20);
+    ok(h.status === 'linked' && h.verdict === 'rename' && h.id === mem20 && home20c === JSON.stringify(['ari.png', 'rC']), `20. 두 번 바꾼 원래 방 → 기억 이어받음 (${JSON.stringify(h)} ${home20c})`);
+
+    // 16. P1-1: another device made this new room's memory first and the read after it fails: still not this change's.
+    const newRoom = name => ev(([n, i]) => { const list = JSON.parse(JSON.stringify(M.chat.slice(0, 6))); list.forEach(m => { delete m.is_system; if (m.extra) for (const k of Object.keys(m.extra)) if (k.startsWith('savepoint')) delete m.extra[k]; }); M.serverFiles[n] = [{ chat_metadata: { integrity: i } }, ...list]; return M.openFile(n); }, [name, name + '-int']);
+    await newRoom('fresh16'); await wait(900);
+    const id16 = (await H()).id;
+    await ev(async ([o]) => {
+        const H = await import('/ext/home.js'), hm = __savePoint.home(), addr = JSON.stringify(['ari.png', 'fresh16']);
+        const st = { ...o, roomKey: addr, linkedSave: null, lastIndex: 2, hashes: o.hashes.slice(0, 3), floor: 2, rev: 1, wid: 'other16' };
+        M.otherPut(H.memName(hm.id), H.memBody({ id: hm.id, state: st, wid: 'other16', from: hm.from, home: { addr, integrity: 'fresh16-int' } }));
+        M.otherPut(H.tagName(addr), H.tagBody({ addr, integrity: 'fresh16-int', mem: hm.id }));
+        const f = window.fetch; let n = 0;
+        window.fetch = async (u, op) => { if (String(u).startsWith('/user/files/' + H.memName(hm.id)) && ++n === 2) { window.fetch = f; return new Response('down', { status: 503 }); } return f(u, op); };
+    }, [old]);
+    await ev(() => __savePoint.handle('run'));
+    await wait(1500);
+    h = await H();
+    await ev(() => __savePoint.commitEdit(mem => { if (mem.scenes[0]) mem.scenes[0].star = !mem.scenes[0].star; }).catch(() => {})); await wait(500);
+    const f16 = await memOf(id16);
+    ok(f16?.wid === 'other16' && h.stop === 'conflict', `16. 새 방 첫 저장: 다른 기기 기억 + 마지막 읽기 실패 → 충돌로 멈춤, 다음 편집도 안 덮음 (${JSON.stringify(h)} ${f16?.wid})`);
+
+    // 17. P1-2: a rename notice while a new room's first memory write is on its way: the room is not decided again, and the
+    // memory written stays on the page (the next change keeps it).
+    await newRoom('fresh17'); await wait(900);
+    await ev(() => { M.beforeUpload = async name => { if (!name.startsWith('savepoint-mem-')) return; M.beforeUpload = null; await M.eventSource.emit(M.event_types.CHAT_RENAMED, { avatarId: 'ari.png', oldFileName: 'zz-c.jsonl', newFileName: 'zz-d.jsonl' }); await new Promise(r => setTimeout(r, 600)); }; });
+    await ev(() => __savePoint.handle('run'));
+    await wait(2000);
+    h = await H();
+    await ev(() => __savePoint.commitEdit(mem => { mem.scenes[0].star = !mem.scenes[0].star; }).catch(e => e.message)); await wait(500);
+    const f17 = await memOf(h.id);
+    r = { page: await ev(() => __savePoint.state()?.lastIndex ?? null), file: f17?.state?.lastIndex ?? null, scenes: f17?.state?.mem?.scenes?.length ?? 0 };
+    ok(h.status === 'linked' && r.page !== null && r.page >= 0 && r.file === r.page && r.scenes > 0, `17. 첫 저장 중 이름 변경 알림 → 다시 판정 안 함, 다음 편집도 기억 유지 (${JSON.stringify(h)} ${JSON.stringify(r)})`);
+
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();
     process.exit(failures ? 1 : 0);

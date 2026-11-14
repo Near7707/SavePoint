@@ -1296,4 +1296,7 @@ test('cleanName keeps a chat file name as the server cleans it', () => {
     assert.equal(cleanName('con'), '');
     assert.equal(cleanName('..'), '..', 'with .jsonl it is not a name of dots only');
     assert.equal(cleanName('x'.repeat(300)).length, 255, 'cut at 255 bytes (the cut takes .jsonl too)');
+    // v0.7.0-b1a (review of b1a, P2-2): a cut ".jsonl" ("…x.json") goes as path.parse(file).name takes it.
+    assert.equal(cleanName('x'.repeat(250)), 'x'.repeat(250));
+    assert.equal(cleanName('my.chat'), 'my.chat');
 });

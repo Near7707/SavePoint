@@ -101,7 +101,8 @@ export function renameNotice(data) {
 
 // v0.7.0-b1a (review P1-4): the name SillyTavern's server keeps for a typed chat file name (the rules of the
 // sanitize-filename package it uses: characters a file name cannot hold go, a name of dots or a Windows device name
-// becomes empty, the name is cut at 255 bytes). The typed name is given without ".jsonl", as renameNotice has it.
+// becomes empty, the name is cut at 255 bytes), then its extension as path.parse takes it. The typed name is given
+// without ".jsonl", as renameNotice has it.
 export function cleanName(typed) {
     let n = String(typed ?? '') + '.jsonl';
     n = n.replace(/[\/\?<>\\:\*\|"]/g, '').replace(/[\x00-\x1f\x80-\x9f]/g, '');
@@ -109,7 +110,10 @@ export function cleanName(typed) {
     n = n.replace(/[\. ]+$/, '');
     const bytes = new TextEncoder().encode(n);
     if (bytes.length > 255) { let cut = 255; while (cut > 0 && (bytes[cut] & 0xc0) === 0x80) cut--; n = new TextDecoder().decode(bytes.slice(0, cut)); }
-    return n.replace(/\.jsonl$/i, '');
+    // v0.7.0-b1a (review of b1a, P2-2): the server names the room by path.parse(file).name: the last extension goes, whole
+    // or cut (".j" of a cut ".jsonl"); a name that is only ".something" stays.
+    const dot = n.lastIndexOf('.');
+    return dot > 0 ? n.slice(0, dot) : n;
 }
 
 // SavePoint's marks on messages (hide, shown, held, 🔖) and the old in-chat memory.

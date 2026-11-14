@@ -27,7 +27,7 @@ export function gateBox() {
         // v0.7.0-a2: the recorded messages are unchanged here (the second source check before a save's request).
         firstMismatch: () => -1,
         // v0.7.0-b1: the room's memory file (always written here), the chat-side gate alone, the memory line open.
-        homeWrite: async () => ({ status: 'ok' }), homeStill: async () => ({ ok: true }), homeOpen: () => true, chatOpen: () => true,
+        homeWrite: async () => ({ status: 'ok' }), homeStill: async () => ({ ok: true }), fingerprint: m => JSON.stringify([m?.name || '', !!m?.is_user, m?.mes || '', m?.swipe_id ?? null]), homeOpen: () => true, chatOpen: () => true,
         MEM_NOT_WRITTEN: new Set(['refused', 'conflict', 'error', 'moved']), MEM_OK: 'ok', UNREAD: 'unread', homeWriteError: w => String(w.status), homeMessage: () => '',
     };
 }
