@@ -176,8 +176,12 @@ export const validCopyHint = copy => d => plainObj(d) && d.format === 'savepoint
 // `copy`: the old in-chat copy the chat file had when this memory was linked to the room (null: none).
 export const memBody = ({ id, state, rev = 0, wid, recent = [], from, home, copy = null }) =>
     ({ format: 'savepoint-mem', v: 1, id, rev, wid, recent: [...recent, { rev, wid }].slice(-RECENT), from, home, copy, state });
-export const tagBody = ({ addr, integrity = null, mem, copy = null, prints = [], at = Date.now() }) =>
-    ({ format: 'savepoint-room', v: 1, addr, integrity, mem, copy, prints, state: 'linked', at });
+// v0.7.0-b1h (review of b1g, P1): `closes`: the renames seen away from this name before a new room's first write here (their ids,
+// `from|at` on the device that saw them). The tag carries them, so they are never proof for it, whatever the settings say.
+export const tagBody = ({ addr, integrity = null, mem, copy = null, prints = [], at = Date.now(), closes = [] }) =>
+    ({ format: 'savepoint-room', v: 1, addr, integrity, mem, copy, prints, state: 'linked', at, ...(closes.length ? { closes } : {}) });
+// The id of a rename record (seen on this device): its old name and the time it was seen. Only an id, never compared as a time.
+export const renameId = r => `${r?.from}|${r?.at}`;
 export const renamedTag = (tag, to, at = Date.now()) => ({ ...tag, state: 'renamed', to, at });
 export const clueBody = (integrity, rooms) => ({ format: 'savepoint-int', v: 1, integrity, rooms });
 export const clueWith = (clue, integrity, addr, mem) => {
@@ -332,6 +336,8 @@ export async function decideRoom(input, read, { readMem = id => read(memName(id)
         if (r?.to !== addr || !str(r.from) || r.from === addr) continue;
         const t = files.get(tagName(r.from));
         if (t?.kind !== OK) continue;
+        // v0.7.0-b1h (review of b1g, P1): a tag a new room wrote after this rename (it names the rename) is that room's.
+        if (Array.isArray(t.data.closes) && t.data.closes.includes(r.id)) continue;
         const toHere = t.data.state === 'renamed' ? t.data.to === addr : true;
         if (!toHere || !str(t.data.integrity) || t.data.integrity !== integrity) continue;
         const m = await mem(t.data.mem);
@@ -615,7 +621,7 @@ export function checkMem(res, { id, from, addr, integrity = null, copy = null, w
 // Two devices: one that finds the other's start mark for another old copy holds. Both can still pass when
 // the second writes its mark after the first checked its own (the server has no compare-and-write); the
 // recheck right before the tag narrows that, and the tag is written last either way.
-export async function placeMemory(io, { id, from, addr, integrity = null, copy = null, state, wid, resume = null }) {
+export async function placeMemory(io, { id, from, addr, integrity = null, copy = null, state, wid, resume = null, closes = [] }) {
     const move = from?.kind === 'migrate';
     const rd = async name => { try { return await io.read(name); } catch { return { kind: ERROR }; } };
     const wr = async (name, body) => { try { await io.write(name, body); return true; } catch { return false; } };
@@ -689,7 +695,7 @@ export async function placeMemory(io, { id, from, addr, integrity = null, copy =
                 if (sameLink(t.data, { id, integrity, copy })) continue;
                 return { hold: 'tagChanged', step };
             }
-            if (!await wr(tagName(addr), tagBody({ addr, integrity, mem: id, copy, prints: pickPrints(body.state.hashes) }))) return { stop: 'write', step };
+            if (!await wr(tagName(addr), tagBody({ addr, integrity, mem: id, copy, prints: pickPrints(body.state.hashes), closes }))) return { stop: 'write', step };
         }
     }
     return { done: true, mem: id, adopted, seen: { rev: body.rev, wid: body.wid } };

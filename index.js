@@ -11,7 +11,7 @@ import { foldLegacyOutline,
 } from './core.js';
 import { lootStatus, lootWarning, lootInChunk, lootBlock, attachLoot, settleLoot, failLoot, lootTarget, applyLootSupplement, restoreLostLoot } from './loot.js';
 import { Vault, roomHash, quickId } from './vault.js';
-import { decideRoom, placeMemory, relinkMemory, memName, tagName, clueName, validMem, validTag, validClue, tagBody, renamedTag, clueWith, nextMem, renameNotice, cleanName, copyHash, hasTraces, readUserFile, checked, pickPrints, validState, sameLink, MISSING, OK } from './home.js';
+import { decideRoom, placeMemory, relinkMemory, memName, tagName, clueName, validMem, validTag, validClue, tagBody, renamedTag, renameId, clueWith, nextMem, renameNotice, cleanName, copyHash, hasTraces, readUserFile, checked, pickPrints, validState, sameLink, MISSING, OK } from './home.js';
 import { memLine, writeMem, serverMemIO, MEM_OK, PENDING, REFUSED, UNREAD, CONFLICT, OVERWRITTEN, READ_ERROR } from './memfile.js';
 import { snapshot, splitFile, covers, writeResult, samePage, canon, PAGE_KEYS } from './guard.js';
 import { upgradeEvidence, segmentPrior, evidenceNumbers } from './provenance.js';
@@ -27,7 +27,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.7.0-b1g';
+const VERSION = '0.7.0-b1h';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -1012,6 +1012,9 @@ async function writeEntry(queue, entry) {
     } catch (e) {
         // v0.7.0-b1c (review of b1b, P3): the memory is in its file whatever happened to the chat file (`memSaved`).
         if (e?.kept) throw saved(e);
+        // v0.7.0-b1h (review of b1g, P2): another memory linked during the change (Relinked) goes on as it is: not a failed chat
+        // write (no mark taken back, nothing waiting cancelled, no failure kept on the memory linked now).
+        if (e?.name === 'Relinked') throw e;
         // v0.7.0-b1: the memory is in its file already: only the marks this change set go back.
         const error = new Error(`기억은 저장했지만 채팅 파일에 원문 숨김을 저장하지 못해서 숨김만 되돌렸어요. (${e?.message || e})`);
         const here = restoreMarks(entry);
@@ -1585,7 +1588,7 @@ function homeInput(r) {
     // the 20-record limit never takes away.
     const left = seen.find(x => x.from === addr && x.to !== addr && !x.foreign && !x.settled)?.to ?? leftSeen().find(x => x.from === addr && !x.foreign)?.to ?? null;
     return { addr, integrity: typeof meta.integrity === 'string' && meta.integrity ? meta.integrity : null, mainChat: typeof meta.main_chat === 'string' && meta.main_chat ? meta.main_chat : null,
-        copy, traces: hasTraces(meta, r.messages || []), prints: (r.messages || []).map(fingerprint), renames: list.map(x => ({ from: x.from, to: x.to })), left, old };
+        copy, traces: hasTraces(meta, r.messages || []), prints: (r.messages || []).map(fingerprint), renames: list.map(x => ({ from: x.from, to: x.to, id: renameId(x) })), left, old };
 }
 // The decision still holds for the chat file read again: the same identity and old copy, the same messages (more may follow).
 function sameInput(a, b) {
@@ -1961,7 +1964,8 @@ async function firstWrite(h, st, state) {
 }
 async function placeFirst(h, st, state, was) {
     {
-        const res = await placeMemory(placeIO(h), { id: h.id, from: h.from, addr: h.key, integrity: h.from?.integrity ?? null, copy: null, state, wid: st.wid });
+        // v0.7.0-b1h (review of b1g, P1): the tag names every rename seen away from this name when the write started.
+        const res = await placeMemory(placeIO(h), { id: h.id, from: h.from, addr: h.key, integrity: h.from?.integrity ?? null, copy: null, state, wid: st.wid, closes: was.from.map(renameId) });
         if (res.done) {
             // v0.7.0-b1a (review of b1a, P1-1): a body made by another device (its receipt seen by placeMemory) is never
             // this change's, whatever the read back says (it may fail).
@@ -4412,7 +4416,11 @@ function paintKeepSoon() { clearTimeout(keepPaintTimer); keepPaintTimer = setTim
 // ───────── small helpers ─────────
 
 function esc(t) { return String(t ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
-function reportError(e) { console.error('[SavePoint]', e); toastr.error(errorText(e), 'SavePoint'); }
+function reportError(e) {
+    // v0.7.0-b1h (review of b1g, P3): another memory linked during a change (Relinked) is a notice, not an error.
+    if (e?.name === 'Relinked') { toastr.info(e.message, 'SavePoint', { timeOut: 8000 }); return; }
+    console.error('[SavePoint]', e); toastr.error(errorText(e), 'SavePoint');
+}
 async function askText(title, value = '') {
     const c = ctx();
     const r = await c.callGenericPopup(esc(title), c.POPUP_TYPE.INPUT, value);

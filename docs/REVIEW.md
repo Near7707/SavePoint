@@ -1,3 +1,37 @@
+# v0.7.0-b1h · v0.7.0-b1g 코드 리뷰 반영 (브랜치 `v0.7-b`)
+
+기준: `v0.7-b`의 `41f1622`(b1g 리뷰 요청서, 코드는 `f21543d`). 파일: `index.js`, `home.js`, 검사, 문서. 리뷰 결과 P1 1 · P2 2 · P3 1. 모두 코드로 확인했고, 2차 의견대로 P1·P2-1·P3 반영, P2-2는 보류(README 한계).
+
+| 리뷰 항목 | 처리 |
+|---|---|
+| P1 (`closeLeft`의 `closed`는 설정 저장이 1초 늦음 → 새 이름표가 서버에 닿은 뒤 저장 전 새로고침이면 옛 `A → B`가 살아나 B가 사본 기억을 가져감) | 🔴 첫 저장이 시작될 때 있던 `from === A` 기록 전체의 ID(`renameId`: `from|at`, 한 번 붙은 값 그대로 — `to`는 나중에 바뀌어서 안 씀, `at`은 순서 비교에 안 씀)를 이름표에 `closes`로 적음(`placeMemory` → `tagBody`). `decideRoom` 5행은 이름표의 `closes`에 그 기록 ID가 있으면 건너뜀(`homeInput`이 `renames`에 `id`를 넘김). 이름표와 차단 정보가 같은 파일로 함께 도착. 설정의 `closed`는 그대로(이름표가 닿기 전 같은 화면의 판정용). |
+| P2-1 (`nothingSent`의 `Relinked`를 바깥 `catch`가 일반 `Error`로 감싸 대기 변경 취소·체크포인트 실패 기록) | 🟡 바깥 `catch`에서 `Relinked`는 그대로 다시 던짐(표시 되돌림·대기 취소·`saved` 감싸기 없음 — `relinked()`가 이미 `saved`). 그러면 실행 쪽 `relinkedRun` 처리가 작동. |
+| P2-2 (옛 `leftSeen`이 남은 채 첫 저장 중 `A → C` → `foreign`이 남아 C 보류) | ⚪ 보류. 실리태번의 이름 변경 알림엔 이름만 있어 그 기록이 이번 저장의 방에서 생겼는지 확인할 수 없음 → 잘못 풀면 기억을 옮기는 근거가 됨. 보류 쪽이 안전. README 알려진 한계. |
+| P3 (🔖 버튼에서 `Relinked`가 `reportError`로 빨간 오류) | 🟡 `reportError`가 `Relinked`만 안내(info)로. |
+
+바뀐 것
+1. `home.js`: `tagBody`의 `closes`(있을 때만), `renameId`, `placeMemory`의 `closes`, `decideRoom` 5행 건너뛰기.
+2. `index.js`: `placeFirst`가 `closes: was.from.map(renameId)`, `homeInput`의 `renames`에 `id`, 바깥 `catch`의 `Relinked` 통과, `reportError`.
+3. 버전 `0.7.0-b1h`. README 한계 한 줄.
+
+★ 특히 봐 줄 곳
+- ★ P1 `closes`는 `was.from`(시작 때 `from === A`인 기록 전체, 이미 `closed`였던 것 포함). `renamedTag`는 이름표를 펼쳐 써서 A가 나중에 이름을 바꿔도 `closes`가 남음 → 그 뒤 생긴 A의 자기 기록은 ID가 달라 영향 없음.
+- ★ P1 옛 이름표(`closes` 없음)는 그대로 읽힘(`validTag`는 다른 필드를 막지 않음).
+- ★ P2-1 `Relinked`가 바깥 `catch`를 지나면 `restoreMarks`를 안 함: 새 숨김은 이미 `guard`/`relinked` 경로에서 되돌렸고, 남은 표시는 새 기억 기준(`followHome`)으로 맞춘 상태.
+
+바뀐 기대(기존 검사)
+- 45: 🔖 변경을 버튼 클릭으로(모의 화면엔 버튼 줄이 없어 메시지에 버튼을 넣고 클릭). 빨간 오류 없음, 재연결 안내 있음을 추가 확인.
+
+검사 준비
+- `home-link.cjs` 49b: 49처럼 사본의 이름표 업로드 응답 직후, 설정을 첫 저장 전 상태(그 기록에 `closed` 없음)로 되돌리고 b49b를 엶. 서버 이름표의 `mem`(사본 기억)·`closes`도 확인. 52: 새 방(옛 숨김 없음)의 자동 체크포인트(`autoCollect`), 기록이 든 기억 업로드 다음 `/api/chats/get`에서 리셋 + `home-recheck` → 보낼 표시 없음(`nothingSent`). 연결 직후와 끝의 `autoFail`·`autoLast`·`autoMark`가 같은지, `ui.lastError`가 새로 안 생기는지.
+
+검사와 망가뜨리기 결과
+- `home-link.cjs` 1~52(49b 포함) 모두 통과. 고치기 전 코드(`f21543d`)에선 45·49b·52 실패.
+- 망가뜨리기: 5행의 `closes` 확인 제거 → 49b 실패. 첫 저장이 `closes`를 안 넘김 → 49b 실패. 바깥 `catch`의 `Relinked` 통과 제거 → 52 실패. `reportError`의 `Relinked` 안내 제거 → 45 실패.
+- Node: 502 통과 / 4 실패(b1과 같은 4개) / 3 건너뜀.
+- 브라우저 묶음 전체(56묶음): 통과 19 / 실패 37, 검사 모드 오류 0. 통과 묶음은 b1g와 같은 19개. 실패는 b1부터의 기존 기대(b2 뒤에 옮김).
+- 참고: 52의 `resetMem`은 검사용이라 기억의 `line`을 그대로 둠. 실제 리셋은 새 `line`(`newState`)이라 실행 `catch`의 `noteAuto`(같은 `line`만 기록)는 리셋된 기억에 쓰지 않음.
+
 # v0.7.0-b1g · v0.7.0-b1f 코드 리뷰 반영 (브랜치 `v0.7-b`)
 
 기준: `v0.7-b`의 `1b49a71`(b1f 리뷰 요청서, 코드는 `06af54a`). 파일: `index.js`, 검사, 문서. 리뷰 결과 P1 2 · P2 1, P3 없음. 모두 코드로 확인했고, 반영 계획을 다시 리뷰받아 그 의견(2차)대로 바꿔 반영했어요(재현은 새 검사 46~51).

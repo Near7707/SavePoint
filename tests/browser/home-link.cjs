@@ -915,10 +915,15 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
             return f(u, o);
         };
     });
-    await ev(k => __savePoint.toggleKeep(k).catch(() => {}), k45);
+    // v0.7.0-b1h (review of b1g, P3): through the 🔖 button itself — the change ends with the notice of a memory linked meanwhile,
+    // never a red error.
+    await ev(() => { toastr.log.length = 0; });
+    // (The mock's chat view has no button bar: a button is put on the message, as SillyTavern's bar would hold it.)
+    const btn45 = await ev(k => { let el = document.querySelector(`#chat .mes[mesid="${k}"]`); if (!el) { el = document.createElement('div'); el.className = 'mes'; el.setAttribute('mesid', String(k)); document.querySelector('#chat').append(el); } let b = el.querySelector('.sp-keep-btn'); if (!b) { el.insertAdjacentHTML('beforeend', '<div class="sp-keep-btn"></div>'); b = el.querySelector('.sp-keep-btn'); } b.click(); return true; }, k45);
     await wait(4000);
     r = { ...r, wid: await ev(() => __savePoint.state()?.wid ?? null), page: await ev(k => ({ keep: !!M.chat[k].extra?.savepointKeep }), k45), file: await ev(k => { const m = M.serverFiles.r45[k + 1]; return { keep: !!m.extra?.savepointKeep, hid: !!m.is_system }; }, k45) };
-    ok(r.on.keep && !r.on.hid && r.wid === 'other45' && !r.page.keep && !r.file.keep && !r.file.hid, `45. 기억 검사 전에 다시 확인이 리셋 연결 → 새 숨김만 되돌리고 🔖는 꺼진 그대로 저장 (${JSON.stringify(r)})`);
+    r.btn = btn45; r.toasts = await ev(() => toastr.log.map(([k, m]) => k + ':' + String(m).slice(0, 20)));
+    ok(r.btn && !r.toasts.some(t => t.startsWith('error:')) && r.toasts.some(t => t.startsWith('info:저장하는 사이')) && r.on.keep && !r.on.hid && r.wid === 'other45' && !r.page.keep && !r.file.keep && !r.file.hid, `45. 기억 검사 전에 다시 확인이 리셋 연결 → 새 숨김만 되돌리고 🔖는 꺼진 그대로 저장 (${JSON.stringify(r)})`);
 
     // ───── v0.7.0-b1g (review of b1f) ─────
     const spHid = list => list.map(m => !!(m?.is_system && m.extra?.savepointHidden));
@@ -1048,6 +1053,80 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => M.openFile('c51')); await wait(1200);
     h = await H();
     ok(h51.status === 'linked' && !!h51.id && h.status === 'linked' && h.id === h51.id, `51. 옛 이름을 이어받은 방이 첫 저장 뒤 다시 이름 변경 → 보류 없이 연결 (${JSON.stringify(h51)} → ${JSON.stringify(h)})`);
+
+    // ───── v0.7.0-b1h (review of b1g) ─────
+    // 49b. P1: as 49, but the settings go back to what they were before the first write (a reload before SillyTavern saved them:
+    // the rename is not closed there) right after the copy's tag reached the server; b49b opened then still does not take the
+    // copy's memory (the tag names the rename it closes).
+    await newRoom('a49b'); await wait(900);
+    await ev(() => M.openFile('branchB')); await wait(900);
+    await ev(() => M.renameChat('a49b', 'b49b'));
+    await ev(() => { M.serverFiles.a49b = JSON.parse(JSON.stringify(M.serverFiles.b49b)); return M.openFile('a49b'); });
+    await wait(900);
+    await ev(async () => {
+        const H = await import('/ext/home.js'), tag = H.tagName(JSON.stringify(['ari.png', 'a49b'])), f = window.fetch, old = JSON.stringify(M.settings.savePoint);
+        window.__h49b = null;
+        window.fetch = async (u, o) => {
+            const s = String(u);
+            if (s === '/api/files/upload' && JSON.parse(o.body).name === tag) {
+                window.fetch = f;
+                const res = await f(u, o);
+                M.settings.savePoint = JSON.parse(old);
+                window.__closed49b = M.settings.savePoint.renames.some(x => x.from === JSON.stringify(['ari.png', 'a49b']) && x.closed);
+                await M.openFile('b49b');
+                for (let i = 0; i < 30 && __savePoint.home().status === 'opening'; i++) await new Promise(r => setTimeout(r, 100));
+                await new Promise(r => setTimeout(r, 600));
+                const hm = __savePoint.home();
+                window.__h49b = { status: hm.status, id: hm.id };
+                return res;
+            }
+            return f(u, o);
+        };
+    });
+    await ev(() => M.add(4)); await ev(() => __savePoint.handle('run').catch(() => {})); await wait(4000);
+    // The copy's memory is the one its tag names (a49b itself is held once reopened here: the settings this page now has never
+    // saw its first write end — what a reload in the middle of it leaves).
+    r = await ev(async () => { const H = await import('/ext/home.js'), t = M.files.get(H.tagName(JSON.stringify(['ari.png', 'a49b']))); return { b: window.__h49b, closed: window.__closed49b, copy: t ? JSON.parse(t).mem : null, closes: t ? JSON.parse(t).closes ?? null : null }; });
+    ok(!!r.b && r.closed === false && !!r.copy && r.b.id !== r.copy && Array.isArray(r.closes) && r.closes.length > 0, `49b. 이름표 직후 설정이 옛 상태로 돌아가도 B가 사본 기억을 안 가져감 (${JSON.stringify(r)})`);
+
+    // 52. P2: as 37 on an automatic checkpoint — `다시 확인` links another device's reset while the last chat file check reads, and
+    // nothing is left to send: the checkpoint ends with the notice of a memory linked meanwhile, and the memory linked now keeps
+    // its automatic-save fields (no failure, no result, no mark of this checkpoint).
+    await ev(() => { M.settings.savePoint.autoEvery = 4; M.settings.savePoint.autoReserve = 2; });
+    // A new room's first checkpoint: no hide of an older memory there, so nothing at all is left to send once the new hides go
+    // back (the request is skipped: `nothingSent`).
+    await newRoom('r52'); await wait(900);
+    await ev(() => M.add(11)); await wait(300);
+    const blocked52 = await ev(() => __savePoint.autoBlocked());
+    await ev(async () => {
+        const H = await import('/ext/home.js'), hm = __savePoint.home(), name = H.memName(hm.id), f = window.fetch;
+        let step = 'up';
+        window.__posts52 = []; window.__auto52 = null; window.__mem52 = name;
+        const pick = st => JSON.stringify([st?.autoFail ?? null, st?.autoLast ?? null, st?.autoMark ?? null]);
+        window.fetch = async (u, o) => {
+            const s = String(u);
+            if (s === '/api/chats/save') window.__posts52.push(JSON.parse(o.body).chat.slice(1).map(m => !!m.is_system));
+            // The checkpoint's own memory write (with the recorded messages), not the mark of the attempt written when it starts.
+            const rec = b => { try { const d = JSON.parse(b); return d.name === name && JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(d.data), c => c.charCodeAt(0)))).state.lastIndex >= 0; } catch { return false; } };
+            if (step === 'up' && s === '/api/files/upload' && rec(o.body)) { step = 'get'; return f(u, o); }
+            if (step === 'get' && s === '/api/chats/get') {
+                step = null;
+                resetMem(H, hm, name, 'other52');
+                __savePoint.handle('home-recheck').catch(() => {});
+                for (let i = 0; i < 40 && __savePoint.state()?.wid !== 'other52'; i++) await new Promise(r => setTimeout(r, 100));
+                window.__auto52 = pick(__savePoint.state());
+            }
+            return f(u, o);
+        };
+        window.__pick52 = pick;
+    });
+    const err52 = await ev(() => __savePoint.ui.lastError?.at ?? null);
+    await ev(() => { toastr.log.length = 0; return __savePoint.autoCollect().catch(() => {}); });
+    await wait(5000);
+    h = await H();
+    r = await ev(() => ({ blocked: null, at: window.__auto52, now: window.__pick52(__savePoint.state()), wid: __savePoint.state()?.wid ?? null, file: (() => { const t = M.files.get(window.__mem52); return t ? JSON.parse(t).wid : null; })(), errors: toastr.log.filter(([k]) => k === 'error').length, posts: window.__posts52 }));
+    r.blocked = blocked52; r.err = (await ev(() => __savePoint.ui.lastError?.at ?? null)) === err52 ? 'same' : 'new';
+    ok(r.blocked === null && r.err === 'same' && r.at !== null && r.at === r.now && r.wid === 'other52' && r.file === 'other52' && r.errors === 0 && r.posts.every(p => !p.some(Boolean)) && h.status === 'linked', `52. 자동 체크포인트 중 리셋 연결 → 새 기억의 자동 저장 기록 그대로·실패로 안 남김 (${JSON.stringify(h)} ${JSON.stringify(r)})`);
 
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();
