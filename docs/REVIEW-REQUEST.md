@@ -1,20 +1,18 @@
-# 코드 리뷰 요청 · v0.7.0-b1h (b1g 코드 리뷰 반영, 브랜치 `v0.7-b`)
+# 코드 리뷰 요청 · v0.7.0-b1i (b1h 코드 리뷰 반영, 브랜치 `v0.7-b`)
 
-- 범위: `git diff 41f1622 c11fd7c` — `home.js`(`tagBody`의 `closes`, `renameId`, `placeMemory`의 `closes`, `decideRoom` 5행), `index.js`(`placeFirst`의 `closes`, `homeInput`의 `renames[].id`, `writeEntry` 바깥 `catch`의 `Relinked` 통과, `reportError`), 검사.
-- 처리 표와 자세한 내용: [REVIEW.md](REVIEW.md) 맨 위 v0.7.0-b1h.
-- 반영 범위(2차 의견대로): P1·P2-1·P3. P2-2(첫 저장 중 이름 변경 보류)는 보류하고 README 알려진 한계에 적었어요.
-- 그대로 다음 조각: 다른 기기에서만 일어나는 리셋 경합(`homeStill()` 뒤 `stIdle()` 구간 포함)은 b2 검증 항목, 첫 저장 이름표만 실패는 b3, b1 리뷰 P1-5(H1 순서)는 b2, 이름 변경 중간 실패는 b3~b4, #0 이어하기는 b3.
-- 결과는 P1/P2/P3로 주세요. 브라우저 묶음은 우리 쪽에서 돌려요(`home-link.cjs` 1~52·49b 통과, 고치기 전 코드에선 45·49b·52 실패. 전체 56묶음 결과는 REVIEW.md).
+- 범위: `git diff 4bdc2b1 b5e8e6a` — `index.js`(`leftNow`, `closeLeft`, `homeInput`의 `was`·`closes`, `actHome`의 `migrate`·`branch`, `placed`의 반환값, `renameHome`의 `closes`·`sure`·`clearLeft`), 검사, 문서.
+- 처리 표와 자세한 내용: [REVIEW.md](REVIEW.md) 맨 위 v0.7.0-b1i.
+- 반영 범위(2차·3차 의견대로): 이름표를 새로 만드는 세 길(이름 변경 따라가기·예전 기억 이전·갈래)에 `closes`. 값은 방을 열 때 `renamesSeen()` 원본에서 뽑은 `from === A && to !== A` 기록 ID(`closed` 포함). 기억이 서버에서 확인된 뒤에만 열 때 잡아 둔 옛 기록을 `clearLeft`.
+- b3로 넘김: 이름표 복구(`relinkMemory`)에서 처음 쓴 `closes` 복원, 이름표 응답을 잃었거나 `UNREAD`일 때 이미 올라간 이름표로 A 다시 연결(그때도 나중의 `A → C`는 무시하지 않음). README 알려진 한계.
+- 그대로 다음 조각: 다른 기기에서만 일어나는 리셋 경합(`homeStill()` 뒤 `stIdle()` 구간 포함)은 b2 검증 항목, b1 리뷰 P1-5(H1 순서)는 b2, 첫 저장 이름표만 실패·이름 변경 중간 실패는 b3~b4, #0 이어하기는 b3, 첫 저장 중 이름 변경 보류(`foreign`)는 그대로.
+- 결과는 P1/P2/P3로 주세요. 브라우저 묶음은 우리 쪽에서 돌려요(`home-link.cjs` 1~57·49b 통과, 고치기 전 코드에선 53~57 실패. 전체 56묶음 결과는 REVIEW.md).
 
-## 지난 리뷰(b1g 코드 리뷰) 처리
-| 항목 | b1h |
+## 지난 리뷰(b1h 코드 리뷰) 처리
+| 항목 | b1i |
 |---|---|
-| P1 | 첫 저장 시작 때 있던 `from === A` 기록 전체의 ID(`from|at`)를 새 이름표의 `closes`에 적음. 5행은 이름표가 그 기록을 막고 있으면 건너뜀. 설정이 새로고침으로 돌아가도 이름표와 함께 도착. |
-| P2-1 | 바깥 `catch`에서 `Relinked`를 감싸지 않고 그대로 넘김 → `relinkedRun` 처리(실패 기록·`autoMark`·AUTO 백업 없음). |
-| P2-2 | 보류(이름 변경 알림에 고유값이 없어 이 방의 기록인지 확인 불가). README 한계. |
-| P3 | `reportError`가 `Relinked`만 안내로 표시. |
+| P1 | `renameHome`의 새 이름표, `migrate`·`branch`의 `placeMemory`에 `closes: input.closes`. 이전·갈래는 `placed()` 확인 성공 뒤, 이름 변경은 기억이 이미 A에 있었거나 `MEM_OK`이고 이름표 단계까지 끝났을 때 `clearLeft(input.was)`. `relink`는 그대로(b3). |
 
 ## 특히 봐 줄 곳
-1. P1: `closes`가 `was.from` 전체(이미 `closed`였던 기록 포함)인 것, `renamedTag`가 `closes`를 그대로 이어 가는 것, 같은 `from|at` 기록이 둘인 경우(P2-4의 서버 정리 이름 기록).
-2. P1: 이름표 쓰기 재시도(`sameLink`로 이미 있는 이름표를 그대로 둘 때)에는 `closes`가 새로 안 붙음 — 첫 시도가 쓴 이름표에 이미 들어 있는지.
-3. P2-1: `Relinked`가 바깥 `catch`를 지날 때 `restoreMarks`·대기 취소를 건너뛰는 게 맞는지.
+1. `closes`에 `closed`·`settled`·`foreign` 기록까지 넣는 것(막는 쪽으로만 작용). A → B → A로 돌아온 기록은 `onChatRenamed`가 `to`를 A로 바꿔 빠지는지.
+2. `input.was`는 판정 때의 기록 객체: 그사이 설정이 다시 불러와지면 정리가 안 됨(보류 쪽). `placed()`가 `adopted`(다른 기기가 같은 이동을 끝냄)에서도 정리하는 게 맞는지.
+3. `renameHome`의 `sure`: 판정 때 읽은 기억의 `home.addr === A`를 확인으로 보는 것, `UNREAD`·이름표 실패에서는 정리 안 하는 것.
