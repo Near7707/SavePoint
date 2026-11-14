@@ -1,26 +1,24 @@
-# 코드 리뷰 요청 · v0.7.0-b1c (b1b 코드 리뷰 반영, 브랜치 `v0.7-b`)
+# 코드 리뷰 요청 · v0.7.0-b1d (b1c 코드 리뷰 반영, 브랜치 `v0.7-b`)
 
-- 범위: `git diff 6249fd4 fff7a33` — `index.js`(`writeEntry`의 `homeSettled`·`takeHome`/`freeHome`·`dropStaleHides`·`sendGuard`·`stIdle` 순서·`saved()`, `applyEntry`/`restoreEntry`의 `entry.applied`, `writeChatFile`의 `sendGuard`, `recheckHome`, `homeWrite`, `onChatRenamed`의 `took`/`foreign`, `homeInput`의 `left`, `onChatDeleted`), `home.js`(`renameNotice` 이름 정리, `decideRoom`의 `left`), 검사.
-- 처리 표와 자세한 내용: [REVIEW.md](REVIEW.md) 맨 위 v0.7.0-b1c.
-- 반영 범위는 지난 2차 의견대로: P1-1·P1-2·P1-4(+P2-2)·P2-3·P3. P1-3은 대기 순서만 당기고 b2 검증 항목, P2-1은 b3 후속.
-- 여전히 다음 조각: b1 리뷰 P1-5(H1 순서)는 b2, 이름 변경 중간 실패는 b3~b4, #0 이어하기는 b3.
-- 결과는 P1/P2/P3로 주세요. 브라우저 묶음은 우리 쪽에서 돌려요(`home-link.cjs` 1~29 통과, 전체 56묶음은 18 통과 / 38 실패, 검사 모드 오류 0 — b1b의 통과 19개 중 `keys`만 한꺼번에 돌릴 때 타이밍으로 실패, 따로 돌리면 통과).
+- 범위: `git diff 3002b35 8f4a2e6` — `index.js`(`writeChatFile`/`persist`의 `guard`와 반환값, `writeEntry`의 `mine`·`guard`·`written = last`, `homeStill(mine)`의 `relinked`, `leftSeen`/`clearLeft`와 `onChatRenamed`·`onChatDeleted`·`homeInput`·`firstWrite`, `restoreEntry`/`restoreMarks`의 `hideOnly`, `dropStaleHides`, `changedMarks`), 검사.
+- 처리 표와 자세한 내용: [REVIEW.md](REVIEW.md) 맨 위 v0.7.0-b1d.
+- 반영 범위: P1-1·P1-2·P1-3·P2-1·P2-2·P3 전부.
+- 그대로 다음 조각: b1b 리뷰 P1-3(두 기기 리셋 경합, `homeStill()` 뒤 `stIdle()` 구간 포함)은 b2 검증 항목, 첫 저장 이름표만 실패는 b3, b1 리뷰 P1-5(H1 순서)는 b2, 이름 변경 중간 실패는 b3~b4, #0 이어하기는 b3.
+- 결과는 P1/P2/P3로 주세요. 브라우저 묶음은 우리 쪽에서 돌려요(`home-link.cjs` 1~36 통과, 고치기 전 코드에선 30~36 실패. 전체 56묶음은 19 통과 / 37 실패, 검사 모드 오류 0 — b1b·b1c와 같은 통과 묶음).
 
-## 지난 리뷰(b1b 코드 리뷰) 처리
-| 항목 | b1c |
+## 지난 리뷰(b1c 코드 리뷰) 처리
+| 항목 | b1d |
 |---|---|
-| P1-1 | 게이트 확인 전 `homeSettled`(진행 중인 판정 기다림), 적용 직전 `takeHome`(판정 중이면 적용 없이 취소, 아니면 `h.writing`을 기억 쓰기 결과 처리 끝까지), 그사이 `recheckHome`은 끝난 뒤 다시(`recheckAfter`). `homeWrite`도 판정 중이면 `linking`. `restoreEntry`는 `entry.applied`가 화면에 있을 때만 기억을 되돌림. |
-| P1-2 | `dropStaleHides`: 적용 직후 순서·지문(`entry.order`·`entry.prints`)과 비교해 처음 바뀐 위치를 찾고, 그 위치나 뒤의 새 숨김만 화면에서 되돌림. 첫 요청 전과 재전송마다 요청 직전(`sendGuard`). 숨김 해제는 그대로 보냄. |
-| P1-3 | `writeEntry`에서 `stIdle()`을 `homeStill()` 앞으로. 남은 틈은 b2 검증 항목. |
-| P1-4 | 남이 떠난 이름을 가져간 기록에 `took`, 그 방의 다음 이름 변경 기록은 `foreign`(증거로 안 씀). 이 기기에서 그 이름을 떠난 방이 있으면 연결된 이름표도 보류(`left`). 삭제 알림은 받은 이름 그대로. |
-| P2-2 | `renameNotice`가 새 이름을 `cleanName`으로 정리(기록·따라가기 모두 서버 이름). |
-| P2-3 | `recheckHome`: `!wasOpen \|\| was !== h.status`면 `roomOpened()`. |
-| P3 | 채팅 쓰기 뒤 오류 모두 `memSaved`. |
-| P2-1 | b3(본체 저장됨·이름표 미완료 구분, 영수증 확인 뒤 연결 이어가기). |
+| P1-1 | 전역 `sendGuard` 삭제. `persist(fileMeta, guard)` → `writeChatFile(fileMeta, guard)`, 요청 직전마다 그 저장의 `guard()`. |
+| P1-2 | `homeWrite` 직후(`freeHome` 전) 이 저장이 쓴 기억 영수증 `mine = { box, id, rev, wid }`. `homeStill(mine)`: 서버 기억 파일이 그 영수증이 아니면 안 씀. 지금 연결된 기억과는 맞으면 방을 멈추지 않고 `relinked`. 다른 id로 연결돼도 `relinked`. |
+| P1-3 | `settings().leftNames`(최대 200): 이름을 떠난 방 `{ from, to }`. 이름 변경을 따라가고 원래 이름으로 돌아오면 지움, 목적지 삭제는 `gone`(따라가기만 멈춤), 그 이름의 새 방 `firstWrite` 성공 때 `clearLeft`. `homeInput`의 `left`는 기존 기록 → 없으면 이 목록. |
+| P2-1 | `writeChatFile`이 마지막 성공 사본(`sentSnap`)을 돌려주고 `written`으로 씀. 실패 판정은 `written` + `e.sents`. |
+| P2-2 | `dropStaleHides` → `restoreMarks(…, { hideOnly: true })`: `is_system`·HIDE·VISIBLE·HELD만, 🔶(KEEP, 스와이프 포함)는 그대로. |
+| P3 | `changedMarks`: 이번 변경이 남긴 값이 지금도 그대로인 표시만. `guard`가 하이드를 되돌리면 `marks`도 다시 셈. |
 
 ## 특히 봐 줄 곳
-1. P1-1: `takeHome`에서 판정 중이면 기다리지 않고 취소하는 것, `h.writing`을 잡는 범위(적용 → 기억 쓰기 결과 처리, 채팅 쓰기 단계는 밖)와 `recheckAfter`로 미룬 다시 확인이 겹치는 경우.
-2. P1-2: 범위를 "#0부터 새로 숨기는 메시지까지"로 둔 것. 바뀐 메시지보다 앞의 새 숨김은 그대로 보내고(`home-link` 19의 기대가 바뀐 이유), 되돌린 뒤 남은 표시가 있으면 쓰기를 이어감. 재전송에서 `sendGuard`가 표시를 되돌린 뒤의 `writeResult`/`settleWrite` 판정.
-3. P1-4 `took`/`foreign`/`left` 규칙이 진짜 이름 변경(같은 방 A → B → A, 여러 번 바꾼 방, 그룹 채팅)을 놓치는 경우, 그리고 `left` 기록이 남은 채로 같은 이름에 새로 만든 채팅(보류로 끝남)이 받아들일 만한지.
-4. `renameNotice` 정리가 실리태번의 실제 저장 이름과 다를 때(규칙 변경 등) 어느 쪽으로 실패하는지.
-5. P1-3 남은 틈을 b2 검증 항목으로 둔 범위가 맞는지.
+1. P1-2 `relinked`에서 방을 멈추지 않는 판단(파일 = 재확인이 연결한 기억이면 방은 정상, 이번 숨김만 버림 → 화면 표시는 되돌리고 `roomOpened()`가 새 기억 기준으로 맞춤). 같은 기억을 다시 연결한 경우(영수증 같음)는 그대로 통과.
+2. P1-3 `leftNames`가 지워지는 경우가 "돌아옴"과 `firstWrite` 성공뿐이라, 떠난 이름에 새로 생긴 다른 방이 보류로 남는 기간이 길어짐(20 → 200, 삭제로도 안 지워짐). 서버가 이름을 정리한 경우 따라가는 규칙(열린 방 = 정리된 이름일 때만)과 그룹 채팅.
+3. P1-3 기록이 20개 밖으로 밀리면 원래 방(새 이름)도 이름 변경 증거가 없어 보류(예전과 같음, 검사 33). 원본 기억을 사본이 쓰는 일만 막은 것으로 충분한지.
+4. P3 `changedMarks` 규칙 변경이 `settleWrite`의 `marksInFile` 판정(그사이 사용자가 직접 바꾼 표시는 이제 빠짐)에 주는 영향.
+5. P2-1에서 첫 요청은 응답 없음, 재전송은 성공한 경우처럼 사본이 섞일 때 `written`/`sents`/`unsure` 판정.
