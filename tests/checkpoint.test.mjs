@@ -10,9 +10,11 @@ import * as guard from '../guard.js';
 import * as provenance from '../provenance.js';
 import * as batches from '../request-batches.js';
 import * as loot from '../loot.js';
+import * as homeFiles from '../home.js';
+import * as memfile from '../memfile.js';
 
 function harness({ count = 20, chars = 30, reserve = 2, keep = 0, limit = 60000 } = {}) {
-    const imported = { ...guard, ...core, ...temporal, ...prompts, ...vault, ...provenance, ...batches, ...loot }, names = [];
+    const imported = { ...guard, ...core, ...temporal, ...prompts, ...vault, ...provenance, ...batches, ...loot, ...homeFiles, ...memfile }, names = [];
     const source = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8').replace(/^import\s*\{([\s\S]*?)\}\s*from\s*['"][^'"]+['"];\n/gm, (_, list) => {
         names.push(...list.split(',').map(x => x.trim()).filter(Boolean)); return '';
     });
@@ -30,6 +32,11 @@ function harness({ count = 20, chars = 30, reserve = 2, keep = 0, limit = 60000 
     const toast = Object.fromEntries(['info', 'error', 'warning', 'success'].map(k => [k, msg => notices.push([k, msg])]));
     let h;
     const app = new Function(...names, 'h', '__saved', 'SillyTavern', 'jQuery', 'toastr', 'backups', 'checks', 'quicks', 'console', source + `
+        // v0.7.0-b1: the room's memory as these checks keep it (the chat metadata), one write per change (the memory file
+        // here is the same disk; the chat file write of the marks writes nothing more).
+        pageBox = () => ctx().chatMetadata; boxMem = b => b?.savePoint; putBoxMem = (b, st) => { if (!b) return; if (st === undefined) delete b.savePoint; else b.savePoint = st; };
+        homeOpen = () => true; homeStill = async () => ({ ok: true });
+        homeWrite = async () => { try { await ctx().saveMetadata(); return { status: 'ok' }; } catch { return { status: 'refused' }; } };
         gateOpen = () => hasChat(); roomReady = async () => hasChat();
         // The chat file of each room (a room here is its chat array): what the room showed when first read,
         // then whatever a save wrote.
@@ -37,7 +44,7 @@ function harness({ count = 20, chars = 30, reserve = 2, keep = 0, limit = 60000 
         __saved = () => { files.set(chat(), clone({ meta: ctx().chatMetadata, chat: chat() })); };
         readServerChat = async () => { const f = fileOf(); return { ok: true, snap: snapshot(f.meta, f.chat, OWN_KEYS), count: f.chat.length, first: f.chat[0], rev: f.meta?.savePoint?.rev ?? null }; };
         setHidden = (m, i, hidden) => { m.is_system = !!hidden; };
-        render = () => {}; persistSoon = () => {}; saveChatSoon = () => {}; writeChatFile = () => ctx().saveMetadata();
+        render = () => {}; persistSoon = () => {}; saveChatSoon = () => {}; writeChatFile = async () => {};
         autosave = st => { if (st) backups.push({ lastIndex: st.lastIndex, mem: clone(st.mem) }); };
         quickSave = async st => { quicks.push(st.lastIndex); return null; };
         queueCheck = (st, before, opts) => checks.push(opts);

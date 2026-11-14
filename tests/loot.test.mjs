@@ -9,9 +9,11 @@ import * as guard from '../guard.js';
 import * as provenance from '../provenance.js';
 import * as batches from '../request-batches.js';
 import * as loot from '../loot.js';
+import * as homeFiles from '../home.js';
+import * as memfile from '../memfile.js';
 
 function harness({ messages = ['A participant kept a token.'], recorded = false } = {}) {
-    const imported = { ...guard, ...core, ...temporal, ...prompts, ...vault, ...provenance, ...batches, ...loot };
+    const imported = { ...guard, ...core, ...temporal, ...prompts, ...vault, ...provenance, ...batches, ...loot, ...homeFiles, ...memfile };
     const names = [];
     const source = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8').replace(/^import\s*\{([\s\S]*?)\}\s*from\s*['"][^'"]+['"];\n/gm, (_, list) => {
         names.push(...list.split(',').map(x => x.trim()).filter(Boolean)); return '';
@@ -24,8 +26,13 @@ function harness({ messages = ['A participant kept a token.'], recorded = false 
         async saveMetadata() { if (h.failWrite) throw new Error('Disk failed'); writes.push(structuredClone(context.chatMetadata.savePoint)); } };
     const toast = Object.fromEntries(['info', 'error', 'warning', 'success'].map(k => [k, msg => notices.push([k, msg])]));
     const app = new Function(...names, 'SillyTavern', 'jQuery', 'toastr', 'checks', 'console', source + `
+        // v0.7.0-b1: the room's memory as these checks keep it (the chat metadata), one write per change (the memory file
+        // here is the same disk; the chat file write of the marks writes nothing more).
+        pageBox = () => ctx().chatMetadata; boxMem = b => b?.savePoint; putBoxMem = (b, st) => { if (!b) return; if (st === undefined) delete b.savePoint; else b.savePoint = st; };
+        homeOpen = () => true; homeStill = async () => ({ ok: true });
+        homeWrite = async () => { try { await ctx().saveMetadata(); return { status: 'ok' }; } catch { return { status: 'refused' }; } };
         gateOpen = () => hasChat(); roomReady = async () => hasChat(); readServerChat = async () => ({ ok: true, snap: pageSnap(), count: chat().length, first: chat()[0], rev: state()?.rev ?? null });
-        setHidden = () => {}; render = () => {}; autosave = () => {}; quickSave = async () => null; persistSoon = () => {}; saveChatSoon = () => {}; writeChatFile = () => ctx().saveMetadata();
+        setHidden = () => {}; render = () => {}; autosave = () => {}; quickSave = async () => null; persistSoon = () => {}; saveChatSoon = () => {}; writeChatFile = async () => {};
         // v0.6.83: no chat file here (the read above is the page itself): a failed write is taken back, as before.
         settleWrite = async e => (e?.landed ? e : 'revert');
         queueCheck = (st, before) => checks.push(checkScope(before, st.mem));

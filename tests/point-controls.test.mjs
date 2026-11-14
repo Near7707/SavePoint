@@ -6,6 +6,8 @@ import * as core from '../core.js';
 import * as temporal from '../temporal.js';
 import * as prompts from '../prompts.js';
 import * as vault from '../vault.js';
+import * as homeFiles from '../home.js';
+import * as memfile from '../memfile.js';
 import * as guard from '../guard.js';
 
 function controls() {
@@ -18,14 +20,14 @@ function controls() {
     const context = { characterId: 0, characters: [{ name: 'Theo', avatar: 'theo.png' }], chatId: 'room', chat: [],
         chatMetadata: { savePoint: st }, extensionSettings: {}, setExtensionPrompt() {},
         async saveMetadata() { writes++; }, saveSettingsDebounced() {} };
-    const imported = { ...guard, ...core, ...temporal, ...prompts, ...vault };
+    const imported = { ...guard, ...core, ...temporal, ...prompts, ...vault, ...homeFiles, ...memfile };
     const original = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
     const names = [];
     const source = original.replace(/^import\s*\{([\s\S]*?)\}\s*from\s*['"][^'"]+['"];\n/gm, (_, list) => {
         names.push(...list.split(',').map(x => x.trim()).filter(Boolean)); return '';
     });
     const run = new Function(...names, 'SillyTavern', 'jQuery',
-        source + '\ngateOpen = () => hasChat(); roomReady = async () => hasChat(); readServerChat = async () => ({ ok: true, snap: pageSnap(), count: chat().length, first: chat()[0], rev: state()?.rev ?? null }); render = () => {}; autosave = () => {}; writeChatFile = () => ctx().saveMetadata();; return { handle, journalHtml, ui };');
+        source + '\npageBox = () => ctx().chatMetadata; boxMem = b => b?.savePoint; putBoxMem = (b, st) => { if (st === undefined) delete b.savePoint; else b.savePoint = st; }; homeOpen = () => true; homeStill = async () => ({ ok: true }); homeWrite = async () => { await ctx().saveMetadata(); return { status: \'ok\' }; };\ngateOpen = () => hasChat(); roomReady = async () => hasChat(); readServerChat = async () => ({ ok: true, snap: pageSnap(), count: chat().length, first: chat()[0], rev: state()?.rev ?? null }); render = () => {}; autosave = () => {}; writeChatFile = async () => {}; return { handle, journalHtml, ui };');
     const app = run(...names.map(n => imported[n]), { getContext: () => context }, () => {});
     return { app, context, writes: () => writes,
         point: () => context.chatMetadata.savePoint.mem.scenes[0].segs[0].points[0],

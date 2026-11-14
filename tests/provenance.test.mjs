@@ -281,7 +281,7 @@ test('opening existing chat metadata migrates old evidence once and schedules pe
     let saves = 0;
     // v0.7.0-a (plan P2-3): read outside the room queue, the memory is shown through a tidied copy and one queued
     // change tidies the page's memory and saves it (before: tidied on the page at once, saved later by persistSoon).
-    const box = { MODULE: 'savePoint', gateOpen: () => true, ctx: () => ({ chatMetadata: meta }), upgradeEvidence: provenance.upgradeEvidence, foldLegacyOutline: core.foldLegacyOutline, normalizeRecordNames: core.normalizeRecordNames, upgradeStoryTimes, ui: {},
+    const box = { ...memAccess(() => meta), MODULE: 'savePoint', gateOpen: () => true, ctx: () => ({ chatMetadata: meta }), upgradeEvidence: provenance.upgradeEvidence, foldLegacyOutline: core.foldLegacyOutline, normalizeRecordNames: core.normalizeRecordNames, upgradeStoryTimes, ui: {},
         inApply: 0, clone: structuredClone, roomKey: () => 'room', roomEpoch: 0, console: { warn() {} },
         async transact(fn) { box.inApply++; try { if (fn() !== false) saves++; } finally { box.inApply--; } } };
     const state = vm.runInNewContext(section('function state() {', '\nfunction freshState') + ';state', box);

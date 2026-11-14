@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { memAccess } from './gate-stub.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
@@ -87,7 +88,7 @@ test('legacy import/export and history restoration normalize without changing ev
 test('opening old chat metadata persists cleanup once, including a restored undo snapshot', async () => {
     const meta = { savePoint: { v: 1, mem: fixture() } }; let saves = 0;
     // v0.7.0-a (plan P2-3): the cleanup is made by one queued change (state() outside the queue shows a tidied copy).
-    const box = { ...core, upgradeStoryTimes, ui: {}, MODULE: 'savePoint', gateOpen: () => true, ctx: () => ({ chatMetadata: meta }),
+    const box = { ...memAccess(() => meta), ...core, upgradeStoryTimes, ui: {}, MODULE: 'savePoint', gateOpen: () => true, ctx: () => ({ chatMetadata: meta }),
         inApply: 0, clone: structuredClone, roomKey: () => 'room', roomEpoch: 0, console: { warn() {} },
         async transact(fn) { box.inApply++; try { if (fn() !== false) saves++; } finally { box.inApply--; } } };
     const state = vm.runInNewContext(section('function state() {', '\nfunction freshState') + ';state', box);
