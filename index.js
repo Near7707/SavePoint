@@ -27,7 +27,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.7.0-b1d';
+const VERSION = '0.7.0-b1e';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -355,7 +355,10 @@ async function writeChatFile(fileMeta = null, guard = null) {
         }
         // From here to the request nothing waits: the room checked is the room whose file is sent.
         // v0.7.0-b1c (review of b1b, P1-2): a queued change's new hides resting on a message changed since go back first.
-        if (guard) guard();
+        // v0.7.0-b1e (review of b1d, P3): nothing of the change is left to send, nothing was sent yet and SillyTavern did not save
+        // meanwhile: no write at all. Once a copy went out, or SillyTavern saved the page (it may have carried the new hides),
+        // a copy is still sent to take them back.
+        if (guard && guard({ sent: sent !== null }) === false && sent === null && !landed) { const e = new RoomBlocked('nothing to send'); e.nothingSent = true; throw fail(e); }
         const t = chatTarget(fileMeta), tSnap = t ? t.snap : null;
         if (sent !== null && (!t || t.body === sent)) return sentSnap;
         if (!t) throw fail(new RoomBlocked('채팅방이 아직 다 열리지 않아서(메시지나 채팅 파일 고유값이 없음) 저장하지 않았어요.'));
@@ -763,11 +766,12 @@ function restoreMarks(entry, opts) {
 // v0.7.0-b1c (review of b1b, P1-2): the new hides of `entry` (a message it hid) that rest on a message changed since the
 // change (#0 up to the hidden one: edited, its swipe changed, deleted or moved) go back on the page. True when any did.
 // Hides taken away and every other mark are left as the change set them.
-function dropStaleHides(entry) {
+// v0.7.0-b1e (review of b1d, P1-1): `all` — every new hide goes back (the memory they rest on is no longer the room's).
+function dropStaleHides(entry, { all = false } = {}) {
     if (!entry?.visibility || !entry.after || !entry.order) return false;
     const list = chat(), order = entry.order;
-    let first = order.length;
-    for (let i = 0; i < order.length; i++) if (list[i] !== order[i] || entry.prints.get(order[i]) !== fingerprint(list[i])) { first = i; break; }
+    let first = all ? 0 : order.length;
+    if (!all) for (let i = 0; i < order.length; i++) if (list[i] !== order[i] || entry.prints.get(order[i]) !== fingerprint(list[i])) { first = i; break; }
     if (first >= order.length) return false;
     const at = new Map(order.map((m, i) => [m, i]));
     const hid = f => f[0] && f[1] === true;
@@ -834,7 +838,7 @@ async function writeEntry(queue, entry) {
     // outcome then takes back or writes over. One started during the checks above stops the change here (nothing applied).
     const hb = pageBox();
     if (!takeHome(hb)) throw new RoomBlocked('이 방의 기억을 다시 확인하는 중이라 이번 변경은 하지 않았어요. 잠시 뒤 다시 해 주세요.');
-    let applied, unsure = null, settled = false, written, marks, tick, rev, w, saved, mine = null;
+    let applied, unsure = null, settled = false, written, marks, tick, rev, w, saved, mine = null, relinkedLate = false, unhidAfter = false;
     const proof = null;
     try {
     checkQueue('before a queued change');
@@ -936,14 +940,33 @@ async function writeEntry(queue, entry) {
         // before its request (writeChatFile).
         // v0.7.0-b1d (review of b1c, P1-1): given to this write only. A hide that goes back here also leaves the marks this write
         // is judged by (P3).
-        const guard = () => { if (dropStaleHides(entry)) { marks = changedMarks(entry); ctx().swipe?.refresh?.(); refreshView(); } };
+        // v0.7.0-b1e (review of b1d, P1-1): the memory this room is linked to right before each request must still be the one
+        // this change wrote (`mine`): `다시 확인` may link another (a reset read on another device) while the chat file is read
+        // here. Then every new hide goes back (the other marks still go out). True while anything of the change is left to send.
+        // P2: a hide taken back after a copy went out (`unhidAfter`): the copy sent again carries the unhide.
+        const guard = ({ sent = false } = {}) => {
+            const l = home.line, again = home !== mine?.box || home.id !== mine?.id || !l?.seen || !!l.pending || !!l.stop || l.seen.rev !== mine.rev || l.seen.wid !== mine.wid || !!l.seen.missing !== !!mine.missing;
+            if (again) relinkedLate = true;
+            if (dropStaleHides(entry, { all: again })) { marks = changedMarks(entry); if (sent) unhidAfter = true; ctx().swipe?.refresh?.(); refreshView(); }
+            return marks.length > 0;
+        };
         // v0.7.0-b1d (review of b1c, P2-1): the copy last answered with success is what the read back is compared with (a copy
         // sent again differs from the first: an old hide went back, or SillyTavern saved the page meanwhile).
         try { const last = await persist(pre.meta, guard); if (last) written = last; }
         catch (e) {
+            if (e?.nothingSent) {
+                const err = new RoomBlocked(relinkedLate ? '기억은 저장했어요. 하지만 그사이 이 방의 기억을 다시 확인해서, 이번 원문 숨김은 저장하지 않았어요. 다시 세이브하면 맞춰요.' : '기억은 저장했어요. 하지만 그사이 원문이 바뀌어서 원문 숨김은 저장하지 않았어요. 다시 세이브하면 맞춰요.');
+                err.kept = true; throw err;
+            }
             const err = await settleWrite(e, { written, rev, proof, pre, key: entry.key, epoch: entry.epoch, marks, tick });
             if (err === 'revert') throw e;
             if (err) { err.kept = true; throw err; }
+            // v0.7.0-b1e (review of b1d, P2): a copy that went out first is in the file, but the copy sent again to take its stale
+            // hides back failed: the file may still hide them. Reported, not a success.
+            if (unhidAfter) {
+                const err2 = new RoomBlocked(`기억은 저장했어요. 그런데 그사이 원문이 바뀌어서 새로 숨긴 원문을 다시 풀어 저장하려 했는데 실패했어요(${e?.message || e}). 서버 채팅 파일에는 그 숨김이 남아 있을 수 있어요. 다음에 채팅이 저장되면(메시지를 보내면) 화면대로 맞춰져요.`);
+                err2.kept = true; throw err2;
+            }
             settled = true;
         }
         if (entry.verify && !settled) {
@@ -1563,7 +1586,9 @@ function onChatRenamed(data) {
     const list = renamesSeen();
     // v0.7.0-b1c (review of b1b, P1-4): the room at `n.from` took that name over from another room that left it (`took`):
     // the tag of that name is the other room's, so this rename proves nothing for it (`foreign`).
-    const foreign = list.some(x => x.to === n.from && x.took === n.from);
+    // v0.7.0-b1e (review of b1d, P1-2): also when a room seen leaving `n.from` is kept (leftSeen) — the rename that took the name
+    // may be gone from the last 20. (A room coming back to its name has no record left at it.)
+    const foreign = list.some(x => x.to === n.from && x.took === n.from) || leftSeen().some(x => x.from === n.from && !x.foreign);
     // v0.7.0-b1a (review of b1a, P1-5): a rename seen before names the room by its address then. That room has now left
     // `n.from`: its record follows it (A → B, then B → C is A → C), so another chat taking the name later (a copy renamed
     // to B) is never taken for it.

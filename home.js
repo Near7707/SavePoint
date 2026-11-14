@@ -379,6 +379,9 @@ export async function decideRoom(input, read, { readMem = id => read(memName(id)
             const rooms = h.kind === OK ? h.data.rooms.filter(a => a !== addr) : [];
             if (rooms.length) return hold(6, 'copyMoved', { mem: id, from: rooms[0], rooms });
         }
+        // v0.7.0-b1e (review of b1d, P1-2): the room of this name was seen leaving it on this device: a chat under it now (a copy
+        // with the same integrity) is not the room, even with the tag lost → hold, the memory is not linked.
+        if (input.left) return hold(6, 'renamedAway', { mem: id, to: input.left });
         // v0.6.71: no tag means the writes stopped before the end (the tag is last): not the tag alone but the
         // rest of those writes (relinkMemory), with the memory's own old copy and the receipt seen here.
         return out('relink', 6, { mem: id, from: m.data.from, copy: m.data.copy ?? null, seen: { rev: m.data.rev, wid: m.data.wid } });
