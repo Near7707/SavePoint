@@ -11,7 +11,7 @@ import { foldLegacyOutline,
 } from './core.js';
 import { lootStatus, lootWarning, lootInChunk, lootBlock, attachLoot, settleLoot, failLoot, lootTarget, applyLootSupplement, restoreLostLoot } from './loot.js';
 import { Vault, roomHash, quickId } from './vault.js';
-import { decideRoom, placeMemory, relinkMemory, memName, tagName, clueName, validMem, validTag, validClue, tagBody, renamedTag, renameId, clueWith, nextMem, renameNotice, cleanName, copyHash, hasTraces, readUserFile, checked, pickPrints, validState, sameLink, MISSING, OK } from './home.js';
+import { decideRoom, placeMemory, relinkMemory, memName, tagName, clueName, validMem, validTag, validClue, tagBody, renamedTag, renameId, withCloses, clueWith, nextMem, renameNotice, cleanName, copyHash, hasTraces, readUserFile, checked, pickPrints, validState, sameLink, MISSING, OK } from './home.js';
 import { memLine, writeMem, serverMemIO, MEM_OK, PENDING, REFUSED, UNREAD, CONFLICT, OVERWRITTEN, READ_ERROR } from './memfile.js';
 import { snapshot, splitFile, covers, writeResult, samePage, canon, PAGE_KEYS } from './guard.js';
 import { upgradeEvidence, segmentPrior, evidenceNumbers } from './provenance.js';
@@ -27,7 +27,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.7.0-b1i';
+const VERSION = '0.7.0-b1j';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -1879,7 +1879,7 @@ async function renameHome(h, d, input, files) {
     };
     const fromTag = checked(files.get(tagName(d.from)), validTag(d.from));
     const copy = fromTag?.kind === OK ? fromTag.data.copy ?? null : null;
-    let why = await step(tagName(addr), validTag(addr), t => !t ? tagBody({ addr, integrity, mem: d.mem, copy, prints: pickPrints(data.state.hashes), closes: input.closes }) : sameLink(t, { id: d.mem, integrity, copy }) || null);
+    let why = await step(tagName(addr), validTag(addr), t => !t ? tagBody({ addr, integrity, mem: d.mem, copy, prints: pickPrints(data.state.hashes), closes: input.closes }) : sameLink(t, { id: d.mem, integrity, copy }) ? withCloses(t, input.closes) || true : null);
     if (!why && integrity) why = await step(clueName(integrity), validClue(integrity), c => c?.rooms.some(x => x.addr === addr && x.mem === d.mem) ? true : clueWith(c, integrity, addr, d.mem));
     if (!why) why = await step(tagName(d.from), validTag(d.from), t => !t ? true : t.state === 'renamed' ? true : t.mem === d.mem ? renamedTag(t, addr) : null);
     if (!mine()) return;

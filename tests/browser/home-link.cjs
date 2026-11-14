@@ -1234,6 +1234,95 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(ha57.verdict === 'rename' && ha57.status === 'linked' && hb57.id !== hx57.id && r.home && Array.isArray(r.closes) && r.closes.length > 0 && r.settled.length > 0 && !r.settled.some(Boolean) && r.left > 0,
         `57. 기억을 다시 읽지 못한 이름 변경 → B가 안 가져감·옛 기록 정리 안 함 (a=${JSON.stringify(ha57)} b=${JSON.stringify(hb57)} ${JSON.stringify(r)})`);
 
+    // ───── v0.7.0-b1j (review of b1i) ─────
+    // P1: another tab (that never saw the old rename) finishes the same placement first, with a tag of the same link and no
+    // `closes`, after this tab decided to place it: the ids it lacks are added to that tag, so the room that left the name still
+    // does not take the memory. (Done before this tab's first decision: b3.)
+    // 58. a move out: the other tab's memory and tag are there before this tab's first reads (writePlan has no tag step left).
+    await newRoom('a58'); await wait(900);
+    await ev(() => M.openFile('branchB')); await wait(900);
+    await ev(() => M.renameChat('a58', 'b58'));
+    await ev(() => M.openFile('p54')); await wait(1200);
+    await ev(async () => {
+        const H = await import('/ext/home.js'), addr = JSON.stringify(['ari.png', 'a58']);
+        const st = { ...JSON.parse(JSON.stringify(__savePoint.state())), roomKey: addr, wid: 'old58' };
+        delete st.by;
+        const hash = H.copyHash(st), id = H.migrateId(addr, hash), f = window.fetch;
+        M.serverFiles.a58 = [{ chat_metadata: { integrity: 'a58-int', savePoint: st } }, ...JSON.parse(JSON.stringify(M.chat))];
+        window.fetch = async (u, o) => {
+            if (String(u).startsWith('/user/files/' + H.memName(id)) && __savePoint.home().d?.verdict === 'migrate') {
+                window.fetch = f;
+                M.otherPut(H.memName(id), H.memBody({ id, state: st, wid: 'other58', from: { kind: 'migrate', addr, copy: hash }, home: { addr, integrity: 'a58-int' }, copy: hash }));
+                M.otherPut(H.tagName(addr), H.tagBody({ addr, integrity: 'a58-int', mem: id, copy: hash }));
+            }
+            return f(u, o);
+        };
+        return M.openFile('a58');
+    });
+    await wait(1500);
+    const ha58 = await H();
+    await ev(() => M.openFile('b58')); await wait(1200);
+    const hb58 = await H();
+    await ev(() => M.openFile('a58')); await wait(1200);
+    h = await H();
+    r = { home: (await memOf(ha58.id))?.home?.addr === A('a58'), closes: (await tagOf('a58'))?.closes ?? null, ...(await leftOf('a58')) };
+    ok(ha58.verdict === 'migrate' && ha58.status === 'linked' && hb58.id !== ha58.id && r.home && Array.isArray(r.closes) && r.closes.length > 0
+        && h.status === 'linked' && h.id === ha58.id && r.settled.every(Boolean) && r.left === 0, `58. 다른 탭이 먼저 끝낸 이전(첫 읽기 전) → 이름표에 막을 기록 채움·B가 안 가져감 (a=${JSON.stringify(ha58)} b=${JSON.stringify(hb58)} a again=${JSON.stringify(h)} ${JSON.stringify(r)})`);
+
+    // 59. a branch: the other tab's tag appears after this tab's first reads, right before its own tag is written.
+    await newRoom('a59'); await wait(900);
+    await ev(() => M.openFile('branchB')); await wait(900);
+    await ev(() => M.renameChat('a59', 'b59'));
+    await ev(() => M.openFile('p54')); await wait(1200);
+    await ev(async () => {
+        const H = await import('/ext/home.js'), addr = JSON.stringify(['ari.png', 'a59']), f = window.fetch;
+        M.branchChat('a59', 9);
+        const int = M.serverFiles.a59[0].chat_metadata.integrity;
+        M.serverFiles.b59[0].chat_metadata.integrity = int;
+        window.fetch = async (u, o) => {
+            const res = await f(u, o);
+            if (String(u) === '/api/files/upload' && JSON.parse(o.body).name === H.clueName(int)) {
+                window.fetch = f;
+                const id = __savePoint.home().d.mem, m = JSON.parse(M.files.get(H.memName(id)));
+                M.otherPut(H.tagName(addr), H.tagBody({ addr, integrity: int, mem: id, copy: m.copy ?? null }));
+            }
+            return res;
+        };
+        return M.openFile('a59');
+    });
+    await wait(1500);
+    const ha59 = await H();
+    await ev(() => M.openFile('b59')); await wait(1200);
+    const hb59 = await H();
+    await ev(() => M.openFile('a59')); await wait(1200);
+    h = await H();
+    r = { home: (await memOf(ha59.id))?.home?.addr === A('a59'), closes: (await tagOf('a59'))?.closes ?? null, ...(await leftOf('a59')) };
+    ok(ha59.verdict === 'branch' && ha59.status === 'linked' && hb59.id !== ha59.id && r.home && Array.isArray(r.closes) && r.closes.length > 0
+        && h.status === 'linked' && h.id === ha59.id && r.settled.every(Boolean) && r.left === 0, `59. 다른 탭이 쓰기 직전에 올린 갈래 이름표 → 막을 기록 채움·B가 안 가져감 (a=${JSON.stringify(ha59)} b=${JSON.stringify(hb59)} a again=${JSON.stringify(h)} ${JSON.stringify(r)})`);
+
+    // 60. a rename followed: the other tab's tag appears after the memory's home moved, right before the tag step.
+    const hx60 = await renamedOnto('a60', 'b60', 'x60');
+    await ev(async id => {
+        const H = await import('/ext/home.js'), addr = JSON.stringify(['ari.png', 'a60']), name = H.memName(id), f = window.fetch;
+        window.fetch = async (u, o) => {
+            const res = await f(u, o);
+            if (String(u) === '/api/files/upload' && JSON.parse(o.body).name === name) {
+                window.fetch = f;
+                M.otherPut(H.tagName(addr), H.tagBody({ addr, integrity: 'a60-int', mem: id }));
+            }
+            return res;
+        };
+    }, hx60.id);
+    await ev(() => M.openFile('a60')); await wait(1200);
+    const ha60 = await H();
+    await ev(() => M.openFile('b60')); await wait(1200);
+    const hb60 = await H();
+    await ev(() => M.openFile('a60')); await wait(1200);
+    h = await H();
+    r = { home: (await memOf(hx60.id))?.home?.addr === A('a60'), closes: (await tagOf('a60'))?.closes ?? null, ...(await leftOf('a60')) };
+    ok(ha60.verdict === 'rename' && ha60.status === 'linked' && hb60.id !== hx60.id && r.home && Array.isArray(r.closes) && r.closes.length > 0
+        && h.status === 'linked' && h.id === hx60.id && r.settled.every(Boolean) && r.left === 0, `60. 이름 변경 중 다른 탭이 올린 이름표 → 막을 기록 채움·B가 안 가져감 (a=${JSON.stringify(ha60)} b=${JSON.stringify(hb60)} a again=${JSON.stringify(h)} ${JSON.stringify(r)})`);
+
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();
     process.exit(failures ? 1 : 0);

@@ -182,6 +182,12 @@ export const tagBody = ({ addr, integrity = null, mem, copy = null, prints = [],
     ({ format: 'savepoint-room', v: 1, addr, integrity, mem, copy, prints, state: 'linked', at, ...(closes.length ? { closes } : {}) });
 // The id of a rename record (seen on this device): its old name and the time it was seen. Only an id, never compared as a time.
 export const renameId = r => `${r?.from}|${r?.at}`;
+// v0.7.0-b1j (review of b1i, P1): a tag of the same link already there (another tab finished the same move first) gets the ids
+// it lacks added to its own (`closes` of both kept); null when it has them all.
+export const withCloses = (tag, closes = []) => {
+    const have = Array.isArray(tag?.closes) ? tag.closes : [], add = [...new Set(closes)].filter(x => !have.includes(x));
+    return add.length ? { ...tag, closes: [...have, ...add] } : null;
+};
 export const renamedTag = (tag, to, at = Date.now()) => ({ ...tag, state: 'renamed', to, at });
 export const clueBody = (integrity, rooms) => ({ format: 'savepoint-int', v: 1, integrity, rooms });
 export const clueWith = (clue, integrity, addr, mem) => {
@@ -533,7 +539,7 @@ export const sameLink = (tag, { id, integrity = null, copy = null }) => !!tag &&
 // writeMoved → writeCopy (moves only) → writeClue → recheckStart (moves) → writeTag (last).
 // in: { id, from, addr, integrity, copy (the old copy the chat has: moves, and a branch that carries one),
 //       mem, moved, start, hint, clue, tag: reads ({ kind, data }) }
-export function writePlan({ id, from, addr, integrity = null, copy = null, mem, moved = null, start = null, hint = null, clue = null, tag }) {
+export function writePlan({ id, from, addr, integrity = null, copy = null, mem, moved = null, start = null, hint = null, clue = null, tag, closes = [] }) {
     const move = from?.kind === 'migrate';
     const reads = [['mem', mem, validMem(id)], ['tag', tag, validTag(addr)]];
     if (move) reads.push(['start', start, validStart(addr)], ['moved', moved, validMoved(addr, copy)], ['hint', hint, validCopyHint(copy)]);
@@ -568,6 +574,8 @@ export function writePlan({ id, from, addr, integrity = null, copy = null, mem, 
     if (r.clue && !(r.clue.kind === OK && r.clue.data.rooms.some(x => x.addr === addr && x.mem === id))) steps.push('writeClue');
     if (r.tag.kind === MISSING) steps.push(...move ? ['recheckStart'] : [], 'writeTag');
     else if (!sameLink(r.tag.data, { id, integrity, copy })) return { hold: 'tagChanged' };
+    // v0.7.0-b1j (review of b1i, P1): the same link already there, without the renames this room closes: written again with them.
+    else if (withCloses(r.tag.data, closes)) steps.push('writeTag');
     return { steps };
 }
 
@@ -637,7 +645,7 @@ export async function placeMemory(io, { id, from, addr, integrity = null, copy =
     if (resume) { const why = same(reads.mem); if (why) return { stop: why }; }
     if (move) Object.assign(reads, { start: await rd(startName(addr)), moved: await rd(movedName(addr, copy)), hint: await rd(copyName(copy)) });
     if (str(integrity)) reads.clue = await rd(clueName(integrity));
-    const plan = writePlan({ id, from, addr, integrity, copy, ...reads });
+    const plan = writePlan({ id, from, addr, integrity, copy, ...reads, closes });
     if (!plan.steps) return plan;
     if (resume && plan.steps.includes('writeMem')) return { stop: 'memGone' };
     if (resume && plan.steps.includes('writeTag')) plan.steps.splice(plan.steps.indexOf('writeTag'), 0, 'recheckMem');
@@ -692,7 +700,12 @@ export async function placeMemory(io, { id, from, addr, integrity = null, copy =
             const t = checked(await rd(tagName(addr)), validTag(addr));
             if (bad(t)) return { stop: 'read', step };
             if (t.kind === OK) {
-                if (sameLink(t.data, { id, integrity, copy })) continue;
+                if (sameLink(t.data, { id, integrity, copy })) {
+                    // v0.7.0-b1j (review of b1i, P1): another tab put the same link first: the ids it lacks are added to it.
+                    const more = withCloses(t.data, closes);
+                    if (more && !await wr(tagName(addr), more)) return { stop: 'write', step };
+                    continue;
+                }
                 return { hold: 'tagChanged', step };
             }
             if (!await wr(tagName(addr), tagBody({ addr, integrity, mem: id, copy, prints: pickPrints(body.state.hashes), closes }))) return { stop: 'write', step };
