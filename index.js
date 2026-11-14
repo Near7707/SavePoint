@@ -27,7 +27,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.7.0-b1f';
+const VERSION = '0.7.0-b1g';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -841,7 +841,7 @@ async function writeEntry(queue, entry) {
     // outcome then takes back or writes over. One started during the checks above stops the change here (nothing applied).
     const hb = pageBox();
     if (!takeHome(hb)) throw new RoomBlocked('이 방의 기억을 다시 확인하는 중이라 이번 변경은 하지 않았어요. 잠시 뒤 다시 해 주세요.');
-    let applied, unsure = null, settled = false, written, marks, tick, rev, w, saved, mine = null, relinkedLate = false, unhidAfter = false;
+    let applied, unsure = null, settled = false, written, marks, tick, rev, w, saved, relinked, mine = null, relinkedLate = false, unhidAfter = false;
     const proof = null;
     try {
     checkQueue('before a queued change');
@@ -871,6 +871,9 @@ async function writeEntry(queue, entry) {
     // v0.7.0-b1a (review P1-1): a room opened while the memory was on its way is never this change's room.
     // v0.7.0-b1a (review of b1a, P3): an error from here on is after the memory was written (`memSaved`: the notice says so).
     saved = e => { if (w.status === MEM_OK || w.status === UNREAD) e.memSaved = true; return e; };
+    // v0.7.0-b1g (review of b1f, P1-1): another memory linked meanwhile: the page follows it, and this change ends with one notice
+    // (not "saved").
+    relinked = () => { if (roomKey() === entry.key && roomEpoch === entry.epoch) followHome(); return saved(new Relinked()); };
     if (moved() && !MEM_NOT_WRITTEN.has(w.status)) { restoreMarks(entry); throw saved(cancelMoved(queue, entry)); }
     if (MEM_NOT_WRITTEN.has(w.status)) {
         const here = restoreEntry(entry);
@@ -907,8 +910,8 @@ async function writeEntry(queue, entry) {
     if (!still.ok && still.why === 'relinked') {
         relinkedLate = true;
         if (dropStaleHides(entry, { all: true }) && roomKey() === entry.key && roomEpoch === entry.epoch) { ctx().swipe?.refresh?.(); refreshView(); }
-        if (!changedMarks(entry).length) throw saved(new RoomBlocked('기억은 저장했어요. 하지만 그사이 이 방의 기억을 다시 확인해서, 이번 원문 숨김은 저장하지 않았어요. 다시 세이브하면 맞춰요.'));
-        toastr.info('그사이 이 방의 기억을 다시 확인해서, 새로 숨기려던 원문은 숨기지 않았어요. 다시 세이브하면 맞춰요.', 'SavePoint', { timeOut: 8000 });
+        // v0.7.0-b1g (review of b1f, P1-1): the notice comes once, at the end of the change (Relinked).
+        if (!changedMarks(entry).length) throw relinked();
     } else if (!still.ok) {
         restoreMarks(entry);
         if (roomKey() === entry.key && roomEpoch === entry.epoch) { ctx().swipe?.refresh?.(); refreshView(); }
@@ -965,6 +968,7 @@ async function writeEntry(queue, entry) {
         try { const last = await persist(pre.meta, guard); if (last) written = last; }
         catch (e) {
             if (e?.nothingSent) {
+                if (relinkedLate && !sameHome(mine)) throw relinked();
                 const err = new RoomBlocked(relinkedLate ? '기억은 저장했어요. 하지만 그사이 이 방의 기억을 다시 확인해서, 이번 원문 숨김은 저장하지 않았어요. 다시 세이브하면 맞춰요.' : '기억은 저장했어요. 하지만 그사이 원문이 바뀌어서 원문 숨김은 저장하지 않았어요. 다시 세이브하면 맞춰요.');
                 err.kept = true; throw err;
             }
@@ -1028,8 +1032,16 @@ async function writeEntry(queue, entry) {
         if (!unsure.moved) markUnsure(unsure);
         throw saved(error);
     }
+    // v0.7.0-b1g (review of b1f, P1-1): `다시 확인` linked another memory while this write was ending (the chat file read back):
+    // the hides and the briefing follow that memory; the change is not reported as saved.
+    if (mine && !sameHome(mine)) throw relinked();
     if (roomKey() === entry.key && roomEpoch === entry.epoch) { if (entry.autosave) autosave(state()); render(); }
     return true;
+}
+// v0.7.0-b1g (review of b1f, P1-1): the room is still on the memory a change wrote (`mine`: its box, id and receipt).
+function sameHome(mine) {
+    const l = home.line?.seen;
+    return !!mine && home === mine.box && home.id === mine.id && !!l && l.rev === mine.rev && l.wid === mine.wid && !!l.missing === !!mine.missing;
 }
 // v0.6.46: what a button edit changed, as steps a replay can repeat safely.
 // v0.6.59: a button edit is worked out on a copy of the memory shown when it was pressed, and these
@@ -1566,7 +1578,9 @@ function homeInput(r) {
     const copy = old !== undefined && old !== null ? { hash: copyHash(old), ok: validState(old) } : null;
     // v0.7.0-b1c (review of b1b, P1-4): a rename made by a room that had taken over a name another room left is no proof for
     // that name's tag (`foreign`); a room seen leaving this name (and not back) means a chat here now is another (`left`).
-    const addr = roomKey(), seen = renamesSeen(), list = seen.filter(x => x.to === addr && !x.foreign);
+    // v0.7.0-b1g (review of b1f, P1-2): a rename away from a name where a new room's own first write has started (`closed`) is no
+    // proof for that name's tag any more (it may be the new room's).
+    const addr = roomKey(), seen = renamesSeen(), list = seen.filter(x => x.to === addr && !x.foreign && !x.closed);
     // v0.7.0-b1d (review of b1c, P1-3): also from the rooms kept as having left a name (`leftSeen`), which a deleted chat or
     // the 20-record limit never takes away.
     const left = seen.find(x => x.from === addr && x.to !== addr && !x.foreign && !x.settled)?.to ?? leftSeen().find(x => x.from === addr && !x.foreign)?.to ?? null;
@@ -1586,11 +1600,28 @@ function renamesSeen() { const s = settings(); if (!Array.isArray(s.renames)) s.
 function leftSeen() { const s = settings(); if (!Array.isArray(s.leftNames)) s.leftNames = []; return s.leftNames; }
 // v0.7.0-b1f (review of b1e, P2-1): a rename seen away from `addr` stays (it may still link the room under its new name) but is
 // no reason any more to hold this name's own tag (`settled`).
-function clearLeft(addr) {
-    const list = leftSeen(), keep = list.filter(x => x.from !== addr);
+// v0.7.0-b1g (review of b1f, P1-2 · P2): a new room's first write at `addr` (firstWrite) works only on what was there when it
+// started (a rename seen while it waits, `addr → C` of this very room, is never touched). Before its tag can be written, the
+// renames away from `addr` are closed (`closed`: decideRoom row 5 no longer reads this name's tag for them — it may be this
+// room's soon). The write confirmed as this room's: they are settled, the takeover marks of renames to `addr` (`took`) and the
+// rooms kept as having left `addr` go. Nothing of this room's written (a read failed, held before the tag): reopened. No
+// answer or not proved either way: they stay closed.
+function closeLeft(addr) {
+    const renames = renamesSeen(), closed = renames.filter(x => x.from === addr && x.to !== addr && !x.closed);
+    for (const x of closed) x.closed = true;
+    if (closed.length) saveSettings();
+    return { addr, closed, from: renames.filter(x => x.from === addr && x.to !== addr), took: renames.filter(x => x.to === addr && x.took === addr), left: leftSeen().filter(x => x.from === addr) };
+}
+function reopenLeft(was) {
+    for (const x of was.closed) delete x.closed;
+    if (was.closed.length) saveSettings();
+}
+function clearLeft(was) {
+    const list = leftSeen(), keep = list.filter(x => !was.left.includes(x));
     let touched = keep.length !== list.length;
     list.splice(0, list.length, ...keep);
-    for (const x of renamesSeen()) if (x.from === addr && !x.settled) { x.settled = true; touched = true; }
+    for (const x of was.from) if (!x.settled) { x.settled = true; touched = true; }
+    for (const x of was.took) if (x.took === was.addr) { delete x.took; touched = true; }
     if (touched) saveSettings();
 }
 function onChatRenamed(data) {
@@ -1852,13 +1883,41 @@ async function recheckHome() {
     try {
         const r = await serverCovered();
         if (!homeHere() || home !== h || !r.ok) { if (homeHere() && home === h) { blockRoom(r.why, r.at); render(); } return; }
-        const wasOpen = homeOpen(), was = h.status;
+        const wasOpen = homeOpen(), was = h.status, mark = homeMark(h);
         await linkHome(r, true);
         // v0.7.0-b1a (review of b1a, P2-1): a room that can save now (linked, or new with its id) gets what opening gives it.
         // v0.7.0-b1c (review of b1b, P2-3): also a new room that found its memory (new → linked): the hides and the briefing
         // follow that memory now.
         if (homeHere() && home === h && homeOpen() && (!wasOpen || was !== h.status)) roomOpened();
+        // v0.7.0-b1g (review of b1f, P1-1): still linked, but to another memory (another device's reset, read while a save of
+        // this room was finishing): the hides and the briefing follow it too.
+        else if (homeHere() && home === h && homeOpen() && mark && homeMark(h) !== mark) followHome();
     } finally { h.linking = false; }
+}
+// Which memory a linked room is on: its id and the receipt of the memory file last seen.
+function homeMark(h) {
+    if (h?.status !== 'linked' || !h.line?.seen) return null;
+    const x = h.line.seen;
+    return JSON.stringify([h.id ?? null, x.rev ?? null, x.wid ?? null, !!x.missing]);
+}
+// v0.7.0-b1g (review of b1f, P1-1): the room now follows another memory than the one it was on (as when opened, without the
+// "continue?" offer). A hide the page takes away goes to the file in SillyTavern's save (syncHide → saveChatSoon); a hide only
+// the server file still has (taken away on the page before, by the change that was running) gets a save of its own (4).
+function followHome() {
+    if (!hasChat() || !homeOpen()) return;
+    reconcile();
+    syncHide();
+    refreshInjection(); render(true);
+    unhideOnServer();
+}
+// v0.7.0-b1g (review of b1f, 4): a hide of SavePoint's the server file still has on a message the page shows: a chat save at the
+// room queue's turn (after a change running now), checked like every save outside a change (guardedSave).
+function unhideOnServer() {
+    return guardedSave(pre => {
+        const msgs = pre.messages || [];
+        const left = chat().some((m, i) => !m.is_system && !m.extra?.[HIDE_KEY] && !!msgs[i]?.is_system && !!msgs[i]?.extra?.[HIDE_KEY]);
+        return left ? persist(pre.meta) : null;
+    });
 }
 // v0.7.0-b1c (review of b1b, P1-1): a change of this room's memory, from the change on the page until its memory write is
 // settled, and a decision of the memory (linkHome, recheckHome) never run at the same time. takeHome: false while a
@@ -1895,6 +1954,12 @@ async function homeWrite(entry) {
     return writeMem(memIO(), h.line, { name: memName(h.id), valid: validMem(h.id), make: f => nextMem(f, state, st.wid) });
 }
 async function firstWrite(h, st, state) {
+    const was = closeLeft(h.key);
+    const out = await placeFirst(h, st, state, was);
+    if (out.status !== MEM_OK && out.reopen) reopenLeft(was);
+    return out;
+}
+async function placeFirst(h, st, state, was) {
     {
         const res = await placeMemory(placeIO(h), { id: h.id, from: h.from, addr: h.key, integrity: h.from?.integrity ?? null, copy: null, state, wid: st.wid });
         if (res.done) {
@@ -1909,7 +1974,7 @@ async function firstWrite(h, st, state) {
                 lineFor(h, { rev: m.data.rev, wid: m.data.wid }); h.status = 'linked'; h.from = m.data.from;
                 // v0.7.0-b1d (review of b1c, P1-3): this name's tag is this room's now: a room that left it before is no reason to
                 // hold it any more.
-                clearLeft(h.key);
+                clearLeft(was);
                 return { status: MEM_OK };
             }
             if (m.kind === OK) { lineFor(h, { rev: m.data.rev, wid: m.data.wid }); if (!h.line.pending) h.line.stop = MF_CONFLICT; h.status = 'linked'; return { status: CONFLICT }; }
@@ -1917,7 +1982,9 @@ async function firstWrite(h, st, state) {
             return { status: UNREAD };
         }
         if (h.line?.pending) { h.status = 'linked'; return { status: PENDING }; }
-        return { status: res.hold ? CONFLICT : res.stop === 'write' ? REFUSED : READ_ERROR, why: res.hold || res.stop };
+        // v0.7.0-b1g (review of b1f, P1-2): not placed, no request left without an answer: this room's tag is not on the server
+        // (written last; one refused at that very step is not proved either way), so the renames closed for it open again.
+        return { status: res.hold ? CONFLICT : res.stop === 'write' ? REFUSED : READ_ERROR, why: res.hold || res.stop, reopen: !(res.stop === 'write' && res.step === 'writeTag') };
     }
 }
 // Status of a memory write that changed nothing in the file: taken back whole.
@@ -2376,6 +2443,10 @@ function refreshInjection() {
 class Cancelled extends Error {}
 // v0.6.61: a change that was no longer valid at its turn (see transact `still`). Nothing was changed.
 class Stale extends Cancelled { constructor(m) { super(m); this.name = 'Stale'; } }
+// v0.7.0-b1g (review of b1f, P1-1): another memory was linked to the room while a change of it was being saved (another device's
+// reset read by `다시 확인`): the page follows that memory now; the change's own end ("saved") is not reported.
+const RELINKED_TEXT = '저장하는 사이 이 방의 기억이 바뀌었어요. 다시 불러온 기억에 맞춰 화면을 갱신했어요.';
+class Relinked extends Stale { constructor(m = RELINKED_TEXT) { super(m); this.name = 'Relinked'; } }
 class RequestTimeout extends Error {
     // kind: 'idle' = no new output for the wait limit, 'total' = the overall maximum was reached,
     // 'limit' = a request whose progress cannot be seen ran past its single time limit.
@@ -2992,7 +3063,7 @@ async function summarize({ close = false, auto = false } = {}) {
     const undoPoint = checkpoint(st);
     const memBefore = st.mem;
     let done = 0, cursor = 0;
-    let stage = 'collect', writeFailed = false;
+    let stage = 'collect', writeFailed = false, relinkedRun = false;
     const oldLoot = queued.filter(x => x.msg <= st.lastIndex);
     const attemptedLoot = new Set();
     let lootFailed = 0, complete = false;
@@ -3061,6 +3132,7 @@ async function summarize({ close = false, auto = false } = {}) {
         complete = true;
     } catch (e) {
         if (stage === 'save' && !(e instanceof Cancelled)) writeFailed = true;
+        if (e?.name === 'Relinked') relinkedRun = true;
         if (queued.length && !(e instanceof Cancelled) && !(e instanceof Unconfirmed) && !(e instanceof RoomBlocked) && run.key === roomKey()) {
             try { lootFailed += await failPendingLoot(run, queued, e); } catch { /* a failed disk write leaves the queue intact */ }
         }
@@ -3082,7 +3154,9 @@ async function summarize({ close = false, auto = false } = {}) {
         if (e instanceof Cancelled) { if (run.key === roomKey()) toastr.info(e.message + where, 'SavePoint'); }
         else if (unconfirmed) { console.warn('[SavePoint]', e); toastr.warning(e.message + where, 'SavePoint', { timeOut: 15000 }); }
         else { console.error('[SavePoint]', e, e.detail || ''); if (!auto) toastr.error(e.message + where, 'SavePoint', { timeOut: 12000 }); }
-        if (auto && run.key === roomKey() && run.epoch === roomEpoch) {
+        // v0.7.0-b1g (review of b1f, P1-1): a memory linked during the save gets no note of it (it is not this save's memory).
+        if (auto && relinkedRun) run.notice = { text: '체크포인트 중 이 방의 기억이 바뀜 · 다시 불러온 기억에 맞춤', tone: 'warning' };
+        else if (auto && run.key === roomKey() && run.epoch === roomEpoch) {
             const cur = state();
             if (cur) {
                 const cancelled = e instanceof Cancelled;
@@ -3108,14 +3182,16 @@ async function summarize({ close = false, auto = false } = {}) {
     } finally {
         // v0.7.0-a: a manual save that pressed but ended before the last message still counts as an attempt (autoMark).
         // Not after a failed chat file write: the next write would only add to it (the attempt is said by its error).
-        if (!auto && !writeFailed && run.key === roomKey() && run.epoch === roomEpoch && (msgs.length || queued.length))
+        // v0.7.0-b1g (review of b1f, P1-1): nor on a memory linked during the save (not this save's).
+        if (!auto && !writeFailed && !relinkedRun && run.key === roomKey() && run.epoch === roomEpoch && (msgs.length || queued.length))
             await noteMem(cur => { if ((cur.line ?? null) !== (st.line ?? null) || cur.lastIndex >= latest || (cur.autoMark ?? -1) >= latest) return false; cur.autoMark = latest; cur.autoHold = null; }, 'save attempt', { room: run });
         if (lootFailed && run.key === roomKey() && state()) toastr.warning(`⚠ 루팅한 내용 ${lootFailed}개가 반영되지 않았어요.${lootFailNote(state())} 다음 세이브 때 다시 시도해요. 자세한 이유는 ⏳ 대기열에서 볼 수 있어요.`, 'SavePoint', { timeOut: 10000 });
         endRun(run);
         // v0.7.0-a1 (review P2-3): "the memory this save wrote" is told by its write receipt (wid), not by the object: a
         // note after it that failed puts back a copy of the same written memory (restoreEntry).
         const now = state(), same = !!now && (now === st || (!!run.wid && now.wid === run.wid && (now.line ?? null) === (st.line ?? null)));
-        if (done && run.key === roomKey()) { autosave(now); if (same) { queueCheck(now, memBefore, { auto }); announceReturns(now); } }
+        // v0.7.0-b1g (review of b1f, P1-1): a memory linked during the save is not this save's: no AUTO backup of it.
+        if (done && run.key === roomKey() && !relinkedRun) { autosave(now); if (same) { queueCheck(now, memBefore, { auto }); announceReturns(now); } }
         // A partial, failed or cancelled run keeps the previous QUICK; what it saved is in AUTO.
         if (complete && !auto && run.key === roomKey() && same) await quickSaveChecked(now).catch(reportError);
     }
