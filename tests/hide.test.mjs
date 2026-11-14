@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { gateBox } from './gate-stub.mjs';
+import { gateBox, memAccess } from './gate-stub.mjs';
 import vm from 'node:vm';
 import { chunkMessages, openScene } from '../core.js';
 
@@ -21,7 +21,7 @@ function harness({ count = 10, lastIndex = 9, keepRecent = 2 } = {}) {
     const writes = [], notifications = [];
     let calls = 0;
     const ui = {};
-    const box = { ...gateBox(), clearInterrupted() {},
+    const box = { ...gateBox(), ...memAccess(() => meta), clearInterrupted() {},
         MODULE: 'savePoint', HIDE_KEY, VISIBLE_KEY, HELD_KEY, KEEP_KEY, ui, roomEpoch: 0,
         clone: structuredClone, roomKey: () => 'room', state: () => meta.savePoint,
         // v0.7.0-a1: no changed original waits for its turn here (the hides follow the room's memory itself).

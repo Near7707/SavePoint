@@ -28,3 +28,11 @@ export function gateBox() {
         firstMismatch: () => -1,
     };
 }
+
+// v0.7.0-b1: the room's memory store (index.js pageBox/pageMem/setPageMem) for a box whose memory lives at
+// `meta().savePoint`, as the chat metadata did before.
+export function memAccess(meta) {
+    const boxMem = box => box?.savePoint;
+    const putBoxMem = (box, st) => { if (!box) return; if (st === undefined) delete box.savePoint; else box.savePoint = st; };
+    return { pageBox: () => meta(), boxMem, putBoxMem, pageMem: () => boxMem(meta()), setPageMem: st => putBoxMem(meta(), st) };
+}

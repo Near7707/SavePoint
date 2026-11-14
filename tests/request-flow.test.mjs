@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { gateBox } from './gate-stub.mjs';
+import { gateBox, memAccess } from './gate-stub.mjs';
 import vm from 'node:vm';
 import * as core from '../core.js';
 import * as temporal from '../temporal.js';
@@ -40,7 +40,7 @@ function harness({ count = 40, chars = 1000, limit = 22500, failAt = Infinity, c
         settings: () => s, num: key => s[key], names: () => ({}), cardText: () => '',
         chat: () => chat, state: () => st, ensureState: () => st,
         // v0.7.0-a1: a save works on the page's memory itself (never a tidied copy read through state()).
-        ctx: () => ({ chatMetadata: { savePoint: st } }), MODULE: 'savePoint', hasChat: () => true, mainBusy: () => false, reconcile: () => true,
+        ...memAccess(() => ({ savePoint: st })), ctx: () => ({ chatMetadata: { savePoint: st } }), MODULE: 'savePoint', hasChat: () => true, mainBusy: () => false, reconcile: () => true,
         collect: (a, b) => chat.map((m, index) => ({ index, name: m.name, text: m.mes })).filter(m => m.index >= a && m.index <= b),
         speaker: m => m.name, cleanText: s => s, msgText: m => m?.mes ?? "", EXCLUDED_ONLY: "(only excluded content)", eligible: m => !m.is_system,
         render() {}, persistSoon() {}, autosave() {}, async quickSave() { return null; }, announceReturns() {}, reportError() {}, queueCheck() {}, clearInterrupted() {}, roomKey: () => undefined,

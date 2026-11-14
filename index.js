@@ -135,7 +135,7 @@ function roomKey() {
 function hasChat() { return roomKey() !== null; }
 function chat() { return ctx().chat || []; }
 function state() {
-    const st = ctx().chatMetadata?.[MODULE];
+    const st = pageMem();
     if (!st || st.v !== 1) return null;
     // v0.6.59: nothing on the page changes before the room is confirmed. An old-format memory is read
     // through an upgraded copy until then; the other tidy-ups wait.
@@ -182,7 +182,7 @@ const basicTidied = new WeakSet(), tidyViews = new WeakMap();
 let tidyAsked = null;
 // v0.7.0-a1: the tidy-up as one queued change, waited for (a save needs it written before it starts).
 function tidyNow() {
-    return transact(() => { const st = ctx().chatMetadata?.[MODULE]; return st && st.v === 1 && tidyMem(st, true) ? undefined : false; }, { undoable: false, autosave: false });
+    return transact(() => { const st = pageMem(); return st && st.v === 1 && tidyMem(st, true) ? undefined : false; }, { undoable: false, autosave: false });
 }
 function tidyQueued() {
     const id = `${roomKey()}|${roomEpoch}`;
@@ -196,7 +196,7 @@ function tidyQueued() {
 // read through a tidied copy gets its tidy-up written first; null when that cannot be done (said with `what`, unless
 // the room changed meanwhile).
 async function pageState(what) {
-    const key = roomKey(), epoch = roomEpoch, own = () => ctx().chatMetadata?.[MODULE];
+    const key = roomKey(), epoch = roomEpoch, own = () => pageMem();
     let st = state();
     if (!st || st === own()) return st;
     let why = '';
@@ -211,6 +211,13 @@ async function pageState(what) {
 }
 const storyTimesChecked = new WeakSet();
 const oldViews = new WeakMap();
+// v0.7.0-b1: the room's memory as the page holds it (its store): every read and change of it goes through these.
+// `pageBox()` is the store of the room open now (its identity tells a room loaded anew), `pageMem()` its memory.
+function pageBox() { return ctx().chatMetadata; }
+function boxMem(box) { return box?.[MODULE]; }
+function putBoxMem(box, st) { if (!box) return; if (st === undefined) delete box[MODULE]; else box[MODULE] = st; }
+function pageMem() { return boxMem(pageBox()); }
+function setPageMem(st) { putBoxMem(pageBox(), st); }
 function freshState(extra = {}) {
     // v0.6.62: `line` is new whenever the room's memory is replaced as a whole (a new state: load, reset).
     // A rewind brings the earlier one back with its own line. Edits pressed on one line never land on another.
@@ -220,7 +227,7 @@ function ensureState() {
     let st = state();
     if (st) return st;
     st = freshState();
-    ctx().chatMetadata[MODULE] = st;
+    setPageMem(st);
     return st;
 }
 function hasMemory(mem) { return !!(mem && (mem.scenes.length || mem.records.length)); }
@@ -583,19 +590,19 @@ function saveQueue(key, epoch) {
 // which page wrote it, does not count). Checked before each queued change, before each chat file write and every 100 ms.
 // A room loaded anew (another metadata object or room) is taken as it is.
 const STRICT = !!globalThis.__spStrict;
-let qTrust = { meta: null, key: null, sig: null };
-function memSig(meta) {
-    const st = meta?.[MODULE];
+let qTrust = { box: null, key: null, sig: null };
+function memSig(box) {
+    const st = boxMem(box);
     if (!st || typeof st !== 'object') return 'none';
     const { by: _by, ...rest } = st;
     return JSON.stringify(rest);
 }
-function trustQueue() { if (STRICT) { const meta = ctx().chatMetadata; qTrust = { meta, key: roomKey(), sig: memSig(meta) }; } }
+function trustQueue() { if (STRICT) { const box = pageBox(); qTrust = { box, key: roomKey(), sig: memSig(box) }; } }
 function checkQueue(where) {
     if (!STRICT) return;
-    const meta = ctx().chatMetadata;
-    if (meta !== qTrust.meta || roomKey() !== qTrust.key) { trustQueue(); return; }
-    const sig = memSig(meta);
+    const box = pageBox();
+    if (box !== qTrust.box || roomKey() !== qTrust.key) { trustQueue(); return; }
+    const sig = memSig(box);
     if (sig === qTrust.sig) return;
     let keys = [];
     try {
@@ -612,8 +619,8 @@ if (STRICT) setInterval(() => checkQueue('timer'), 100);
 const SESSION = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 // Applies one change to the page (memory, hide flags, injection, screen). false = nothing changed.
 function applyEntry(entry) {
-    const meta = entry.meta = ctx().chatMetadata;   // this room's metadata, even if the room changes later
-    entry.prev = meta[MODULE] ? clone(meta[MODULE]) : undefined;
+    const box = entry.box = pageBox();   // this room's memory store, even if the room changes later
+    entry.prev = boxMem(box) ? clone(boxMem(box)) : undefined;
     // A save-time rescan may retire a previous manual visibility exception.
     // Keep those flags as well as visibility so a failed disk write restores
     // the exact pre-save state, including messages the user had opened.
@@ -698,8 +705,7 @@ function refreshView() {
 // (by hand, by another change) stays. `extra` is never replaced: other keys in it (a translation) stay.
 // A change that threw while it ran (no entry.after) is put back as it was.
 function restoreEntry(entry) {
-    const meta = entry.meta;
-    if (entry.prev === undefined) delete meta[MODULE]; else meta[MODULE] = entry.prev;
+    putBoxMem(entry.box, entry.prev);
     const here = roomKey() === entry.key && roomEpoch === entry.epoch;
     // v0.6.77: by where the message is now (one deleted meanwhile moves the ones after it).
     const where = here && entry.visibility ? new Map(chat().map((m, i) => [m, i])) : null;
@@ -774,7 +780,7 @@ async function writeEntry(queue, entry) {
     checkQueue('before a queued change');
     try { applied = applyEntry(entry); trustQueue(); }
     catch (e) {
-        const here = entry.meta ? restoreEntry(entry) : roomKey() === entry.key && roomEpoch === entry.epoch;
+        const here = entry.box ? restoreEntry(entry) : roomKey() === entry.key && roomEpoch === entry.epoch;
         trustQueue();
         if (here) {
             try { if (!entry.visibility) syncHide(); else ctx().swipe?.refresh?.(); } catch (x) { console.error('[SavePoint] hide after a failed change', x); }
@@ -785,7 +791,7 @@ async function writeEntry(queue, entry) {
     }
     if (applied === false) return false;
     let unsure = null, settled = false;
-    const written = sendSnap(pre.meta), rev = state()?.rev ?? null, proof = proofOf(ctx().chatMetadata?.[MODULE]), marks = changedMarks(entry), tick = delTick;
+    const written = sendSnap(pre.meta), rev = state()?.rev ?? null, proof = proofOf(pageMem()), marks = changedMarks(entry), tick = delTick;
     try {
         // v0.6.76: a failure after the change may already be in the file is not taken back (settleWrite).
         try { await persist(pre.meta); }
@@ -926,7 +932,7 @@ function persistSoon() {
     // (marked now, so a SillyTavern save of the page before our write still shows it as this page's).
     // v0.6.60: never on a room that is not confirmed yet: its first check compares the page's memory with
     // the file's (see foreignMemory).
-    const mark = () => { const st = ctx().chatMetadata?.[MODULE]; if (gateOpen() && st && typeof st === 'object') st.by = SESSION; };
+    const mark = () => { const st = pageMem(); if (gateOpen() && st && typeof st === 'object') st.by = SESSION; };
     mark();
     persistTimer = setTimeout(function save() {
         if (roomKey() !== key || roomEpoch !== epoch) return;
@@ -965,7 +971,7 @@ function guardedSave(write) {
             if (pre.why === 'busy') gate.held = true; else warnBlocked();
             return;
         }
-        const written = sendSnap(pre.meta), rev = state()?.rev ?? null, proof = proofOf(ctx().chatMetadata?.[MODULE]), tick = delTick;
+        const written = sendSnap(pre.meta), rev = state()?.rev ?? null, proof = proofOf(pageMem()), tick = delTick;
         // v0.6.72: a save stopped because the room moved meanwhile is not an error of the new room.
         try { await write(pre); } catch (e) {
             let err = await settleWrite(e, { written, rev, proof, pre, key, epoch, tick });
@@ -1969,7 +1975,7 @@ function assertValid(run, upTo) {
 // (a message edited while the write waited for its file check is not recorded from its old text).
 function assertStill(run, upTo, base) {
     // v0.7.0-a1 (review P2-1): the run's memory must be the page's own (never a tidied copy read through state()).
-    const ok = !run.cancelled && run.key === roomKey() && run.epoch === roomEpoch && state() === run.st && run.st === ctx().chatMetadata?.[MODULE] && run.st.mem === base &&
+    const ok = !run.cancelled && run.key === roomKey() && run.epoch === roomEpoch && state() === run.st && run.st === pageMem() && run.st.mem === base &&
         !run.st.review && firstMismatch(run.hashes.slice(0, upTo + 1)) === -1 && baseMatches(run);
     if (!ok) { run.cancelled = true; throw new Cancelled('기록하는 사이 대화나 기억이 바뀌어서 이 구간은 저장하지 않았어요. 다시 세이브해 주세요.'); }
     return true;
@@ -2283,14 +2289,14 @@ async function summarize({ close = false, auto = false } = {}) {
     // v0.7.0-a1 (review P2-1): an old-format memory is read through a tidied copy until its tidy-up is written. A save
     // works on the page's memory itself (its writes change `st`), so the tidy-up is written first; if it cannot be,
     // nothing is asked (a save made on the copy would say "saved" while the page kept the old memory).
-    if (st !== ctx().chatMetadata?.[MODULE]) {
+    if (st !== pageMem()) {
         let why = '';
         try { await tidyNow(); } catch (e) { why = ` · ${errorText(e)}`; }
         if (!here()) return;
         if (ui.run) { toastr.info('이미 기록 중이에요.'); return; }
         st = state();
         if (!st) return;
-        if (st !== ctx().chatMetadata?.[MODULE]) {
+        if (st !== pageMem()) {
             const text = `기억 정리를 저장하지 못해서 ${auto ? '체크포인트' : '세이브'}를 시작하지 않았어요${why}`;
             if (auto) console.warn('[SavePoint]', text); else toastr.warning(text, 'SavePoint', { timeOut: 10000 });
             return;
@@ -2305,7 +2311,7 @@ async function summarize({ close = false, auto = false } = {}) {
         if (!again) { render(); toastr.warning('예전 원문이 바뀌었어요. 창 위쪽 안내에서 먼저 처리해 주세요.'); return; }
         if (ui.run) { toastr.info('이미 기록 중이에요.'); return; }
         st = state();
-        if (!st || st !== ctx().chatMetadata?.[MODULE] || st.review || firstMismatch(st.hashes) >= 0) return;
+        if (!st || st !== pageMem() || st.review || firstMismatch(st.hashes) >= 0) return;
     }
     const latest = chat().length - 1;
     const start = st.lastIndex + 1;
@@ -2976,7 +2982,7 @@ async function translate() {
         await transact(() => {
             const before = st.mem;
             st.mem = next; pushHistory(st, before, next, { kind: 'edit' });
-        }, { still: () => run.cancelled || ui.run !== run ? '중지했어요.' : state() !== st || st !== ctx().chatMetadata?.[MODULE] || st.rev !== rev ? '기억이 바뀌어서 번역을 적용하지 않았어요.' : true });
+        }, { still: () => run.cancelled || ui.run !== run ? '중지했어요.' : state() !== st || st !== pageMem() || st.rev !== rev ? '기억이 바뀌어서 번역을 적용하지 않았어요.' : true });
         // v0.6.39: the view language stays whatever the user chose last (🌐 원문 during the request wins).
         toastr.success(`${count}개 항목의 한국어 보기를 만들었어요.`);
     } catch (e) {
@@ -3023,7 +3029,7 @@ async function rekeyScenes(ids) {
                 let next = before;
                 for (const [sid, keys] of results) next = applyRekey(next, sid, keys);
                 st.mem = next; pushHistory(st, before, next, { kind: 'edit' });
-            }, { still: () => run.cancelled || ui.run !== run ? '중지했어요.' : state() !== st || st !== ctx().chatMetadata?.[MODULE] || st.rev !== rev ? '기억이 바뀌어서 적용하지 않았어요.' : true });
+            }, { still: () => run.cancelled || ui.run !== run ? '중지했어요.' : state() !== st || st !== pageMem() || st.rev !== rev ? '기억이 바뀌어서 적용하지 않았어요.' : true });
         }
         refreshInjection();
         toastr[failed ? 'warning' : 'success'](`주입 포인트를 다시 골랐어요 (장면 ${results.length}개${failed ? `, 실패 ${failed}개` : ''}). 직접 지정한 포인트는 그대로예요.`);
@@ -3084,7 +3090,7 @@ async function undo() {
             // Worked out at its turn, from the room as it is then.
             const restored = { ...clone(st.undo), undo: null, undoInfo: null };
             restored.lootQueue = restoreLostLoot(st.lootQueue, st.mem, restored.mem, { room: roomKey(), hashes: st.hashes, fallback: st.undo.lootQueue });
-            ctx().chatMetadata[MODULE] = restored;
+            setPageMem(restored);
         }, { undoable: false, verify: true, still: same, stale: '리와인드를 기다리는 사이 되돌릴 지점이 바뀌어서(다른 저장·리셋) 되돌리지 않았어요. ⏪를 다시 눌러 주세요.' });
     } catch (e) {
         if (e instanceof Stale) { toastr.info(e.message, 'SavePoint', { timeOut: 10000 }); return; }
@@ -3097,7 +3103,7 @@ async function clearRoom() {
     const st = state();
     if (!st || !(await confirmHere('리셋: 이 방의 기억을 모두 지울까요? 세이브 슬롯은 남아요. (⏪ 리와인드로 되돌릴 수 있어요)', () => !ui.run))) return;
     // v0.6.61: the loot queue kept is the one there at its turn.
-    await transact(() => { ctx().chatMetadata[MODULE] = freshState({ autoMark: chat().length - 1, lootQueue: clone(state()?.lootQueue || []) }); }, { undoable: true, undoKind: 'reset', verify: true });
+    await transact(() => { setPageMem(freshState({ autoMark: chat().length - 1, lootQueue: clone(state()?.lootQueue || []) })); }, { undoable: true, undoKind: 'reset', verify: true });
 }
 
 // ───────── save slots (server files via vault.js) ─────────
@@ -3390,7 +3396,7 @@ async function loadSave(id) {
                 if (reply.recorded) { st.lastIndex = 0; st.hashes = hashesTo(0); st.floor = 0; }
             }
             if (now) st.lootQueue = restoreLostLoot(now.lootQueue, now.mem, st.mem, { room: key, hashes: now.hashes, fallback: now.undo?.lootQueue });
-            ctx().chatMetadata[MODULE] = st;
+            setPageMem(st);
         }, { undoable: true, undoKind: 'load', verify: true, still: pre => !here() || stillAsked(pre), stale: changedNote });
         if (ok === false) return moved();
     } catch (e) {
@@ -3956,7 +3962,7 @@ async function retryLoot(id) {
     // A copy that became the page's memory (its tidy-up written meanwhile) is the same memory line; anything else is not.
     const cur = state();
     if (!cur || (cur !== st && (!st.line || cur.line !== st.line))) return;
-    if (cur !== st || st !== ctx().chatMetadata?.[MODULE]) {
+    if (cur !== st || st !== pageMem()) {
         st = await pageState('루팅 다시 반영을');
         if (!st || roomKey() !== key || roomEpoch !== epoch || ui.run) return;
         item = (st.lootQueue || []).find(x => x.id === id); if (!item) return;
