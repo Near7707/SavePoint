@@ -129,7 +129,9 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(h.status === 'linked' && h.last === 15 && r.oldTag === 'renamed' && r.newTag === 'linked' && r.home && r.roomKey && JSON.stringify(r.was) === JSON.stringify([JSON.stringify(['ari.png', 'oldRoom'])]), `7. 이름 변경 → 본체 home·새 이름표·옛 이름표 renamed (${JSON.stringify(h)} ${JSON.stringify(r)})`);
     await ev(() => M.openFile('newRoom')); await wait(700);
     h = await H();
-    ok(h.status === 'linked' && h.verdict === 'link' && quickOld >= 1, `7. 새 이름으로 다시 열기 → 연결 (${JSON.stringify(h)}, 옛 QUICK ${quickOld})`);
+    // v0.7.0-b1a (review P3): the old name's QUICK is listed in the renamed room (sameRoom: the memory's `was`).
+    const quickNew = await ev(() => __savePoint.listSaves().filter(x => x.quick && __savePoint.sameRoom(x.room) && x.room === JSON.stringify(['ari.png', 'oldRoom'])).length);
+    ok(h.status === 'linked' && h.verdict === 'link' && quickOld >= 1 && quickNew === quickOld, `7. 새 이름으로 다시 열기 → 연결, 옛 이름의 QUICK이 이 방 목록에 (${JSON.stringify(h)}, 옛 QUICK ${quickOld} → 이 방 ${quickNew})`);
 
     // 8. another device wrote the memory file: the next change writes nothing over it, and the room stops.
     const mid = (await H()).id;
@@ -201,10 +203,107 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const warned = await ev(() => toastr.log.slice(-3).some(x => x[0] === 'warning' && /연결되지 않아서/.test(x[1])));
     ok(h.status === 'readFail' && h.last === null && /읽지 못했/.test(r.alert) && r.btn && /읽지|찾는/.test(blocked), `11. 읽기 실패 → 쓰기 0·이유·다시 확인 (${JSON.stringify(h)}, ${blocked.slice(0, 50)})`);
     ok(warned, '11. 연결 전 일반 전송 → 경고 알림');
+    // v0.7.0-b1a (review P3): nothing was written while the room was not linked (chat saves and user files).
+    r = { ...r, sp2: await ev(() => M.spSaves), puts2: await ev(() => M.fileLog.filter(x => x[0] === 'put').length) };
+    ok(r.sp2 === r.sp && r.puts2 === r.puts, `11. 읽기 실패 중 채팅 저장·파일 쓰기 0 (${JSON.stringify({ sp: [r.sp, r.sp2], puts: [r.puts, r.puts2] })})`);
     await ev(n => { M.fileState = {}; }, tag11);
     await ev(() => __savePoint.handle('home-recheck')); await wait(900);
     h = await H();
     ok(h.status === 'linked' && h.verdict === 'link', `11. 다시 확인 → 연결 (${JSON.stringify(h)})`);
+
+    // ───── v0.7.0-b1a (review of b1) ─────
+    const H12 = () => H();
+    const hiddenOf = id => ev(id => (M.serverFiles[id] || []).slice(1).filter(m => m.is_system).length, id);
+    // 12. P1-1: another room opened (and linked) while this room's memory write is on its way: the change writes no chat
+    // file at all (not this room's, not the room open now).
+    await ev(() => { M.settings.savePoint.hideMode = 'auto'; }); await ev(() => M.openFile('newRoom')); await wait(900);
+    await ev(() => M.add(4));
+    r = await ev(() => ({ sp: M.spSaves, b: JSON.stringify(M.serverFiles.branchB), n: JSON.stringify(M.serverFiles.newRoom) }));
+    await ev(() => { M.beforeUpload = async name => { if (!name.startsWith('savepoint-mem-')) return; M.beforeUpload = null; await M.openFile('branchB'); await new Promise(r => setTimeout(r, 900)); }; });
+    await ev(() => __savePoint.handle('run'));
+    await wait(2500);
+    h = await H12();
+    r = { sp: [r.sp, await ev(() => M.spSaves)], bSame: await ev(() => JSON.stringify(M.serverFiles.branchB)) === r.b, nSame: await ev(() => JSON.stringify(M.serverFiles.newRoom)) === r.n, room: await ev(() => M.chatId), status: h.status };
+    ok(r.sp[0] === r.sp[1] && r.bSame && r.nSame && r.room === 'branchB' && r.status === 'linked', `12. 기억 저장 중 다른 방 열림 → 어느 채팅 파일도 쓰지 않음 (${JSON.stringify(r)})`);
+
+    // 12b. P1-1: another device adds a reply to the chat file while the memory write is on its way: the chat file is read
+    // again before it is written, the reply stays, the room stops.
+    await ev(() => M.openFile('newRoom')); await wait(900);
+    await ev(() => M.add(4));
+    r = await ev(() => ({ sp: M.spSaves, hid: M.serverFiles.newRoom.slice(1).filter(m => m.is_system).length }));
+    await ev(() => { M.beforeUpload = async name => { if (!name.startsWith('savepoint-mem-')) return; M.beforeUpload = null; M.serverFiles.newRoom.push({ name: 'Other', is_user: false, mes: 'A reply saved on another device.', send_date: Date.now(), extra: {} }); }; });
+    await ev(() => __savePoint.handle('run'));
+    await wait(2500);
+    r = { ...r, sp2: await ev(() => M.spSaves), kept: await ev(() => M.serverFiles.newRoom.some(m => m.mes === 'A reply saved on another device.')), hid2: await hiddenOf('newRoom'), page: await ev(() => M.chat.filter(m => m.is_system).length), gate: await ev(() => __savePoint.home().status) };
+    ok(r.sp2 === r.sp && r.kept && r.hid2 === r.hid && r.page === r.hid, `12b. 기억 저장 중 다른 기기 답변 → 채팅 파일 쓰지 않음·답변 그대로·화면 숨김 되돌림 (${JSON.stringify(r)})`);
+
+    // 13. P1-2: two 다시 확인 at once run one decision; a notice during an opening whose memory write got no answer never
+    // decides the room again (the lost write may still land).
+    const tag13 = await ev(async () => { const H = await import('/ext/home.js'); const n = H.tagName(JSON.stringify(['ari.png', 'newRoom'])); M.fileState[n] = 'error'; return n; });
+    await ev(() => M.openFile('newRoom')); await wait(900);
+    await ev(() => { M.fileState = {}; M.fileReads = []; });
+    await ev(() => __savePoint.handle('home-recheck')); await wait(900);
+    const one = await ev(n => M.fileReads.filter(x => x === n).length, tag13);
+    await ev(n => { M.fileState[n] = 'error'; }, tag13);
+    await ev(() => M.openFile('newRoom')); await wait(900);
+    await ev(() => { M.fileState = {}; M.fileReads = []; });
+    await ev(() => Promise.all([__savePoint.recheckHome(), __savePoint.recheckHome()])); await wait(900);
+    h = await H12();
+    const two = await ev(n => M.fileReads.filter(x => x === n).length, tag13);
+    ok(h.status === 'linked' && one > 0 && two === one, `13. 다시 확인 두 번 → 판정 한 번 (이름표 읽기 ${one} / ${two}, ${h.status})`);
+    // An old room moving out: its body upload loses its answer while a rename notice asks for another round.
+    await ev(([o]) => { const list = JSON.parse(JSON.stringify(M.chat)); M.serverFiles.oldRoom2 = [{ chat_metadata: { integrity: 'old2-int', savePoint: { ...o, roomKey: JSON.stringify(['ari.png', 'oldRoom2']) } } }, ...list]; }, [old]);
+    await ev(() => {
+        const f = window.fetch;
+        window.fetch = async (u, o) => {
+            if (String(u) === '/api/files/upload' && JSON.parse(o.body).name.startsWith('savepoint-mem-')) {
+                window.fetch = f; M.late = () => f(u, o);
+                await M.eventSource.emit(M.event_types.CHAT_RENAMED, { avatarId: 'ari.png', oldFileName: 'zz-a.jsonl', newFileName: 'zz-b.jsonl' });
+                throw new TypeError('Failed to fetch');
+            }
+            return f(u, o);
+        };
+    });
+    const puts13 = await ev(() => M.fileLog.filter(x => x[0] === 'put' && x[1].startsWith('savepoint-mem-')).length);
+    await ev(() => M.openFile('oldRoom2')); await wait(1500);
+    h = await H12();
+    r = { puts: (await ev(() => M.fileLog.filter(x => x[0] === 'put' && x[1].startsWith('savepoint-mem-')).length)) - puts13, status: h.status, pending: h.pending };
+    ok(r.puts === 0 && r.status === 'pending' && r.pending, `13. 이전 중 응답 끊김 + 이름 변경 알림 → 다시 판정하지 않음, 기억 쓰기 0 (${JSON.stringify(r)})`);
+    await ev(() => M.late && M.late()); await wait(200);
+
+    // 14. P1-3: another device made this new room's memory first: the first change is not taken as written.
+    await ev(() => { const list = JSON.parse(JSON.stringify(M.chat.slice(0, 6))); list.forEach(m => { delete m.is_system; if (m.extra) for (const k of Object.keys(m.extra)) if (k.startsWith('savepoint')) delete m.extra[k]; }); M.serverFiles.freshRoom = [{ chat_metadata: { integrity: 'fresh-int' } }, ...list]; });
+    await ev(() => M.openFile('freshRoom')); await wait(900);
+    h = await H12();
+    const new14 = h.status;
+    await ev(async ([o]) => {
+        const H = await import('/ext/home.js'), hm = __savePoint.home(), addr = JSON.stringify(['ari.png', 'freshRoom']);
+        const st = { ...o, roomKey: addr, linkedSave: null, lastIndex: 2, hashes: o.hashes.slice(0, 3), floor: 2, rev: 1, wid: 'other-first' };
+        M.otherPut(H.memName(hm.id), H.memBody({ id: hm.id, state: st, wid: 'other-first', from: hm.from, home: { addr, integrity: 'fresh-int' } }));
+        M.otherPut(H.tagName(addr), H.tagBody({ addr, integrity: 'fresh-int', mem: hm.id }));
+    }, [old]);
+    await ev(() => __savePoint.handle('run'));
+    await wait(1500);
+    h = await H12();
+    const f14 = await memOf(h.id);
+    r = { was: new14, wid: f14?.wid, stop: h.stop, log: await ev(() => toastr.log.slice(-1).map(x => x[1].slice(0, 60))), page: await ev(() => __savePoint.state()?.lastIndex ?? null) };
+    ok(new14 === 'new' && f14?.wid === 'other-first' && h.stop === 'conflict' && r.page !== 5, `14. 다른 기기가 새 방 기억을 먼저 만듦 → 내 저장 성공 아님·멈춤 (${JSON.stringify(r)})`);
+
+    // 15. P1-4: a room renamed in the list while an imported copy of it is open (just opened): the copy is never taken as
+    // the renamed room. The room open itself renamed with a name the server cleans still is.
+    await ev(() => M.openFile('newRoom')); await wait(900);
+    const copy15 = await ev(() => M.importChat('newRoom'));
+    await ev(n => M.openFile(n), copy15); await wait(900);
+    const h15 = await H12();
+    await ev(() => M.renameChat('newRoom', 'listRenamed')); await wait(900);
+    h = await H12();
+    r = await ev(n => ({ guess: __savePoint.settings().renames.some(x => x.to === JSON.stringify(['ari.png', n])), home: (() => { const t = [...M.files.keys()].filter(k => k.startsWith('savepoint-mem-')).map(k => JSON.parse(M.files.get(k)).home.addr); return t.includes(JSON.stringify(['ari.png', n])); })() }), copy15);
+    ok(h15.status === 'held' && h.status === 'held' && !r.guess && !r.home, `15. 목록에서 다른 방 이름 변경 → 가져온 사본으로 기억을 옮기지 않음 (${h15.status}/${h.status} ${JSON.stringify(r)})`);
+    await ev(() => M.openFile('listRenamed')); await wait(900);
+    await ev(() => M.renameChat('listRenamed', 'clean:ed?', { saved: 'cleaned' })); await wait(1200);
+    h = await H12();
+    const home15 = await ev(() => { const t = M.files.get('savepoint-mem-' + __savePoint.home().id + '.json'); return t ? JSON.parse(t).home?.addr : null; });
+    ok(h.status === 'linked' && home15 === JSON.stringify(['ari.png', 'cleaned']), `15. 열린 방 이름 변경(서버가 이름 정리) → 그대로 옮겨짐 (${JSON.stringify(h)} ${home15})`);
 
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();

@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import {
+import { cleanName,
     roomAddr, scopeOf, migrateId, homeId, memName, tagName, clueName, movedName, copyHash, fingerprint, digest, renameNotice, hasTraces,
     classifyRead, readUserFile, checked, validMem, validTag, memBody, tagBody, renamedTag, clueBody, clueWith, movedBody,
     pickPrints, firstDiff, printCheck, decideRoom, branchRestore, branchState, writePlan, canWrite, nextMem, wroteMine, maybeOverwritten,
@@ -1286,4 +1286,14 @@ test('v0.6.82: one rule for a tag that is there already (sameLink), when the pla
     for (const x of [{ id: 'n', integrity: 'i-A', copy: 'c1' }, { id: 'm', integrity: 'i-B', copy: 'c1' }, { id: 'm', integrity: null, copy: 'c1' }, { id: 'm', integrity: 'i-A', copy: 'c2' }, { id: 'm', integrity: 'i-A', copy: null }])
         assert.equal(sameLink(t, x), false, JSON.stringify(x));
     assert.equal(sameLink(renamedTag(t, A2), { id: 'm', integrity: 'i-A', copy: 'c1' }), false);
+});
+
+// v0.7.0-b1a (review P1-4): a rename guess takes the room reopened only when its name is the typed one as the server keeps it.
+test('cleanName keeps a chat file name as the server cleans it', () => {
+    assert.equal(cleanName('Plain name'), 'Plain name');
+    assert.equal(cleanName('a/b:c?d*e|f"g<h>i\\j'), 'abcdefghij');
+    assert.equal(cleanName('tab\there'), 'tabhere');
+    assert.equal(cleanName('con'), '');
+    assert.equal(cleanName('..'), '..', 'with .jsonl it is not a name of dots only');
+    assert.equal(cleanName('x'.repeat(300)).length, 255, 'cut at 255 bytes (the cut takes .jsonl too)');
 });

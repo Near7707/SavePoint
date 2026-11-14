@@ -264,7 +264,7 @@ test('QUICK is written only after a complete manual quicksave, also when nothing
 function moveTo(h, chat) { h.context.chatId = 'room-B'; h.context.chat = chat; h.context.chatMetadata = {}; }
 const greeting = () => ({ name: 'Participant', mes: 'Welcome to the very first scene.', is_user: false, extra: {} });
 
-test('new room with only a greeting: #0 becomes the recorded reply and collection starts at #1', async () => {
+test('new room with only a greeting: #0 becomes the recorded reply and collection starts at #1', { skip: 'v0.7.0-b1a: the carried #0 is off until b3 (review P2-3); back with b3' }, async () => {
     const h = harness(); await h.app.summarize();
     const rec = h.app.saveRecord(h.app.state(), 'Q', 'slot', false, { quick: true }); h.app.setSlot(rec);
     assert.equal(rec.lastReply.index, 19); assert.equal(rec.lastReply.recorded, true);
@@ -278,7 +278,7 @@ test('new room with only a greeting: #0 becomes the recorded reply and collectio
     assert(!/^#0 /m.test(sent) && /^#1 /m.test(sent), 'the carried #0 is not collected again');
 });
 
-test('a reply that was not yet recorded (checkpoint reserve) is carried but collected in the new room', async () => {
+test('a reply that was not yet recorded (checkpoint reserve) is carried but collected in the new room', { skip: 'v0.7.0-b1a: the carried #0 is off until b3 (review P2-3); back with b3' }, async () => {
     const h = harness(); await h.app.autoCollect();   // #18-#19 held back
     const rec = h.app.saveRecord(h.app.state(), 'A', 'slot', true); h.app.setSlot(rec);
     assert.equal(rec.lastReply.recorded, false); assert.equal(rec.lastReply.pending, 2);
@@ -316,7 +316,7 @@ test('room change while the continue question is open: nothing changes in either
     assert(h.notices.some(([, m]) => m.includes('채팅방이 바뀌어서')));
 });
 
-test('carried #0 replaces the greeting with its content-bound data, marks the chat edited, and rolls back on a failed save', async () => {
+test('carried #0 replaces the greeting with its content-bound data, marks the chat edited, and rolls back on a failed save', { skip: 'v0.7.0-b1a: the carried #0 is off until b3 (review P2-3); back with b3' }, async () => {
     const h = harness(); await h.app.summarize();
     const rec = h.app.saveRecord(h.app.state(), 'Q', 'slot', false, { quick: true }); h.app.setSlot(rec);
     const g = () => ({ ...greeting(), swipe_id: 1, swipes: ['Welcome to the very first scene.', 'Alt greeting'],
@@ -334,13 +334,14 @@ test('carried #0 replaces the greeting with its content-bound data, marks the ch
     assert(!Object.hasOwn(h.context.chatMetadata, 'tainted'), 'the edited-chat mark is undone with the load');
 });
 
-test('answering no twice cancels the whole load', async () => {
+// v0.7.0-b1a (review P2-3): until b3 a load into a new room asks only "memory only?" (the carried #0 is off); no → nothing.
+test('a load into a new room asks memory-only once (#0 carry off until b3); no cancels the whole load', async () => {
     const h = harness(); await h.app.summarize();
     const rec = h.app.saveRecord(h.app.state(), 'Q', 'slot', false, { quick: true }); h.app.setSlot(rec);
     moveTo(h, [greeting()]);
     const asked = []; h.app.setConfirm(async text => { asked.push(text); return false; });
     await h.app.loadSave('slot');
-    assert.equal(asked.length, 2); assert(asked[1].includes('기억만'));
+    assert.equal(asked.length, 1); assert(asked[0].includes('기억만') && asked[0].includes('잠시 꺼 두었어요'));
     assert.equal(h.context.chat[0].mes, greeting().mes); assert.equal(h.context.chatMetadata.savePoint, undefined);
     h.app.setConfirm(async text => !text.includes('마지막 캐릭터 메시지'));
     await h.app.loadSave('slot');

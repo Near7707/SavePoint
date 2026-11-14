@@ -99,6 +99,19 @@ export function renameNotice(data) {
     return { from: roomAddr(scope, from), to: roomAddr(scope, to) };
 }
 
+// v0.7.0-b1a (review P1-4): the name SillyTavern's server keeps for a typed chat file name (the rules of the
+// sanitize-filename package it uses: characters a file name cannot hold go, a name of dots or a Windows device name
+// becomes empty, the name is cut at 255 bytes). The typed name is given without ".jsonl", as renameNotice has it.
+export function cleanName(typed) {
+    let n = String(typed ?? '') + '.jsonl';
+    n = n.replace(/[\/\?<>\\:\*\|"]/g, '').replace(/[\x00-\x1f\x80-\x9f]/g, '');
+    if (/^\.+$/.test(n) || /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i.test(n)) n = '';
+    n = n.replace(/[\. ]+$/, '');
+    const bytes = new TextEncoder().encode(n);
+    if (bytes.length > 255) { let cut = 255; while (cut > 0 && (bytes[cut] & 0xc0) === 0x80) cut--; n = new TextDecoder().decode(bytes.slice(0, cut)); }
+    return n.replace(/\.jsonl$/i, '');
+}
+
 // SavePoint's marks on messages (hide, shown, held, 🔖) and the old in-chat memory.
 export const OWN_KEYS = ['savepointHidden', 'savepointVisible', 'savepointHeld', 'savepointKeep'];
 export function hasTraces(meta, messages, module = 'savePoint') {
