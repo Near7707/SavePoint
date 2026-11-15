@@ -357,6 +357,15 @@ window.fetch = async (url, opts = {}) => {
     if (u === '/api/characters/chats') return res(M.chatList().map(id => ({ file_name: `${id}.jsonl`, file_id: id })));
     if (!u.startsWith('/api/files/') && !u.startsWith('/user/files/')) return realFetch(url, opts);
     if (M.serverDown) return res('down', 503);
+    // v0.7.0-b2c: M.vaultDown: the save slots' files (index, slots, autosaves) down, the rooms' memory files still served (older
+    // suites took the whole server down, M.serverDown, when the memory was in the chat file).
+    if (M.vaultDown) {
+        const home = n => /^savepoint-(mem|room|int|moved|moving|copy)-/.test(String(n).replace('user/files/', ''));
+        let names;
+        try { const b = JSON.parse(opts.body || 'null'); names = u === '/api/files/upload' ? [b.name] : u === '/api/files/delete' ? [b.path] : u === '/api/files/verify' ? b.urls : null; } catch { names = null; }
+        if (!names) names = [u.slice('/user/files/'.length).split('?')[0]];
+        if (!names.every(home)) return res('down', 503);
+    }
     if (u === '/api/files/upload') {
         const b = JSON.parse(opts.body);
         if (!/^[a-zA-Z0-9_\-.]+$/.test(b.name)) return res('bad name', 400);
@@ -370,6 +379,8 @@ window.fetch = async (url, opts = {}) => {
             let how = M.memFail || null;
             if (!how && M.memFailOnce) { how = M.memFailOnce; M.memFailOnce = null; }
             if (!how && M.memFailNth && !--M.memFailNth) how = M.memFailKind || 'refused';
+            // M.memFailIf(state): the next write whose memory passes it fails once (as M.memFailKind, default 'refused').
+            if (!how && M.memFailIf) { let st = null; try { st = JSON.parse(fromB64(b.data)).state; } catch { /* not ours */ } if (M.memFailIf(st)) { M.memFailIf = null; how = M.memFailKind || 'refused'; } }
             if (how) {
                 (M.memFails ||= []).push(how);
                 if (how === 'refused') return res('bad', 400);
@@ -378,7 +389,12 @@ window.fetch = async (url, opts = {}) => {
             }
         }
         if (M.beforeUpload) await M.beforeUpload(b.name, fromB64(b.data));
+        // v0.7.0-b2c: M.memSwallowOnce: the next memory file write answers ok but is not written (older suites swallowed the chat
+        // file write, M.swallowMeta). M.memReadFailAfterWrite: once the next memory file write lands, reads of memory files fail
+        // (500) until M.memReadFail is cleared (older: M.readFailAfterSave); a number n: once the n-th from now lands (M.readFailAfterNth).
+        if (b.name.startsWith('savepoint-mem-') && M.memSwallowOnce) { M.memSwallowOnce = false; (M.memFails ||= []).push('swallowed'); return res({ path: 'user/files/' + b.name }); }
         M.files.set(b.name, fromB64(b.data)); M.fileLog.push(['put', b.name]);
+        if (b.name.startsWith('savepoint-mem-') && M.memReadFailAfterWrite && (M.memReadFailAfterWrite === true || !--M.memReadFailAfterWrite)) { M.memReadFailAfterWrite = false; M.memReadFail = true; }
         return res({ path: 'user/files/' + b.name });
     }
     if (u === '/api/files/delete') {
@@ -395,7 +411,7 @@ window.fetch = async (url, opts = {}) => {
     const wait = M.fileDelay[name] ?? M.fileDelay['*'];
     if (wait) await new Promise(r => setTimeout(r, wait));
     const st = M.fileState[name];
-    if (st === 'error') return res('down', 500);
+    if (st === 'error' || (M.memReadFail && name.startsWith('savepoint-mem-'))) return res('down', 500);
     if (st === 'missing') return res('nf', 404);
     if (st === 'broken' && M.files.has(name)) { const t = M.files.get(name); return res(t.slice(0, Math.max(1, Math.floor(t.length / 2)))); }
     if (st === 'broken') return res('<!DOCTYPE html><html><body>not found</body></html>');

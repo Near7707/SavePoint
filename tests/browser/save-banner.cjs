@@ -72,9 +72,12 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const savedTo = await ev(() => __savePoint.state().lastIndex);
     await ev(async () => { window.__roomA = { chat: M.chat, meta: M.meta }; await M.switchChat('chatB', [], {}); await M.opened(); M.add(2); });
     await p3; await sleep(200);
-    r = await ev(() => ({ toast: toastr.log.filter(x => x[0] === 'warning').map(x => x.slice(1).join(' ')).pop() || '', all: toastr.log.slice(-4).map(x => x[1]).join(' | '), interrupted: M.settings.savePoint.interrupted }));
+    // v0.7.0-b2c: the notice looked up among the warnings (not only the last); another warning about the part cut by the move
+    // is checked on its own below.
+    r = await ev(() => ({ toast: toastr.log.filter(x => x[0] === 'warning').map(x => x.slice(1).join(' ')).find(x => x.includes('방을 나가서')) || '', all: toastr.log.slice(-4).map(x => x[1]).join(' | '), interrupted: M.settings.savePoint.interrupted }));
     ok(r.toast.includes('방을 나가서 저장을 멈췄어요') && r.toast.includes(`#36–#${savedTo}`) && r.toast.includes('다시 세이브'), `3. 방을 옮기면 어느 방에서 어디까지 저장됐는지 알림 (${r.toast.slice(0, 90)})`);
     ok(!r.all.includes('대화나 채팅방이 바뀌어서'), '3. 옮겨 간 방에서 헷갈리는 취소 문구는 다시 띄우지 않음');
+    ok(!r.all.includes('들어갔는지 확인하지 못했어요'), `3. (b2c) 옮겨 간 방에서 저장 확인 못 함 경고를 따로 띄우지 않음 (${r.all.slice(-60)})`);
     ok(Object.keys(r.interrupted || {}).length === 1, '3. 멈춘 방을 기억해 둠');
     ok(!(await banner()).shown, '3. 새 방에서는 안내 창이 사라짐');
 
@@ -111,7 +114,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     // 6. a checkpoint whose chat-file write fails shows no "완료"
     await ev(() => { M.delay = 400; M.settings.savePoint.auto = true; M.settings.savePoint.autoEvery = 5; const b = M.chat.length; M.add(12, i => (i === b + 6 ? 'SCENEBREAK at the gate. ' : '') + `Message ${i}`);
         // v0.7.0-a: write 1 is the checkpoint's start mark (at the room's turn); the record's write (2) fails.
-        M.failNth = 2; });
+        // v0.7.0-b2c: the memory file's writes (turned away).
+        M.memFailNth = 2; M.memFailKind = 'refused'; });
     await ev(() => { if (M.chat.at(-1).is_user) M.add(1); });
     const before6 = await ev(() => ({ last: __savePoint.state().lastIndex, calls: M.calls.length }));
     const p6 = ev(() => __savePoint.autoCollect());
@@ -122,11 +126,11 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r = await ev(() => ({ b: (() => { const x = document.getElementById('sp_save_banner'); return { shown: !x.hidden, text: x.textContent }; })(), last: __savePoint.state().lastIndex, calls: M.calls.length, fail: __savePoint.state().autoFail, tone: document.getElementById('sp_save_banner').dataset.tone, auto: __savePoint.state().autoLast?.result || '' }));
     const t6 = await ev(() => toastr.log.slice(-3).map(x => x[1]).join(' | '));
     ok(r.calls - before6.calls >= 1 && r.fail?.stage === 'save' && r.auto.includes('실패') && t6.includes('체크포인트 실패'), `6. 저장 단계에서 실패한 체크포인트를 알리고 기록함 (${r.auto.slice(0, 40)})`);
-    ok(!(r.b.shown && r.b.text.includes('완료')) && r.last === before6.last, `6. 채팅 파일 저장이 실패한 체크포인트는 완료로 표시하지 않음 (${r.b.text.trim().slice(0, 24)} / #${r.last})`);
+    ok(!(r.b.shown && r.b.text.includes('완료')) && r.last === before6.last, `6. 기억 저장이 실패한 체크포인트는 완료로 표시하지 않음 (${r.b.text.trim().slice(0, 24)} / #${r.last})`);
     ok(r.b.shown && r.tone === 'warning', '6. 실패 결과는 경고 배너로 표시');
     await sleep(3700);
     ok((await banner()).shown && (await banner()).text.includes('실패'), '6. 실패 배너는 성공 표시의 3.5초보다 오래 유지');
-    await ev(() => { M.failMeta = false; M.failNth = 0; M.settings.savePoint.auto = false; });
+    await ev(() => { M.memFailNth = 0; M.settings.savePoint.auto = false; });
 
     await browser.close(); srv.close();
     console.log(failures ? `${failures} FAILED` : 'ALL PASS');

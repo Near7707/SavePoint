@@ -24,6 +24,8 @@ function serve() {
 }
 let failures = 0;
 const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!cond) failures++; };
+const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
+const B3 = 'b3: #0 이어하기를 꺼 둠';
 
 
 // v0.6.81 (review of v0.6.76–79 P2-1, P2-3): 🔶 and the carried #0 follow the room's write result: a write
@@ -73,24 +75,34 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         ok(/Unconfirmed/.test(msg) && r.body && r.page.every(Boolean) && r.file.every(Boolean), `1. 🔶 확인 못 함: 화면 스와이프 표시도 파일처럼 남음 (${JSON.stringify(r)})`);
         await page.close();
     }
-    // 2. 🔶 refused by the server → the message and its swipes are put back.
+    // 2. 🔶 refused by the server → the message and its swipes are put back. v0.7.0-b2c: the memory file write turned away
+    //    (2); the memory written and only the chat file write failing (2c) → the marks go back as well, the memory stays.
     {
         const { page, ev } = await session();
-        await ev(() => { M.chat[3].swipe_info = [{ extra: {} }, {}]; M.stSave(); M.failOnce = true; });
+        await ev(() => { M.chat[3].swipe_info = [{ extra: {} }, {}]; M.stSave(); M.memFailOnce = 'refused'; });
         const msg = await ev(() => __savePoint.toggleKeep(3).then(() => 'ok', e => `${e.name}: ${e.message}`));
         const r = await ev(() => ({ body: !!M.chat[3].extra?.savepointKeep, swipes: JSON.stringify(M.chat[3].swipe_info) }));
         ok(/취소했어요/.test(msg) && !r.body && r.swipes === '[{"extra":{}},{}]', `2. 🔶 거절: 메시지·스와이프 표시 되돌림 (${r.swipes})`);
         await page.close();
     }
-    // 2b. 🔶 refused, but one swipe's mark was changed again while the write was on its way → that swipe
-    //     keeps what it has now; the others are put back.
     {
         const { page, ev } = await session();
-        await ev(() => { M.chat[3].swipe_info = [{ extra: {} }, { extra: {} }]; M.stSave(); M.metaDelay = 400; M.failOnce = true; });
+        await ev(() => { M.chat[3].swipe_info = [{ extra: {} }, {}]; M.stSave(); M.failOnce = true; });
+        const msg = await ev(() => __savePoint.toggleKeep(3).then(() => 'ok', e => `${e.name}: ${e.message}`));
+        const r = await ev(() => ({ body: !!M.chat[3].extra?.savepointKeep, swipes: JSON.stringify(M.chat[3].swipe_info), file: JSON.stringify(M.serverFiles.chatA[4].swipe_info) }));
+        ok(/기억은 저장했지만/.test(msg) && !r.body && r.swipes === '[{"extra":{}},{}]' && r.file === r.swipes, `2c. (b2c) 🔶 채팅 저장만 실패: 메시지·스와이프 표시 되돌림 (${r.swipes} · ${msg.slice(0, 40)})`);
+        await page.close();
+    }
+    // 2b. 🔶 refused, but one swipe's mark was changed again while the write was on its way → that swipe
+    //     keeps what it has now; the others are put back. (v0.7.0-b2c: the memory file write, slow and turned away.)
+    {
+        const { page, ev } = await session();
+        await ev(() => { M.chat[3].swipe_info = [{ extra: {} }, { extra: {} }]; M.stSave(); M.memDelay = 400; M.memFailOnce = 'refused'; });
         await ev(() => { window.__k = __savePoint.toggleKeep(3).then(() => 'ok', e => e.message); });
         await page.waitForTimeout(150);
         await ev(() => { M.chat[3].swipe_info[1].extra.savepointKeep = 7; });
         const msg = await ev(() => window.__k);
+        await ev(() => { M.memDelay = 0; });
         const r = await ev(() => M.chat[3].swipe_info.map(x => x.extra?.savepointKeep ?? null));
         ok(/취소했어요/.test(msg) && r[0] === null && r[1] === 7, `2b. 🔶 거절: 그사이 다시 바뀐 스와이프 표시는 그대로 (${JSON.stringify(r)})`);
         await page.close();
@@ -98,32 +110,36 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     // 3–4. Continuing in a new room: the new #0 and the memory are kept when the write landed and the room was
     //      then blocked (3); put back when the server refused it (4), except a #0 edited by hand meanwhile (4b) or
     //      one that got anything but SavePoint's own marks meanwhile: a translation, a hide by hand (4c, v0.6.84).
-    for (const [n, how] of [[3, 'landed'], [4, 'refused'], [5, 'edited'], [6, 'marked']]) {
-        const { page, ev } = await session();
-        const qid = await ev(() => __savePoint.listSaves().find(x => x.quick)?.id);
-        await ev(() => M.switchChat('chatNew', [{ name: 'Ari', is_user: false, is_system: false, mes: 'Hello! This is the very first greeting.', swipe_id: 0, swipes: ['Hello! This is the very first greeting.'], extra: {} }], {}));
-        await page.waitForTimeout(600);
-        if (how === 'landed') await landThen(ev, 'chatNew', 'other');
-        else if (how === 'refused') await ev(() => { M.failOnce = true; });
-        else if (how === 'edited') await ev(() => { M.metaDelay = 400; M.failOnce = true; let n = 0;
-            M.beforeChatSave = async () => { if (++n === 1) setTimeout(() => { M.noStSave = true; M.chat[0].mes = 'Edited by hand.'; M.chat[0].swipes = [M.chat[0].mes]; }, 100); }; });
-        else await ev(() => { M.metaDelay = 400; M.failOnce = true; let n = 0;
-            M.beforeChatSave = async () => { if (++n === 1) setTimeout(() => { M.noStSave = true; M.chat[0].extra.display_text = 'Translated.'; M.chat[0].is_system = true; }, 100); }; });
-        await ev(async id => { M.confirm = 1; await __savePoint.handle('load', id); }, qid);
-        await page.waitForTimeout(1500);
-        const r = await ev(() => ({ page0: M.chat[0].mes, file0: M.serverFiles.chatNew[1].mes, mem: !!__savePoint.state()?.mem?.scenes?.length, tr: M.chat[0].extra?.display_text ?? null, sys: M.chat[0].is_system === true }));
-        if (how === 'landed') ok(r.page0 === r.file0 && r.page0 !== 'Hello! This is the very first greeting.' && r.mem, `3. 이어하기가 들어간 뒤 방 막힘: 화면 첫 메시지·기억 = 파일 (${r.page0.slice(0, 20)})`);
-        else if (how === 'refused') ok(r.page0 === 'Hello! This is the very first greeting.' && r.file0 === r.page0 && !r.mem, `4. 이어하기 거절: 첫 메시지·기억 되돌림 (${r.page0.slice(0, 20)})`);
-        else if (how === 'edited') ok(r.page0 === 'Edited by hand.' && !r.mem, `4b. 이어하기 거절, 그사이 손으로 고친 첫 메시지는 그대로 (${r.page0.slice(0, 20)})`);
-        else ok(r.page0 !== 'Hello! This is the very first greeting.' && r.tr === 'Translated.' && r.sys && !r.mem, `4c. 이어하기 거절, 그사이 번역·직접 숨김이 붙은 새 첫 메시지는 그대로 (${JSON.stringify({ tr: r.tr, sys: r.sys })})`);
-        await page.close();
-    }
+    // v0.7.0-b2c: continuing in a new room is the #0 carry, off until b3.
+    if (process.env.B3) {
+        for (const [n, how] of [[3, 'landed'], [4, 'refused'], [5, 'edited'], [6, 'marked']]) {
+            const { page, ev } = await session();
+            const qid = await ev(() => __savePoint.listSaves().find(x => x.quick)?.id);
+            await ev(() => M.switchChat('chatNew', [{ name: 'Ari', is_user: false, is_system: false, mes: 'Hello! This is the very first greeting.', swipe_id: 0, swipes: ['Hello! This is the very first greeting.'], extra: {} }], {}));
+            await page.waitForTimeout(600);
+            if (how === 'landed') await landThen(ev, 'chatNew', 'other');
+            else if (how === 'refused') await ev(() => { M.failOnce = true; });
+            else if (how === 'edited') await ev(() => { M.metaDelay = 400; M.failOnce = true; let n = 0;
+                M.beforeChatSave = async () => { if (++n === 1) setTimeout(() => { M.noStSave = true; M.chat[0].mes = 'Edited by hand.'; M.chat[0].swipes = [M.chat[0].mes]; }, 100); }; });
+            else await ev(() => { M.metaDelay = 400; M.failOnce = true; let n = 0;
+                M.beforeChatSave = async () => { if (++n === 1) setTimeout(() => { M.noStSave = true; M.chat[0].extra.display_text = 'Translated.'; M.chat[0].is_system = true; }, 100); }; });
+            await ev(async id => { M.confirm = 1; await __savePoint.handle('load', id); }, qid);
+            await page.waitForTimeout(1500);
+            const r = await ev(() => ({ page0: M.chat[0].mes, file0: M.serverFiles.chatNew[1].mes, mem: !!__savePoint.state()?.mem?.scenes?.length, tr: M.chat[0].extra?.display_text ?? null, sys: M.chat[0].is_system === true }));
+            if (how === 'landed') ok(r.page0 === r.file0 && r.page0 !== 'Hello! This is the very first greeting.' && r.mem, `3. 이어하기가 들어간 뒤 방 막힘: 화면 첫 메시지·기억 = 파일 (${r.page0.slice(0, 20)})`);
+            else if (how === 'refused') ok(r.page0 === 'Hello! This is the very first greeting.' && r.file0 === r.page0 && !r.mem, `4. 이어하기 거절: 첫 메시지·기억 되돌림 (${r.page0.slice(0, 20)})`);
+            else if (how === 'edited') ok(r.page0 === 'Edited by hand.' && !r.mem, `4b. 이어하기 거절, 그사이 손으로 고친 첫 메시지는 그대로 (${r.page0.slice(0, 20)})`);
+            else ok(r.page0 !== 'Hello! This is the very first greeting.' && r.tr === 'Translated.' && r.sys && !r.mem, `4c. 이어하기 거절, 그사이 번역·직접 숨김이 붙은 새 첫 메시지는 그대로 (${JSON.stringify({ tr: r.tr, sys: r.sys })})`);
+            await page.close();
+        }
+    } else for (const m of ['3. 이어하기가 들어간 뒤 방 막힘: 화면 첫 메시지·기억 = 파일', '4. 이어하기 거절: 첫 메시지·기억 되돌림', '4b. 이어하기 거절, 그사이 손으로 고친 첫 메시지는 그대로', '4c. 이어하기 거절, 그사이 번역·직접 숨김이 붙은 새 첫 메시지는 그대로']) skip(m, B3);
     // 5. Hide off: a memory edit waits for its write; meanwhile #8 is hidden by hand and #9 gets a translation
     //    (a new extra object). The write is refused → the edit goes back, #8 stays hidden, #9 keeps its translation.
     //    The change itself hides #2 (as SavePoint does): that goes back. Hide off and auto mode alike.
     for (const mode of ['off', 'auto']) {
         const { page, ev } = await session({ hideMode: mode });
-        await ev(() => { M.metaDelay = 400; M.failOnce = true; });
+        // v0.7.0-b2c: the memory file write (slow, turned away).
+        await ev(() => { M.memDelay = 400; M.memFailOnce = 'refused'; });
         const before = await ev(() => M.chat.map(m => !!m.is_system));
         await ev(() => { window.__d = __savePoint.transact(() => { __savePoint.state().probe = 'edit'; const m = M.chat[2]; m.is_system = true; m.extra = m.extra || {}; m.extra.savepointHidden = 1; }, { rehide: true }).then(() => 'ok', e => e.message); });
         await page.waitForTimeout(150);

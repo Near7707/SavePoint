@@ -26,6 +26,8 @@ function serve() {
 }
 let failures = 0;
 const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!cond) failures++; };
+const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
+const B3 = 'b3: #0 이어하기를 꺼 둠';
 
 (async () => {
     const srv = await serve();
@@ -86,17 +88,21 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r = await ev(() => ({ resume: $('.sp-resume .sp-save-quick').length, label: $('.sp-resume .sp-save-meta').text() }));
     ok(r.resume === 1 && r.label.includes('🗝️'), `3. 새 방: 이어하기 칸에 다른 방 QUICK (${r.label.trim().slice(0, 40)})`);
     if (SHOTS) await page.screenshot({ path: path.join(OUT, 'quick-resume.png') });
+    // v0.7.0-b2c: loading into a room with only its greeting carries #0 (이어하기), off until b3.
     await ev(async id => { M.confirm = 1; await __savePoint.handle('load', id); }, qid);
     await page.waitForTimeout(400);
-    r = await ev(() => ({ mes: M.chat[0].mes, swipes: M.chat[0].swipes.length, last: __savePoint.state().lastIndex, carry: __savePoint.state().carry, n: M.chat.length }));
-    ok(r.mes === lastText && r.swipes === 1 && r.n === 1, '3. 첫 인사말이 저장 당시 마지막 캐릭터 메시지로 바뀜');
-    ok(r.last === 0 && r.carry && r.carry.recorded, '3. 이미 기록된 메시지라 #0은 기록된 것으로 연결');
-    await ev(() => { M.add(3); });
-    const c0 = await ev(() => M.calls.length);
-    await ev(() => __savePoint.handle('run'));
-    await page.waitForTimeout(1500);
-    r = await ev(c0 => M.calls.slice(c0).join('\n'), c0);
-    ok(!/^#0 /m.test(r) && /^#1 /m.test(r), '3. 새 방 기록은 #1부터 (#0 다시 기록 안 함)');
+    ok(await ev(() => !!__savePoint.state()?.mem), '3. (b2c) 불러오면 기억은 들어옴');
+    if (process.env.B3) {
+        r = await ev(() => ({ mes: M.chat[0].mes, swipes: M.chat[0].swipes.length, last: __savePoint.state().lastIndex, carry: __savePoint.state().carry, n: M.chat.length }));
+        ok(r.mes === lastText && r.swipes === 1 && r.n === 1, '3. 첫 인사말이 저장 당시 마지막 캐릭터 메시지로 바뀜');
+        ok(r.last === 0 && r.carry && r.carry.recorded, '3. 이미 기록된 메시지라 #0은 기록된 것으로 연결');
+        await ev(() => { M.add(3); });
+        const c0 = await ev(() => M.calls.length);
+        await ev(() => __savePoint.handle('run'));
+        await page.waitForTimeout(1500);
+        r = await ev(c0 => M.calls.slice(c0).join('\n'), c0);
+        ok(!/^#0 /m.test(r) && /^#1 /m.test(r), '3. 새 방 기록은 #1부터 (#0 다시 기록 안 함)');
+    } else for (const m of ['3. 첫 인사말이 저장 당시 마지막 캐릭터 메시지로 바뀜', '3. 이미 기록된 메시지라 #0은 기록된 것으로 연결', '3. 새 방 기록은 #1부터 (#0 다시 기록 안 함)']) skip(m, B3);
 
     // 4. other characters: one folder per character (👾), rooms split (🗝️) when there are several
     await ev(async () => {
@@ -132,15 +138,18 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.length === 1 && r[0][0] === 'Newer local QUICK' && r[0][1], `6. 같은 ID는 설정에 보관한 최신 사본 하나만 표시 (${JSON.stringify(r)})`);
 
     // 7. SillyTavern swallows a server error and returns: the read-back finds the old file and everything is undone
-    const qid2 = (await saves()).find(x => x.quick && x.room.includes('chatA')).id;
-    await ev(() => M.switchChat('chatFail', [{ name: 'Ari', is_user: false, is_system: false, mes: 'Fresh greeting for the failing room.', swipe_id: 0, swipes: ['Fresh greeting for the failing room.'], extra: {} }], {}));
-    await page.waitForTimeout(300);
-    await ev(() => { M.writeServerChat(); M.silentSaveFail = true; toastr.log.length = 0; });
-    await ev(async id => { M.confirm = 1; await __savePoint.handle('load', id); }, qid2);
-    await page.waitForTimeout(300);
-    r = await ev(() => ({ mes: M.chat[0].mes, st: __savePoint.state(), tainted: Object.hasOwn(M.meta, 'tainted'), toast: toastr.log.map(x => x[1]).join(' | ') }));
-    ok(r.mes === 'Fresh greeting for the failing room.' && !r.st && !r.tainted && r.toast.includes('되돌렸어요'), `7. 서버 저장이 조용히 실패하면 첫 메시지·기억·수정 표시를 되돌림 (${r.toast.slice(0, 60)})`);
-    await ev(() => { M.silentSaveFail = false; });
+    // v0.7.0-b2c: the first message rewritten is the #0 carry (b3); a memory file that answers ok but is not written is room-gate 6.
+    if (process.env.B3) {
+        const qid2 = (await saves()).find(x => x.quick && x.room.includes('chatA')).id;
+        await ev(() => M.switchChat('chatFail', [{ name: 'Ari', is_user: false, is_system: false, mes: 'Fresh greeting for the failing room.', swipe_id: 0, swipes: ['Fresh greeting for the failing room.'], extra: {} }], {}));
+        await page.waitForTimeout(300);
+        await ev(() => { M.writeServerChat(); M.silentSaveFail = true; toastr.log.length = 0; });
+        await ev(async id => { M.confirm = 1; await __savePoint.handle('load', id); }, qid2);
+        await page.waitForTimeout(300);
+        r = await ev(() => ({ mes: M.chat[0].mes, st: __savePoint.state(), tainted: Object.hasOwn(M.meta, 'tainted'), toast: toastr.log.map(x => x[1]).join(' | ') }));
+        ok(r.mes === 'Fresh greeting for the failing room.' && !r.st && !r.tainted && r.toast.includes('되돌렸어요'), `7. 서버 저장이 조용히 실패하면 첫 메시지·기억·수정 표시를 되돌림 (${r.toast.slice(0, 60)})`);
+        await ev(() => { M.silentSaveFail = false; });
+    } else skip('7. 서버 저장이 조용히 실패하면 첫 메시지·기억·수정 표시를 되돌림', B3 + ' (기억 파일의 조용한 실패는 room-gate 6)');
 
     // 8. a new chat asks "이어서 할까요?": 이어하기 lists the saves to pick from; 새로 하기 is remembered for the room
     await ev(() => __savePoint.handle('close'));
@@ -156,7 +165,9 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await page.click('#sp_resume [data-resume]');
     await page.waitForTimeout(600);
     r = await ev(() => ({ hidden: document.getElementById('sp_resume').hidden, mem: !!__savePoint.state()?.mem?.scenes?.length, first: M.chat[0].mes }));
-    ok(r.hidden && r.mem && r.first !== 'A brand new greeting.', '8. 고르면 불러오고 선택 칸은 닫힘');
+    // v0.7.0-b2c: the greeting replaced by the save's last reply is the #0 carry (b3); the memory is loaded either way.
+    ok(r.hidden && r.mem, '8. 고르면 불러오고 선택 칸은 닫힘');
+    if (process.env.B3) ok(r.first !== 'A brand new greeting.', '8. 첫 메시지가 이어짐'); else skip('8. 첫 메시지가 이어짐', B3);
     await ev(g => M.switchChat('chatFresh', g, {}), greet());
     await page.waitForTimeout(1000);
     await page.click('#sp_resume [data-resume-act="fresh"]');

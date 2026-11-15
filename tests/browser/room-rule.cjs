@@ -138,21 +138,22 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
 
     // 4. [P2] a checkpoint written but not confirmed; SillyTavern then saves the page with the "unconfirmed"
     //    note in it. The write is still found by its receipt.
+    //    v0.7.0-b2c: the memory is in its memory file, which SillyTavern's own saves never write; the record's write lands and its
+    //    read-back fails (M.memReadFailAfterWrite = 2: the start mark is the first write). The record is the file's and the page's
+    //    (b2a: only new hides wait for a read); the next write once reads come back goes on, the line read again.
     await open('roomD', msgs(4, 'Dee'));
-    // v0.7.0-a: the checkpoint's start mark is its first write (at the room's turn); reads fail after the record's write.
-    await ev(() => { M.add(8); M.readFailAfterNth = 2; toastr.log.length = 0; });
+    await ev(() => { M.add(8); M.memReadFailAfterWrite = 2; toastr.log.length = 0; });
     await ev(() => __savePoint.summarize({ auto: true }));
     await wait(600);
-    r = await ev(() => ({ b: __savePoint.autoBlocked(), last: __savePoint.state().autoLast?.status }));
-    // v0.7.0-a (plan P2-3): the "unsure" result note is a memory change; with the room's writes stopped it is not
-    // made (before: put on the page, then written by SillyTavern's own save — the path this version closes).
-    ok(r.b === 'unsure' && r.last !== 'unsure', `4. 준비: 체크포인트 저장 확인 불가, 결과 메모는 기억에 넣지 않음 (${r.b}, ${r.last})`);
-    await ev(() => { M.readFailAfterNth = 0; M.readFailAfterSave = false; M.serverError = false; M.add(1); toastr.log.length = 0; });
+    r = await ev(() => ({ b: __savePoint.autoBlocked(), last: __savePoint.state().autoLast?.status, page: __savePoint.state().lastIndex, file: (M.memReadFail = false, M.mem('roomD').lastIndex), unread: !!__savePoint.home().line?.unread }));
+    ok(r.b !== 'room' && r.b !== 'unsure' && r.last !== 'unsure' && r.page >= 8 && r.file === r.page && r.unread, `4. 준비: 체크포인트 기록은 저장, 다시 읽기만 실패 (${JSON.stringify(r)})`);
+    await ev(() => { M.stSave(); M.add(1); toastr.log.length = 0; });
     r = await ev(() => M.mem('roomD').autoLast?.status);
     ok(r !== 'unsure', `4. 실리태번 자체 저장이 SavePoint의 확인 불가 메모를 쓰지 않음 (${r})`);
-    await wait(3600);
-    r = await ev(() => ({ b: __savePoint.autoBlocked(), t: toastr.log.map(x => x[1]).join(' | ') }));
-    ok(r.b !== 'unsure' && r.t.includes('들어가 있는 걸 확인'), `4. 기록이 그대로면 확인 불가가 풀림 (${r.b}, ${r.t.slice(0, 30)})`);
+    await ev(() => __savePoint.toggleKeep(2).catch(() => {}));
+    await wait(600);
+    r = await ev(() => ({ b: __savePoint.autoBlocked(), unread: !!__savePoint.home().line?.unread, keep: !!M.mem('roomD') && !!M.chat[2].extra?.savepointKeep }));
+    ok(r.b !== 'room' && !r.unread && r.keep, `4. 기록이 그대로면 다음 저장이 평소대로 (${JSON.stringify(r)})`);
 
     // 5. [P2] 기록 다시 확인 pressed while the room is still being checked: the first check is not blocked.
     const checked = JSON.parse(JSON.stringify(memory));

@@ -91,7 +91,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         const blocked = await ev(() => __savePoint.autoBlocked());
         if (how === 'on') ok(r1 === 'ok' && a.page && b.file, `2. 실리태번이 🔶를 먼저 저장(+다른 메시지 번역), SavePoint 요청은 500: 🔶 유지, 다음 저장 뒤에도 파일에 남음 (${r1.slice(0, 30)}, ${JSON.stringify(b)})`);
         else if (how === 'off') ok(r1 === 'ok' && !a.page && !b.file, `2b. 🔶 끄기도 같음: 표시 없음이 반영된 결과 (${r1.slice(0, 30)}, ${JSON.stringify(b)})`);
-        else if (how === 'before') ok(/취소했어요/.test(r1) && !a.page && !b.file, `2c. 파일 전체는 다르지만 🔶가 없다고 확인됨: 되돌림 (${r1.slice(0, 30)})`);
+        else if (how === 'before') ok(/되돌렸어요/.test(r1) && !a.page && !b.file, `2c. (b2c: 기억은 저장된 채 표시만 되돌림) 파일 전체는 다르지만 🔶가 없다고 확인됨: 되돌림 (${r1.slice(0, 30)})`);
         else ok(/Unconfirmed/.test(r1) && a.page && blocked === 'unsure', `2d. 그 메시지가 그사이 바뀌어 가릴 수 없음: 되돌리지 않고 확인 대기 (${r1.slice(0, 30)}, ${blocked})`);
         await page.close();
     }

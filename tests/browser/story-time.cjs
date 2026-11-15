@@ -119,12 +119,12 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r=await ev(()=>({st:__savePoint.state(),injection:M.prompts.savepoint.v}));
     ok(r.st.lastIndex === 1 && r.st.mem.scenes[0].segs.at(-1).time.end.certainty === 'unconfirmed' && r.injection.includes('(unconfirmed)'), '7. 날짜 근거가 틀려도 내용은 저장, 시간만 미확인');
     const stable=await ev(()=>JSON.stringify(__savePoint.state().mem));
-    await ev(()=>{M.failMeta=true;__savePoint.handle('edit-segtime','s1|g1');});
+    await ev(()=>{M.memFail='refused';__savePoint.handle('edit-segtime','s1|g1');});
     await page.fill('[data-edit=date]','2026-11-01');
     await ev(()=>__savePoint.handle('edit-save').catch(()=>{}));
     r=await ev(()=>JSON.stringify(__savePoint.state().mem));
-    ok(r === stable, '8. 채팅 파일 쓰기 실패 시 날짜 편집도 원복');
-    await ev(()=>{M.failMeta=false;});
+    ok(r === stable, '8. (b2c) 기억 파일 쓰기 거절 시 날짜 편집도 원복');
+    await ev(()=>{M.memFail=null;});
     await page.setViewportSize({width:320,height:667});await ev(()=>__savePoint.render(true));
     r=await ev(()=>({w:document.querySelector('#sp_overlay .sp-window').getBoundingClientRect().width,b:document.querySelector('.sp-body').clientHeight}));
     ok(r.w<=320 && r.b>50, '9. 작은 모바일 폭에서도 본문과 날짜 편집 영역 접근 가능');

@@ -121,12 +121,13 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.shown && r.tone === 'warning' && r.title === '일부 저장' && r.news === 'NEW🎒 1' && still, `8. 일부 저장: 안내 위, 저장된 변화 아래, 닫을 때까지 유지 (${JSON.stringify(r)})`);
     await page.click('#sp_save_banner .sp-sb-close');
 
-    // 10. (v0.6.54) the chat-file write of a later part fails: the partial notice and what was saved still show
-    await ev(() => { M.add(30); M.addChanges = ({ first }) => ({ changes: [{ op: 'update', id: __savePoint.state().mem.records.find(x => x.text.includes('lamp')).id, text: 'The lamp is cleaned.', msgs: [first] }] }); M.failNth = 2; });
+    // 10. (v0.6.54) the chat-file write of a later part fails: the partial notice and what was saved still show.
+    //     v0.7.0-b2c: the memory file write of that part (turned away).
+    await ev(() => { M.add(30); M.addChanges = ({ first }) => ({ changes: [{ op: 'update', id: __savePoint.state().mem.records.find(x => x.text.includes('lamp')).id, text: 'The lamp is cleaned.', msgs: [first] }] }); M.memFailNth = 2; M.memFailKind = 'refused'; });
     await ev(() => __savePoint.handle('run').catch(() => {}));
     await page.waitForTimeout(1500);
     r = await banner();
-    await ev(() => { M.failNth = 0; });
+    await ev(() => { M.memFailNth = 0; });
     ok(r.shown && r.tone === 'warning' && r.title === '일부 저장' && r.news === 'NEW🎒 1', `10. 파일 저장 실패로 멈춰도 일부 저장 안내와 변화 줄 (${JSON.stringify(r)})`);
     await page.click('#sp_save_banner .sp-sb-close');
     await ev(() => { M.add(1); return __savePoint.handle('run'); }); await page.waitForTimeout(1200); await page.click('#sp_save_banner .sp-sb-close').catch(() => {});

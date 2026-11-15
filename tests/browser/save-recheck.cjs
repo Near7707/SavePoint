@@ -55,6 +55,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const other = { name: 'Me', is_user: true, is_system: false, mes: 'Written on the other device.', swipe_id: 0, extra: {} };
     const mine = { name: 'Me', is_user: true, is_system: false, mes: 'Written on this page.', swipe_id: 0, extra: {} };
     const fileLast = ev => ev(() => M.serverFiles.chatA.at(-1).mes);
+    // v0.7.0-b2c (3–9): the memory goes to its own file; the chat file write that is sent again is a 🔖 on #2 (hides off).
+    const kept = (ev, where) => ev(w => !!(w === 'page' ? M.chat[2] : M.serverFiles.chatA[3]).extra?.savepointKeep, where);
     const toasts = ev => ev(() => toastr.log.slice(M.toastLog).map(x => x.join(': ')).join(' / '));
 
     // 1. A small save waits for SillyTavern's write; another device adds a message meanwhile → nothing sent.
@@ -96,13 +98,13 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
             M.metaDelay = 400; let n = 0;
             M.beforeChatSave = async name => { if (++n === 1) { M.readDelayFor = { chatA: 150 }; setTimeout(() => M.serverFiles[name].push(window.__other), 450); } };
         });
-        await ev(o => { window.__other = o; window.__done = __savePoint.transact(() => { __savePoint.state().probe = 'resend'; }).then(() => 'ok', e => e.message); }, other);
+        await ev(o => { window.__other = o; window.__done = __savePoint.toggleKeep(2).then(() => 'ok', e => e.message); }, other);
         await page.waitForTimeout(200);
         await ev(m => { M.noStSave = true; M.chat.push(m); }, mine);
         const msg = await ev(() => window.__done);
         ok(await ev(() => M.saveBodies.length) === 1, '3. 서버가 그사이 바뀌어서 다시 보내지 않음 (첫 요청 1번만)');
         ok(await fileLast(ev) === other.mes, '3. 다른 기기의 메시지가 파일에 그대로');
-        ok(await ev(() => __savePoint.state().probe) === 'resend' && await ev(() => M.mem('chatA').probe) === 'resend', '3. 들어간 변경은 화면에서 되돌리지 않음(파일에도 있음)');
+        ok(await kept(ev, 'page') && await kept(ev, 'file'), '3. 들어간 변경은 화면에서 되돌리지 않음(파일에도 있음)');
         ok(/저장했어요/.test(msg) && !/취소/.test(msg), `3. 안내: 저장은 했고 더 저장하지 않음 (${String(msg).slice(0, 60)})`);
         ok(await ev(() => __savePoint.autoBlocked()) === 'room', '3. 방을 막음');
         await page.close();
@@ -112,12 +114,12 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     {
         const { page, ev } = await session();
         await ev(() => { M.metaDelay = 400; let n = 0; M.beforeChatSave = async () => { if (++n === 1) { M.readDelayFor = { chatA: 150 }; setTimeout(() => { M.serverError = true; }, 450); } }; });
-        await ev(() => { window.__done = __savePoint.transact(() => { __savePoint.state().probe = 'unread'; }).then(() => 'ok', e => `${e.name}: ${e.message}`); });
+        await ev(() => { window.__done = __savePoint.toggleKeep(2).then(() => 'ok', e => `${e.name}: ${e.message}`); });
         await page.waitForTimeout(200);
         await ev(m => { M.noStSave = true; M.chat.push(m); }, mine);
         const msg = await ev(() => window.__done);
         ok(await ev(() => M.saveBodies.length) === 1, '4. 서버를 읽지 못하면 다시 보내지 않음');
-        ok(await ev(() => __savePoint.state().probe) === 'unread', '4. 들어간 변경은 화면에서 되돌리지 않음');
+        ok(await kept(ev, 'page'), '4. 들어간 변경은 화면에서 되돌리지 않음');
         ok(/Unconfirmed/.test(msg) && /확인하지 못했어요/.test(msg), `4. 안내: 저장 확인 못 함 (${String(msg).slice(0, 50)})`);
         ok(await ev(() => __savePoint.autoBlocked()) === 'unsure', '4. 확인될 때까지 저장 멈춤');
         await ev(() => { M.serverError = false; });
@@ -147,9 +149,9 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     {
         const { page, ev } = await session();
         await ev(() => { M.metaDelay = 300; M.failNth = 2; setTimeout(() => { M.noStSave = true; M.chat.push(window.__mine); }, 100); });
-        const msg = await ev(m => { window.__mine = m; return new Promise(r => setTimeout(r, 0)).then(() => __savePoint.transact(() => { __savePoint.state().probe = 'ON'; }).then(() => 'ok', e => e.message)); }, mine);
+        const msg = await ev(m => { window.__mine = m; return new Promise(r => setTimeout(r, 0)).then(() => __savePoint.toggleKeep(2).then(() => 'ok', e => e.message)); }, mine);
         ok(await ev(() => M.saveBodies.length) === 2, '6. 준비: 두 번째 요청이 500으로 실패');
-        ok(await ev(() => __savePoint.state().probe) === 'ON' && await ev(() => M.mem('chatA').probe) === 'ON', '6. 첫 요청이 들어갔으면 화면에서 되돌리지 않음(파일과 같음)');
+        ok(await kept(ev, 'page') && await kept(ev, 'file'), '6. 첫 요청이 들어갔으면 화면에서 되돌리지 않음(파일과 같음)');
         ok(msg === 'ok', `6. 파일을 읽어 이번 변경이 들어간 걸 확인 → "취소했어요" 없음 (${String(msg).slice(0, 50)})`);
         ok(await ev(() => __savePoint.autoBlocked()) !== 'unsure' && await ev(() => __savePoint.autoBlocked()) !== 'room', '6. 방도 막지 않음');
         await page.close();
@@ -159,8 +161,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     {
         const { page, ev } = await session();
         await ev(() => { M.failOnce = true; });
-        const msg = await ev(() => __savePoint.transact(() => { __savePoint.state().probe = 'first'; }).then(() => 'ok', e => e.message));
-        ok(/취소했어요/.test(msg) && await ev(() => __savePoint.state().probe === undefined), '7. 첫 요청이 실패하면 지금처럼 되돌림');
+        const msg = await ev(() => __savePoint.toggleKeep(2).then(() => 'ok', e => e.message));
+        ok(/되돌렸어요/.test(msg) && !(await kept(ev, 'page')) && !(await kept(ev, 'file')), `7. 첫 요청이 실패하면 지금처럼 되돌림 (${String(msg).slice(0, 40)})`);
         await page.close();
     }
 
@@ -169,12 +171,12 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     {
         const { page, ev } = await session();
         await ev(() => { M.metaDelay = 400; });
-        await ev(() => { window.__done = __savePoint.transact(() => { __savePoint.state().probe = 'normal'; }).then(() => 'ok', e => e.message); });
+        await ev(() => { window.__done = __savePoint.toggleKeep(2).then(() => 'ok', e => e.message); });
         await page.waitForTimeout(150);
         await ev(() => M.add(1));
         const msg = await ev(() => window.__done);
         ok(msg === 'ok' && await ev(() => M.saveBodies.length) === 2, '8. 이 화면 자신의 새 메시지면 다시 보냄(경고 없음)');
-        ok(await ev(() => M.serverFiles.chatA.length - 1) === 13 && await ev(() => M.mem('chatA').probe) === 'normal', '8. 파일에 새 메시지와 변경이 모두 있음');
+        ok(await ev(() => M.serverFiles.chatA.length - 1) === 13 && await kept(ev, 'file'), '8. 파일에 새 메시지와 변경이 모두 있음');
         ok(await ev(() => __savePoint.autoBlocked()) !== 'room' && !/저장하지 않았어요/.test(await toasts(ev)), '8. 방을 막지 않음');
         await page.close();
     }
@@ -185,7 +187,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     {
         const { page, ev } = await session();
         await ev(() => { M.metaDelay = 400; });
-        await ev(() => { window.__done = __savePoint.transact(() => { __savePoint.state().probe = 'late'; }).then(() => 'ok', e => e.message); });
+        await ev(() => { window.__done = __savePoint.toggleKeep(2).then(() => 'ok', e => e.message); });
         await page.waitForTimeout(150);
         await ev(() => { const m = M.chat[3]; m.mes = 'An edited line from this page.'; m.swipes = [m.mes]; M.add(1); });
         const msg = await ev(() => window.__done);

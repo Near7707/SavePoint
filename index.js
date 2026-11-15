@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b2b4';
+const VERSION = '0.7.0-b2c2';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);

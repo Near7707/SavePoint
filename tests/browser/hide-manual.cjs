@@ -107,12 +107,20 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.slice(0, 8) === 'HH.HHHHH', `5c. 수동: 직접 펼친 메시지는 다음 세이브에도 보임 (${r})`);
     await ev(() => { const m = M.chat[2]; m.is_system = true; m.extra.savepointHidden = 1; delete m.extra.savepointVisible; __savePoint.syncHide(); });
 
-    // 6. a failed write takes the hide back
+    // 6. a failed write takes the hide back. v0.7.0-b2c: the range is in the memory file now. 6a: its write turned away →
+    // the hide and the range both as before. 6: the memory written, only the chat file write of the new hides failing →
+    // the range stays (saved), the hides go back and are not set again by the next count outside a save.
+    await ev(() => { M.memFails = []; M.memFailOnce = 'refused'; });
+    await ev(() => __savePoint.handle('hide-now').catch(() => {}));
+    await page.waitForTimeout(300);
+    r = { hid: await hidden(), to: await ev(() => __savePoint.state().hideManual?.to), file: await ev(() => M.mem().hideManual?.to), tried: await ev(() => M.memFails.length) };
+    ok(r.tried === 1 && r.hid.startsWith('HHHHHHHH.') && r.to === 7 && r.file === 7, `6a. (b2c) 기억 저장 거절 → 숨김과 범위 모두 원래대로 (${JSON.stringify(r)})`);
     await ev(() => { M.failOnce = true; });
     await ev(() => __savePoint.handle('hide-now').catch(() => {}));
     await page.waitForTimeout(300);
-    r = { hid: await hidden(), to: await ev(() => __savePoint.state().hideManual?.to), tried: await ev(() => M.failOnce === false) };
-    ok(r.tried && r.hid.startsWith('HHHHHHHH.') && r.to === 7, `6. 저장 실패 → 숨김과 범위 모두 원래대로 (${JSON.stringify(r)})`);
+    await ev(() => __savePoint.syncHide());
+    r = { hid: await hidden(), to: await ev(() => __savePoint.state().hideManual?.to), file: await ev(() => M.mem().hideManual?.to), tried: await ev(() => M.failOnce === false) };
+    ok(r.tried && r.hid.startsWith('HHHHHHHH.') && r.to > 7 && r.file === r.to, `6. (b2c) 채팅 저장만 실패 → 범위는 저장된 채로, 숨김은 원래대로·다시 안 걸림 (${JSON.stringify(r)})`);
 
     // 6b. a message the user hid themselves, then opened again, is not hidden by the next save
     await ev(() => { const m = M.chat[1]; delete m.extra.savepointHidden; m.is_system = false; __savePoint.syncHide(); M.add(2); return __savePoint.handle('run'); });

@@ -138,13 +138,15 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r = await ev(id => { const st = __savePoint.state(); const q = st.mem.records.find(x => x.id === id); q.to = undefined; delete q.to; q.by = [st.mem.entities.find(e => e.name === 'Ari').id, 'e90']; __savePoint.handle('tab', 'quests'); const a = $('.sp-q-open .sp-role').first().text(); q.mutual = true; __savePoint.adoptPage(); __savePoint.render(true); return [a, $('.sp-q-open .sp-role').first().text()]; }, q2);
     ok(r[0] === 'Ari · 나' && r[1] === 'Ari · 나 서로', `9. 여러 명이 지킬 약속은 서로 표시가 있을 때만 서로 (${r.join(' / ')})`);
 
+    // v0.7.0-b2c (10~17): the memory is written to the room's memory file: a slow or failed write of it (M.memDelay,
+    // M.memFailOnce = 'refused'; older: the chat file, M.metaDelay / M.failOnce).
     // 10. (v0.6.43) a choice shows at once even while the chat file is still being written
-    await ev(() => { __savePoint.handle('tab', 'party'); M.metaDelay = 1200; });
+    await ev(() => { __savePoint.handle('tab', 'party'); M.memDelay = 1200; });
     const ari = await ev(() => __savePoint.state().mem.entities.find(e => e.name === 'Ari').id);
     const pending = ev(id => __savePoint.handle('person-mode', id + '|standby'), ari);
     await page.waitForTimeout(150);
     r = await ev(() => ({ on: $('.sp-party-mode .sp-on').map((i, e) => e.textContent).get(), saving: M.saves }));
-    await pending; await ev(() => { M.metaDelay = 0; });
+    await pending; await ev(() => { M.memDelay = 0; });
     ok(r.on.includes('대기'), `10. 저장이 끝나기 전에 화면에 선택 반영 (${r.on.join(',')})`);
     r = await ev(() => $('.sp-party-mode').first().find('.sp-on').length);
     ok(r === 1, '10. 한 사람에 선택 표시는 하나');
@@ -152,12 +154,12 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     // 11. (v0.6.44) an earlier write that fails late never undoes a later choice that was written
     const qid11 = await ev(() => __savePoint.state().mem.records.find(r => r.type === 'quest').id);
     const ent11 = await ev(() => __savePoint.state().mem.entities.find(e => e.name === 'Ari').id);
-    await ev(() => { __savePoint.handle('tab', 'quests'); M.metaDelay = 600; M.failOnce = true; });
+    await ev(() => { __savePoint.handle('tab', 'quests'); M.memDelay = 600; M.memFailOnce = 'refused'; });
     const first = ev(id => __savePoint.handle('person-mode', id + '|exclude').then(() => 'ok', e => 'fail:' + e.message), ent11);   // fails late
     await page.waitForTimeout(100);
     const second = ev(id => __savePoint.handle('pin-rec', id).then(() => 'ok', e => 'fail:' + e.message), qid11);              // written after
     const [a, b2] = [await first, await second];
-    await ev(() => { M.metaDelay = 0; });
+    await ev(() => { M.memDelay = 0; });
     r = await ev(([q, e]) => { const st = __savePoint.state(); const saved = JSON.parse(JSON.stringify(__savePoint.home().st));
         return { pin: st.mem.records.find(x => x.id === q).pin, mode: st.mem.entities.find(x => x.id === e).standby, savedPin: saved.mem.records.find(x => x.id === q).pin, savedMode: saved.mem.entities.find(x => x.id === e).standby }; }, [qid11, ent11]);
     ok(r.pin === true && r.mode !== 'exclude', `11. 앞 저장 실패: 그 변경만 취소, 뒤의 ⚓는 남음 (${JSON.stringify(r)} · ${a} · ${b2})`);
@@ -169,24 +171,24 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const keyOf = () => ev(p => { const [s, g, j] = p.split('|'); const pp = __savePoint.state().mem.scenes.find(x => x.id === s).segs.find(x => x.id === g).points[+j]; return { user: pp.keyUser, key: pp.key }; }, pt.id);
     const fileKey = () => ev(p => { const [s, g, j] = p.split('|'); const f = M.mem(); const pp = f.mem.scenes.find(x => x.id === s).segs.find(x => x.id === g).points[+j]; return { user: pp.keyUser, key: pp.key }; }, pt.id);
     const k0 = await keyOf();
-    await ev(() => { M.metaDelay = 500; M.failOnce = true; });
+    await ev(() => { M.memDelay = 500; M.memFailOnce = 'refused'; });
     const t1 = ev(id => __savePoint.handle('key-toggle', id).then(() => 'ok', e => 'fail'), pt.id);
     await page.waitForTimeout(80);
     const t2 = ev(id => __savePoint.handle('key-toggle', id).then(() => 'ok', e => 'fail'), pt.id);
-    await t1; await t2; await ev(() => { M.metaDelay = 0; });
+    await t1; await t2; await ev(() => { M.memDelay = 0; });
     let k1 = await keyOf(), kf = await fileKey();
     const on = x => (x.user ?? x.key) === true;
     ok(on(k1) === on(k0) && on(kf) === on(k0), `12. ○→●→○에서 첫 저장 실패: 마지막 선택(○) 유지, 파일도 같음 (${JSON.stringify([k0, k1, kf])})`);
 
-    await ev(() => { M.metaDelay = 400; });
+    await ev(() => { M.memDelay = 400; });
     const a1 = ev(id => __savePoint.handle('key-toggle', id), pt.id);
     await page.waitForTimeout(60);
     const a2 = ev(id => __savePoint.handle('pin-rec', id), qid11);
     const a3 = ev(sid => __savePoint.handle('star', sid), pt.sid);
     await page.waitForTimeout(30);
-    await ev(() => { M.failOnce = true; });   // would hit the write after the one that already held ★
+    await ev(() => { M.memFailOnce = 'refused'; });   // would hit the write after the one that already held ★
     await a1.catch(() => {}); await a2.catch(() => {}); await a3.catch(() => {});
-    await ev(() => { M.metaDelay = 0; M.failOnce = false; });
+    await ev(() => { M.memDelay = 0; M.memFailOnce = null; });
     r = await ev(([sid, q]) => { const st = __savePoint.state(), f = M.mem();
         return { star: !!st.mem.scenes.find(x => x.id === sid).star, fileStar: !!f.mem.scenes.find(x => x.id === sid).star, pin: st.mem.records.find(x => x.id === q).pin, filePin: f.mem.records.find(x => x.id === q).pin }; }, [pt.sid, qid11]);
     ok(r.star === r.fileStar && r.pin === r.filePin, `13. 연속 ●·⚓·★ 뒤 실패가 와도 화면과 파일이 같음 (${JSON.stringify(r)})`);
@@ -216,8 +218,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const both = () => ev(() => { const st = __savePoint.state(), f = M.mem();
         const pick = m => ['r950', 'r951'].map(id => { const x = m.records.find(r => r.id === id); return x ? (x.pin ? 'pin' : 'on') : 'gone'; }).join(',');
         return { page: pick(st.mem), file: pick(f.mem) }; });
-    const slowFail = () => ev(() => { M.metaDelay = 400; M.failOnce = true; });
-    const settle = async (...ps) => { for (const p of ps) await p.catch(() => {}); await ev(() => { M.metaDelay = 0; M.failOnce = false; }); };
+    const slowFail = () => ev(() => { M.memDelay = 400; M.memFailOnce = 'refused'; });
+    const settle = async (...ps) => { for (const p of ps) await p.catch(() => {}); await ev(() => { M.memDelay = 0; M.memFailOnce = null; }); };
     await setup(); await ev(() => __savePoint.handle('pin-rec', 'r950').then(() => __savePoint.handle('pin-rec', 'r950')));   // write the setup once
     await slowFail();
     let p1 = ev(() => __savePoint.handle('del-rec', 'r950')); await page.waitForTimeout(60);

@@ -104,7 +104,9 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await page.close();
 
     // ── 6. settings lost: the server list comes back by itself ──
-    page = await session({ files: serverFiles });
+    // v0.7.0-b2c: the save slots' files only: the room's memory files of that session name its chat file's integrity, which a new
+    // session's room (a new mock chat file) does not have (the room would be held).
+    page = await session({ files: Object.fromEntries(Object.entries(serverFiles).filter(([k]) => !/^savepoint-(mem|room|int|moved|moving|copy)-/.test(k))) });
     r = await page.evaluate(() => __savePoint.listSaves().map(x => x.name));
     ok(r.includes('Route A') && r.filter(n => n.startsWith('오토세이브')).length === 3, '6. 설정이 비어도 서버 목록에서 슬롯이 그대로 보임');
     await page.evaluate(() => { M.add(10); });
@@ -138,13 +140,15 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await page.close();
 
     // ── 9. a save while the server is down stays in settings, then moves on the next start ──
+    // v0.7.0-b2c: the memory is in the room's memory file on the server: only the save slots' files are down (M.vaultDown).
     page = await session();
-    await page.evaluate(() => { M.add(12); M.serverDown = true; });
+    await page.evaluate(() => { M.add(12); M.vaultDown = true; });
     await page.evaluate(() => __savePoint.handle('run'));
     await page.waitForTimeout(1600);
     st = await settingsOf(page);
     const localAuto = Object.values(st.savePoint.localSaves).filter(x => x.auto).length;
     ok(localAuto === 1 && (await page.evaluate(() => __savePoint.state().lastIndex)) === 11, '9. 서버가 안 되면 오토세이브는 설정에 보관 (기억 기록은 정상)');
+    ok((await page.evaluate(() => M.mem()?.lastIndex)) === 11, '9. (b2c) 기억 파일에는 기록이 들어감');
     await page.close();
     page = await session({ settings: st });
     st = await settingsOf(page);

@@ -138,47 +138,51 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     }
 
     // 6. SillyTavern swallows a failed save: the file is read back, the save is taken back, no QUICK.
+    //    v0.7.0-b2c: the memory file write answers ok but is not written (M.memSwallowOnce): a new room's first save.
     await ev(() => M.switchChat('chatA2', [], {}));
+    await ev(() => M.opened());
     await page.waitForTimeout(300);
     await ev(() => { M.add(10); });
     const quickBefore = await ev(() => JSON.stringify(__savePoint.listSaves().filter(x => x.quick).map(x => [x.id, x.updated])));
-    // v0.6.83: only the run's own write is swallowed. SillyTavern answers success only after writing, and a copy
-    // answered with success is taken as the file (the base for deletions); the status save that follows the
-    // failure is written normally (before, it was swallowed too and later took that copy for the file).
-    await ev(() => { M.swallowMeta = true; M.swallowed = 0; M.beforeChatSave = async () => { if (M.swallowed >= 1) { M.swallowMeta = false; M.beforeChatSave = null; } }; toastr.log.length = 0; });
+    await ev(() => { M.memSwallowOnce = true; M.memFails = []; toastr.log.length = 0; });
     await ev(() => __savePoint.handle('run'));
     await page.waitForTimeout(1500);
-    r = await ev(() => ({ last: __savePoint.state()?.lastIndex ?? -1, t: toastr.log.map(x => x[1]).join(' | '), quick: JSON.stringify(__savePoint.listSaves().filter(x => x.quick).map(x => [x.id, x.updated])) }));
-    ok(r.last === -1 && r.t.includes('채팅 파일은 그대로') && r.quick === quickBefore, `6. 조용한 저장 실패 → 저장 위치 그대로, QUICK 백업 없음, 실패 안내 (${r.last})`);
-    await ev(() => { M.swallowMeta = false; });
+    r = await ev(() => ({ last: __savePoint.state()?.lastIndex ?? -1, file: M.mem()?.lastIndex ?? null, f: M.memFails.join(), t: toastr.log.map(x => x[1]).join(' | '), quick: JSON.stringify(__savePoint.listSaves().filter(x => x.quick).map(x => [x.id, x.updated])) }));
+    ok(r.f === 'swallowed' && r.last === -1 && r.file === null && r.t.includes('저장하지 않았어요') && !r.t.includes('완료') && r.quick === quickBefore, `6. 조용한 저장 실패 → 저장 위치 그대로, QUICK 백업 없음, 실패 안내 (${r.last})`);
 
-    // 7. an unconfirmed save (the read-back fails): nothing taken back; checkpoints and other writes wait
-    //    until a later read confirms it.
-    await ev(() => { M.settings.savePoint.auto = true; M.settings.savePoint.autoEvery = 5; M.settings.savePoint.autoReserve = 0; M.readFailAfterSave = true; toastr.log.length = 0; });
+    // 7. an unconfirmed save (the read-back fails): nothing taken back.
+    //    v0.7.0-b2c: the memory file written, its read-back failing (M.memReadFailAfterWrite): the memory is the page's and the
+    //    file's (a memory file answered ok is in the file: v0.7.0-b2a keeps only new hides off it until a read shows it); the
+    //    next write after reads come back goes on as usual (older: the chat file, checkpoints and writes held).
     await ev(() => __savePoint.handle('run'));
-    await page.waitForTimeout(1200);
-    r = await ev(() => ({ last: __savePoint.state()?.lastIndex, t: toastr.log.map(x => x[1]).join(' | '), quick: JSON.stringify(__savePoint.listSaves().filter(x => x.quick).map(x => [x.id, x.updated])) }));
-    ok(r.last === 9 && r.t.includes('확인하지 못했어요') && r.quick === quickBefore, `7. 저장 확인 불가 → 자동으로 되돌리지 않음, 성공 안내·QUICK 백업 보류 (${r.t.slice(0, 40)})`);
-    await ev(() => { M.readFailAfterSave = false; M.add(7); M.calls0 = M.calls.length; M.saves0 = M.saves; });
-    await ev(() => __savePoint.autoCollect());
-    await ev(() => __savePoint.toggleKeep(2).catch(e => { M.keepErr2 = e.message; }));
-    await page.waitForTimeout(300);
-    r = await ev(() => ({ ai: M.calls.length - M.calls0, saves: M.saves - M.saves0, blocked: __savePoint.autoBlocked(), keep: M.keepErr2 || '', mark: !!M.chat[2].extra?.savepointKeep }));
-    ok(r.ai === 0 && r.saves === 0 && r.blocked === 'unsure' && r.keep.includes('확인하지 못했어요') && !r.mark, `7. 확인 전에는 체크포인트·다음 쓰기 보류 (${r.blocked})`);
-    await ev(() => { M.serverError = false; toastr.log.length = 0; M.calls0 = M.calls.length; });
-    await page.waitForTimeout(5500);
-    r = await ev(() => ({ blocked: __savePoint.autoBlocked(), t: toastr.log.map(x => x[1]).join(' | '), ai: M.calls.length - M.calls0, last: __savePoint.state().lastIndex, n: M.chat.length }));
-    ok(r.blocked !== 'unsure' && r.t.includes('들어가 있는 걸 확인'), `7. 다시 읽어 확인되면 평소대로 (${r.blocked})`);
-    ok(r.ai > 0 && r.last === r.n - 1, `7. 그 뒤 체크포인트는 확인된 위치부터 이어감 (#${r.last}/${r.n - 1})`);
-    // the write that did not land: a later read finds the old memory → said so, still nothing written
-    await ev(() => { M.settings.savePoint.auto = false; M.add(3); M.swallowMeta = true; M.readFailAfterSave = true; toastr.log.length = 0; });
+    await page.waitForTimeout(1500);
+    await ev(() => { M.add(4); M.memReadFailAfterWrite = true; toastr.log.length = 0; });
     await ev(() => __savePoint.handle('run'));
-    await page.waitForTimeout(800);
-    await ev(() => { M.readFailAfterSave = false; M.serverError = false; });
-    await page.waitForTimeout(3600);
-    r = await ev(() => ({ t: toastr.log.map(x => x[1]).join(' | '), blocked: __savePoint.autoBlocked() }));
-    ok(r.t.includes('들어가지 않았어요'), `7. 나중에 읽어 보니 저장이 없으면 그렇다고 알리고 계속 멈춤 (${r.t.slice(-50)})`);
-    await ev(() => { M.swallowMeta = false; });
+    await page.waitForTimeout(1500);
+    r = await ev(() => ({ last: __savePoint.state()?.lastIndex, file: (M.memReadFail = false, M.mem()?.lastIndex), unread: !!__savePoint.home().line?.unread, blocked: __savePoint.autoBlocked() }));
+    ok(r.last === 13 && r.file === 13 && r.unread && r.blocked !== 'room', `7. (b2c) 기억 다시 읽기만 실패 → 되돌리지 않음, 새 숨김만 보류 표시 (${JSON.stringify(r)})`);
+    await ev(() => { M.add(2); toastr.log.length = 0; });
+    await ev(() => __savePoint.handle('run'));
+    await page.waitForTimeout(1500);
+    r = await ev(() => ({ last: __savePoint.state()?.lastIndex, file: M.mem()?.lastIndex, unread: !!__savePoint.home().line?.unread, t: toastr.log.map(x => x[1]).join(' | ') }));
+    ok(r.last === 15 && r.file === 15 && !r.unread && r.t.includes('완료'), `7. (b2c) 다시 읽히면 평소대로 (${JSON.stringify(r)})`);
+    // the write that did not land, and its read-back failing: a later write finds the old memory → said so, the room stops.
+    await ev(() => { M.add(3); M.memSwallowOnce = true; M.memReadFail = true; toastr.log.length = 0; });
+    await ev(() => __savePoint.handle('run'));
+    await page.waitForTimeout(1500);
+    await ev(() => { M.memReadFail = false; M.add(2); toastr.log.length = 0; });
+    await ev(() => __savePoint.handle('run').catch(() => {}));
+    await page.waitForTimeout(1500);
+    r = await ev(() => ({ t: toastr.log.map(x => x[1]).join(' | '), blocked: __savePoint.autoBlocked(), file: M.mem()?.lastIndex }));
+    ok(r.t.includes('저장하지 않') && !r.t.includes('완료') && r.blocked === 'room' && r.file === 15, `7. 나중에 읽어 보니 저장이 없으면 그렇다고 알리고 계속 멈춤 (${r.t.slice(-60)})`);
+    // 7c. a new room's first save written, its read-back failing: the memory written is not dropped from the page.
+    await ev(() => M.switchChat('chatA3', [], {}));
+    await ev(() => M.opened());
+    await ev(() => { M.add(10); M.memReadFailAfterWrite = true; toastr.log.length = 0; });
+    await ev(() => __savePoint.handle('run').catch(() => {}));
+    await page.waitForTimeout(1500);
+    r = await ev(() => ({ last: __savePoint.state()?.lastIndex ?? -1, file: (M.memReadFail = false, M.mem()?.lastIndex ?? null), t: toastr.log.map(x => x[1]).join(' | ') }));
+    ok(r.file === 9 && r.last === 9 && !r.t.includes('다른 곳'), `7c. (b2c) 새 방 첫 저장이 다시 읽기만 실패: 저장한 기억을 화면에서 버리지 않음 (화면 #${r.last}, 파일 #${r.file}, ${r.t.slice(0, 50)})`);
 
     // 8. an empty answer from the server (a new room or a failed read, no way to tell): no "continue?".
     await ev(() => { M.serverEmpty = true; });

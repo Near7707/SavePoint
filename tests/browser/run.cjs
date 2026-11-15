@@ -177,19 +177,20 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         const html = await ev(() => $('#sp_overlay .sp-body').html().length);
         ok(html > 50, `탭 ${t} 표시`);
     }
-    // 16. metadata save failure keeps memory unchanged
-    await ev(() => { M.add(3); M.failMeta = true; });
+    // 16. metadata save failure keeps memory unchanged. v0.7.0-b2c (16, 16b): the memory file write turned away (older: the
+    // chat file); the reset's release written to the chat file first and failing stays as it was (failMeta).
+    await ev(() => { M.add(3); M.memFail = 'refused'; });
     const lastBefore = await ev(() => __savePoint.state().lastIndex);
     await ev(() => __savePoint.handle('run'));
-    ok(await ev(() => __savePoint.state().lastIndex) === lastBefore, '저장 실패 시 기억·위치 그대로');
-    await ev(() => { M.failMeta = false; });
+    ok(await ev(() => __savePoint.state().lastIndex) === lastBefore && await ev(() => M.mem().lastIndex) === lastBefore, '저장 실패 시 기억·위치 그대로');
+    await ev(() => { M.memFail = null; });
 
     // 16b. every change path restores on a thrown save (review #3)
     r = await ev(async () => {
         const st = __savePoint.state(), sid = st.mem.scenes[0].id, before = st.mem.scenes[0].pin, histLen = st.history.length;
-        M.failMeta = true;
+        M.memFail = 'refused';
         try { await __savePoint.handle('pin', sid); } catch { /* reported */ }
-        M.failMeta = false;
+        M.memFail = null;
         const now = __savePoint.state();
         return { before, after: now.mem.scenes[0].pin, hist: now.history.length === histLen, err: toastr.log.at(-1)[1] };
     });
@@ -202,31 +203,45 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         return { scenes: __savePoint.state().mem.scenes.length, hidden: M.chat.filter(m => m.is_system).length, hiddenBefore };
     });
     ok(r.scenes > 0 && r.hidden === r.hiddenBefore, '기억 비우기 저장 실패 → 기억·하이드 그대로');
+    r = await ev(async () => {
+        const hiddenBefore = M.chat.filter(m => m.is_system).length;
+        M.memFail = 'refused';
+        try { await __savePoint.handle('clear-room'); } catch { /* reported */ }
+        M.memFail = null;
+        return { scenes: __savePoint.state().mem.scenes.length, file: M.mem().mem.scenes.length, hidden: M.chat.filter(m => m.is_system).length, hiddenBefore };
+    });
+    ok(r.scenes > 0 && r.file === r.scenes, `(b2c) 기억 비우기의 기억 저장 거절 → 기억 그대로 (${JSON.stringify(r)})`);
+    await ev(() => __savePoint.syncHide());
     // a save that SillyTavern swallows: the change stays in the page, memory and hide flags together
     // v0.6.58: the file is read back; it is unchanged, so the save is taken back (memory and hide together).
-    const lastBefore2 = await ev(() => { M.add(3); M.swallowMeta = true; toastr.log.length = 0; M.hidBefore = M.chat.map(m => !!m.is_system).join(); return __savePoint.state().lastIndex; });
+    // v0.7.0-b2c: the memory file write answers ok but is not written (M.memSwallowOnce): the read-back finds another body
+    // (overwritten): nothing more is written in the room, no new hide is set; reopening shows the file's memory.
+    const lastBefore2 = await ev(() => { M.add(3); M.memSwallowOnce = true; M.memFails = []; toastr.log.length = 0; M.hidBefore = M.chat.map(m => !!m.is_system).join(); return __savePoint.state().lastIndex; });
     await ev(() => __savePoint.handle('run'));
-    r = await ev(() => { const st = __savePoint.state();
-        return { last: st.lastIndex, len: M.chat.length, swallowed: M.swallowed, toast: toastr.log.map(x => x[1]).join(' | '),
-            consistent: M.chat.map(m => !!m.is_system).join() === M.hidBefore }; });
-    ok(r.last === lastBefore2 && r.swallowed >= 1 && r.consistent && r.toast.includes('채팅 파일은 그대로'), `조용히 실패한 저장 → 다시 읽어 보고 되돌림, 기억과 하이드는 함께 이전 상태 (${r.last}/${lastBefore2} ${r.swallowed} ${r.consistent} ${r.toast.slice(0, 80)})`);
-    await ev(() => { M.swallowMeta = false; });
-    // room switch while a failing save is in flight
+    r = await ev(() => ({ file: M.mem().lastIndex, swallowed: M.memFails.join(), toast: toastr.log.map(x => x[1]).join(' | '), blocked: __savePoint.autoBlocked(),
+        consistent: M.chat.map(m => !!m.is_system).join() === M.hidBefore }));
+    ok(r.file === lastBefore2 && r.swallowed === 'swallowed' && r.consistent && r.blocked === 'room' && r.toast.includes('저장하지 않았어요') && !r.toast.includes('완료'), `조용히 실패한 저장 → 다시 읽어 보고 멈춤, 새 하이드 없음 (${JSON.stringify(r).slice(0, 160)})`);
+    await ev(async () => { M.openFile(M.chatId); await M.opened(); });
+    await page.waitForTimeout(300);
+    r = await ev(() => ({ page: __savePoint.state().lastIndex, blocked: __savePoint.autoBlocked() }));
+    ok(r.page === lastBefore2 && r.blocked !== 'room', `(b2c) 다시 열면 파일의 기억으로 (${JSON.stringify(r)})`);
+    // room switch while a failing save is in flight (v0.7.0-b2c: the memory file write, slow and turned away)
     r = await ev(async () => {
-        const oldMeta = M.meta, oldChat = M.chat, sid = __savePoint.state().mem.scenes[0].id, pinBefore = __savePoint.state().mem.scenes[0].pin;
-        M.metaDelay = 200; M.failMeta = true;
+        const oldChat = M.chatId, sid = __savePoint.state().mem.scenes[0].id, pinBefore = __savePoint.state().mem.scenes[0].pin;
+        M.memDelay = 200; M.memFailOnce = 'refused';
         const p = __savePoint.handle('pin', sid).catch(() => {});
         await new Promise(r => setTimeout(r, 50));
         await M.switchChat('chatD', [], {}); await M.opened(); M.add(2);
         await p;
-        M.metaDelay = 0; M.failMeta = false;
-        const res = { oldPin: oldMeta.savePoint.mem.scenes[0].pin === pinBefore, newState: !!__savePoint.state(), newInj: M.prompts.savepoint?.v || '', newHidden: M.chat.some(m => m.is_system) };
+        M.memDelay = 0; M.memFailOnce = null;
+        const res = { oldPin: M.mem(oldChat).mem.scenes[0].pin === pinBefore, newState: !!__savePoint.state(), newInj: M.prompts.savepoint?.v || '', newHidden: M.chat.some(m => m.is_system) };
         // v0.6.60: SillyTavern opens a room from its chat file (the first check compares the memory too).
         const f = JSON.parse(JSON.stringify(M.serverFiles.chatC));
         await M.switchChat('chatC', f.slice(1), f[0].chat_metadata); await M.opened();
+        res.back = __savePoint.state()?.mem?.scenes?.[0]?.pin === pinBefore;
         return res;
     });
-    ok(r.oldPin && !r.newState && r.newInj === '' && !r.newHidden, '저장 중 방 이동 + 실패 → 원래 방만 원복, 새 방은 그대로');
+    ok(r.oldPin && r.back && !r.newState && r.newInj === '' && !r.newHidden, `저장 중 방 이동 + 실패 → 원래 방만 원복, 새 방은 그대로 (${JSON.stringify(r)})`);
 
     // 16c. person in the item slot, twice (v0.2.1): nothing saved, retry explains the fix
     r = await ev(async () => {
