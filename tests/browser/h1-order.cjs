@@ -459,7 +459,9 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await wait(1500);
     x = await look();
     const o8 = await order(), wid8 = await ev(async () => { const H = await import('/ext/home.js'); return JSON.parse(M.files.get(H.memName(__savePoint.home().id))).wid; });
-    ok(y.page.length > 0 && x.server.length === 0 && o8.length === 0 && wid8 === 'other8' && x.sp === y.sp,
+    // v0.7.0-b2b: the rewind now stops before it is applied (the chat file shows the hides taken away); the room checks its memory
+    // again and follows the reset (which may write the memory file once): still no chat save, no hide on the server.
+    ok(y.page.length > 0 && x.server.length === 0 && !o8.includes('chat') && x.file === -1 && x.sp === y.sp,
         `8. 다른 기기 리셋 뒤 오래된 화면의 리와인드 → 채팅 저장 안 함, 서버 숨김 0 (before=${JSON.stringify(y)} after=${JSON.stringify(x)} order=${JSON.stringify(o8)} err=${r})`);
 
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');

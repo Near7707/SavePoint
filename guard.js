@@ -90,6 +90,8 @@ export function snapshot(meta, messages, own) {
     return {
         full: list.map(hashOf),
         plain: list.map(m => hashOf(plain(m, own))),
+        // v0.7.0-b2b: per message, does it carry SavePoint's hide (own[0], hidden)? So a later read can tell a hide the file took away.
+        hid: list.map(m => !!(m && typeof m === 'object' && m.is_system && m.extra && typeof m.extra === 'object' && m.extra[own[0]])),
         meta: meta && typeof meta === 'object' ? Object.fromEntries(Object.keys(meta).filter(k => meta[k] !== undefined).map(k => [k, hashOf(meta[k])])) : null,
     };
 }

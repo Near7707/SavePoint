@@ -27,7 +27,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.7.0-b2a4';
+const VERSION = '0.7.0-b2b';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -340,7 +340,8 @@ async function writeChatFile(fileMeta = null, guard = null) {
         return err;
     };
     for (let round = 0; round < 4; round++) {
-        if (await stIdle()) landed = true;
+        const waited = await stIdle();
+        if (waited) landed = true;
         if (moved()) { if (sent !== null) return sentSnap; throw fail(new RoomBlocked('채팅방이 바뀌어서 저장하지 않았어요.')); }
         if (landed) {
             // v0.7.0-b1f (review of b1e, P1): the check runs before a copy already in the file ends the write too: `다시 확인` may
@@ -348,8 +349,17 @@ async function writeChatFile(fileMeta = null, guard = null) {
             if (guard && sent !== null) guard({ sent: true });
             const t0 = chatTarget(fileMeta);
             if (sent !== null && (!t0 || t0.body === sent)) return sentSnap;
+            // v0.7.0-b2b: SillyTavern was waited for here: the memory file is read again before the chat file (another device may have
+            // written it meanwhile), for the first request and every copy sent again.
+            if (waited) {
+                const hs = await homeStill();
+                if (moved()) { if (sent !== null) return sentSnap; throw fail(new RoomBlocked('채팅방이 바뀌어서 저장하지 않았어요.')); }
+                if (!hs.ok) { render(); const e = new RoomBlocked(hs.why === 'memRead' ? '기억 파일을 다시 읽지 못해서 채팅 파일을 저장하지 않았어요.' : `채팅 파일은 저장하지 않았어요. ${homeMessage() || '그사이 다른 곳에서 이 방의 기억 파일을 저장했어요.'}`); e.memMoved = hs.why; throw fail(e); }
+            }
             const c = await fileAllows(sentSnap);
             if (moved()) { if (sent !== null) return sentSnap; throw fail(new RoomBlocked('채팅방이 바뀌어서 저장하지 않았어요.')); }
+            // v0.7.0-b2b: the file took away SavePoint hides the page still had (shown now, fileAllows): nothing more is sent.
+            if (c.ok && c.released?.length) { setSeen(c.r.snap); const e = new RoomBlocked(RELEASED_HELD); e.released = true; throw fail(e); }
             if (!c.ok) {
                 blockRoom(c.why, c.at);
                 throw fail(new RoomBlocked(c.why === 'error' || c.why === 'empty'
@@ -445,10 +455,46 @@ async function fileAllows(sentSnap = null) {
     let c = covers(now, r.snap, MODULE, seen, cut);
     if (!c.ok && c.why !== 'gone' && sentSnap && ownCopy(sentSnap, r.snap)) c = { ok: true };
     if (c.ok && foreignMemory(r, now, seen)) return { ok: false, why: 'mem' };
+    const rel = c.ok && gateHere() ? releasedOf(r, now, seen) : [];
+    if (rel.length) freeReleased(rel);
     // v0.6.104 (review P3): the caller makes this file the base (`gate.seen`; today only writeChatFile), after its own check that the
     // room is still the one whose file was read: the room can change between readSettled's check and this line.
     if (genBusy(c)) return { ok: false, why: 'busy' };
-    return c.ok ? { ok: true, r } : { ok: false, why: c.why, at: c.at };
+    return c.ok ? { ok: true, r, released: rel } : { ok: false, why: c.why, at: c.at };
+}
+// v0.7.0-b2b: messages the page hides with SavePoint's mark whose hide the server file took away since it was last seen there
+// (the same message, at the same place, in the last file seen, in this file and on the page): another device reset the room or
+// showed them. A chat write sending the page now would hide them again on the server.
+function releasedOf(r, now, seen) {
+    if (!seen?.hid || !r?.snap?.hid || !now?.plain) return [];
+    const list = chat(), out = [];
+    for (let i = 0; i < list.length && i < r.snap.plain.length; i++) {
+        const m = list[i];
+        if (!m?.is_system || !m.extra?.[HIDE_KEY] || !seen.hid[i] || r.snap.hid[i]) continue;
+        if (now.plain[i] !== r.snap.plain[i] || seen.plain?.[i] !== now.plain[i]) continue;
+        out.push(m);
+    }
+    return out;
+}
+// Shown on the page as the file has them, marked "shown by the server" (only a save or 👻 pressed hides them again; an automatic
+// record or recount leaves them shown). No chat save is asked for here; the memory of the room is checked again.
+const RELEASED_NOTE = '다른 곳(다른 기기나 탭)에서 원문 숨김을 풀어서, 그 원문을 이 화면에서도 다시 보여 줘요.';
+const RELEASED_HELD = `기억은 저장했어요. 하지만 ${RELEASED_NOTE} 이번 채팅 저장은 보류했어요.`;
+function freeReleased(list) {
+    const all = chat();
+    let n = 0;
+    for (const m of list) {
+        const i = all.indexOf(m);
+        if (i < 0 || !m.is_system || !m.extra?.[HIDE_KEY]) continue;
+        setHidden(m, i, false);
+        delete m.extra[HIDE_KEY]; delete m.extra[HELD_KEY]; m.extra[VISIBLE_KEY] = SERVER_SHOWN; n++;
+    }
+    if (!n) return 0;
+    if (homeHere()) home.freed = true;
+    ctx().swipe?.refresh?.(); refreshView();
+    toastr.info(RELEASED_NOTE, 'SavePoint', { timeOut: 8000 });
+    Promise.resolve().then(() => recheckHome()).catch(() => {});
+    return n;
 }
 function genBusy(c) {
     // v0.6.90: a difference the reply being made explains (see serverCovered).
@@ -884,17 +930,22 @@ async function releaseFirst(queue, entry, pre) {
     const gone = () => { restoreEntry(entry); trustQueue(); return cancelMoved(queue, entry); };
     await stIdle();
     if (moved()) throw gone();
+    const memStill = async () => {
     const still = await homeStill();
     if (moved()) throw gone();
     if (!still.ok) {
         undoAll('memory file');
         throw new RoomBlocked(still.why === 'memRead' ? '기억 파일을 다시 읽지 못해서 이번 변경은 하지 않았어요. 잠시 뒤 다시 해 주세요.' : `이번 변경은 하지 않았어요. ${homeMessage() || '그사이 다른 곳에서 이 방의 기억 파일을 저장했어요. 방을 다시 열거나 새로고침해 주세요.'}`);
     }
-    await stIdle();
+    };
+    await memStill();
+    // v0.7.0-b2b: a wait for SillyTavern after the memory check checks the memory again.
+    for (let k = 0; k < 3 && await stIdle(); k++) { if (moved()) throw gone(); await memStill(); }
     if (moved()) throw gone();
     let now;
     try { now = await serverCovered(); } catch { now = { ok: false, why: 'error' }; }
     if (moved() || now.why === 'moved') throw gone();
+    if (now.ok && now.released?.length) { undoAll('released'); throw new RoomBlocked(`이번 변경은 하지 않았어요. ${RELEASED_NOTE}`); }
     if (!now.ok) { undoAll(now.why); blockRoom(now.why, now.at); throw new RoomBlocked(`${gateMessage()} 이번 변경은 취소했어요.`); }
     pre = now;
     written = sendSnap(pre.meta);
@@ -966,6 +1017,8 @@ async function writeEntry(queue, entry) {
     if (moved()) throw cancelMoved(queue, entry);
     if (entry.cancelled) throw entry.cancelled;
     if (!pre.ok) { blockRoom(pre.why, pre.at); throw new RoomBlocked(`${gateMessage()} 이번 변경은 취소했어요.`); }
+    // v0.7.0-b2b: hides the file took away (shown on the page now): nothing of this change is done; the memory is checked again.
+    if (pre.released?.length) throw new RoomBlocked(`이번 변경은 하지 않았어요. ${RELEASED_NOTE} 다시 해 주세요.`);
     if (entry.still) {
         const ok = entry.still(pre);
         if (ok !== true) throw new Stale(typeof ok === 'string' ? ok : entry.stale || '기다리는 사이 대화나 기억이 바뀌어서 이 변경은 하지 않았어요. 다시 해 주세요.');
@@ -1081,7 +1134,8 @@ async function writeEntry(queue, entry) {
     await stIdle();
     if (moved()) { takeBack(); throw saved(cancelMoved(queue, entry)); }
     // P1-1: the memory file is still the one this room last saw, right before the chat file is written.
-    const still = await homeStill(mine);
+    // v0.7.0-b2b: and again after every wait for SillyTavern that follows (another device may write the memory in it).
+    const onStill = still => {
     // v0.7.0-b1f (review of b1e, P2-2): another memory linked meanwhile — as right before the request (guard): only the new hides
     // go back; the other marks of the change (🔖, a hide taken away) still go out.
     if (!still.ok && still.why === 'relinked') {
@@ -1095,16 +1149,28 @@ async function writeEntry(queue, entry) {
         if (roomKey() === entry.key && roomEpoch === entry.epoch) { ctx().swipe?.refresh?.(); refreshView(); }
         throw saved(new RoomBlocked(still.why === 'moved' ? '채팅방이 바뀌어서 원문 숨김은 저장하지 않았어요.' : still.why === 'memRead' ? '기억 파일을 다시 읽지 못해서 원문 숨김은 저장하지 않았어요(기억은 저장했어요).' : still.why === 'relinked' ? '기억은 저장했어요. 하지만 그사이 이 방의 기억을 다시 확인해서, 이번 원문 숨김은 저장하지 않았어요. 다시 세이브하면 맞춰요.' : `기억은 저장했어요. 하지만 ${homeMessage()}`));
     }
+    };
+    onStill(await homeStill(mine));
     // v0.7.0-b1a (review P1-1): the chat file is checked again right before it is written (the check before the change is
     // older than the memory write: another device may have added a reply since). The write goes out over this read only.
     {
         const away = () => { takeBack(); return saved(cancelMoved(queue, entry)); };
         if (moved()) throw away();
-        await stIdle();
+        for (let k = 0; k < 3 && await stIdle(); k++) {
+            if (moved()) throw away();
+            onStill(await homeStill(mine));
+        }
         if (moved()) throw away();
         let now;
         try { now = await serverCovered(); } catch { now = { ok: false, why: 'error' }; }
         if (moved() || now.why === 'moved') throw away();
+        // v0.7.0-b2b: the file took away SavePoint hides the page still shows (another device's reset or unhide): this change's chat
+        // write is held back whole (its other hides may rest on a memory being reset). Those messages are shown (serverCovered).
+        if (now.ok && now.released?.length) {
+            takeBack();
+            if (roomKey() === entry.key && roomEpoch === entry.epoch) { ctx().swipe?.refresh?.(); refreshView(); }
+            throw saved(new RoomBlocked(RELEASED_HELD));
+        }
         if (!now.ok) {
             takeBack();
             blockRoom(now.why, now.at);
@@ -1171,7 +1237,9 @@ async function writeEntry(queue, entry) {
             // v0.7.0-b2a4 (review of b2a3, P2): no copy could be made before the first request, so the first check (which takes what is
             // sent and checked) never ran: what is read back is compared with the page after the last wait (SillyTavern may have saved
             // an edited message with its 🔖 meanwhile), never the one before it. The held hides stay unset.
-            if (e?.noTarget && !heldDone) { written = sendSnap(pre.meta); marks = leftMarks(); tick = delTick; }
+            // v0.7.0-b2b: the same for a write held back before its first request (hides the file took away, the memory file changed).
+            const stopped = e?.noTarget || e?.released || e?.memMoved;
+            if (stopped && !heldDone) { written = sendSnap(pre.meta); marks = leftMarks(); tick = delTick; }
             if (e?.nothingSent) {
                 if (relinkedLate && !sameHome(mine)) throw relinked();
                 // v0.7.0-b2a2 (review of b2a1, P1): the held hides were left out only because the hide setting of now no longer asks
@@ -1182,6 +1250,10 @@ async function writeEntry(queue, entry) {
                 const err = new RoomBlocked(relinkedLate ? '기억은 저장했어요. 하지만 그사이 이 방의 기억을 다시 확인해서, 이번 원문 숨김은 저장하지 않았어요. 다시 세이브하면 맞춰요.' : '기억은 저장했어요. 하지만 그사이 원문이 바뀌어서 원문 숨김은 저장하지 않았어요. 다시 세이브하면 맞춰요.');
                 err.kept = true; throw err;
                 }
+            } else if ((e?.released || e?.memMoved) && !e.sents?.length && !marks.length) {
+                // v0.7.0-b2b: nothing but the held hides (never set) was left: nothing of the change is in the file.
+                const err = new RoomBlocked(e.released ? `기억은 저장했어요. 하지만 ${RELEASED_NOTE} 이번 채팅 저장은 보류했어요.` : `기억은 저장했어요. 하지만 ${e.message}`);
+                err.kept = true; throw err;
             } else if (e?.noTarget && !e.sents?.length && !marks.length) {
                 // v0.7.0-b2a3 (review of b2a2, P2): no copy could be made before the first request, and the change had nothing but its
                 // held hides to send (not set: the page shows them still). Nothing of it can be in the file, so nothing is read back
@@ -1385,13 +1457,20 @@ function guardedSave(write) {
         // v0.7.0-b1 (P1-1): the memory file is still the one this room last saw; a chat write carries no memory receipt.
         // v0.7.0-b1a (review of b1a, P1-3): before the chat file is read, so the write goes out right over that read.
         // v0.7.0-b1c (review of b1b, P1-3): after SillyTavern's own write was waited for (above), not before it.
-        const still = await homeStill();
-        if (!here()) return;
-        if (!still.ok) { console.warn('[SavePoint] chat save held: the memory file changed or could not be read'); render(); return; }
-        await stIdle();
+        const memStill = async () => {
+            const still = await homeStill();
+            if (!here()) return false;
+            if (!still.ok) { console.warn('[SavePoint] chat save held: the memory file changed or could not be read'); render(); return false; }
+            return true;
+        };
+        if (!(await memStill())) return;
+        // v0.7.0-b2b: a wait for SillyTavern after the memory check checks the memory again.
+        for (let k = 0; k < 3 && await stIdle(); k++) { if (!here() || !(await memStill())) return; }
         if (!here()) return;
         const pre = await serverCovered();
         if (!here()) return;
+        // v0.7.0-b2b: hides the file took away (shown on the page now): nothing is written; the memory is checked again.
+        if (pre.ok && pre.released?.length) { render(); return; }
         if (!pre.ok) {
             blockRoom(pre.why, pre.at);
             // v0.6.90: held back by a reply being made: no warning; saved again once the room is checked after it.
@@ -1401,6 +1480,8 @@ function guardedSave(write) {
         const written = sendSnap(pre.meta), rev = state()?.rev ?? null, proof = null, tick = delTick;
         // v0.6.72: a save stopped because the room moved meanwhile is not an error of the new room.
         try { await write(pre); } catch (e) {
+            // v0.7.0-b2b: held back before its first request (hides the file took away, the memory file changed): nothing sent.
+            if ((e?.released || e?.memMoved) && !e.sents?.length) { render(); return; }
             let err = await settleWrite(e, { written, rev, proof, pre, key, epoch, tick });
             if (err === 'revert') err = e;
             if (err && roomKey() === key && roomEpoch === epoch) reportError(err);
@@ -1580,6 +1661,8 @@ async function serverCovered(page = pageSnap, tries = [0, 500, 1500], { adopt = 
         const seen = gateHere() ? gate.seen : null, now = page();
         const c = covers(now, r.snap, MODULE, seen, gateHere() ? gate.cut : null);
         if (c.ok && foreignMemory(r, now, seen)) return { ok: false, why: 'mem' };
+        // v0.7.0-b2b: hides the file took away since it was last seen are shown on the page now, before the file becomes the base.
+        if (c.ok && gateHere()) { const rel = releasedOf(r, now, seen); if (rel.length) { r.released = rel; freeReleased(rel); } }
         // v0.6.87: `adopt: false` — a look before a change takes its turn (a load's questions): a write of this room may
         // be on its way, so the file is not made the base (its turn checks again).
         if (c.ok) { if (adopt && gateHere()) setSeen(r.snap); return r; }
@@ -2186,13 +2269,16 @@ function freeHome(box) {
 const holds = new WeakMap();
 function hidesHeld() {
     const h = home, l = h?.line;
-    return !!(h?.writing || (h && holds.has(h)) || l?.unread || l?.pending || l?.stop);
+    // v0.7.0-b2b: `freed` — the server file took hides away (freeReleased): the held save is not retried by a recount outside a turn.
+    return !!(h?.writing || (h && holds.has(h)) || l?.unread || l?.pending || l?.stop || h?.freed);
 }
 // The end of a save turn (writeEntry): a pass skipped meanwhile is worked out again once, in the same room, on a memory proved
 // in its file (hidesHeld), and only when the turn did not end in a failure (what it took back is not set again by itself).
 function endHold(box, entry, ok) {
     if (!box || holds.get(box) !== entry) return;
     holds.delete(box);
+    // v0.7.0-b2b: a save turn (a save, a checkpoint, 👻) that ended well worked the hides out again with all its checks.
+    if (ok && entry.rehide && box.freed && box === home) delete box.freed;
     if (!box.hideSkipped) return;
     box.hideSkipped = false;
     if (ok) setTimeout(() => { if (home === box && homeHere() && gateOpen() && !hidesHeld()) syncHide(); }, 0);
@@ -2396,6 +2482,8 @@ function setHidden(m, i, hidden) {
     m.is_system = hidden;
     $(`#chat .mes[mesid="${i}"]`).attr('is_system', String(hidden));
 }
+// v0.7.0-b2b: the value of VISIBLE_KEY on a message shown because the server file took SavePoint's hide away (freeReleased).
+const SERVER_SHOWN = 'server';
 // v0.6.49: 'off' / 'auto' (every save hides what it recorded) / 'manual' (only the 👻 button does).
 // Settings from before v0.6.49 only have `hide`.
 function hideModeOf(s) {
@@ -2484,6 +2572,8 @@ function syncHide({ rehide = false, grow = false } = {}) {
             if (live) liveShown.add(m);
             return;
         }
+        // v0.7.0-b2b: shown because the server file took its hide away: only a save or 👻 pressed hides it again.
+        if (rescan && m.extra?.[VISIBLE_KEY] === SERVER_SHOWN && rehide !== 'save' && rehide !== 'button') return;
         if (rescan && i <= cutoff && (may || hold())) {
             // Recheck from #0 on every saved batch. A manually opened message
             // stays open during ordinary redraws, but joins the next save's hide.
@@ -3207,7 +3297,7 @@ async function supplementLoot(run, items, undoPoint = checkpoint(run.st)) {
                 } else if (lr?.run === run.id) { lr.at = Date.now(); lr.from = Math.min(lr.from, lo); lr.to = Math.max(lr.to, hi); }
                 else st.lastRecord = { at: Date.now(), from: lo, to: hi, kind: 'supplement', run: run.id };
                 st.undoInfo = { kind: st.lastRecord.kind, run: run.id, at: Date.now(), edits: 0 };
-            }, { undoable: false, autosave: false, rehide: true, verify: true, still: () => assertStill(run, chat().length - 1, base) });
+            }, { undoable: false, autosave: false, rehide: run.auto ? true : 'save', verify: true, still: () => assertStill(run, chat().length - 1, base) });
             run.lootCounted = counted;
             saved++;
         } catch (e) {
@@ -3318,12 +3408,12 @@ async function summarize({ close = false, auto = false } = {}) {
                 await transact(() => {
                     const cur = state(), before = cur.mem;
                     cur.mem = closeOpenScene(before); pushHistory(cur, before, cur.mem, { kind: 'edit' });
-                }, { rehide: true, undoable: true, undoKind: 'sceneclose', verify: true });
+                }, { rehide: auto ? true : 'save', undoable: true, undoKind: 'sceneclose', verify: true });
                 toastr.success('진행 중이던 장면을 닫았어요.');
             } catch (e) { fine = false; reportError(e); }
         } else if (settings().enabled && hideModeOf(settings()) !== 'off' && hasMemory(st.mem)) {
             try {
-                await transact(() => {}, { undoable: false, autosave: false, rehide: true });
+                await transact(() => {}, { undoable: false, autosave: false, rehide: auto ? true : 'save' });
                 toastr.info('기록할 새 메시지가 없어요. 하이드 상태를 다시 확인했어요.');
             } catch (e) { fine = false; reportError(e); }
         } else toastr.info('기록할 새 메시지가 없어요.');
@@ -3370,17 +3460,17 @@ async function summarize({ close = false, auto = false } = {}) {
                 st.undo = undoPoint; st.undoInfo = { kind: st.lastRecord.kind, run: run.id, at: Date.now(), edits: 0 };
                 settleAutoFail(st);
                 lootFailed += settleLoot(st, marked, next, data.lootWhy, counted);
-            }, { undoable: false, autosave: false, rehide: true, verify: true, still: () => assertStill(run, coverTo, base) });
+            }, { undoable: false, autosave: false, rehide: run.auto ? true : 'save', verify: true, still: () => assertStill(run, coverTo, base) });
             run.lootCounted = counted;
             done++; cursor += chunk.indices.length;
         }
         const supplement = await supplementLoot(run, oldLoot, undoPoint);
         done += supplement.saved; lootFailed += supplement.failed;
         if (!msgs.length && !supplement.saved && !close && settings().enabled && hideModeOf(settings()) !== 'off' && hasMemory(st.mem))
-            await transact(() => {}, { undoable: false, autosave: false, rehide: true });
+            await transact(() => {}, { undoable: false, autosave: false, rehide: run.auto ? true : 'save' });
         if (close && !msgs.length && openScene(st.mem)) {
             assertValid(run, end);
-            await transact(() => { const before = st.mem; st.mem = closeOpenScene(before); pushHistory(st, before, st.mem, { kind: 'edit' }); st.undo = undoPoint; st.undoInfo = { kind: 'sceneclear', run: run.id, at: Date.now(), edits: 0 }; }, { undoable: false, autosave: false, rehide: true, verify: true });
+            await transact(() => { const before = st.mem; st.mem = closeOpenScene(before); pushHistory(st, before, st.mem, { kind: 'edit' }); st.undo = undoPoint; st.undoInfo = { kind: 'sceneclear', run: run.id, at: Date.now(), edits: 0 }; }, { undoable: false, autosave: false, rehide: run.auto ? true : 'save', verify: true });
             done++;
         }
         await markStaleLoot(run, queued.filter(x => !attemptedLoot.has(x.id) && !oldLoot.includes(x)));
