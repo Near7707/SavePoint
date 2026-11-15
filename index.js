@@ -27,7 +27,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.7.0-b2a3';
+const VERSION = '0.7.0-b2a4';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -1168,6 +1168,10 @@ async function writeEntry(queue, entry) {
         // sent again differs from the first: an old hide went back, or SillyTavern saved the page meanwhile).
         try { const last = await persist(pre.meta, guard); if (last) written = last; }
         catch (e) {
+            // v0.7.0-b2a4 (review of b2a3, P2): no copy could be made before the first request, so the first check (which takes what is
+            // sent and checked) never ran: what is read back is compared with the page after the last wait (SillyTavern may have saved
+            // an edited message with its 🔖 meanwhile), never the one before it. The held hides stay unset.
+            if (e?.noTarget && !heldDone) { written = sendSnap(pre.meta); marks = leftMarks(); tick = delTick; }
             if (e?.nothingSent) {
                 if (relinkedLate && !sameHome(mine)) throw relinked();
                 // v0.7.0-b2a2 (review of b2a1, P1): the held hides were left out only because the hide setting of now no longer asks

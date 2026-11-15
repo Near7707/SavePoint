@@ -386,6 +386,35 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     x = await look();
     ok(x.page.length > y.page.length && x.page.join() === x.server.join() && covered(x) && !x.stop, `14. 고유값이 돌아온 뒤 다음 세이브는 막히지 않고 숨김 (${JSON.stringify(x)})`);
 
+    // 14b. (review of b2a3, P2) as 14, but the change is a 🔖 and SillyTavern's save in the wait carries that message edited (with the
+    // 🔖): no copy can be made, the 🔖 is found in the file against the page after the wait — no "확인하지 못했어요", no lock.
+    const k14 = await ev(() => M.chat.length - 1);
+    y = await look();
+    await afterCheck(`() => {
+        M.stScript.setChatSaving(true);
+        setTimeout(() => {
+            M.chat[${k14}].mes += ' (edited)';
+            window.__integrity14 = M.meta.integrity; delete M.meta.integrity;
+            M.stSave();
+            M.stScript.setChatSaving(false);
+        }, 300);
+    }`);
+    r = await ev(k => { toastr.log.length = 0; return __savePoint.toggleKeep(k).then(() => null, e => String(e?.message || e)); }, k14);
+    await wait(2500);
+    x = await look();
+    r = await ev(([k, err]) => ({ err, keep: !!M.serverFiles[M.chatId][k + 1]?.extra?.savepointKeep, edited: /\(edited\)$/.test(M.serverFiles[M.chatId][k + 1]?.mes || '') }), [k14, r]);
+    ok(!r.err && r.keep && r.edited && !x.stop && !x.pending && x.sp === y.sp,
+        `14b. 실리태번이 고친 본문과 🔖를 저장·고유값 없음 → 🔖 확인됨, 확인 못 함 아님 (k=${k14} before=${JSON.stringify(y)} after=${JSON.stringify(x)} ${JSON.stringify(r)})`);
+    await ev(() => { M.meta.integrity = window.__integrity14; M.serverFiles[M.chatId][0].chat_metadata.integrity = window.__integrity14; __savePoint.adoptPage(); });
+    await ev(() => M.add(3));
+    y = await look();
+    await ev(() => { toastr.log.length = 0; return __savePoint.handle('run').catch(() => {}); });
+    await wait(2000);
+    x = await look();
+    r = await ev(() => toastr.log.map(([, m]) => String(m)).filter(m => /화면과 같아져서|확인하지 못했어요/.test(m)));
+    ok(x.file === y.file + 3 && x.page.length > y.page.length && x.page.join() === x.server.join() && covered(x) && !x.stop && !r.length,
+        `14b. 다음 세이브는 다시 확인 없이 바로 저장 (before=${JSON.stringify(y)} after=${JSON.stringify(x)} ${JSON.stringify(r)})`);
+
     // 13. (review of b2a1, P2) auto → manual while the memory is on its way, with an old manual range in the memory reaching past
     // what is hidden: the range is worked out as syncHide does (from what is hidden now), so no held hide is set.
     await ev(() => M.add(3));
