@@ -649,7 +649,7 @@ export async function placeMemory(io, { id, from, addr, integrity = null, copy =
     if (!plan.steps) return plan;
     if (resume && plan.steps.includes('writeMem')) return { stop: 'memGone' };
     if (resume && plan.steps.includes('writeTag')) plan.steps.splice(plan.steps.indexOf('writeTag'), 0, 'recheckMem');
-    let body = reads.mem?.kind === OK ? reads.mem.data : null, adopted = false;
+    let body = reads.mem?.kind === OK ? reads.mem.data : null, adopted = false, wrote = null;
     for (const step of plan.steps) {
         if (step === 'writeStart') { if (!await wr(startName(addr), startBody({ addr, copy, mem: id, wid }))) return { stop: 'write', step }; }
         else if (step === 'checkStart' || step === 'recheckStart') {
@@ -674,12 +674,18 @@ export async function placeMemory(io, { id, from, addr, integrity = null, copy =
             if (pre.kind === OK) {
                 const v = checkMem(pre, { id, from, addr, integrity, copy, wid });
                 if (v !== 'theirs' && v !== 'mine') return { hold: v, step };
-            } else if (!await wr(memName(id), memBody({ id, state, wid, from, home: { addr, integrity }, copy }))) return { stop: 'write', step };
+            } else {
+                const made = memBody({ id, state, wid, from, home: { addr, integrity }, copy });
+                if (!await wr(memName(id), made)) return { stop: 'write', step };
+                wrote = { rev: made.rev, wid };
+            }
         }
         else if (step === 'checkMem') {
             const back = await rd(memName(id));
             const v = checkMem(back, { id, from, addr, integrity, copy, wid });
-            if (v !== 'mine' && v !== 'theirs') return { hold: v, step };
+            // v0.7.0-b2c2b (E·D): the body this run wrote, read back: unreadable (`read: error|broken`) or not there (`missing`)
+            // is told apart for the caller (`wrote`: what was written; nothing else here changes).
+            if (v !== 'mine' && v !== 'theirs') return { hold: v, step, read: checked(back, validMem(id)).kind, wrote };
             body = back.data; adopted = v === 'theirs';
         } else if (step === 'writeMoved') { if (!await wr(movedName(addr, copy), movedBody({ addr, copy, mem: id, rev: body.rev }))) return { stop: 'write', step }; }
         else if (step === 'writeCopy') {

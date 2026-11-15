@@ -189,23 +189,25 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.room.includes('다른 방에서 담은 항목') && !r.room.includes('다시 시도해요'), '10. 다른 방 항목은 반영하지 않는다고 안내');
     // 11. when the chat file itself cannot be written, the item keeps its reason on screen. v0.7.0-b2c: the memory file now
     // (its write turned away).
-    await ev(async () => { M.memFail = 'refused'; try { await __savePoint.summarize(); } catch {} });
+    // v0.7.0-b2c2b (B, ⚪): a save stopped by its memory write keeps no reason per item (the run stops there, RoomBlocked): the
+    // whole save's failure is said and the item stays queued for the next save (README, known limits).
+    await ev(async () => { M.memFail = 'refused'; toastr.log.length = 0; try { await __savePoint.summarize(); } catch {} });
     await sleep(300);
     // v0.7.0-a: on screen only (lootShown), never in the page's memory, which SillyTavern could save in its own time.
     r = await ev(() => { M.memFail = null; const q = __savePoint.lootShown(__savePoint.state()); const x = q.find(i => i.text === 'The ferry horn sounded');
         const kept = (__savePoint.state().lootQueue || []).find(i => i.text === 'The ferry horn sounded');
-        return { err: x?.error || '', fails: x?.fails || 0, inMemory: kept?.error || '' }; });
-    ok(r.err.includes('기억 파일 저장을 거절') && r.fails === 1, `11. (b2c) 기억 파일 저장 거절에도 항목별 이유와 횟수가 남음 (${r.err} · ${r.fails})`);
+        return { err: x?.error || '', fails: x?.fails || 0, inMemory: kept?.error || '', queued: !!kept, t: toastr.log.map(y => y[1]).join(' | ') }; });
+    ok(r.t.includes('기억 파일 저장을 거절') && r.queued, `11. (b2c2b) 기억 파일 저장 거절: 저장 실패 안내, 루팅 항목은 대기열에 남음 (${r.t.slice(0, 60)})`);
     ok(!r.inMemory.includes('거절') && !r.inMemory.includes('500'), `11. (v0.7.0-a) 저장 못 한 이유는 화면에만, 기억에는 넣지 않음 (${r.inMemory})`);
     // 12. the same for ↻: a failed file write updates that item's reason and count
     await ev(async () => { M.memFail = null; await __savePoint.handle('tab', 'queue'); });
     r = await ev(() => { const x = __savePoint.lootShown(__savePoint.state()).find(i => i.error && i.msg <= __savePoint.state().lastIndex && document.querySelector(`[data-act=loot-retry][data-id="${i.id}"]`)); return x ? { id: x.id, fails: x.fails || 0 } : null; });
     if (r) {
-        await ev(() => { M.supplementLinks = true; M.memFail = 'refused'; });
+        await ev(() => { M.supplementLinks = true; M.memFail = 'refused'; toastr.log.length = 0; });
         await page.click(`[data-act=loot-retry][data-id="${r.id}"]`);
         await sleep(600);
-        const after = await ev(id => { M.memFail = null; M.supplementLinks = false; const x = __savePoint.lootShown(__savePoint.state()).find(i => i.id === id); return x ? { err: x.error, fails: x.fails } : null; }, r.id);
-        ok(after && after.err.includes('기억 파일 저장을 거절') && after.fails === r.fails + 1, `12. (b2c) ↻ 중 기억 파일 저장 거절도 이유·횟수 갱신, 항목 보존 (${after?.err} · ${after?.fails})`);
+        const after = await ev(id => { M.memFail = null; M.supplementLinks = false; const x = __savePoint.lootShown(__savePoint.state()).find(i => i.id === id); return x ? { err: x.error, fails: x.fails, t: toastr.log.map(y => y[1]).join(' | ') } : null; }, r.id);
+        ok(after && after.t.includes('기억 파일 저장을 거절'), `12. (b2c2b) ↻ 중 기억 파일 저장 거절: 실패 안내, 항목 보존 (${after?.t?.slice(0, 60)})`);
     } else ok(false, '12. ↻ 버튼이 있는 실패 항목을 찾지 못함');
     // 13. a re-translated on-screen text is only a warning: ↻ stays available
     r = await ev(() => {

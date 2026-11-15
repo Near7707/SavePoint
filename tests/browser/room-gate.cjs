@@ -149,6 +149,8 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     await page.waitForTimeout(1500);
     r = await ev(() => ({ last: __savePoint.state()?.lastIndex ?? -1, file: M.mem()?.lastIndex ?? null, f: M.memFails.join(), t: toastr.log.map(x => x[1]).join(' | '), quick: JSON.stringify(__savePoint.listSaves().filter(x => x.quick).map(x => [x.id, x.updated])) }));
     ok(r.f === 'swallowed' && r.last === -1 && r.file === null && r.t.includes('저장하지 않았어요') && !r.t.includes('완료') && r.quick === quickBefore, `6. 조용한 저장 실패 → 저장 위치 그대로, QUICK 백업 없음, 실패 안내 (${r.last})`);
+    // v0.7.0-b2c2b (D): said as a file not there, not as another device's save.
+    ok(r.t.includes('파일이 없어서') && !r.t.includes('다른 곳'), `6. (b2c2b D) 조용한 실패를 다른 기기 탓으로 말하지 않음 (${r.t.slice(0, 80)})`);
 
     // 7. an unconfirmed save (the read-back fails): nothing taken back.
     //    v0.7.0-b2c: the memory file written, its read-back failing (M.memReadFailAfterWrite): the memory is the page's and the
@@ -176,13 +178,48 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     r = await ev(() => ({ t: toastr.log.map(x => x[1]).join(' | '), blocked: __savePoint.autoBlocked(), file: M.mem()?.lastIndex }));
     ok(r.t.includes('저장하지 않') && !r.t.includes('완료') && r.blocked === 'room' && r.file === 15, `7. 나중에 읽어 보니 저장이 없으면 그렇다고 알리고 계속 멈춤 (${r.t.slice(-60)})`);
     // 7c. a new room's first save written, its read-back failing: the memory written is not dropped from the page.
+    //     v0.7.0-b2c2b (E): the server took the body but it was not read back (before its tag): the room stops with that said, no
+    //     new hide and no later save until a read proves it; `다시 확인` then links the memory file found under its id without
+    //     writing its body again (7d: opening the room again does the same).
+    const hideWas = await ev(() => { const was = [M.settings.savePoint.hideMode, M.settings.savePoint.keepRecent]; Object.assign(M.settings.savePoint, { hideMode: 'auto', keepRecent: 2 }); return was; });   // so a save hides
     await ev(() => M.switchChat('chatA3', [], {}));
     await ev(() => M.opened());
     await ev(() => { M.add(10); M.memReadFailAfterWrite = true; toastr.log.length = 0; });
     await ev(() => __savePoint.handle('run').catch(() => {}));
     await page.waitForTimeout(1500);
-    r = await ev(() => ({ last: __savePoint.state()?.lastIndex ?? -1, file: (M.memReadFail = false, M.mem()?.lastIndex ?? null), t: toastr.log.map(x => x[1]).join(' | ') }));
+    r = await ev(() => ({ last: __savePoint.state()?.lastIndex ?? -1, file: (M.memReadFail = false, M.mem()?.lastIndex ?? null), t: toastr.log.map(x => x[1]).join(' | '),
+        blocked: __savePoint.autoBlocked(), hid: M.chat.filter(m => m.extra?.savepointHidden).length }));
+    Object.assign(r, await ev(async () => { $('#sp_wand').trigger('click'); await new Promise(z => setTimeout(z, 200));
+        const out = { alert: $('.sp-home-alert').text(), btn: $('.sp-home-alert [data-act="home-recheck"]').length };
+        __savePoint.ui.open = false; $('#sp_overlay').hide(); return out; }));
     ok(r.file === 9 && r.last === 9 && !r.t.includes('다른 곳'), `7c. (b2c) 새 방 첫 저장이 다시 읽기만 실패: 저장한 기억을 화면에서 버리지 않음 (화면 #${r.last}, 파일 #${r.file}, ${r.t.slice(0, 50)})`);
+    ok(r.t.includes('다시 읽어 확인하지 못했어요') && r.blocked === 'room' && r.hid === 0 && !r.t.includes('완료'), `7c. (b2c2b E) 방을 멈추고 확인 못 함을 알림, 새 숨김 없음 (${JSON.stringify({ blocked: r.blocked, hid: r.hid })} ${r.t.slice(0, 60)})`);
+    ok(r.alert.includes('다시 읽어 확인하지 못했어요') && r.btn === 1, `7c. (b2c2b E) 창에 같은 안내와 다시 확인 버튼 (${r.alert.slice(0, 50)})`);
+    // a later save is held (nothing written) while it is unproved
+    r = await ev(async () => { const n = M.fileLog.length; M.add(2); toastr.log.length = 0; await __savePoint.handle('run').catch(() => {}); return { n, last: __savePoint.state()?.lastIndex, file: M.mem()?.lastIndex, t: toastr.log.map(x => x[1]).join(' | ') }; });
+    ok(r.last === 9 && r.file === 9 && (await ev(n => M.fileLog.slice(n).filter(x => x[0] === 'put' && x[1].startsWith('savepoint-mem-')).length, r.n)) === 0, `7c. (b2c2b E) 확인 전 다음 세이브는 기억 파일을 쓰지 않음 (${r.t.slice(0, 60)})`);
+    // reads back: `다시 확인` links the memory in the file, its body not written again
+    r = await ev(async () => { const n = M.fileLog.length; await __savePoint.handle('home-recheck'); await M.opened(); await new Promise(z => setTimeout(z, 300));
+        return { n, puts: M.fileLog.slice(n).filter(x => x[0] === 'put').map(x => x[1]), status: __savePoint.home().status, stop: __savePoint.home().line?.stop ?? null, unread: !!__savePoint.home().line?.unread,
+            last: __savePoint.state()?.lastIndex, blocked: __savePoint.autoBlocked()}; });
+    ok(r.status === 'linked' && !r.stop && !r.unread && r.last === 9 && r.blocked !== 'room' && !r.puts.some(x => x.startsWith('savepoint-mem-')) && r.puts.some(x => x.startsWith('savepoint-room-')),
+        `7c. (b2c2b E) 다시 확인 → 파일의 기억에 연결, 기억 본체는 다시 쓰지 않음 (${JSON.stringify(r)})`);
+    await ev(() => { M.add(2); toastr.log.length = 0; });
+    await ev(() => __savePoint.handle('run').catch(() => {}));
+    await page.waitForTimeout(1500);
+    r = await ev(() => ({ last: __savePoint.state()?.lastIndex, file: M.mem()?.lastIndex, hid: M.chat.filter(m => m.extra?.savepointHidden).length, t: toastr.log.map(x => x[1]).join(' | ') }));
+    ok(r.last === 13 && r.file === 13 && r.hid > 0 && r.t.includes('완료'), `7c. (b2c2b E) 그 뒤 세이브는 평소대로(새 숨김도) (${JSON.stringify(r).slice(0, 120)})`);
+    // 7d. the same, then the room opened again (no `다시 확인`): linked to the file's memory, its body not written again.
+    await ev(() => M.switchChat('chatA4', [], {}));
+    await ev(() => M.opened());
+    await ev(() => { M.add(10); M.memReadFailAfterWrite = true; toastr.log.length = 0; });
+    await ev(() => __savePoint.handle('run').catch(() => {}));
+    await page.waitForTimeout(1500);
+    r = await ev(async () => { M.memReadFail = false; const n = M.fileLog.length, stop = __savePoint.home().line?.stop ?? null; await M.openFile('chatA4'); await M.opened(); await new Promise(z => setTimeout(z, 300));
+        return { stop, puts: M.fileLog.slice(n).filter(x => x[0] === 'put').map(x => x[1]), status: __savePoint.home().status, last: __savePoint.state()?.lastIndex, file: M.mem()?.lastIndex, blocked: __savePoint.autoBlocked() }; });
+    ok(r.stop === 'firstUnsure' && r.status === 'linked' && r.last === 9 && r.file === 9 && r.blocked !== 'room' && !r.puts.some(x => x.startsWith('savepoint-mem-')),
+        `7d. (b2c2b E) 멈춘 뒤 방을 다시 열면 파일의 기억에 연결, 기억 본체는 다시 쓰지 않음 (${JSON.stringify(r)})`);
+    await ev(([m, k]) => { Object.assign(M.settings.savePoint, { hideMode: m, keepRecent: k }); }, hideWas);
 
     // 8. an empty answer from the server (a new room or a failed read, no way to tell): no "continue?".
     await ev(() => { M.serverEmpty = true; });

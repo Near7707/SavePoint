@@ -101,7 +101,9 @@ export async function writeMem(io, line, { name, valid, make }) {
         let post;
         try { post = checked(await io.read(name, valid), valid); } catch { post = { kind: READ_ERROR }; }
         if (post.kind === OK && wroteMine(post.data, body.wid)) { line.seen = { rev: body.rev, wid: body.wid }; return { status: MEM_OK, body }; }
-        if (post.kind === OK || post.kind === MISSING) { line.stop = OVERWRITTEN; return { status: OVERWRITTEN, body }; }
+        // v0.7.0-b2c2b (D): the file read back still the one this line saw (answered ok, not written: `quiet`) is told apart from
+        // another device's write over ours; both stop the line.
+        if (post.kind === OK || post.kind === MISSING) { line.stop = OVERWRITTEN; const quiet = sameSeen(post, line.seen); if (quiet) line.quiet = true; return { status: OVERWRITTEN, body, quiet }; }
         line.seen = { rev: body.rev, wid: body.wid };
         // v0.7.0-b2a (b2 design review P1-2): written, not read back: no new hide rests on it until a read shows it (`unread`).
         line.unread = true;

@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b2c2a';
+const VERSION = '0.7.0-b2c2b';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -1918,6 +1918,8 @@ function homeMessage() {
     if (!hasChat()) return '채팅방을 먼저 열어 주세요.';
     if (!homeHere() || home.status === 'opening' || home.status === 'idle') return '이 방의 기억 파일을 아직 찾는 중이에요. 잠시 뒤 다시 해 주세요.';
     if (home.status === 'pending' || home.line?.pending) return '응답을 받지 못한 기억 저장이 아직 기억 파일에 도착할 수 있어요. 그 저장이 새 기억을 덮지 않도록, 이 방은 다시 열거나 새로고침할 때까지 기억을 저장하지 않아요.';
+    if (home.line?.stop === FIRST_UNSURE) return FIRST_UNSURE_TEXT;
+    if (home.line?.stop === MF_OVERWRITTEN && home.line.quiet) return QUIET_TEXT;
     if (home.line?.stop === MF_CONFLICT || home.line?.stop === MF_OVERWRITTEN) return '다른 곳(다른 기기나 창)에서 이 방의 기억 파일을 저장해서, 이 화면의 기억이 오래됐어요. 덮어쓰지 않도록 저장하지 않아요. 방을 다시 열거나 새로고침해 주세요.';
     if (home.status === 'new' && !home.id) return '이 방의 채팅 파일에 아직 고유값이 없어서 기억 파일을 만들 수 없어요. 메시지를 하나 보내거나 방을 다시 열어 주세요.';
     if (home.status === 'readFail') return '이 방의 기억 파일을 읽지 못했어요. 그래서 아무것도 저장하지 않고 자동 기록도 멈췄어요. 잠시 뒤 `다시 확인`을 눌러 주세요.';
@@ -1925,6 +1927,8 @@ function homeMessage() {
     if (home.status === 'held') return `이 방의 기억을 정하지 못해서 보류했어요: ${HOLD_TEXT[home.why] || home.why}. 그동안 아무것도 저장하지 않고 자동 기록도 멈춰요.`;
     return '';
 }
+const FIRST_UNSURE_TEXT = '서버가 저장을 수락했지만, 기억 파일을 다시 읽어 확인하지 못했어요. 다시 확인해 주세요. 확인될 때까지 이 방은 새로 저장하지 않아요.';
+const QUIET_TEXT = '서버는 기억 파일을 저장했다고 답했지만, 다시 읽어 보니 파일이 그대로라서 이번 변경은 저장하지 않았어요. 화면의 기억이 파일보다 앞서 있어서, 이 방은 다시 열거나 새로고침할 때까지 기억을 저장하지 않아요.';
 const HOLD_TEXT = {
     integrity: '기억 이름표와 채팅 파일의 고유값이 달라요', copyChanged: '채팅 파일 속 예전 기억이 기억 파일을 만든 뒤에 바뀌었어요(예전 버전에서 저장했을 수 있어요)',
     integrityGone: '채팅 파일에 고유값이 없어서 같은 방인지 확인할 수 없어요', unproven: '같은 방이라는 증거가 없어요', memGone: '기억 이름표는 있는데 기억 파일이 없어요',
@@ -2389,6 +2393,16 @@ async function placeFirst(h, st, state, was) {
             return { status: UNREAD };
         }
         if (h.line?.pending) { h.status = 'linked'; return { status: PENDING }; }
+        // v0.7.0-b2c2b (E·D): the body this write put there, read back right after (before any hint or the tag): not there
+        // (answered ok, never written) → nothing kept, said as such (not another device); unreadable → the server took it,
+        // so it is kept on the page and the room stops until a read proves it (`다시 확인` or opening the room again: the
+        // memory is found under its id and linked by the usual relink, its body never written again).
+        if (res.hold === 'unsure' && res.step === 'checkMem' && res.wrote) {
+            if (res.read === MISSING) return { status: MEM_MISSING, reopen: true };
+            lineFor(h, res.wrote); h.status = 'linked';
+            if (!h.line.pending) { h.line.stop = FIRST_UNSURE; h.line.unread = true; }
+            return { status: FIRST_UNSURE, reopen: true };
+        }
         // v0.7.0-b1g (review of b1f, P1-2): not placed, no request left without an answer: this room's tag is not on the server
         // (written last; one refused at that very step is not proved either way), so the renames closed for it open again.
         return { status: res.hold ? CONFLICT : res.stop === 'write' ? REFUSED : READ_ERROR, why: res.hold || res.stop, reopen: !(res.stop === 'write' && res.step === 'writeTag') };
@@ -2398,8 +2412,14 @@ async function placeFirst(h, st, state, was) {
 // that could not write its start mark says so; a room already closed or busy deciding (`linking`) stays quiet as before.
 function memBlocked(w, text) { const e = new RoomBlocked(text); if (w.status !== 'linking') e.memWrite = w.status; return e; }
 // Status of a memory write that changed nothing in the file: taken back whole.
-const MEM_NOT_WRITTEN = new Set([REFUSED, CONFLICT, READ_ERROR, 'moved', 'linking']);
+// v0.7.0-b2c2b (E·D): a new room's first body answered ok but not there when read back (MEM_MISSING), or not readable back
+// (FIRST_UNSURE: kept, the room stopped until a read shows it).
+const MEM_MISSING = 'memMissing', FIRST_UNSURE = 'firstUnsure';
+const MEM_NOT_WRITTEN = new Set([REFUSED, CONFLICT, READ_ERROR, MEM_MISSING, 'moved', 'linking']);
 function homeWriteError(w) {
+    if (w.status === MEM_MISSING) return '서버는 기억 파일을 저장했다고 답했지만, 다시 읽어 보니 파일이 없어서 이번 변경은 저장하지 않았어요. 잠시 뒤 다시 해 주세요.';
+    if (w.status === MF_OVERWRITTEN && w.quiet) return QUIET_TEXT;
+    if (w.status === FIRST_UNSURE) return FIRST_UNSURE_TEXT;
     if (w.status === CONFLICT || w.status === MF_OVERWRITTEN) return '다른 곳(다른 기기나 창)에서 이 방의 기억 파일을 저장해서 이번 변경은 저장하지 않았어요. 방을 다시 열거나 새로고침해 주세요.';
     if (w.status === REFUSED) return '서버가 기억 파일 저장을 거절해서 이번 변경을 취소했어요.';
     if (w.status === READ_ERROR) return '기억 파일을 읽지 못해서 이번 변경은 저장하지 않았어요. 잠시 뒤 다시 해 주세요.';
@@ -2433,7 +2453,8 @@ function homeAlert() {
     if (!hasChat() || homeOpen()) return '';
     const text = homeMessage();
     if (!text) return '';
-    const again = homeHere() && ['held', 'readFail', 'stopped'].includes(home.status) || home.status === 'new' && !home.id;
+    // v0.7.0-b2c2b (E): a new room's first body not read back (FIRST_UNSURE) is checked again from here too.
+    const again = homeHere() && (['held', 'readFail', 'stopped'].includes(home.status) || home.line?.stop === FIRST_UNSURE) || home.status === 'new' && !home.id;
     return `<div class="sp-alert sp-home-alert">${esc(text)}${again ? `<div class="sp-row">${btn('home-recheck', '', '다시 확인', '채팅 파일과 기억 파일을 다시 읽어 이 방의 기억을 다시 찾아요')}</div>` : ''}</div>`;
 }
 

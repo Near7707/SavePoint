@@ -220,7 +220,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => __savePoint.handle('run'));
     r = await ev(() => ({ file: M.mem().lastIndex, swallowed: M.memFails.join(), toast: toastr.log.map(x => x[1]).join(' | '), blocked: __savePoint.autoBlocked(),
         consistent: M.chat.map(m => !!m.is_system).join() === M.hidBefore }));
-    ok(r.file === lastBefore2 && r.swallowed === 'swallowed' && r.consistent && r.blocked === 'room' && r.toast.includes('저장하지 않았어요') && !r.toast.includes('완료'), `조용히 실패한 저장 → 다시 읽어 보고 멈춤, 새 하이드 없음 (${JSON.stringify(r).slice(0, 160)})`);
+    ok(r.file === lastBefore2 && r.swallowed === 'swallowed' && r.consistent && r.blocked === 'room' && r.toast.includes('저장하지 않았어요') && !r.toast.includes('완료') && r.toast.includes('파일이 그대로') && !r.toast.includes('다른 곳'), `조용히 실패한 저장 → 다시 읽어 보고 멈춤, 새 하이드 없음, (b2c2b D) 다른 기기 탓으로 말하지 않음 (${JSON.stringify(r).slice(0, 160)})`);
     await ev(async () => { M.openFile(M.chatId); await M.opened(); });
     await page.waitForTimeout(300);
     r = await ev(() => ({ page: __savePoint.state().lastIndex, blocked: __savePoint.autoBlocked() }));

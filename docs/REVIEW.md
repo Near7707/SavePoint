@@ -1,3 +1,39 @@
+# v0.7.0-b2c2b · b2c2 버그 고치기 2: 새 방 첫 저장 확인 실패 E·문구 D (브랜치 `v0.7-b`)
+
+기준: `v0.7-b`의 `b8a527a`(b2c2a, A·C·G). 파일: `index.js`, `home.js`, `memfile.js`, `manifest.json`, 검사(`room-gate.cjs` 6·7c·7d, `run.cjs` 조용한 실패, `loot-bar.cjs` 11·12), 문서. 설계는 GPT 의견(사용자 동의)대로.
+
+| 항목 | 처리 |
+|---|---|
+| E `room-gate` 7c: 새 방 첫 저장에서 기억 본체는 써졌는데, 바로 다음 다시 읽기(`placeMemory`의 `checkMem`, 아직 단서·이름표 쓰기 전)가 실패 → `checkMem`이 `unsure` → `{ hold }` → `CONFLICT` → "다른 곳에서 저장해서" + 화면 기억 버림 → 다음 세이브는 충돌로 방 멈춤 → 다시 열면 파일의 기억(실제로 저장된 것) | 🔴 `placeMemory`가 그 단계의 읽기 결과(`read`)와 이번에 쓴 본체(`wrote`: rev·wid)를 돌려줌. `placeFirst`: 읽기 실패·깨짐이면 화면 기억을 그대로 두고 `linked` + 줄 `stop = FIRST_UNSURE`·`unread` → 상태 `FIRST_UNSURE`(`Unconfirmed`, 대기열 취소). 방은 `homeOpen` 거짓이라 새 숨김·후속 저장·체크포인트 모두 멈춤. 안내 "서버가 저장을 수락했지만, 기억 파일을 다시 읽어 확인하지 못했어요. 다시 확인해 주세요. 확인될 때까지 이 방은 새로 저장하지 않아요."(창 안내도 같은 문구 + `다시 확인` 버튼). `다시 확인`·방 다시 열기는 기존 방 판정 → 6행 `relink`(이름표 없는 기억 파일, `homeId(주소, 고유값)`로 찾음) → `relinkMemory`(본체는 안 씀: `resume`이면 `writeMem` 단계가 있을 때 멈춤) → 단서·이름표만 쓰고 연결. |
+| D 새 방: 서버가 ok로 답하고 안 씀(`memSwallowOnce`) → 같은 `checkMem` 단계에서 파일 없음 → "다른 곳에서 저장해서" | 🟡 `read === MISSING`이면 새 상태 `MEM_MISSING`(`MEM_NOT_WRITTEN`에 넣음: 통째로 되돌림, 방은 `new` 그대로라 다음 세이브는 처음부터). 문구 "서버는 기억 파일을 저장했다고 답했지만, 다시 읽어 보니 파일이 없어서 이번 변경은 저장하지 않았어요. 잠시 뒤 다시 해 주세요." |
+| D 이어진 방: 서버가 ok로 답하고 안 씀 → `writeMem` 다시 읽기가 "이 줄이 본 파일 그대로" → `OVERWRITTEN` → "다른 곳에서 저장해서" | 🟡 `writeMem`이 그 경우를 `quiet`(반환값과 줄)로 표시. 동작(줄 멈춤, 화면 기억 유지, 다시 열면 파일 기억) 그대로, 문구만 "서버는 기억 파일을 저장했다고 답했지만, 다시 읽어 보니 파일이 그대로라서 이번 변경은 저장하지 않았어요. 화면의 기억이 파일보다 앞서 있어서, 이 방은 다시 열거나 새로고침할 때까지 기억을 저장하지 않아요." (`homeWriteError`, `homeMessage`) |
+| 다른 기기의 영수증을 실제로 읽은 경우 | 그대로(기존 충돌 처리: `res.seen.wid !== st.wid`, 다시 읽은 파일이 다른 영수증, `checkMem`의 `otherOrigin`). |
+| B `loot-bar` 11·12: 기억 저장 거절로 세이브가 멈추면 루팅 항목별 이유·횟수가 안 남음 | ⚪ 고치지 않음(실행이 `RoomBlocked`로 그 자리에서 멈추는 구조, 항목은 대기열에 남고 전체 안내는 뜸). 검사 기대를 "전체 실패 안내 + 항목이 대기열에 남음"으로. README 알려진 한계(v0.7.0-b2c2b). |
+
+바뀐 것
+1. `home.js` `placeMemory`: `writeMem` 단계에서 쓴 본체를 `wrote`로 기억, `checkMem` 단계의 보류에 `read`·`wrote`를 붙임(다른 값·다른 단계는 그대로).
+2. `memfile.js` `writeMem`: 다시 읽은 파일이 이 줄이 본 그대로면 `quiet`.
+3. `index.js`: `MEM_MISSING`·`FIRST_UNSURE`·문구 두 개, `placeFirst`의 새 분기, `homeWriteError`·`homeMessage`, `homeAlert`의 `다시 확인` 버튼 조건. 버전 `0.7.0-b2c2b`.
+
+★ 특히 봐 줄 곳
+- ★ E에서 `reopen: true`: 이름표를 아직 안 썼으니 이 방이 닫아 둔 이름 변경 기록을 다시 엶(기존 `CONFLICT` 때와 같음). 그 뒤 `relink`는 이름표에 `closes`를 넣지 않고 `clearLeft`도 안 함 — b3 "이미 있는 이름표 재연결 ①"과 같은 한계(이 이름을 떠난 방이 있는 드문 경우에만 해당).
+- ★ `checkMem` 말고 그 뒤 단계(`writeClue`·`writeTag`의 읽기·쓰기 실패)도 본체는 이미 써진 상태. 이번엔 손대지 않음 → 지금처럼 `READ_ERROR`/`REFUSED`로 화면 기억을 되돌리고, 다음 세이브가 자기 본체를 남의 것으로 볼 수 있음(b1b 리뷰 P2-1, b3 "첫 저장 이름표 실패"와 같은 줄기). 모의 환경의 `memReadFailAfterWrite`는 기억 파일 읽기만 막아서 이 길은 안 탐.
+- ★ 이어진 방에서 조용한 실패 뒤 다시 읽기도 실패(`UNREAD`)하고, 다음 저장의 쓰기 전 읽기가 옛 파일을 보면 여전히 "다른 곳에서 저장해서"(`CONFLICT`, `room-gate` 7 끝부분). 그 옛 파일이 이 줄이 그 전에 본 것인지는 줄이 기억하지 않아서 구분 안 함(⚪).
+- ★ `FIRST_UNSURE` 동안 `다시 확인`은 `recheckHome` 그대로(대기 중 쓰기 없음 → `linkHome`). 저장 응답 없음(`pending`)은 지금처럼 다시 열기까지 기다림.
+
+바뀐 기대(기존 검사)
+- `room-gate` 6: 문구에 "파일이 없어서", "다른 곳" 없음(새 줄).
+- `room-gate` 7c: 화면·파일 #9는 그대로, 새 줄 — 방 멈춤(`autoBlocked() === 'room'`)·안내·새 숨김 없음, 창 안내와 `다시 확인` 버튼, 확인 전 다음 세이브는 기억 파일을 안 씀, `다시 확인` → `linked`·멈춤 풀림·기억 파일 쓰기 없음(단서·이름표만), 그 뒤 세이브 평소대로(새 숨김도). 7c·7d는 하이드를 켜고(`auto`, 최근 2개) 끝나면 원래대로.
+- `room-gate` 7d(새): 같은 실패 뒤 방 다시 열기 → 파일의 기억에 연결, 기억 파일 쓰기 없음.
+- `run` 조용한 실패: 문구에 "파일이 그대로", "다른 곳" 없음.
+- `loot-bar` 11·12: 위 B.
+
+검사와 망가뜨리기 결과
+- 고치기 전 코드(`131d7ff`, 새 검사 파일): `room-gate` 6(D)·7c 6줄·7d 실패, `run` 조용한 실패 줄 실패.
+- 망가뜨리기: E 분기 통째로 빼기 → 6(D)·7c·7d 7줄 실패 / E의 `stop = FIRST_UNSURE` 빼기(기억은 남기고 방은 안 멈춤) → 7c 4줄·7d 실패(확인 전 다음 세이브가 그대로 저장됨) / 새 방 `MEM_MISSING` 대신 `CONFLICT` → 6(D)만 실패 / 이어진 방 `quiet` 문구 빼기 → `run` 조용한 실패 줄만 실패.
+- Node: 506 통과 / 0 실패 / 3 건너뜀.
+- 브라우저 묶음 전체(58묶음, 한꺼번에, b2c2a+b2c2b): 통과 50 / 실패 8, 검사 모드 오류 0. 실패 = 아직 안 옮긴 `save-*` 5(묶음별 FAIL 수가 고치기 전 코드와 같음: adopt 22 · answer 6 · answered 2 · base 7 · foreign 8) + scroll(b2c3) + 한꺼번에 돌릴 때 가끔 실패하는 `inject-wait`·`status`(따로 다시 돌려 둘 다 통과). b2c2 1차의 버그 후보 4묶음(autofail · loot-bar · room-gate · save-banner) 모두 통과.
+
 # v0.7.0-b2c2a · b2c2 버그 고치기 1: 안내 A·C·G (브랜치 `v0.7-b`)
 
 기준: `v0.7-b`의 `131d7ff`(b2c2 1차, 검사만). 파일: `index.js`, `manifest.json`, 검사(`save-banner.cjs` 3 준비, `restore-scope.cjs` 2c 문구), 문서. 범위는 사용자가 b2c2 1차 버그 후보에서 고른 것(GPT 의견 반영). E·D는 다음 커밋(b2c2b), B는 검사 기대만.
@@ -23,7 +59,8 @@
 - 고치기 전 코드(`131d7ff`): `autofail` 5 실패(b2c2 1차), 새 준비의 `save-banner` 3 실패, `restore-scope` 2c 실패(문구).
 - 망가뜨리기: A `!e.memWrite` 빼기 → `autofail` 5 실패 / G 알림 조건 빼기 → `save-banner` 3 실패(새 준비로는 매번, 예전 준비로는 세 번 중 한 번) / C 예전 문구 → `restore-scope` 2c 실패.
 - 검사 안 한 곳: 방 막힘(`linking`·게이트)으로 시작 못 한 체크포인트가 조용한지(시작 전 `gateOpen` 확인이 먼저 막아서 이 `catch`까지 오는 길을 모의 환경에서 만들기 어려움), 🔖 중 방 이동 경고(코드 그대로).
-- Node·브라우저 전체: (아래 b2c2b 항목에 함께 적음 — 두 커밋 모두 끝난 뒤 한 번 더 돌림)
+- Node: 506 통과 / 0 실패 / 3 건너뜀. 브라우저 전체는 두 커밋을 합쳐 한 번 돌림(위 b2c2b 항목).
+- 고친 묶음: autofail · save-banner · restore-scope · save-settle 통과.
 
 # v0.7.0-b2c2 · 예전 검사 묶음을 기억 파일 기준으로 2: 저장 실패 흉내 (브랜치 `v0.7-b`)
 
