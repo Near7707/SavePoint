@@ -34,6 +34,8 @@ export function gateBox() {
         // v0.7.0-b2a: new hides are never held back here (the memory is always proved).
         hidesHeld: () => false,
         endHold: () => {}, holds: new WeakMap(),
+        // v0.7.0-b2b1
+        refitReleased: () => {}, freedNow: [], heldNow: null,
     };
 }
 

@@ -27,7 +27,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.7.0-b2b';
+const VERSION = '0.7.0-b2b1';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -465,36 +465,64 @@ async function fileAllows(sentSnap = null) {
 // v0.7.0-b2b: messages the page hides with SavePoint's mark whose hide the server file took away since it was last seen there
 // (the same message, at the same place, in the last file seen, in this file and on the page): another device reset the room or
 // showed them. A chat write sending the page now would hide them again on the server.
+// v0.7.0-b2b1 (review of b2b, P1): also the messages the save turn running now is to hide again at its first request (its held
+// hides, `heldNow`: shown on the page until then). Their server copy only has to be the same message as in the last file seen
+// (the page may show it edited). P2: { m, user } — `user`: the file hides it still, without SavePoint's mark (the user hid it
+// there after the release), so the page keeps it hidden and only SavePoint's marks go.
+let heldNow = null;
 function releasedOf(r, now, seen) {
     if (!seen?.hid || !r?.snap?.hid || !now?.plain) return [];
-    const list = chat(), out = [];
+    const list = chat(), out = [], plan = new Set((heldNow?.() || []).map(v => v.m));
     for (let i = 0; i < list.length && i < r.snap.plain.length; i++) {
         const m = list[i];
-        if (!m?.is_system || !m.extra?.[HIDE_KEY] || !seen.hid[i] || r.snap.hid[i]) continue;
-        if (now.plain[i] !== r.snap.plain[i] || seen.plain?.[i] !== now.plain[i]) continue;
-        out.push(m);
+        if (!m || !seen.hid[i] || r.snap.hid[i] || seen.plain?.[i] !== r.snap.plain[i]) continue;
+        const pageHid = !!(m.is_system && m.extra?.[HIDE_KEY]);
+        if (pageHid ? now.plain[i] !== r.snap.plain[i] : m.is_system || !plan.has(m)) continue;
+        out.push({ m, user: !!r.snap.sys?.[i] });
     }
     return out;
 }
 // Shown on the page as the file has them, marked "shown by the server" (only a save or 👻 pressed hides them again; an automatic
 // record or recount leaves them shown). No chat save is asked for here; the memory of the room is checked again.
-const RELEASED_NOTE = '다른 곳(다른 기기나 탭)에서 원문 숨김을 풀어서, 그 원문을 이 화면에서도 다시 보여 줘요.';
+// v0.7.0-b2b1 (review of b2b, P2): one the file hides without SavePoint's mark stays (or is made) hidden on the page with no mark
+// of SavePoint's, so no later write puts the mark back and no reset or rewind takes the user's hide away.
+const RELEASED_NOTE = '다른 곳(다른 기기나 탭)에서 SavePoint의 원문 숨김을 풀어서, 이 화면도 서버의 채팅 파일대로 맞췄어요.';
 const RELEASED_HELD = `기억은 저장했어요. 하지만 ${RELEASED_NOTE} 이번 채팅 저장은 보류했어요.`;
+// v0.7.0-b2b1: what freeReleased did in this save turn, done again when the turn ends (a change taken back in between restores the
+// marks it set: a user's hide made on the page would go, a SavePoint mark taken off would come back).
+let freedNow = [];
+function fitReleased({ m, user }, all = chat()) {
+    const i = all.indexOf(m);
+    if (i < 0) return false;
+    let n = false;
+    const drop = k => { if (m.extra && typeof m.extra === 'object' && Object.hasOwn(m.extra, k)) { delete m.extra[k]; n = true; } };
+    if (user) {
+        if (!m.is_system) { setHidden(m, i, true); n = true; }
+        [HIDE_KEY, HELD_KEY, VISIBLE_KEY].forEach(drop);
+        return n;
+    }
+    if (m.is_system) { if (!m.extra?.[HIDE_KEY]) return false; setHidden(m, i, false); n = true; }
+    drop(HIDE_KEY); drop(HELD_KEY);
+    if (m.extra?.[VISIBLE_KEY] !== SERVER_SHOWN) { m.extra ||= {}; m.extra[VISIBLE_KEY] = SERVER_SHOWN; n = true; }
+    return n;
+}
 function freeReleased(list) {
     const all = chat();
     let n = 0;
-    for (const m of list) {
-        const i = all.indexOf(m);
-        if (i < 0 || !m.is_system || !m.extra?.[HIDE_KEY]) continue;
-        setHidden(m, i, false);
-        delete m.extra[HIDE_KEY]; delete m.extra[HELD_KEY]; m.extra[VISIBLE_KEY] = SERVER_SHOWN; n++;
-    }
+    for (const x of list) { if (fitReleased(x, all)) n++; freedNow.push(x); }
     if (!n) return 0;
     if (homeHere()) home.freed = true;
     ctx().swipe?.refresh?.(); refreshView();
     toastr.info(RELEASED_NOTE, 'SavePoint', { timeOut: 8000 });
     Promise.resolve().then(() => recheckHome()).catch(() => {});
     return n;
+}
+// At the end of a save turn (writeEntry), in the room it ran in: what freeReleased did is done again after anything taken back.
+function refitReleased() {
+    const list = freedNow; freedNow = [];
+    let n = 0;
+    for (const x of list) if (fitReleased(x)) n++;
+    if (n) { ctx().swipe?.refresh?.(); refreshView(); }
 }
 function genBusy(c) {
     // v0.6.90: a difference the reply being made explains (see serverCovered).
@@ -1012,6 +1040,7 @@ async function writeEntry(queue, entry) {
     // the check and the write: the file could change while this waits).
     await stIdle();
     if (moved()) throw cancelMoved(queue, entry);
+    freedNow = [];
     let pre;
     try { pre = await serverCovered(); } catch { pre = { ok: false, why: 'error' }; }
     if (moved()) throw cancelMoved(queue, entry);
@@ -1034,7 +1063,7 @@ async function writeEntry(queue, entry) {
     if (!takeHome(hb)) throw new RoomBlocked('이 방의 기억을 다시 확인하는 중이라 이번 변경은 하지 않았어요. 잠시 뒤 다시 해 주세요.');
     // v0.7.0-b2a2 (review of b2a1, P1): no other pass sets a new hide in this room until the turn ends (endHold below).
     if (hb && typeof hb === 'object') holds.set(hb, entry);
-    let turnFailed = false;
+    let turnFailed = false, plan = null;
     try {
     let applied, unsure = null, settled = false, written, marks, tick, rev, w, saved, relinked, mine = null, relinkedLate = false, unhidAfter = false;
     let held = [], released = false, heldWhy = null;
@@ -1062,6 +1091,9 @@ async function writeEntry(queue, entry) {
     // between, so no save of SillyTavern's can carry them) and set again only once its memory is proved in its file.
     held = holdNewHides(entry);
     for (const v of held) heldSet.add(v.m);
+    // v0.7.0-b2b1 (review of b2b, P1): every later read of the chat file in this turn checks these too (releasedOf).
+    plan = () => held;
+    heldNow = plan;
     if (held.length && roomKey() === entry.key && roomEpoch === entry.epoch) ctx().swipe?.refresh?.();
     // v0.7.0-b2a (H1; b2 design review P1-1): hides the new memory no longer covers — taken away by this change, or still in the
     // server file only (taken away on the page before, by an edited original) — are written to the chat file and read back
@@ -1335,7 +1367,12 @@ async function writeEntry(queue, entry) {
         // worked out at the end.
         if (e?.name !== 'Relinked') turnFailed = true;
         throw e;
-    } finally { endHold(hb, entry, !turnFailed); }
+    } finally {
+        if (heldNow === plan) heldNow = null;
+        // v0.7.0-b2b1: a turn held back over released hides ends in a failure (what it took back is fitted to the file again).
+        if (turnFailed && roomKey() === entry.key && roomEpoch === entry.epoch) refitReleased(); else freedNow = [];
+        endHold(hb, entry, !turnFailed);
+    }
 }
 // v0.7.0-b1g (review of b1f, P1-1): the room is still on the memory a change wrote (`mine`: its box, id and receipt).
 function sameHome(mine) {

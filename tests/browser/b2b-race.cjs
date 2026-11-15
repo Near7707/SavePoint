@@ -231,6 +231,96 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     x = await look();
     ok(x.page.length === 0 && x.server.length === 0 && x.file === -1, `5. 다시 확인 → 새 기억을 따라 모두 보임 (${JSON.stringify(x)})`);
 
+    // v0.7.0-b2b1 (review of b2b). The marks of message i on the page and in the server chat file: [hidden, SavePoint's mark].
+    const mk = i => ev(i => { const f = m => [!!m?.is_system, !!m?.extra?.savepointHidden]; return { p: f(M.chat[i]), s: f((M.serverFiles[M.chatId] || [])[i + 1]) }; }, i);
+    // The user shows on the page (not saved yet) messages SavePoint hid: the next save hides them again (its held hides).
+    const userShows = list => ev(list => {
+        for (const i of list) { const m = M.chat[i]; m.is_system = false; delete m.extra.savepointHidden; m.extra.savepointVisible = true; }
+        __savePoint.adoptPage();
+    }, list);
+    // Another device takes SavePoint's hide of message i away in the chat file and the user hides it there themselves.
+    const USER_HIDES = i => `async () => { const m = M.serverFiles[M.chatId][${i} + 1]; delete m.extra.savepointHidden; m.is_system = true; }`;
+    const resetHere = async () => { await ev(async () => { M.confirm = 1; try { await __savePoint.handle('clear-room'); } catch { /* reported */ } }); await wait(2000); };
+
+    // 6. (P1) every hide the server has is shown on the page (the user opened them; the save hides them again at its first request).
+    // Right after the save's memory check another device's reset ends: its last chat read sees the release of what it is to hide
+    // again — the write is held back whole, the room follows the emptied memory.
+    y = await fresh();
+    await ev(() => M.add(3));
+    await userShows(y.page);
+    y = await look();
+    ok(y.page.length === 0 && y.server.length > 0, `6. 준비: 서버만 숨김 (${JSON.stringify(y)})`);
+    await afterMem(2, RESET('other6'), { up: true });
+    await ev(() => { toastr.log.length = 0; return __savePoint.handle('run').catch(() => {}); });
+    await wait(3000);
+    x = await look();
+    r = { held: await said(/채팅 저장은 보류/) };
+    ok(x.sp === y.sp && x.server.length === 0 && x.page.length === 0 && r.held > 0 && x.file === -1,
+        `6. 다시 숨길 원문의 해제(마지막 확인) → 요청 0회, 새 기억 따름 (before=${JSON.stringify(y)} after=${JSON.stringify(x)} ${JSON.stringify(r)})`);
+
+    // 7. (P1) the same, half a reset (the memory stays) ending in the chat write's own wait for SillyTavern (after the last check):
+    // the chat file read before the first request sees it.
+    y = await fresh();
+    await ev(() => M.add(3));
+    await userShows(y.page);
+    y = await look();
+    await afterCheck(`() => { M.stScript.setChatSaving(true); setTimeout(async () => { await (${RESET('')})(); M.stScript.setChatSaving(false); }, 300); }`);
+    await ev(() => { toastr.log.length = 0; return __savePoint.handle('run').catch(() => {}); });
+    await wait(3000);
+    x = await look();
+    r = { held: await said(/채팅 저장은 보류/) };
+    ok(x.sp === y.sp && x.server.length === 0 && x.page.length === 0 && r.held > 0,
+        `7. 다시 숨길 원문의 해제(채팅 쓰기의 기다림) → 첫 요청 전에 보류, 요청 0회 (before=${JSON.stringify(y)} after=${JSON.stringify(x)} ${JSON.stringify(r)})`);
+
+    // 8. (P2) another device takes SavePoint's hide of #1 away and the user hides #1 there themselves, right after the save's memory
+    // check. The page keeps #1 hidden without SavePoint's mark, nothing is sent; the next save leaves the mark off, and a reset
+    // here keeps the user's hide.
+    y = await fresh();
+    await ev(() => M.add(3));
+    y = await look();
+    ok(y.page.includes(1) && y.server.includes(1), `8. 준비 (${JSON.stringify(y)})`);
+    await afterMem(2, USER_HIDES(1), { up: true });
+    await ev(() => { toastr.log.length = 0; return __savePoint.handle('run').catch(() => {}); });
+    await wait(3000);
+    x = await look();
+    r = await mk(1);
+    ok(x.sp === y.sp && r.p.join() === 'true,false' && r.s.join() === 'true,false' && await said(/채팅 저장은 보류/) > 0,
+        `8. 서버에서 사용자가 숨김 → 화면도 숨김 유지·표시만 뗌, 요청 0회 (${JSON.stringify(r)} before=${JSON.stringify(y)} after=${JSON.stringify(x)})`);
+    await ev(() => __savePoint.handle('run').catch(() => {}));
+    await wait(2500);
+    x = await look();
+    r = await mk(1);
+    ok(x.sp > y.sp && r.p.join() === 'true,false' && r.s.join() === 'true,false', `8. 다음 세이브 → 표시가 돌아오지 않음 (${JSON.stringify(r)} ${JSON.stringify(x)})`);
+    await resetHere();
+    x = await look();
+    r = await mk(1);
+    ok(x.file === -1 && x.page.join() === '1' && x.server.join() === '1' && r.p.join() === 'true,false', `8. 이 기기에서 리셋 → 사용자 숨김만 남음 (${JSON.stringify(r)} ${JSON.stringify(x)})`);
+
+    // 9. (P1 + P2; #1 is the user's own hide from 8) #2 is shown on the page (the save hides it again at its first request) and the user hides it on the server
+    // themselves (SavePoint's hide taken away there). The change taken back would show it again: the page hides it after that, with
+    // no mark of SavePoint's, nothing is sent; the next save and a reset keep it so.
+    y = await fresh();
+    await ev(() => M.add(3));
+    await userShows([2]);
+    y = await look();
+    ok(!y.page.includes(2) && y.server.includes(2), `9. 준비 (${JSON.stringify(y)})`);
+    await afterMem(2, USER_HIDES(2), { up: true });
+    await ev(() => { toastr.log.length = 0; return __savePoint.handle('run').catch(() => {}); });
+    await wait(3000);
+    x = await look();
+    r = await mk(2);
+    ok(x.sp === y.sp && r.p.join() === 'true,false' && r.s.join() === 'true,false' && await said(/채팅 저장은 보류/) > 0,
+        `9. 다시 숨길 원문을 서버에서 사용자가 숨김 → 화면 숨김·표시 없음, 요청 0회 (${JSON.stringify(r)} before=${JSON.stringify(y)} after=${JSON.stringify(x)})`);
+    await ev(() => __savePoint.handle('run').catch(() => {}));
+    await wait(2500);
+    x = await look();
+    r = await mk(2);
+    ok(x.sp > y.sp && r.p.join() === 'true,false' && r.s.join() === 'true,false', `9. 다음 세이브 → 표시가 돌아오지 않음 (${JSON.stringify(r)} ${JSON.stringify(x)})`);
+    await resetHere();
+    x = await look();
+    r = await mk(2);
+    ok(x.file === -1 && x.page.join() === '1,2' && x.server.join() === '1,2', `9. 이 기기에서 리셋 → 사용자 숨김만 남음 (${JSON.stringify(r)} ${JSON.stringify(x)})`);
+
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();
     process.exit(failures ? 1 : 0);
