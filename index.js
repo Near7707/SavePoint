@@ -27,7 +27,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.7.0-b2a2';
+const VERSION = '0.7.0-b2a3';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -272,18 +272,27 @@ function foreignDiff(page, file) {
     for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) if (!OWN_META.includes(k) && a[k] !== b[k]) return true;
     return false;
 }
-function chatTarget(fileMeta) {
+// v0.7.0-b2a3 (review of b2a2, P2): can a copy of the room be made now (messages, the chat's integrity, its id, the character
+// or the group)? chatTarget's own conditions, asked without building the copy. { c, list, page, file, group, ch } or null.
+function chatReady() {
     const c = ctx(), list = c.chat, page = c.chatMetadata, file = chatId();
     if (!Array.isArray(list) || !list.length || !page || typeof page !== 'object' || !page.integrity) return null;
     if (file === null || file === undefined || file === '') return null;
+    const group = c.groupId !== undefined && c.groupId !== null && c.groupId !== '';
+    const ch = group ? null : c.characters?.[c.characterId];
+    if (!group && !ch) return null;
+    return { c, list, page, file, group, ch };
+}
+function chatTarget(fileMeta) {
+    const ready = chatReady();
+    if (!ready) return null;
+    const { list, page, file, group, ch } = ready;
     const meta = sendMeta(page, fileMeta);
     const head = { chat_metadata: meta, user_name: 'unused', character_name: 'unused' };
     // v0.6.101: `snap` — the copy actually sent (its metadata is not the page's), for `sents` and `gate.seen`.
     const snap = snapshot(meta, list, OWN_KEYS);
-    if (c.groupId !== undefined && c.groupId !== null && c.groupId !== '')
+    if (group)
         return { url: '/api/chats/group/save', body: JSON.stringify({ id: file, chat: [head, ...list] }), snap };
-    const ch = c.characters?.[c.characterId];
-    if (!ch) return null;
     return { url: '/api/chats/save', body: JSON.stringify({ ch_name: ch.name, file_name: file, chat: [head, ...list], avatar_url: ch.avatar, force: false }), snap };
 }
 async function stIdle() {
@@ -361,6 +370,10 @@ async function writeChatFile(fileMeta = null, guard = null) {
         // v0.7.0-b1e (review of b1d, P3): nothing of the change is left to send, nothing was sent yet and SillyTavern did not save
         // meanwhile: no write at all. Once a copy went out, or SillyTavern saved the page (it may have carried the new hides),
         // a copy is still sent to take them back.
+        // v0.7.0-b2a3 (review of b2a2, P2): before the first request's check (which sets a queued change's held hides) the room must
+        // be one a copy can be made of: otherwise nothing is set on the page and no request is made (`noTarget`). No wait from here
+        // to chatTarget below, so a room ready here is ready there.
+        if (guard && sent === null && !chatReady()) { const e = new RoomBlocked('채팅방이 아직 다 열리지 않아서(메시지나 채팅 파일 고유값이 없음) 저장하지 않았어요.'); e.noTarget = true; throw fail(e); }
         if (guard && guard({ sent: sent !== null }) === false && sent === null) { const e = new RoomBlocked('nothing to send'); e.nothingSent = true; throw fail(e); }
         const t = chatTarget(fileMeta), tSnap = t ? t.snap : null;
         if (sent !== null && (!t || t.body === sent)) return sentSnap;
@@ -1165,6 +1178,12 @@ async function writeEntry(queue, entry) {
                 const err = new RoomBlocked(relinkedLate ? '기억은 저장했어요. 하지만 그사이 이 방의 기억을 다시 확인해서, 이번 원문 숨김은 저장하지 않았어요. 다시 세이브하면 맞춰요.' : '기억은 저장했어요. 하지만 그사이 원문이 바뀌어서 원문 숨김은 저장하지 않았어요. 다시 세이브하면 맞춰요.');
                 err.kept = true; throw err;
                 }
+            } else if (e?.noTarget && !e.sents?.length && !marks.length) {
+                // v0.7.0-b2a3 (review of b2a2, P2): no copy could be made before the first request, and the change had nothing but its
+                // held hides to send (not set: the page shows them still). Nothing of it can be in the file, so nothing is read back
+                // and the room is not locked as unconfirmed.
+                const err = new RoomBlocked('기억은 저장했고, 채팅 요청은 만들지 못했어요(채팅방이 아직 다 열리지 않았어요). 다시 세이브하면 맞춰요.');
+                err.kept = true; throw err;
             } else {
             const err = await settleWrite(e, { written, rev, proof, pre, key: entry.key, epoch: entry.epoch, marks, tick });
             if (err === 'revert') throw e;
