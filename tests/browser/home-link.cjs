@@ -1356,7 +1356,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await wait(1500);
     const ha61 = await H();
     r = { tag: await tagOf('a61'), ...(await leftOf('a61')) };
-    ok(ha61.verdict === 'migrate' && ha61.status !== 'linked' && r.tag === null && r.settled.length > 0 && !r.settled.some(Boolean) && r.left > 0,
+    ok(ha61.verdict === 'migrate' && ha61.status === 'held' && ha61.why === 'tagChanged' && r.tag === null && r.settled.length > 0 && !r.settled.some(Boolean) && r.left > 0,
         `61. 보강하려던 이름표가 마지막 읽기에서 사라짐 → 보류·이름표 다시 안 만듦·옛 기록 정리 안 함 (a=${JSON.stringify(ha61)} ${JSON.stringify(r)})`);
 
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
