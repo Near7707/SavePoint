@@ -1,3 +1,56 @@
+# v0.7.0-b2a · H1 저장 순서 (b2 설계 리뷰 반영, 브랜치 `v0.7-b`)
+
+기준: `v0.7-b`의 `7144a9b`(b1k 리뷰 P3). 파일: `index.js`, `memfile.js`, `manifest.json`, 검사, 문서. b2 설계 리뷰 결과 P1 2 · P2 1 · P3 없음. 모든 항목을 코드로 확인했어요(`guard.js` `plain()`이 `is_system`·SavePoint 표시를 빼고 비교, UNREAD 뒤 방이 계속 열림, 기본 `syncHide()`).
+
+| 설계 리뷰 항목 | 처리 |
+|---|---|
+| (설계) 늘리는 숨김 = 기억 먼저 (b1 리뷰 P1-5) | 🔴 `writeEntry`: 변경을 적용한 같은 순간(기다림 없음)에 새 숨김만 화면에서 빼 둠(`holdNewHides`). 기억 파일이 이 저장의 영수증으로 확인되면(`MEM_OK`·`sameHome(mine)`) 다시 걸고(`putHeldHides`) 채팅 저장(예전 확인 절차 그대로). |
+| (설계) 줄이는 숨김 = 풀기 저장 먼저 | 🔴 `releaseFirst`: 풀기를 채팅 파일에 저장 → 다시 읽어 `writeResult`로 확인 → 기억. 실패 확정이면 통째로 되돌림(기억도 안 씀), 들어갔을 수 있으면 기억만 되돌리고 `markUnsure`로 방 멈춤. 섞인 변경은 풀기 → 기억 → 새 숨김(채팅 2번, 질문 3 답). |
+| P1-1 (화면 표시 차이만 보면 서버에만 남은 숨김을 놓침) | 🔴 `releasesOf`: 새 기억이 덮는 마지막 메시지(`lastIndex`, 검토 중·기억 없음은 -1) 뒤에서, 이번 변경이 푼 숨김 + 이미 읽어 둔 서버 채팅(`pre`)에서 SavePoint가 숨겼는데 화면은 보이는 메시지. 하나라도 있으면 `releaseFirst`. 사본에 미리 돌려 보는 장치는 만들지 않음. |
+| P1-2 (UNREAD 뒤 설정 변경 등으로 다시 숨김) | 🔴 기억 줄에 `unread`(업로드 응답은 받았는데 다시 읽지 못함: `writeMem`, 새 방 첫 저장). 다음 읽기가 같은 기억을 보면 지움(`writeMem` 첫 읽기, `homeStill`). `hidesHeld()` = 기억 쓰기 중(`writing`)·`unread`·`pending`·`stop` → 저장 차례 밖의 `syncHide`는 새로 숨기지 않고 푸는 것만. 그때 건너뛴 숨김은 `freeHome`에서 한 번 다시 계산. 다시 걸 때는 같은 방·같은 기억 영수증·그 메시지의 숨김 표시가 뺀 그대로·#0부터 그 메시지까지 지문이 그대로일 때만. |
+| P2 (검사 기대 + 기억만 고치는 편집의 새 숨김) | 🔴 저장 차례 안의 `syncHide`는 `grow`인 변경만 새로 숨김: 세이브·체크포인트(`rehide`), 👻, 🔖(`toggleKeep`·모두 끄기), 리와인드, 불러오기, 원문 받아들이기. 다른 기억 편집은 푸는 것만(🗑로 마지막 장면·기록 삭제는 풀기 대상 → `releaseFirst`). `hide.test` 기대는 아래. |
+| 질문 2 (풀기 확인 뒤 기억 응답 없음) | 풀린 채로 그 방 기억 쓰기 멈춤(`pending`), 확인된 풀기는 되돌리지 않음. 풀기 자체가 미확인이면 기억 쓰기 시작 안 함. |
+| b2 검증 항목(다른 기기 리셋, 늦은 도착, `homeStill()` 뒤 기다림) | ⚪ b2b. |
+
+바뀐 것
+1. `index.js` "H1 order" 구역: `holdNewHides`, `putHeldHides`, `releasesOf`, `restoreMemOnly`, `releaseFirst`.
+2. `writeEntry`: 적용 직후 새 숨김 빼 두기 → (풀기가 있으면) `releaseFirst` → `homeWrite` → 확인되면 새 숨김 다시 걸기 → 남은 표시만 채팅 저장. 풀기를 먼저 저장한 변경은 그 뒤 실패해도 새 숨김만 되돌림(`takeBack`), 보낼 표시는 새 숨김만(`leftMarks`). 기억 쓰기가 안 된 경우(`MEM_NOT_WRITTEN`)는 기억만 되돌리고 풀린 채로.
+3. `syncHide({ grow })`, `hidesHeld()`, `home.hideSkipped`. `transact`의 `grow` 옵션.
+4. `memfile.js` `writeMem`: `line.unread`. `placeFirst`의 UNREAD도.
+5. 버전 `0.7.0-b2a`. README 변경 기록, PLAN.
+
+★ 특히 봐 줄 곳
+- ★ 새 숨김을 빼 둔 동안(기억 업로드·풀기 저장) 화면에는 그 메시지가 보이고, 답변 생성 요청이 있으면 그 원문도 들어감(기억에도 있음: 겹쳐 보이는 쪽). 기억 확인 뒤 다시 걺.
+- ★ 풀기 저장(`releaseFirst`)은 `homeStill()`을 거치지 않음: 새 숨김을 싣지 않고(빼 둔 상태) 기억도 아직 안 바뀜. 다른 기기가 기억을 바꿨으면 이어지는 `homeWrite`의 첫 읽기가 `CONFLICT`로 막고, 그때는 기억만 되돌리고 풀린 채로 둠(더 보이는 쪽). 채팅 쪽 확인은 `writeChatFile`(실리태번 저장 기다림·재전송 전 `fileAllows`)·`settleWrite`·다시 읽기 그대로.
+- ★ 서버에만 남은 숨김은 기억이 덮는 범위 밖(`i > lastIndex`)만 봄. 범위 안에서 화면만 보이는 것(사용자가 펼침)은 그대로(숨겼는데 기억에 없음이 아님).
+- ★ `grow`가 아닌 변경 뒤 자동 모드에서 숨길 메시지가 생겨도 다음 세이브·다음 저장 차례 밖 `syncHide`(메시지 이벤트 등)에서 숨김. `hidesHeld()` 동안 건너뛴 경우만 `freeHome`이 한 번 다시 계산.
+- ★ `unread`는 `lineFor`로 새 줄을 만들 때(다시 확인·방 열기) 넘기지 않음: 새 줄은 방금 읽은 파일 기준.
+
+바뀐 기대(기존 검사)
+- `hide.test` "a failed disk write restores manual visibility exceptions, ownership and the saved position" → "a failed hide write after the memory … keeps the saved memory": 세이브(늘리는 숨김)의 채팅 쓰기 실패 → 표시만 되돌리고 기억(`lastIndex` 8, rev 1)은 남음.
+- `hide.test` "manual: a failed write of the button puts every message and the range back" → "… puts every message back and keeps the range": 👻 범위(`hideManual.to` 7)는 기억이라 남음.
+- `hide.test` "manual: a failed write of a rewind puts the hidden messages back": 기대 그대로(b1 임시 순서에서 실패하던 것이 다시 통과 — 풀기 저장 실패 → 기억도 되돌림).
+- `hide.test` "🔖 auto: …": 🔖를 끄는 변경을 실제 `toggleKeep`처럼 `grow: true`로 부름(그래야 그 자리에서 다시 숨김).
+- `loot.test` "failed undo and earlier-slot writes …": 실패 문구 기대 "채팅 파일" → "기억 파일"(b1부터 기억은 기억 파일).
+- `checkpoint.test` 검사 상자: `writeChatFile`이 이 방의 "파일"에 화면을 넣음(새 숨김이 기억 뒤 채팅 쓰기로 나가므로; 전에는 기억 쓰기가 화면 전체를 디스크에 썼음).
+- `gate-stub.mjs`: `hidesHeld: () => false`.
+
+검사 준비
+- 새 묶음 `tests/browser/h1-order.cjs`(자동 하이드, 최근 2개 유지). 순서는 `window.fetch`를 감싸 SavePoint의 채팅 저장(`chat`)과 기억 업로드(`mem`)를 기록. 확인 기준은 "서버 채팅의 숨김이 모두 기억 파일 `lastIndex` 이하"(합격 기준 5).
+  - 1: 기억 업로드 중(`M.beforeUpload`) 화면 숨김과 실리태번 자체 저장(`M.stSave()`) 사본에 새 숨김 없음, 순서 `mem,chat`.
+  - 2: 리와인드 → `chat`이 먼저. 3: 리와인드 중 채팅 저장 실패(`M.failMeta`) → 기억 파일·화면·서버 그대로.
+  - 4: 화면만 #6~#9를 풀어 둔 뒤(서버는 숨김) 리와인드 → `chat,mem,chat`(풀기 → 기억 → #6·#7 다시 숨김), 서버 #8·#9 풀림.
+  - 5: 화면·서버 모두 보이는 기록된 #2 → 기억 편집(`commitEdit`) 뒤 그대로·채팅 저장 0회, 다음 세이브에서 숨김.
+  - 6: 기억 업로드 직후 그 파일 읽기 오류 → `unread`·새 숨김 없음, 읽기를 되돌리고 설정 변경 + `syncHide()` → 여전히 없음, 다음 세이브(첫 읽기로 확인) → 숨김.
+  - 6b: 기억 업로드 중 새로 숨길 #14 수정, 업로드 뒤 두 번째 기억 파일 읽기(`homeStill`) 때 실리태번 자체 저장 → 그 사본에 #13은 숨김, #14·#15는 없음.
+  - 7: 리셋 중 기억 업로드 500(응답 없음) → `chat` 먼저, 화면·서버 숨김 0, 기억 파일 그대로, `pending`, `syncHide()` 뒤에도 다시 안 숨김.
+
+검사와 망가뜨리기 결과
+- `h1-order.cjs` 모두 통과. 고치기 전 코드(`7144a9b`)에선 1(업로드 중 화면·실리태번 저장에 새 숨김 #6~#9), 2(`mem,chat`), 3, 4(서버에 #8·#9 남음), 5(#2 숨김·채팅 저장), 6(두 가지), 7 실패.
+- 망가뜨리기(복사본에 문자열 치환): 새 숨김 빼 두기 없앰 → 1·4 실패. 서버에만 남은 숨김 안 봄 → 4 실패. 풀기 목록 늘 비움 → 2·3·4·7 실패. `hidesHeld`가 `unread` 안 봄 → 6(설정 변경) 실패. 차례 안 `grow` 늘 참 → 5 실패. 다시 걸 때 지문 확인 없앰 → 6b 실패.
+- Node: 506 통과 / 0 실패 / 3 건너뜀(b1부터 남았던 4개 실패 정리).
+- 브라우저 묶음 전체(57묶음): 통과 21 / 실패 36, 검사 모드 오류 0. 통과는 b1k의 19개 + `hide-fail`(b1 임시 순서에서 실패하던 것이 다시 통과) + `h1-order`(새). `status`는 한꺼번에 돌릴 때 타이밍으로 실패, 따로 돌려 통과. 실패 36개는 기억을 채팅 메타데이터에서 읽는 기존 기대(b2c에서 옮김).
+
 # v0.7.0-b1k · v0.7.0-b1j 코드 리뷰 반영 (브랜치 `v0.7-b`)
 
 기준: `v0.7-b`의 `017c8d9`(b1j 리뷰 요청서, 코드는 `ffb42aa`). 파일: `home.js`, 검사, 문서. 리뷰 결과 P1 없음, P2 1건, P3 없음. 코드로 확인했고, 반영 계획을 다시 리뷰받아 그 의견(2차)대로 반영했어요.

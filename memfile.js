@@ -26,6 +26,7 @@ export const MEM_OK = 'ok', REFUSED = 'refused', PENDING = 'pending', CONFLICT =
 // A room's line of memory writes on this page. `seen`: { rev, wid } of the file last seen, { missing: true } when
 // the server said there is none, null before the first read. `pending`: the request that got no answer.
 // `stop`: why this line writes nothing more (conflict, overwritten, pending).
+// v0.7.0-b2a: `unread` — the last write was answered but not read back yet (no new hide rests on it, index.js hidesHeld).
 export function memLine(seen = null) { return { seen, pending: null, stop: null, busy: false }; }
 // What a read tells the line it saw (open the room: the file as it is then).
 export function seenOf(res) {
@@ -85,6 +86,8 @@ export async function writeMem(io, line, { name, valid, make }) {
         try { pre = checked(await io.read(name, valid), valid); } catch { pre = { kind: READ_ERROR }; }
         if (pre.kind !== OK && pre.kind !== MISSING) return { status: READ_ERROR };
         if (!sameSeen(pre, line.seen)) { line.stop = CONFLICT; return { status: CONFLICT }; }
+        // v0.7.0-b2a (b2 design review P1-2): the file read now is the one this line saw: a write left unread back is proved.
+        delete line.unread;
         const body = make(pre.kind === OK ? pre.data : null);
         if (!body || !valid(body)) throw new Error('memory body does not pass its own check');
         let up;
@@ -100,6 +103,8 @@ export async function writeMem(io, line, { name, valid, make }) {
         if (post.kind === OK && wroteMine(post.data, body.wid)) { line.seen = { rev: body.rev, wid: body.wid }; return { status: MEM_OK, body }; }
         if (post.kind === OK || post.kind === MISSING) { line.stop = OVERWRITTEN; return { status: OVERWRITTEN, body }; }
         line.seen = { rev: body.rev, wid: body.wid };
+        // v0.7.0-b2a (b2 design review P1-2): written, not read back: no new hide rests on it until a read shows it (`unread`).
+        line.unread = true;
         return { status: UNREAD, body };
     } finally { line.busy = false; }
 }

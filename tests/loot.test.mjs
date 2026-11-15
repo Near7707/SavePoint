@@ -504,11 +504,12 @@ test('failed undo and earlier-slot writes preserve both existing queue edits and
     await h.app.addLoot(0, 'kept a token.'); await h.app.summarize(); await h.app.addLoot(0, 'a token.');
     const before = JSON.stringify(h.app.state());
     h.failWrite = true;
-    await assert.rejects(h.app.handle('undo'), /채팅 파일/);
+    // v0.7.0-b2a: the memory is written to its memory file (b1), so a refused write names that file.
+    await assert.rejects(h.app.handle('undo'), /기억 파일/);
     assert.equal(JSON.stringify(h.app.state()), before);
     h.app.setSlot(slot);
     await h.app.loadSave('slot', 'continue');
-    assert(h.notices.some(([kind, message]) => kind === 'error' && message.includes('채팅 파일')));
+    assert(h.notices.some(([kind, message]) => kind === 'error' && message.includes('기억 파일')));
     assert.equal(JSON.stringify(h.app.state()), before);
 });
 

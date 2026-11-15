@@ -31,6 +31,8 @@ export function gateBox() {
         MEM_NOT_WRITTEN: new Set(['refused', 'conflict', 'error', 'moved', 'linking']), MEM_OK: 'ok', UNREAD: 'unread', homeWriteError: w => String(w.status), homeMessage: () => '',
         // v0.7.0-b1c: no decision of the room's memory runs here; the copy checked again before a resend (none here).
         takeHome: () => true, freeHome() {}, homeSettled: async () => {}, 
+        // v0.7.0-b2a: new hides are never held back here (the memory is always proved).
+        hidesHeld: () => false,
     };
 }
 

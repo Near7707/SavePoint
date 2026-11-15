@@ -27,7 +27,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.7.0-b1k';
+const VERSION = '0.7.0-b2a';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -566,12 +566,12 @@ async function settleWrite(e, { written, rev, proof, pre, key, epoch, marks = nu
 // `still(pre)` is asked at its turn, after the file check and right before it is applied. Anything but
 // true stops it with nothing changed (Stale; a string is the reason shown). The change itself works from
 // the room's state at its turn (state()), never from objects taken before the wait.
-async function transact(change, { undoable = false, undoKind = '', autosave: doAutosave = true, rehide = false, replay = false, snapshot = false, verify = false, still = null, stale = '', hides = true } = {}) {
+async function transact(change, { undoable = false, undoKind = '', autosave: doAutosave = true, rehide = false, replay = false, snapshot = false, verify = false, still = null, stale = '', hides = true, grow = false } = {}) {
     const key = roomKey(), epoch = roomEpoch;
     const ready = gateOpen() || await roomReady();
     if (roomKey() !== key || roomEpoch !== epoch) throw new RoomBlocked('채팅방이 바뀌어서 이번 변경은 하지 않았어요.');
     if (!ready) throw new RoomBlocked(gateMessage());
-    const entry = { change, undoable, undoKind, autosave: doAutosave, rehide, replay, snapshot, verify, still, stale, hides, key, epoch };
+    const entry = { change, undoable, undoKind, autosave: doAutosave, rehide, replay, snapshot, verify, still, stale, hides, grow, key, epoch };
     const queue = saveQueue(key, epoch);
     queue.pending.push(entry);
     const done = queue.chain.then(() => writeEntry(queue, entry)).finally(() => { const i = queue.pending.indexOf(entry); if (i >= 0) queue.pending.splice(i, 1); });
@@ -674,7 +674,9 @@ function applyChange(entry) {
         st.wid = newId();
     }
     // v0.7.0-a: a note (noteMem) leaves the hide flags as they are; it only marks the memory.
-    if (entry.hides !== false) syncHide({ rehide: entry.rehide });
+    // v0.7.0-b2a (b2 design review P2): only a change that records or hides (a save, 👻) or may bring memory back (a rewind, a
+    // load, the original accepted: `grow`) sets new hides; any other memory edit only takes hides away.
+    if (entry.hides !== false) syncHide({ rehide: entry.rehide, grow: !!(entry.rehide || entry.grow) });
     entry.after = new Map(chat().map(m => [m, { flags: ownFlags(m), swipes: swipeMarks(m) }]));
     if (roomKey() === entry.key && roomEpoch === entry.epoch) refreshView();
     return true;
@@ -787,6 +789,98 @@ function dropStaleHides(entry, { all = false } = {}) {
     restoreMarks({ ...entry, visibility: stale }, { hideOnly: true });
     return true;
 }
+// ───────── H1 order (v0.7.0-b2a) ─────────
+// A change that hides more writes its memory first and its new hides after it; one that hides less writes the release first
+// and its memory after it. So the server never holds a hide its memory file does not cover: what is in between shows more.
+const hidFlag = f => !!f && f[0] && f[1] === true;
+// The new hides of `entry` (a message it hid), taken off the page right after the change (no wait in between). Returns them.
+function holdNewHides(entry) {
+    if (!entry?.visibility || !entry.after) return [];
+    const list = entry.visibility.filter(v => { const post = entry.after.get(v.m); return post && hidFlag(post.flags[0]) && !hidFlag(v.flags[0]) && hidFlag(ownFlags(v.m)[0]); });
+    if (list.length) restoreMarks({ ...entry, visibility: list }, { hideOnly: true });
+    return list;
+}
+// Sets the held hides again (the memory is in its file now). Only on a message still as before the change (its hide marks as the
+// hold left them, no 🔖 since) and resting on messages unchanged since the change (#0 up to it: dropStaleHides' rule).
+function putHeldHides(entry, held) {
+    const list = chat(), order = entry.order || [], at = new Map(list.map((m, i) => [m, i]));
+    let first = order.length;
+    for (let k = 0; k < order.length; k++) if (list[k] !== order[k] || entry.prints?.get(order[k]) !== fingerprint(list[k])) { first = k; break; }
+    let n = 0;
+    for (const v of held) {
+        const i = at.get(v.m), post = entry.after?.get(v.m);
+        if (i === undefined || i >= first || !post || kept(v.m)) continue;
+        const now = ownFlags(v.m);
+        if (![0, 1, 2, 3].every(j => sameMark(now[j], v.flags[j]))) continue;
+        setHidden(v.m, i, !!post.flags[0][1]);
+        if (!post.flags[0][0]) delete v.m.is_system;
+        [HIDE_KEY, VISIBLE_KEY, HELD_KEY].forEach((k, j) => putMark(v.m, k, post.flags[j + 1]));
+        if (!v.hadExtra && v.m.extra && typeof v.m.extra === 'object' && !Object.keys(v.m.extra).length) delete v.m.extra;
+        n++;
+    }
+    return n;
+}
+// Places past what the memory now covers (its last recorded message; none under review or without memory) where a hide of
+// SavePoint's goes away: taken away by this change on the page, or (b2 design review P1-1) still in the server file read
+// before the change (`pre`) on a message the page shows (an edited original showed it before its turn came).
+function releasesOf(entry, pre) {
+    const st = state(), floor = st && !st.review && hasMemory(st.mem) ? st.lastIndex : -1;
+    const list = chat(), at = new Map(list.map((m, i) => [m, i])), out = new Set();
+    for (const v of entry.visibility || []) {
+        const post = entry.after?.get(v.m), i = at.get(v.m);
+        if (post && i !== undefined && i > floor && hidFlag(v.flags[0]) && !hidFlag(post.flags[0]) && !v.m.is_system) out.add(i);
+    }
+    const msgs = Array.isArray(pre?.messages) ? pre.messages : [];
+    list.forEach((m, i) => { if (i > floor && !m.is_system && msgs[i]?.is_system && msgs[i]?.extra?.[HIDE_KEY]) out.add(i); });
+    return [...out];
+}
+// The page's memory goes back to the one before `entry` (while it is still the one the change put there); marks stay.
+function restoreMemOnly(entry) {
+    if (!Object.hasOwn(entry, 'applied') || boxMem(entry.box) === entry.applied) putBoxMem(entry.box, entry.prev);
+    trustQueue();
+    if (roomKey() === entry.key && roomEpoch === entry.epoch) refreshView();
+}
+// The release goes to the chat file and is read back before the memory is written. Throws when it is not proved there:
+// shown not to be there → the whole change goes back; may be there → the memory goes back, the page keeps it shown, and the
+// room writes nothing more until the file is read with it (markUnsure). The new hides are off the page all this time.
+async function releaseFirst(queue, entry, pre) {
+    const moved = () => roomKey() !== entry.key || roomEpoch !== entry.epoch;
+    const marks = changedMarks(entry), rev = state()?.rev ?? null, tick = delTick;
+    let written = sendSnap(pre.meta);
+    const undoAll = e => {
+        const here = restoreEntry(entry);
+        trustQueue();
+        for (const x of queue.pending) if (x !== entry && !x.replay && !x.cancelled) x.cancelled = new Error(`앞선 변경의 원문 숨김 풀기를 채팅 파일에 저장하지 못해서 이 변경도 취소했어요. (${e?.message || e})`);
+        if (here) { ctx().swipe?.refresh?.(); refreshView(); }
+    };
+    const away = () => { restoreMemOnly(entry); return new Unconfirmed('방을 옮겨서 원문 숨김 풀기가 채팅 파일에 들어갔는지 확인하지 못했어요. 그 방을 다시 열어 확인해 주세요.'); };
+    try { const last = await persist(pre.meta); if (last) written = last; }
+    catch (e) {
+        const err = await settleWrite(e, { written, rev, proof: null, pre, key: entry.key, epoch: entry.epoch, marks, tick });
+        if (err === 'revert') { undoAll(e); throw new Error(`원문 숨김 풀기를 채팅 파일에 저장하지 못해서 이번 변경을 취소했어요. (${e?.message || e})`); }
+        if (err) { restoreMemOnly(entry); throw err; }
+        return;
+    }
+    if (moved()) throw away();
+    const post = await readServerChat();
+    if (moved()) throw away();
+    const result = post?.ok ? writeResult(written, pre.snap, post.snap, MODULE) : 'unsure';
+    if (result === 'failed') {
+        if (gateHere()) setSeen(post.snap);
+        undoAll('file unchanged');
+        throw new Error('실리태번은 저장을 마쳤다고 했지만 채팅 파일은 그대로라서, 원문 숨김 풀기와 이번 변경을 취소했어요.');
+    }
+    if (result !== 'ok') {
+        markUnsure({ rev, prevRev: pre.rev, written, before: pre.snap, proof: null, prevProof: pre.proof, answered: true, tick });
+        restoreMemOnly(entry);
+        throw new Unconfirmed('원문 숨김 풀기는 보냈지만 채팅 파일에 들어갔는지 확인하지 못해서 기억은 바꾸지 않았어요. 확인될 때까지 SavePoint는 새로 저장하지 않아요.');
+    }
+    if (gateHere()) {
+        const c = fileBase(post, gate.seen);
+        if (c.ok) setSeen(post.snap);
+        else if (c.why === 'gone' || c.why === 'mem') { blockRoom(c.why); restoreMemOnly(entry); throw new RoomBlocked(`원문 숨김 풀기는 채팅 파일에 저장했지만 ${gateMessage()} 그래서 기억은 바꾸지 않았어요.`); }
+    }
+}
 function cancelMoved(queue, entry) {
     const left = queue.pending.slice(Math.max(0, queue.pending.indexOf(entry)));
     const error = new Error(`채팅방을 옮겨서 이전 방의 마지막 변경 ${left.length}개는 저장하지 못했을 수 있어요. 그 방을 다시 열어 확인해 주세요.`);
@@ -842,7 +936,13 @@ async function writeEntry(queue, entry) {
     const hb = pageBox();
     if (!takeHome(hb)) throw new RoomBlocked('이 방의 기억을 다시 확인하는 중이라 이번 변경은 하지 않았어요. 잠시 뒤 다시 해 주세요.');
     let applied, unsure = null, settled = false, written, marks, tick, rev, w, saved, relinked, mine = null, relinkedLate = false, unhidAfter = false;
+    let held = [], released = false;
     const proof = null;
+    // v0.7.0-b2a (H1): after a release went to the chat file first, only the new hides held back are left to send.
+    const heldSet = new Set();
+    const leftMarks = () => { const all = changedMarks(entry); if (!released) return all; const list = chat(); return all.filter(c => heldSet.has(list[c.i])); };
+    // What a failed hide write takes back: every mark of the change, or after a release in the file, the new hides only.
+    const takeBack = () => released ? restoreMarks({ ...entry, visibility: held }, { hideOnly: true }) : restoreMarks(entry);
     try {
     checkQueue('before a queued change');
     try { applied = applyEntry(entry); trustQueue(); entry.order = chat().slice(); entry.prints = new Map(entry.order.map(m => [m, fingerprint(m)])); }
@@ -857,9 +957,23 @@ async function writeEntry(queue, entry) {
         throw e instanceof Cancelled ? e : new Error(`변경을 적용하다 오류가 나서 이번 변경을 취소했어요. (${e?.message || e})`);
     }
     if (applied === false) return false;
+    // v0.7.0-b2a (H1; b1 review P1-5): the new hides of the change are taken off the page in the same moment (nothing waits in
+    // between, so no save of SillyTavern's can carry them) and set again only once its memory is proved in its file.
+    held = holdNewHides(entry);
+    for (const v of held) heldSet.add(v.m);
+    if (held.length && roomKey() === entry.key && roomEpoch === entry.epoch) ctx().swipe?.refresh?.();
+    // v0.7.0-b2a (H1; b2 design review P1-1): hides the new memory no longer covers — taken away by this change, or still in the
+    // server file only (taken away on the page before, by an edited original) — are written to the chat file and read back
+    // before the memory shrinks.
+    const releases = releasesOf(entry, pre);
+    if (releases.length) {
+        await releaseFirst(queue, entry, pre);
+        released = true;
+        if (moved()) { restoreMemOnly(entry); throw cancelMoved(queue, entry); }
+    }
     // v0.7.0-b1: the chat file holds no memory any more: a chat write is proved by the copy sent and the marks it set
     // (the rule of a room without a memory before), never by a memory receipt.
-    written = sendSnap(pre.meta); marks = changedMarks(entry); tick = delTick;
+    written = sendSnap(pre.meta); marks = leftMarks(); tick = delTick;
     rev = state()?.rev ?? null;
     // v0.7.0-b1: the memory goes to the room's memory file first. A change of the memory alone (no hide or mark of
     // SavePoint's changed) never writes the chat file. Until b2 (H1 order) a change that also hides writes the chat file
@@ -874,7 +988,15 @@ async function writeEntry(queue, entry) {
     // v0.7.0-b1g (review of b1f, P1-1): another memory linked meanwhile: the page follows it, and this change ends with one notice
     // (not "saved").
     relinked = () => { if (roomKey() === entry.key && roomEpoch === entry.epoch) followHome(); return saved(new Relinked()); };
-    if (moved() && !MEM_NOT_WRITTEN.has(w.status)) { restoreMarks(entry); throw saved(cancelMoved(queue, entry)); }
+    if (moved() && !MEM_NOT_WRITTEN.has(w.status)) { if (!released) restoreMarks(entry); throw saved(cancelMoved(queue, entry)); }
+    if (MEM_NOT_WRITTEN.has(w.status) && released) {
+        // v0.7.0-b2a (H1): the release is in the chat file already: only the memory goes back (the messages stay shown, which the
+        // old memory still covers: shown more, never hidden without memory).
+        restoreMemOnly(entry);
+        for (const x of queue.pending) if (x !== entry && !x.replay && !x.cancelled) x.cancelled = new Error(`앞선 변경을 기억 파일에 저장하지 못해서 이 변경도 취소했어요. (${homeWriteError(w)})`);
+        if (roomKey() === entry.key && roomEpoch === entry.epoch) { refreshInjection(); render(); }
+        throw w.status === 'moved' ? cancelMoved(queue, entry) : new RoomBlocked(`원문 숨김은 풀어 저장했지만 ${homeWriteError(w)}`);
+    }
     if (MEM_NOT_WRITTEN.has(w.status)) {
         const here = restoreEntry(entry);
         trustQueue();
@@ -885,13 +1007,20 @@ async function writeEntry(queue, entry) {
     if (w.status !== MEM_OK) {
         // No answer (may still land), written but overwritten, or written but not read back: the memory stays as the page
         // has it; no new hide is set on top of a memory not proved to be in its file (P1-1).
-        if (marks.length) { restoreMarks(entry); if (roomKey() === entry.key && roomEpoch === entry.epoch) { ctx().swipe?.refresh?.(); refreshView(); } }
-        if (w.status === UNREAD) { if (marks.length) toastr.info('기억은 저장했지만 다시 읽어 확인하지 못해서, 이번에는 원문을 숨기지 않았어요.', 'SavePoint', { timeOut: 8000 }); }
+        if (marks.length && !released) { restoreMarks(entry); if (roomKey() === entry.key && roomEpoch === entry.epoch) { ctx().swipe?.refresh?.(); refreshView(); } }
+        if (w.status === UNREAD) { if (marks.length || held.length) toastr.info('기억은 저장했지만 다시 읽어 확인하지 못해서, 이번에는 원문을 숨기지 않았어요.', 'SavePoint', { timeOut: 8000 }); }
         else {
             for (const x of queue.pending) if (x !== entry && !x.cancelled) x.cancelled = new RoomBlocked(homeWriteError(w));
             render();
             throw new Unconfirmed(homeWriteError(w));
         }
+    }
+    // v0.7.0-b2a (H1; b2 design review P1-2): the memory is in its file (read back with this change's receipt): the new hides held
+    // back are set again, each only where the message is still as the change left it (same room, same memory, no mark of it
+    // changed since). A message edited meanwhile is checked below (dropStaleHides).
+    if (w.status === MEM_OK && held.length && !moved() && (mine ? sameHome(mine) : !entry.box?.line)) {
+        if (putHeldHides(entry, held)) { ctx().swipe?.refresh?.(); refreshView(); }
+        marks = leftMarks();
     }
     if (!marks.length || w.status !== MEM_OK) {
         if (roomKey() === entry.key && roomEpoch === entry.epoch) { if (entry.autosave) autosave(state()); render(); }
@@ -902,7 +1031,7 @@ async function writeEntry(queue, entry) {
     // that read and the chat write (the gap another device's reset could fall in). Two files cannot be checked at once:
     // a gap stays (b2 checks it).
     await stIdle();
-    if (moved()) { restoreMarks(entry); throw saved(cancelMoved(queue, entry)); }
+    if (moved()) { takeBack(); throw saved(cancelMoved(queue, entry)); }
     // P1-1: the memory file is still the one this room last saw, right before the chat file is written.
     const still = await homeStill(mine);
     // v0.7.0-b1f (review of b1e, P2-2): another memory linked meanwhile — as right before the request (guard): only the new hides
@@ -911,16 +1040,16 @@ async function writeEntry(queue, entry) {
         relinkedLate = true;
         if (dropStaleHides(entry, { all: true }) && roomKey() === entry.key && roomEpoch === entry.epoch) { ctx().swipe?.refresh?.(); refreshView(); }
         // v0.7.0-b1g (review of b1f, P1-1): the notice comes once, at the end of the change (Relinked).
-        if (!changedMarks(entry).length) throw relinked();
+        if (!leftMarks().length) throw relinked();
     } else if (!still.ok) {
-        restoreMarks(entry);
+        takeBack();
         if (roomKey() === entry.key && roomEpoch === entry.epoch) { ctx().swipe?.refresh?.(); refreshView(); }
         throw saved(new RoomBlocked(still.why === 'moved' ? '채팅방이 바뀌어서 원문 숨김은 저장하지 않았어요.' : still.why === 'memRead' ? '기억 파일을 다시 읽지 못해서 원문 숨김은 저장하지 않았어요(기억은 저장했어요).' : still.why === 'relinked' ? '기억은 저장했어요. 하지만 그사이 이 방의 기억을 다시 확인해서, 이번 원문 숨김은 저장하지 않았어요. 다시 세이브하면 맞춰요.' : `기억은 저장했어요. 하지만 ${homeMessage()}`));
     }
     // v0.7.0-b1a (review P1-1): the chat file is checked again right before it is written (the check before the change is
     // older than the memory write: another device may have added a reply since). The write goes out over this read only.
     {
-        const away = () => { restoreMarks(entry); return saved(cancelMoved(queue, entry)); };
+        const away = () => { takeBack(); return saved(cancelMoved(queue, entry)); };
         if (moved()) throw away();
         await stIdle();
         if (moved()) throw away();
@@ -928,13 +1057,13 @@ async function writeEntry(queue, entry) {
         try { now = await serverCovered(); } catch { now = { ok: false, why: 'error' }; }
         if (moved() || now.why === 'moved') throw away();
         if (!now.ok) {
-            restoreMarks(entry);
+            takeBack();
             blockRoom(now.why, now.at);
             ctx().swipe?.refresh?.(); refreshView();
             throw saved(new RoomBlocked(`기억은 저장했어요. 하지만 ${gateMessage()} 그래서 원문 숨김은 저장하지 않았어요.`));
         }
         pre = now; entry.pre = now;
-        written = sendSnap(pre.meta); marks = changedMarks(entry); tick = delTick;
+        written = sendSnap(pre.meta); marks = leftMarks(); tick = delTick;
         // v0.7.0-b1a (review of b1a, P1-4): a message edited since the change (on this page, maybe saved by SillyTavern
         // already): its new text is not what the memory recorded, so no hide goes out.
         // v0.7.0-b1c (review of b1b, P1-2): a new hide rests on every message from #0 to it (an edit before it rewinds the
@@ -942,7 +1071,7 @@ async function writeEntry(queue, entry) {
         // part of the fingerprint. Only new hides go back: a hide taken away (an edited message shown again) still goes out.
         if (dropStaleHides(entry)) {
             ctx().swipe?.refresh?.(); refreshView();
-            written = sendSnap(pre.meta); marks = changedMarks(entry);
+            written = sendSnap(pre.meta); marks = leftMarks();
             if (!marks.length) throw saved(new RoomBlocked('기억은 저장했어요. 하지만 그사이 원문이 바뀌어서 원문 숨김은 저장하지 않았어요. 다시 세이브하면 맞춰요.'));
             toastr.info('그사이 원문이 바뀌어서 새로 숨기려던 원문은 숨기지 않았어요. 다시 세이브하면 맞춰요.', 'SavePoint', { timeOut: 8000 });
         }
@@ -960,7 +1089,7 @@ async function writeEntry(queue, entry) {
         const guard = ({ sent = false } = {}) => {
             const l = home.line, again = home !== mine?.box || home.id !== mine?.id || !l?.seen || !!l.pending || !!l.stop || l.seen.rev !== mine.rev || l.seen.wid !== mine.wid || !!l.seen.missing !== !!mine.missing;
             if (again) relinkedLate = true;
-            if (dropStaleHides(entry, { all: again })) { marks = changedMarks(entry); if (sent) unhidAfter = true; ctx().swipe?.refresh?.(); refreshView(); }
+            if (dropStaleHides(entry, { all: again })) { marks = leftMarks(); if (sent) unhidAfter = true; ctx().swipe?.refresh?.(); refreshView(); }
             return marks.length > 0;
         };
         // v0.7.0-b1d (review of b1c, P2-1): the copy last answered with success is what the read back is compared with (a copy
@@ -1017,7 +1146,7 @@ async function writeEntry(queue, entry) {
         if (e?.name === 'Relinked') throw e;
         // v0.7.0-b1: the memory is in its file already: only the marks this change set go back.
         const error = new Error(`기억은 저장했지만 채팅 파일에 원문 숨김을 저장하지 못해서 숨김만 되돌렸어요. (${e?.message || e})`);
-        const here = restoreMarks(entry);
+        const here = takeBack();
         trustQueue();
         // Waiting changes: button edits run at their turn on what is there then; the rest are cancelled.
         for (const x of queue.pending) if (x !== entry && !x.replay && !x.cancelled)
@@ -1948,7 +2077,16 @@ function takeHome(box) {
 function freeHome(box) {
     if (box !== home || !box.writing) return;
     box.writing = false;
+    // v0.7.0-b2a: a hide syncHide held back while this write ran (hidesHeld) is worked out again once the memory is proved.
+    if (box.hideSkipped) { box.hideSkipped = false; setTimeout(() => { if (home === box && homeHere() && gateOpen() && !hidesHeld()) syncHide(); }, 0); }
     if (box.recheckAfter) { box.recheckAfter = false; setTimeout(() => { if (home === box && homeHere()) recheckHome(); }, 0); }
+}
+// v0.7.0-b2a (H1; b2 design review P1-2): a new hide rests on a memory proved to be in its file. Outside a queued change none
+// is set while a memory write of the room runs (`writing`), after one answered but not read back (`unread`), or while its line
+// is stopped or waiting for an answer: hides are only taken away then.
+function hidesHeld() {
+    const h = home, l = h?.line;
+    return !!(h?.writing || l?.unread || l?.pending || l?.stop);
 }
 // A decision running now is waited for (at most 10 s).
 async function homeSettled(box) {
@@ -1997,6 +2135,8 @@ async function placeFirst(h, st, state, was) {
             }
             if (m.kind === OK) { lineFor(h, { rev: m.data.rev, wid: m.data.wid }); if (!h.line.pending) h.line.stop = MF_CONFLICT; h.status = 'linked'; return { status: CONFLICT }; }
             lineFor(h, res.seen); h.status = 'linked';
+            // v0.7.0-b2a (b2 design review P1-2): not read back: no new hide on it until a read shows it.
+            h.line.unread = true;
             return { status: UNREAD };
         }
         if (h.line?.pending) { h.status = 'linked'; return { status: PENDING }; }
@@ -2033,7 +2173,7 @@ async function homeStill(mine = null) {
     const seen = h.line.seen, same = x => r.kind === MISSING ? !!x?.missing : r.kind === OK && !!x && r.data.rev === x.rev && r.data.wid === x.wid;
     if (mine && !same(mine)) {
         if (same(seen) && mine.id === h.id) return { ok: false, why: 'relinked' };
-    } else if (same(seen)) return { ok: true };
+    } else if (same(seen)) { delete h.line.unread; return { ok: true }; }
     if (r.kind === OK || r.kind === MISSING) { h.line.stop = MF_CONFLICT; render(); return { ok: false, why: 'memFile' }; }
     return { ok: false, why: 'memRead' };
 }
@@ -2175,9 +2315,14 @@ function manualHidePlan(st, list = chat()) {
 }
 // `rehide`: true for a save (in manual mode it no longer rescans: the range is the button's), 'button'
 // for the 👻 button (rescans the range, like a save in auto mode).
-function syncHide({ rehide = false } = {}) {
+// v0.7.0-b2a (H1): `grow` — inside a queued change, may it set new hides (see applyChange)? Outside one, new hides wait while
+// the memory is not proved in its file (hidesHeld); hides are taken away either way.
+function syncHide({ rehide = false, grow = false } = {}) {
     // v0.7.0-a1 (review P2-2): while a changed original waits for its turn, the hides follow the memory it will leave.
     const st = liveState(), live = st !== state(), s = settings(), list = chat();
+    const may = inApply ? grow : !hidesHeld();
+    let skipped = false;
+    const hold = () => { skipped = true; return false; };
     const own = state(), sourcePending = !!own && own.lastIndex >= 0 && firstMismatch(own.hashes) >= 0;
     const mode = hideModeOf(s);
     const can = s.enabled && mode !== 'off' && st && !st.review && hasMemory(st.mem);
@@ -2219,7 +2364,7 @@ function syncHide({ rehide = false } = {}) {
         // Only these: a message the user opened themselves is left as it is.
         // v0.7.0-a3 (review of v0.7.0-a2, P2): "gone" is checked on the memory itself: inside a save turn liveState()
         // gives the memory as it is (not live) while the change is still there.
-        if (!live && liveShown.has(m) && !sourcePending) {
+        if (!live && liveShown.has(m) && !sourcePending && (may || hold())) {
             liveShown.delete(m);
             if (can && mode === 'manual' && !mark && !m.is_system && i <= reach) { m.extra ||= {}; m.extra[HIDE_KEY] = 1; setHidden(m, i, true); changed = true; return; }
         }
@@ -2230,7 +2375,7 @@ function syncHide({ rehide = false } = {}) {
             if (live) liveShown.add(m);
             return;
         }
-        if (rescan && i <= cutoff) {
+        if (rescan && i <= cutoff && (may || hold())) {
             // Recheck from #0 on every saved batch. A manually opened message
             // stays open during ordinary redraws, but joins the next save's hide.
             if (m.extra && Object.hasOwn(m.extra, VISIBLE_KEY)) { delete m.extra[VISIBLE_KEY]; changed = true; }
@@ -2253,16 +2398,17 @@ function syncHide({ rehide = false } = {}) {
             // v0.6.74: a hidden message is no longer shown for "keep the latest N"; a "held" mark from
             // before (shown for that reason) is still hidden again when it falls outside the latest N.
             if (m.extra?.[HELD_KEY] && (m.is_system || i > reach)) dropHeld(m);
-            else if (m.extra?.[HELD_KEY] && i <= cutoff) { m.extra[HIDE_KEY] = 1; dropHeld(m); setHidden(m, i, true); changed = true; }
+            else if (m.extra?.[HELD_KEY] && i <= cutoff && (may || hold())) { m.extra[HIDE_KEY] = 1; dropHeld(m); setHidden(m, i, true); changed = true; }
             return;
         }
         dropHeld(m);
-        if (!mark && i <= cutoff && !m.is_system && !m.extra?.[VISIBLE_KEY]) {
+        if (!mark && i <= cutoff && !m.is_system && !m.extra?.[VISIBLE_KEY] && (may || hold())) {
             m.extra ||= {}; m.extra[HIDE_KEY] = 1; setHidden(m, i, true); changed = true;
         }
     });
     // v0.7.0-b1: inside a queued change its own write sends the marks (after its memory); outside one, a chat save.
     if (changed) { ctx().swipe?.refresh?.(); if (!inApply) saveChatSoon(); }
+    if (skipped && !inApply && homeHere()) home.hideSkipped = true;
     return changed || ranged;
 }
 const liveShown = new WeakSet();
@@ -2379,7 +2525,7 @@ async function acceptCurrentSource() {
         st.lastIndex = Math.min(st.lastIndex, chat().length - 1);
         st.hashes = hashesTo(st.lastIndex);
         st.floor = st.lastIndex; st.history = []; st.review = null; st.undo = null; st.undoInfo = null;
-    }, { undoable: false });
+    }, { undoable: false, grow: true });
 }
 
 // ───────── injection ─────────
@@ -3820,7 +3966,7 @@ async function undo() {
             const restored = { ...clone(st.undo), undo: null, undoInfo: null };
             restored.lootQueue = restoreLostLoot(st.lootQueue, st.mem, restored.mem, { room: roomKey(), hashes: st.hashes, fallback: st.undo.lootQueue });
             setPageMem(restored);
-        }, { undoable: false, verify: true, still: same, stale: '리와인드를 기다리는 사이 되돌릴 지점이 바뀌어서(다른 저장·리셋) 되돌리지 않았어요. ⏪를 다시 눌러 주세요.' });
+        }, { undoable: false, verify: true, grow: true, still: same, stale: '리와인드를 기다리는 사이 되돌릴 지점이 바뀌어서(다른 저장·리셋) 되돌리지 않았어요. ⏪를 다시 눌러 주세요.' });
     } catch (e) {
         if (e instanceof Stale) { toastr.info(e.message, 'SavePoint', { timeOut: 10000 }); return; }
         throw e;
@@ -4125,7 +4271,7 @@ async function loadSave(id) {
             }
             if (now) st.lootQueue = restoreLostLoot(now.lootQueue, now.mem, st.mem, { room: key, hashes: now.hashes, fallback: now.undo?.lootQueue });
             setPageMem(st);
-        }, { undoable: true, undoKind: 'load', verify: true, still: pre => !here() || stillAsked(pre), stale: changedNote });
+        }, { undoable: true, undoKind: 'load', verify: true, grow: true, still: pre => !here() || stillAsked(pre), stale: changedNote });
         if (ok === false) return moved();
     } catch (e) {
         if (e instanceof Stale) { toastr.info(e.message, 'SavePoint', { timeOut: 10000 }); return; }
@@ -4361,7 +4507,7 @@ async function toggleKeep(index) {
     // v0.6.81: the message's flags and its swipes' marks come back with the change itself (restoreEntry),
     // and only when the write surely failed: one that may be in the file (unconfirmed, kept) stays.
     try {
-        await transact(() => { setKeep(m, on); }, { undoable: false, autosave: false, snapshot: true });
+        await transact(() => { setKeep(m, on); }, { undoable: false, autosave: false, snapshot: true, grow: true });
     } catch (e) { paintKeep(); throw e; }
     paintKeep(); if (ui.open) render(true);
     toastr.info(on ? '🔶 하이드 제외: SavePoint가 이 메시지를 하이드하지 않아요. 기록은 평소처럼 해요.'
@@ -4395,7 +4541,7 @@ async function keepOffAll() {
     if (!(await confirmHere(`🔶 하이드 제외 ${list.length}개를 모두 해제할까요? ${hideModeOf(settings()) === 'manual' ? '다음에 👻 하이드를 누를 때 함께 숨겨요.' : '저장된 원문은 바로 하이드돼요.'}`,
         () => chat().filter(kept).length === list.length && list.every(kept)))) return;
     try {
-        await transact(() => { for (const m of list) setKeep(m, false); }, { undoable: false, autosave: false, snapshot: true });
+        await transact(() => { for (const m of list) setKeep(m, false); }, { undoable: false, autosave: false, snapshot: true, grow: true });
     } catch (e) { paintKeep(); render(); throw e; }
     paintKeep(); ui.keepList = false; render(true);
     toastr.info(`🔶 하이드 제외 ${list.length}개를 해제했어요.`, 'SavePoint');

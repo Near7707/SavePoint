@@ -137,17 +137,20 @@ test('a successful save writes the rescanned visibility and memory position toge
     assert(h.writes[0].chat.slice(7).every(m => !m.is_system));
 });
 
-test('a failed disk write restores manual visibility exceptions, ownership and the saved position', async () => {
+// v0.7.0-b2a (H1; b2 design review P2): a save hides more, so its memory is written first and its new hides after it. A failed
+// chat write of the hides takes back the marks only: the memory (in its file) and its position stay.
+test('a failed hide write after the memory restores manual visibility exceptions and ownership, and keeps the saved memory', async () => {
     const h = harness({ lastIndex: 3 });
     h.chat[0].extra[VISIBLE_KEY] = true;
     h.chat[1].extra[HIDE_KEY] = 1;
     h.chat[2].is_system = true;
     delete h.chat[3].extra;
-    const original = JSON.stringify(h.chat), before = JSON.stringify(h.meta.savePoint);
+    const original = JSON.stringify(h.chat);
     h.box.persist = async () => { throw new Error('disk full'); };
     await assert.rejects(h.transact(() => { h.meta.savePoint.lastIndex = 8; }, { rehide: true }), /저장하지 못해서/);
     assert.equal(JSON.stringify(h.chat), original);
-    assert.equal(JSON.stringify(h.meta.savePoint), before);
+    assert.equal(h.meta.savePoint.lastIndex, 8);
+    assert.equal(h.meta.savePoint.rev, 1);
     h.chat.forEach((m, n) => assert.equal(h.dom.get(n), String(m.is_system)));
 });
 
@@ -268,12 +271,14 @@ test('manual: a user-hidden message is left alone, and off shows only what SaveP
     assert.equal(shown(h), 'HHHHHHHH.H');   // v0.6.74 (was '.........H'): off keeps every hide
 });
 
-test('manual: a failed write of the button puts every message and the range back', async () => {
+// v0.7.0-b2a (H1; b2 design review P2): the 👻 range is memory, written first; a failed chat write of the hides takes back the
+// marks only (the range stays in the memory file).
+test('manual: a failed hide write of the button puts every message back and keeps the range', async () => {
     const h = manual({ count: 10, lastIndex: 9, keepRecent: 2 });
-    const before = JSON.stringify(h.meta.savePoint), chatBefore = JSON.stringify(h.chat);
+    const chatBefore = JSON.stringify(h.chat);
     h.box.persist = async () => { throw new Error('disk full'); };
     await assert.rejects(press(h), /저장하지 못해서/);
-    assert.equal(JSON.stringify(h.meta.savePoint), before);
+    assert.equal(h.meta.savePoint.hideManual.to, 7);
     assert.equal(JSON.stringify(h.chat), chatBefore);
     h.chat.forEach((m, n) => assert.equal(h.dom.get(n), String(m.is_system)));
 });
@@ -378,7 +383,8 @@ test('🔖 auto: a kept message is shown again at once and never hidden; a hide 
     await h.transact(() => {}, { rehide: true });
     assert.equal(shown(h), 'HHH.HHHH..');
     assert.equal(h.chat[3].extra[HIDE_KEY], undefined);
-    await h.transact(() => keepOn(h, 3, false), { snapshot: true });
+    // v0.7.0-b2a: 🔖 changes may set new hides (`grow`, as toggleKeep asks); other memory edits only take hides away.
+    await h.transact(() => keepOn(h, 3, false), { snapshot: true, grow: true });
     assert.equal(shown(h), 'HHHHHHHH..');                       // auto: hidden again at once
 });
 
