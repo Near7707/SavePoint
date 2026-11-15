@@ -158,16 +158,16 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const second = ev(id => __savePoint.handle('pin-rec', id).then(() => 'ok', e => 'fail:' + e.message), qid11);              // written after
     const [a, b2] = [await first, await second];
     await ev(() => { M.metaDelay = 0; });
-    r = await ev(([q, e]) => { const st = __savePoint.state(); const saved = JSON.parse(JSON.stringify(M.meta.savePoint));
+    r = await ev(([q, e]) => { const st = __savePoint.state(); const saved = JSON.parse(JSON.stringify(__savePoint.home().st));
         return { pin: st.mem.records.find(x => x.id === q).pin, mode: st.mem.entities.find(x => x.id === e).standby, savedPin: saved.mem.records.find(x => x.id === q).pin, savedMode: saved.mem.entities.find(x => x.id === e).standby }; }, [qid11, ent11]);
     ok(r.pin === true && r.mode !== 'exclude', `11. 앞 저장 실패: 그 변경만 취소, 뒤의 ⚓는 남음 (${JSON.stringify(r)} · ${a} · ${b2})`);
-    r = await ev(([q, e]) => { const f = M.serverChat?.[0]?.chat_metadata?.savePoint; return f ? { pin: f.mem.records.find(x => x.id === q).pin, mode: f.mem.entities.find(x => x.id === e).standby } : null; }, [qid11, ent11]);
+    r = await ev(([q, e]) => { const f = M.mem(); return f ? { pin: f.mem.records.find(x => x.id === q).pin, mode: f.mem.entities.find(x => x.id === e).standby } : null; }, [qid11, ent11]);
     ok(r && r.pin === true && r.mode !== 'exclude', `11. 파일과 화면이 같음 (${JSON.stringify(r)})`);
 
     // 12–14. (v0.6.45) review: same toggle twice, a later write that already held the last change, a room move
     const pt = await ev(() => { const sc = __savePoint.state().mem.scenes[0], g = sc.segs[0]; return { id: `${sc.id}|${g.id}|0`, sid: sc.id }; });
     const keyOf = () => ev(p => { const [s, g, j] = p.split('|'); const pp = __savePoint.state().mem.scenes.find(x => x.id === s).segs.find(x => x.id === g).points[+j]; return { user: pp.keyUser, key: pp.key }; }, pt.id);
-    const fileKey = () => ev(p => { const [s, g, j] = p.split('|'); const f = M.serverChat?.[0]?.chat_metadata?.savePoint; const pp = f.mem.scenes.find(x => x.id === s).segs.find(x => x.id === g).points[+j]; return { user: pp.keyUser, key: pp.key }; }, pt.id);
+    const fileKey = () => ev(p => { const [s, g, j] = p.split('|'); const f = M.mem(); const pp = f.mem.scenes.find(x => x.id === s).segs.find(x => x.id === g).points[+j]; return { user: pp.keyUser, key: pp.key }; }, pt.id);
     const k0 = await keyOf();
     await ev(() => { M.metaDelay = 500; M.failOnce = true; });
     const t1 = ev(id => __savePoint.handle('key-toggle', id).then(() => 'ok', e => 'fail'), pt.id);
@@ -187,25 +187,25 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => { M.failOnce = true; });   // would hit the write after the one that already held ★
     await a1.catch(() => {}); await a2.catch(() => {}); await a3.catch(() => {});
     await ev(() => { M.metaDelay = 0; M.failOnce = false; });
-    r = await ev(([sid, q]) => { const st = __savePoint.state(), f = M.serverChat[0].chat_metadata.savePoint;
+    r = await ev(([sid, q]) => { const st = __savePoint.state(), f = M.mem();
         return { star: !!st.mem.scenes.find(x => x.id === sid).star, fileStar: !!f.mem.scenes.find(x => x.id === sid).star, pin: st.mem.records.find(x => x.id === q).pin, filePin: f.mem.records.find(x => x.id === q).pin }; }, [pt.sid, qid11]);
     ok(r.star === r.fileStar && r.pin === r.filePin, `13. 연속 ●·⚓·★ 뒤 실패가 와도 화면과 파일이 같음 (${JSON.stringify(r)})`);
 
     const roomA = await ev(() => ({ id: M.chatId, chat: M.chat, meta: M.meta }));
-    await ev(() => { M.metaDelay = 400; M.saveCalls = 0; });
+    await ev(() => { M.memDelay = 400; M.saveCalls = 0; });   // v0.7.0-b2c: the memory file's write is the slow one
     const m1 = ev(id => __savePoint.handle('key-toggle', id).then(() => 'ok', e => 'fail'), pt.id);
     await page.waitForTimeout(60);
     const m2 = ev(q => __savePoint.handle('pin-rec', q).then(() => 'ok', e => 'fail:' + e.message), qid11);
     await page.waitForTimeout(30);
     await ev(() => M.switchChat('roomQ', [], {}));
     const [o1, o2] = [await m1, await m2];
-    await ev(() => { M.metaDelay = 0; });
+    await ev(() => { M.memDelay = 0; });
     r = await ev(() => ({ bMeta: JSON.stringify(M.meta) }));
     ok(o2.startsWith('fail:채팅방을 옮겨서') && !r.bMeta.includes('savePoint'), `14. 방을 옮긴 뒤 이전 방의 대기 저장은 새 방을 저장하지 않고 알림 (${o1} · ${o2.slice(0, 40)})`);
     // v0.6.72: the slow write started in room A now lands in room A's file (before, it landed in the room open
     // by then), so room A is opened again from its file.
-    ok(await ev(a => !!M.serverFiles[a.id][0].chat_metadata.savePoint && !M.serverFiles.roomQ?.[0]?.chat_metadata?.savePoint, roomA), '14b. 늦게 끝난 저장은 원래 방 파일에만 들어감');
-    await ev(a => M.openFile(a.id, { same: false }), roomA);
+    ok(await ev(a => !!M.mem(a.id) && !M.mem('roomQ'), roomA), '14b. 늦게 끝난 저장은 원래 방 파일에만 들어감');
+    await ev(async a => { await M.openFile(a.id, { same: false }); await M.opened(); }, roomA);
 
     // 15–17. (v0.6.46) replays address items by id; a gone target stops the replay; the file stays valid
     const setup = () => ev(() => { const st = __savePoint.state();
@@ -213,7 +213,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         for (const x of st.mem.records) if (['r950', 'r951'].includes(x.id)) x.pin = false;
         __savePoint.adoptPage(); 
         __savePoint.render(true); });
-    const both = () => ev(() => { const st = __savePoint.state(), f = M.serverChat[0].chat_metadata.savePoint;
+    const both = () => ev(() => { const st = __savePoint.state(), f = M.mem();
         const pick = m => ['r950', 'r951'].map(id => { const x = m.records.find(r => r.id === id); return x ? (x.pin ? 'pin' : 'on') : 'gone'; }).join(',');
         return { page: pick(st.mem), file: pick(f.mem) }; });
     const slowFail = () => ev(() => { M.metaDelay = 400; M.failOnce = true; });
@@ -235,7 +235,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const newId = await ev(() => __savePoint.state().mem.records.find(x => x.text === 'A brand new thread.')?.id);
     p2 = ev(id => __savePoint.handle('pin-rec', id), newId);
     await settle(p1, p2);
-    r = await ev(() => { const f = M.serverChat[0].chat_metadata.savePoint; const bad = f.mem.records.some(x => Array.isArray(x) || !x || !x.type);
+    r = await ev(() => { const f = M.mem(); const bad = f.mem.records.some(x => Array.isArray(x) || !x || !x.type);
         return { bad, pageHas: __savePoint.state().mem.records.some(x => x.text === 'A brand new thread.'), fileHas: f.mem.records.some(x => x.text === 'A brand new thread.') }; });
     ok(newId && !r.bad && !r.pageHas && !r.fileHas, `17. 추가 실패 + 그 항목 ⚓: 없는 자리를 만들지 않고 취소, 파일 형식 유지 (${JSON.stringify(r)})`);
     if (SHOTS) await page.locator('#sp_overlay .sp-window').screenshot({ path: path.join(OUT, 'quests-main.png') });

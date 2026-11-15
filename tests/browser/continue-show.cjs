@@ -24,6 +24,9 @@ function serve() {
 }
 let failures = 0;
 const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!cond) failures++; };
+// v0.7.0-b2c: a check that no longer applies (its reason given), or one kept for b3.
+const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
+const B3 = 'b3: #0 이어하기를 꺼 둠';
 
 
 // v0.6.86 (review of v0.6.83–84):
@@ -73,6 +76,11 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const late = (ev, ms) => ev(ms => { const f = window.fetch; let k = 0;
         window.fetch = (u, o) => { if (String(u) !== '/api/chats/save' || ++k !== 1) return f(u, o); setTimeout(() => f(u, o), ms); return Promise.reject(new TypeError('Failed to fetch')); }; }, ms);
 
+    // 1–2 (v0.6.86) and 4–4b (v0.6.88): the continue (a new #0 written with the memory) is off until b3.
+    for (const m of ['1. 응답 없는 이어하기: 방을 다시 읽지 않고 첫 메시지를 한 번 그림', '1. 늦은 요청 도착 뒤에도 화면은 그대로',
+        '1b. 이어하기 성공(빈 방)', '1c. 이어하기 성공(인사말 방)', '2. 이어하기 거절, 번역이 붙은 첫 메시지는 남김', '2b. 이어하기 거절, 첫 메시지를 되돌림',
+        '4. 이어하기 중 새 메시지 둘이 #1·#2로 그려짐', '4b. 이어하기 거절, 그 뒤 새 메시지가 있음']) skip(m, B3);
+    if (process.env.B3) {
     // 1. An empty room; the continue gets no answer (it lands 4 s later). Then two new messages and a 🔶.
     {
         const { page, ev } = await session();
@@ -92,7 +100,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     for (const [n, room] of [['1b', []], ['1c', greetingRoom()]]) {
         const { page, ev } = await session();
         const r = await carry(page, ev, room);
-        const file = await ev(() => ({ n: M.serverFiles.chatNew.length - 1, first: M.serverFiles.chatNew[1]?.mes, mem: !!M.serverFiles.chatNew[0].chat_metadata.savePoint }));
+        const file = await ev(() => ({ n: M.serverFiles.chatNew.length - 1, first: M.serverFiles.chatNew[1]?.mes, mem: !!M.mem('chatNew') }));
         const drawn = n === '1b' ? r.draws === 1 && r.redraws === 0 : r.draws === 0 && r.redraws === 1;
         ok(r.reloads === 0 && drawn && r.shown === 1 && file.n === 1 && file.first === r.page0 && r.page0 !== GREETING && file.mem,
             `${n}. 이어하기 성공(${n === '1b' ? '빈 방' : '인사말 방'}): 첫 메시지를 한 번만 그리고 방을 다시 읽지 않음 (${JSON.stringify({ draws: r.draws, redraws: r.redraws, reloads: r.reloads })})`);
@@ -111,25 +119,28 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         else ok(r.page0 === GREETING && !s.tainted && !s.fileTainted && !s.mem && /첫 메시지와 기억은 불러오기 전 그대로/.test(r.toasts), `2b. 이어하기 거절, 첫 메시지를 되돌리면 편집된 채팅 표시도 되돌림 (${JSON.stringify(s)})`);
         await page.close();
     }
+    }
     // 3. Title A is saved (its AUTO waits 1.2 s); title B's write gets no answer and its read-back is slow.
     //    3b. A's timer runs while B is still on its way (2 s); then B is refused (SillyTavern's 500).
     const lastAuto = ev => ev(() => __savePoint.listSaves().filter(s => s.auto).sort((a, b) => (b.created || 0) - (a.created || 0))[0]?.stats?.lastTitle ?? null);
     for (const how of ['lost', 'slow']) {
         const { page, ev } = await session();
         await ev(() => __savePoint.commitEdit(m => { m.scenes.at(-1).title = 'Title A'; }));
-        if (how === 'lost') await ev(() => { const f = window.fetch; let k = 0; window.fetch = (u, o) => { if (String(u) !== '/api/chats/save' || ++k !== 1) return f(u, o);
-            M.readDelayFor = { chatA: 2500 }; setTimeout(() => f(u, o), 20000); return Promise.reject(new TypeError('Failed to fetch')); }; });
-        else await ev(() => { M.metaDelay = 2000; M.failOnce = true; });
+        // v0.7.0-b2c: the memory's write is the memory file's (lost: no answer, it lands 20 s later; slow: 2 s, then refused).
+        if (how === 'lost') await ev(() => { const f = window.fetch; let k = 0; window.fetch = (u, o) => { if (String(u) !== '/api/files/upload' || !JSON.parse(o.body).name.startsWith('savepoint-mem-') || ++k !== 1) return f(u, o);
+            setTimeout(() => f(u, o), 20000); return Promise.reject(new TypeError('Failed to fetch')); }; });
+        else await ev(() => { M.memDelay = 2000; M.memFailOnce = 'refused'; });
         await ev(() => { window.__b = __savePoint.commitEdit(m => { m.scenes.at(-1).title = 'Title B'; }).then(() => 'ok', e => `${e.name}: ${e.message}`); });
         await page.waitForTimeout(1600);
         const mid = await lastAuto(ev);
         const b = await ev(() => window.__b);
         await page.waitForTimeout(1500);
-        const end = await lastAuto(ev), file = await ev(() => M.serverFiles.chatA[0].chat_metadata.savePoint.mem.scenes.at(-1).title);
+        const end = await lastAuto(ev), file = await ev(() => M.mem('chatA').mem.scenes.at(-1).title);
         ok(mid === 'Title A' && end === 'Title A' && file === 'Title A' && !/^ok/.test(b), `${how === 'lost' ? '3' : '3b'}. AUTO는 확인된 저장(A)만: ${how === 'lost' ? '응답 끊긴 B' : 'B가 응답을 기다리는 사이 A 타이머 실행, B는 거절'} (${JSON.stringify({ mid, end, file })}, ${b.slice(0, 20)})`);
         await page.close();
     }
 
+    if (process.env.B3) {
     // 4–4b (v0.6.88). An empty room; while the continue is on its way a message is sent and answered (SillyTavern draws
     //    them as #1 and #2). 4: it lands — #0 is drawn in front of them. 4b: refused (500) — #0 stays (messages were made
     //    on top of it), only the memory goes back; screen numbers match the list, and the notice says so.
@@ -146,6 +157,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         else ok(lined && s.list.length === 3 && s.list[1] === 'Sent meanwhile.' && !s.mem && /그 뒤에 새 메시지가 있어서/.test(r.toasts),
             `4b. 이어하기 거절, 그 뒤 새 메시지가 있음 → 첫 메시지는 남기고 기억만 되돌림, 화면 번호 = 실제 번호 (${JSON.stringify(s.screen)}, ${s.mem})`);
         await page.close();
+    }
+
     }
 
     await browser.close(); srv.close();

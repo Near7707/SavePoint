@@ -33,7 +33,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: SHOTS ? 2 : 1 });
     page.on('pageerror', e => { console.log('PAGE ERROR', e.message); failures++; });
     await page.goto(`http://localhost:${srv.address().port}/`);
-    await page.waitForFunction(() => !!globalThis.__savePoint);
+    await page.waitForFunction(() => !!globalThis.__savePoint && __savePoint.vault.ready);
+    await page.evaluate(() => M.opened());   // v0.7.0-b2c: the room's memory file read first
     const ev = (fn, arg) => page.evaluate(fn, arg);
     const sleep = ms => page.waitForTimeout(ms);
     const banner = () => ev(() => { const b = document.getElementById('sp_save_banner'); return b ? { shown: !b.hidden, text: b.textContent, theme: b.getAttribute('data-theme') } : { shown: false, text: '' }; });
@@ -69,7 +70,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const p3 = ev(() => __savePoint.handle('run').catch(() => {}));
     await page.waitForFunction(() => __savePoint.state().lastIndex >= 40, null, { timeout: 15000 });
     const savedTo = await ev(() => __savePoint.state().lastIndex);
-    await ev(async () => { window.__roomA = { chat: M.chat, meta: M.meta }; await M.switchChat('chatB', [], {}); M.add(2); });
+    await ev(async () => { window.__roomA = { chat: M.chat, meta: M.meta }; await M.switchChat('chatB', [], {}); await M.opened(); M.add(2); });
     await p3; await sleep(200);
     r = await ev(() => ({ toast: toastr.log.filter(x => x[0] === 'warning').map(x => x.slice(1).join(' ')).pop() || '', all: toastr.log.slice(-4).map(x => x[1]).join(' | '), interrupted: M.settings.savePoint.interrupted }));
     ok(r.toast.includes('방을 나가서 저장을 멈췄어요') && r.toast.includes(`#36–#${savedTo}`) && r.toast.includes('다시 세이브'), `3. 방을 옮기면 어느 방에서 어디까지 저장됐는지 알림 (${r.toast.slice(0, 90)})`);
@@ -78,7 +79,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(!(await banner()).shown, '3. 새 방에서는 안내 창이 사라짐');
 
     // 4. coming back: a notice, a HUD line with a button, cleared after the next save
-    await ev(async () => { await M.switchChat('chatA', window.__roomA.chat, window.__roomA.meta); });
+    await ev(async () => { await M.switchChat('chatA', window.__roomA.chat, window.__roomA.meta); await M.opened(); });
     await sleep(200);
     r = await ev(() => toastr.log.at(-1)?.[1] || '');
     ok(r.includes('중간에 멈췄어요') && r.includes(`#${savedTo + 1}부터 미저장`), `4. 돌아오면 이어서 저장하라고 안내 (${r.slice(0, 60)})`);
@@ -101,10 +102,10 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.shown && r.text.includes('저장 중입니다') && !r.text.includes('완료'), `5. 바로 다음 저장을 시작하면 이전 완료 표시 대신 저장 중 (${r.text.trim().slice(0, 20)})`);
     await p5; await sleep(50);
     ok((await banner()).text.includes('저장 완료'), '5. 다음 저장도 완료 표시');
-    await ev(async () => { window.__roomA2 = { chat: M.chat, meta: M.meta }; await M.switchChat('chatC', [], {}); M.add(2); });
+    await ev(async () => { window.__roomA2 = { chat: M.chat, meta: M.meta }; await M.switchChat('chatC', [], {}); await M.opened(); M.add(2); });
     await sleep(100);
     ok(!(await banner()).shown, '5. 방을 옮기면 이전 방의 완료 표시가 바로 사라짐');
-    await ev(async () => { await M.switchChat('chatA', window.__roomA2.chat, window.__roomA2.meta); });
+    await ev(async () => { await M.switchChat('chatA', window.__roomA2.chat, window.__roomA2.meta); await M.opened(); });
     await sleep(3700);
 
     // 6. a checkpoint whose chat-file write fails shows no "완료"

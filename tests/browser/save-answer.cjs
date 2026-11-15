@@ -92,7 +92,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         const { page, ev } = await session();
         await noAnswer(ev, 0);
         const msg = await ev(() => __savePoint.transact(() => { __savePoint.state().probe = 'two'; }).then(() => 'ok', e => `${e.name}: ${e.message}`));
-        const r = await ev(() => ({ page: __savePoint.state().probe ?? null, file: M.serverFiles.chatA[0].chat_metadata.savePoint.probe ?? null, blocked: __savePoint.autoBlocked() }));
+        const r = await ev(() => ({ page: __savePoint.state().probe ?? null, file: M.mem('chatA').probe ?? null, blocked: __savePoint.autoBlocked() }));
         ok(/저장했어요/.test(msg) && r.page === 'two' && r.file === 'two' && r.blocked === 'room', `2. 응답만 끊김: 파일에서 찾아 화면 유지, 방은 멈춤 (${msg.slice(0, 40)}, ${JSON.stringify(r)})`);
         await page.close();
     }
@@ -102,14 +102,14 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         const { page, ev } = await session();
         await noAnswer(ev, 4000);
         const msg = await ev(() => __savePoint.transact(() => { __savePoint.state().probe = 'three'; }).then(() => 'ok', e => `${e.name}: ${e.message}`));
-        let r = await ev(() => ({ page: __savePoint.state().probe ?? null, file: M.serverFiles.chatA[0].chat_metadata.savePoint.probe ?? null, blocked: __savePoint.autoBlocked() }));
+        let r = await ev(() => ({ page: __savePoint.state().probe ?? null, file: M.mem('chatA').probe ?? null, blocked: __savePoint.autoBlocked() }));
         ok(/Unconfirmed/.test(msg) && r.page === 'three' && r.file === null && r.blocked === 'unsure', `3. 아직 가는 중: 화면은 그대로, 확인 못 함 (${JSON.stringify(r)})`);
         await page.waitForTimeout(3500);
         ok(!/들어가지 않았어요/.test(await toasts(ev)), '3. 파일이 아직 그대로여도 "들어가지 않았어요"라고 하지 않음');
         await page.waitForTimeout(1000);
         const sends = await ev(() => M.saveBodies.length);
         const msg2 = await ev(() => __savePoint.transact(() => { __savePoint.state().probe2 = 'after'; }).then(() => 'ok', e => `${e.name}: ${e.message}`));
-        r = await ev(() => ({ file: M.serverFiles.chatA[0].chat_metadata.savePoint.probe ?? null, file2: M.serverFiles.chatA[0].chat_metadata.savePoint.probe2 ?? null, page2: __savePoint.state().probe2 ?? null }));
+        r = await ev(() => ({ file: M.mem('chatA').probe ?? null, file2: M.mem('chatA').probe2 ?? null, page2: __savePoint.state().probe2 ?? null }));
         ok(/RoomBlocked/.test(msg2) && r.file === 'three' && r.file2 === null && r.page2 === null && await ev(() => M.saveBodies.length) === sends, `3. 늦게 들어간 뒤에도 다음 변경은 보내지 않음 (${msg2.slice(0, 40)}, ${JSON.stringify(r)})`);
         await page.close();
     }

@@ -211,7 +211,7 @@ M.serverFiles = {};
 // Older suites write the open room's file directly.
 M.writeServerChat = () => { if (M.silentSaveFail) return; M.serverChat = copy([{ chat_metadata: M.meta }, ...M.chat]); M.serverFiles[M.chatId] = M.serverChat; };
 M.stSave = () => { if (M.serverFrozen || M.silentSaveFail || M.swallowMeta || M.noStSave) return; M.stSaves++; M.serverFiles[M.chatId] = copy([{ chat_metadata: M.meta }, ...M.chat]); };
-M.spSaves = 0; M.stSaves = 0; M.chatSaves = 0;
+M.spSaves = 0; M.stSaves = 0; M.chatSaves = 0; M.saves = 0;   // v0.7.0-b2c: counted from 0 (the first chat save may now come late)
 M.serverFile = name => {
     if (M.serverEmpty) return {};
     if (M.serverError) return null;
@@ -294,6 +294,39 @@ M.importChat = (id, name = `${id} imported`) => { M.serverFiles[name] = copy(M.s
 // M.beforeUpload(name, text): awaited right before a write lands (another device can write in between:
 // M.otherPut). M.otherPut / M.otherDel: another device's writes, straight to the folder.
 M.fileState = {}; M.fileDelay = {}; M.fileReads = [];
+// v0.7.0-b2c: a room's memory as its memory file holds it (older suites read it from the chat metadata, which SavePoint no
+// longer writes). `chat`: the room by its chat id (the character open now): the room open now through its home, another through
+// its room tag. `M.putMem(st)`: a test's own memory for the room open now (setup), on the page and in its memory file (the file's
+// rev and wid kept: still the one this page saw), taken as the queue's.
+import('/ext/home.js').then(H => { M.H = H; });
+M.charKey = () => { const c = SillyTavern.getContext(); if (c.groupId !== undefined && c.groupId !== null && c.groupId !== '') return 'group:' + c.groupId; return c.characters?.[c.characterId]?.avatar ?? null; };
+M.memId = (chat = M.chatId) => {
+    const h = __savePoint.home();
+    if (chat === M.chatId && h.id) return h.id;
+    const t = M.files.get(M.H.tagName(JSON.stringify([M.charKey(), String(chat)])));
+    try { return t ? JSON.parse(t).mem ?? null : null; } catch { return null; }
+};
+M.memDoc = (chat = M.chatId) => { const id = M.memId(chat), t = id ? M.files.get(M.H.memName(id)) : null; try { return t ? JSON.parse(t) : null; } catch { return null; } };
+M.mem = (chat = M.chatId) => M.memDoc(chat)?.state ?? null;
+// The room open now done opening (its memory file read and linked, or held): b2c suites that switch rooms wait for it.
+M.opened = async (ms = 5000) => { const end = Date.now() + ms; while (__savePoint.home().status === 'opening' && Date.now() < end) await new Promise(r => setTimeout(r, 20)); return __savePoint.home().status; };
+// M.holdMem(test): the next memory file write whose state passes `test` waits (M.held = its name) until M.release().
+M.holdMem = test => {
+    M.held = false;
+    M.beforeUpload = async (name, text) => {
+        if (M.held || !name.startsWith('savepoint-mem-')) return;
+        let st = null; try { st = JSON.parse(text).state; } catch { /* not ours */ }
+        if (!test(st)) return;
+        M.held = name;
+        await new Promise(r => { M.release = r; });
+    };
+};
+M.putMem = st => {
+    __savePoint.home().st = st;
+    const d = M.memDoc();
+    if (d && st && M.H.validState(st)) { d.state = JSON.parse(JSON.stringify(st)); M.files.set(M.H.memName(d.id), JSON.stringify(d)); }
+    __savePoint.adoptPage();
+};
 M.otherPut = (name, obj) => { M.files.set(name, typeof obj === 'string' ? obj : JSON.stringify(obj)); M.fileLog.push(['other-put', name]); };
 M.otherDel = name => { M.files.delete(name); M.fileLog.push(['other-del', name]); };
 
@@ -328,6 +361,22 @@ window.fetch = async (url, opts = {}) => {
         const b = JSON.parse(opts.body);
         if (!/^[a-zA-Z0-9_\-.]+$/.test(b.name)) return res('bad name', 400);
         if (M.failFile && b.name.includes(M.failFile)) return res('fail', 500);
+        // v0.7.0-b2c: a failed write of a room's memory file (older suites failed the chat file, where the memory was).
+        // M.memFail (every write) · M.memFailOnce (the next) · M.memFailNth = n (the n-th from now): 'refused' (400: turned
+        // away, nothing written), 'lost' (500: no answer, nothing written), 'landed' (written, then 500: the answer lost).
+        if (b.name.startsWith('savepoint-mem-')) {
+            // M.memDelay: ms before a memory file write lands (older suites slowed the chat file with M.metaDelay).
+            if (M.memDelay) await new Promise(r => setTimeout(r, M.memDelay));
+            let how = M.memFail || null;
+            if (!how && M.memFailOnce) { how = M.memFailOnce; M.memFailOnce = null; }
+            if (!how && M.memFailNth && !--M.memFailNth) how = M.memFailKind || 'refused';
+            if (how) {
+                (M.memFails ||= []).push(how);
+                if (how === 'refused') return res('bad', 400);
+                if (how === 'landed') { M.files.set(b.name, fromB64(b.data)); M.fileLog.push(['put', b.name]); }
+                return res('fail', 500);
+            }
+        }
         if (M.beforeUpload) await M.beforeUpload(b.name, fromB64(b.data));
         M.files.set(b.name, fromB64(b.data)); M.fileLog.push(['put', b.name]);
         return res({ path: 'user/files/' + b.name });

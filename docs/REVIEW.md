@@ -1,3 +1,24 @@
+# v0.7.0-b2c1 · 예전 검사 묶음을 기억 파일 기준으로 1 (브랜치 `v0.7-b`)
+
+기준: `v0.7-b`의 `355f967`(b2b2 리뷰 요청서, 리뷰 받음: P1·P2 없음). 코드 변경 없음(버전만). 파일: `tests/browser/mock.js`, 예전 묶음 29개, 문서.
+
+바뀐 것
+1. `mock.js` 도우미: `M.mem(chat)`·`M.memDoc(chat)`(그 방의 기억 파일: 지금 방은 `home().id`, 다른 방은 이름표), `M.putMem(st)`(검사 준비용 기억을 화면과 기억 파일에 같이, rev·wid 그대로, `adoptPage`), `M.opened()`(방 열기가 끝날 때까지), `M.holdMem(test)`(조건에 맞는 다음 기억 쓰기를 `M.release()`까지 붙잡음), `M.memFail`·`memFailOnce`·`memFailNth`(`'refused'` 400 · `'lost'` 500 안 씀 · `'landed'` 쓰고 500), `M.memDelay`, `M.saves`는 0부터.
+2. 기계적으로 바꾼 것: `M.meta.savePoint`(화면 기억) → `__savePoint.home().st`, 서버 채팅 파일 속 기억 → `M.mem(방)`, 기억을 직접 넣던 준비 → `M.putMem`, 방을 바꾼 직후 → `M.opened()`, 새로 만드는 방 파일에 `integrity`(기억 파일은 고유값 있는 방만 만듦), 채팅 파일을 되돌리던 준비는 `M.files`(기억 파일·이름표)도 함께 되돌림.
+3. 뜻을 옮긴 것(채팅 쓰기는 이제 🔖·숨김만): `room-switch-save` 3·4(고유값 거절·그룹 파일)는 🔖로, `room-order` 4(다른 기기 기억)는 다른 기기의 기억 파일 쓰기 + 이 화면의 기억 편집으로, 5(큰 저장 중 작은 저장)는 기억 파일 쓰기가 겹치지 않는지로, 6(확인 못 한 루팅 보충)은 기억 쓰기 응답 없음으로, `room-turn` 5(방 확인 중 무시)는 "확인 중엔 화면에 기억이 없음 → 무시는 차례를 기다려 기억 파일에 저장"으로, `recheck`(정리 저장 거절·붙잡기)는 기억 파일 쓰기로, `mock-home` 3은 🔖로, `continue-show` 3·3b는 기억 파일 쓰기의 응답 없음·늦은 거절로.
+4. `SKIP`(이유를 줄에 씀): #0 이어하기(b3까지 꺼 둠) — `continue-show` 1~2b·4·4b, `room-turn` 1, `room-order` 2, `room-gate` 9. 채팅 파일 속 기억에만 있던 상황 — `room-turn` 2 준비·3(열 때 기억은 기억 파일에서 읽음, home-link), `room-order` 4b(기억 확인은 기억 파일 영수증으로만, memfile.test).
+
+옮기다 찾은 버그 후보(코드는 안 고침, 판단 받기 전)
+- ★ `recheck` 3: 수동 하이드에서 숨긴 원문을 고치고 답변 시작(SavePoint가 화면에서 숨김을 풂) → 실리태번이 그 화면을 저장(서버도 풀림) → 원문을 되돌려 화면이 다시 숨김 → 다음 차례에 `releasedOf`가 "다른 곳에서 숨김을 풂"으로 잘못 봄(마지막으로 본 파일은 숨김, 지금 파일은 아님, 화면은 숨김) → 숨김을 모두 펼치고 `freed`, 다른 기기 안내. b2b2 요청서 "특히 봐 줄 곳 2"의 경우.
+- `scroll`: 방을 다시 열면 기억 파일을 읽기 전(기억 없음) 그린 화면이 스크롤을 0으로 만들고 그 값을 그 방의 위치로 저장 → 방마다 기억하던 SavePoint 창 스크롤 위치가 사라짐.
+
+남은 실패(b2c2·b2c3): autofail 3 · hide-manual 1 · loot-bar 2 · note-fail · quests 5 · quick 5 · recheck 1(위) · restore-scope 8 · results 1 · room-gate 6 · room-rule 2 · run 4+ · save-adopt · save-answer · save-answered · save-banner 5 · save-base · save-foreign · save-recheck · save-settle 1 · scroll 2(위) · story-time 1 · vault 3. 대부분 채팅 파일 실패로 기억 저장 실패를 흉내 내던 곳, 그리고 기억 변경을 채팅 쓰기의 계기로 쓰던 곳(`save-*`).
+
+검사와 결과
+- Node: 506 통과 / 0 실패 / 3 건너뜀.
+- 브라우저 묶음 전체(58묶음): 통과 34(예전 22 + balanced · continue-show · deadline · edit-generate · mock-home · rewind · room-apply · room-order · room-switch-save · room-turn · save-pending · timeline · wait-room) / 실패 24, 검사 모드 오류 0. 한꺼번에 돌릴 때 `status`가 예전과 같은 타이밍 실패 → 따로 통과. SKIP 17줄(continue-show 8 · room-turn 4 · room-order 4 · room-gate 1).
+- 망가뜨리기: 이번엔 검사를 옮기기만 해서 하지 않음(b2c3에서 옮긴 묶음 몇 곳에 함).
+
 # v0.7.0-b2b2 · v0.7.0-b2b1 코드 리뷰 반영 (브랜치 `v0.7-b`)
 
 기준: `v0.7-b`의 `d01575b`(b2b1 리뷰 요청서, 코드는 `dce17b4`). 파일: `index.js`, `manifest.json`, 검사(`b2b-race.cjs` 10), 문서. 리뷰 결과 지난 P1 닫힘, 새 P1 없음, P2 2. 코드로 확인했고, P2-1은 고치기 전 코드에서 새 검사로 재현했어요. 범위는 2차 의견(P2-1만, P2-2는 알려진 한계)대로.

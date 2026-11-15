@@ -168,7 +168,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
             M.beforeChatSave = async () => { if (++n === 1) setTimeout(() => { M.noStSave = true; M.chat.push(window.__m); }, 100); }; }, msg('Thirteenth.'));
         await ev(() => { M.failNth = 2; });
         const r1 = await ev(() => __savePoint.transact(() => { __savePoint.state().probe = 'eight'; }).then(() => 'ok', e => `${e.name}: ${e.message}`));
-        const r = await ev(() => ({ page: __savePoint.state().probe ?? null, file: M.serverFiles.chatA[0].chat_metadata.savePoint.probe ?? null }));
+        const r = await ev(() => ({ page: __savePoint.state().probe ?? null, file: M.mem('chatA').probe ?? null }));
         ok(r.page === 'eight' && r.file === 'eight', `8. 첫 저장 성공 뒤 재전송만 실패: 첫 변경은 화면에 남음 (${r1.slice(0, 30)})`);
         await page.close();
     }

@@ -46,7 +46,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const page = await session({ settings: { savePoint: { firstTab: 'journal', check: false, askResume: false } } });
     const ev = (fn, arg) => page.evaluate(fn, arg);
     const wait = ms => page.waitForTimeout(ms);
-    const fileMem = () => ev(() => M.serverFiles[M.chatId]?.[0]?.chat_metadata?.savePoint?.mem || null);
+    const fileMem = () => ev(() => M.mem(M.chatId)?.mem || null);
     await ev(() => { M.add(8); });
     await ev(() => __savePoint.handle('run'));
     await wait(1500);
@@ -100,7 +100,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => { M.confirm = 1; M.promptThrow = 1; toastr.log.length = 0; });
     await ev(() => __savePoint.handle('clear-room').catch(e => { M.e3b = e.message; }));
     await wait(300);
-    r = { page: await ev(() => __savePoint.state().mem.scenes.length), file: (await fileMem())?.scenes?.length, undo: await ev(() => M.serverFiles[M.chatId][0].chat_metadata.savePoint.undoInfo?.kind), e: await ev(() => M.e3b || '') };
+    r = { page: await ev(() => __savePoint.state().mem.scenes.length), file: (await fileMem())?.scenes?.length, undo: await ev(() => M.mem().undoInfo?.kind), e: await ev(() => M.e3b || '') };
     ok(r.page === 0 && r.file === 0 && r.undo === 'reset' && !r.e, `3. 프롬프트 갱신 오류는 리셋 저장을 막지 않음 (${r.page}, ${r.file}, ${r.e})`);
 
     await page.close();

@@ -61,7 +61,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     // 2. pressing it hides the recorded messages outside the latest 4; the file has it
     await ev(() => __savePoint.handle('hide-now'));
     await page.waitForTimeout(300);
-    r = { hid: await hidden(), btn: await button(), to: await ev(() => __savePoint.state().hideManual?.to), file: await ev(() => M.meta.savePoint?.hideManual?.to) };
+    r = { hid: await hidden(), btn: await button(), to: await ev(() => __savePoint.state().hideManual?.to), file: await ev(() => M.mem()?.hideManual?.to) };
     ok(r.hid === 'HHHHHHHH....' && r.btn?.text === '👻 하이드 0' && r.to === 7, `2. 👻 → 저장된 원문 8개 하이드, 최근 4개 남김, 버튼은 0으로 남음 (${JSON.stringify(r)})`);
 
     // 3. later saves record but do not grow the range
@@ -165,7 +165,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     //     first (strict mode turns that into a page error), and the file gets it.
     const at11 = await ev(() => { const sel = document.querySelector('#sp_settings [data-set=hideMode]'); sel.value = 'manual'; $(sel).trigger('change'); return M.settings.savePoint.hideManualAt; });
     await page.waitForTimeout(900);
-    r = await ev(() => ({ page: __savePoint.state().hideManual, file: M.serverFiles[M.chatId][0].chat_metadata.savePoint.hideManual }));
+    r = await ev(() => ({ page: __savePoint.state().hideManual, file: M.mem().hideManual }));
     ok(r.page?.at >= at11 && r.file?.at === r.page.at && r.file?.to === r.page.to, `11. (v0.7.0-a) 수동으로 다시 바꾸면 새 범위가 대기열 차례에 저장됨 (${JSON.stringify(r)})`);
 
     await page.close();

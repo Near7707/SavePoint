@@ -52,6 +52,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r = await ev(async () => {
         const H = await import('/ext/home.js');
         const read = name => H.readUserFile(fetch, name);
+        const r0 = M.fileReads.length;   // v0.7.0-b2c: SavePoint reads the room's own memory file too (not counted here)
         M.otherPut('savepoint-mem-a.json', { a: 1 });
         M.otherPut('savepoint-mem-b.json', { b: 1 });
         const out = { none: (await read('savepoint-mem-zz.json')).kind, ok: (await read('savepoint-mem-a.json')).kind };
@@ -64,7 +65,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         M.fileState = {}; M.fileDelay = { 'savepoint-mem-a.json': 300 };
         const t = Date.now(); out.slow = (await read('savepoint-mem-a.json')).kind; out.waited = Date.now() - t;
         M.fileDelay = {};
-        out.reads = M.fileReads.filter(n => n.startsWith('savepoint-mem-')).length;
+        out.reads = M.fileReads.slice(r0).filter(n => /^savepoint-mem-(a|b|c|d|zz)\.json$/.test(n)).length;
         return out;
     });
     ok(r.none === 'missing' && r.ok === 'ok' && r.broken === 'broken' && r.error === 'error' && r.brokenNone === 'broken' && r.hidden === 'missing', `1. 사용자 파일 읽기 네 가지 (${JSON.stringify(r)})`);
@@ -88,7 +89,9 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r = await ev(() => ({ sp: M.spSaves, st: M.stSaves }));
     await ev(() => __savePoint.handle('run'));
     await wait(1500);
-    const after = await ev(() => ({ sp: M.spSaves, st: M.stSaves, mem: !!M.serverFiles[M.chatId][0].chat_metadata.savePoint }));
+    // v0.7.0-b2c: the memory goes to its own file; SavePoint's chat save here is a 🔖 (a save hides nothing yet).
+    await ev(() => __savePoint.toggleKeep(1));
+    const after = await ev(() => ({ sp: M.spSaves, st: M.stSaves, mem: !!M.mem() }));
     ok(r.sp === 0 && r.st >= 1 && after.sp >= 1 && after.mem, `3. 채팅 저장 횟수: SavePoint ${r.sp}→${after.sp}, 실리태번 ${r.st}→${after.st}`);
     await ev(() => { M.add(1); });
     const after2 = await ev(() => ({ sp: M.spSaves, st: M.stSaves }));
@@ -111,7 +114,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
             list: M.chatList().sort(),
         };
     });
-    ok(r.b.join() === '5,chatA,true,true' && r.s.join() === 'Another way it went.,1' && r.o === 'i-main', `4. 분기·스와이프 분기·예전 분기 (${JSON.stringify([r.b, r.s, r.o])})`);
+    // v0.7.0-b2c: no memory in the chat file to copy (the branch's last field).
+    ok(r.b.join() === '5,chatA,true,false' && r.s.join() === 'Another way it went.,1' && r.o === 'i-main', `4. 분기·스와이프 분기·예전 분기 (${JSON.stringify([r.b, r.s, r.o])})`);
     ok(r.c[1] === 7 && r.c[2] === 'chatA' && r.i.join() === 'chatA imported,i-main,true' && r.marks.join() === 'Branch #1,Branch #2,Branch #3', `4. 체크포인트·가져오기 (${JSON.stringify([r.c, r.i])})`);
     ok(r.link[0] === r.c[0] && r.link[1] === r.c[0] && r.link[2] === null && r.link[4] === r.link[3] + 1, `4. 체크포인트는 원래 방 메시지에 bookmark_link를 붙이고 실리태번이 원래 방을 저장 (${JSON.stringify(r.link)})`);
     r = await ev(async () => (await (await fetch('/api/characters/chats', { method: 'POST', body: JSON.stringify({ avatar_url: 'ari.png', simple: true }) })).json()).map(x => x.file_name));

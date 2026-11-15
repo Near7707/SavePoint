@@ -102,7 +102,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         const msg = await ev(() => window.__done);
         ok(await ev(() => M.saveBodies.length) === 1, '3. 서버가 그사이 바뀌어서 다시 보내지 않음 (첫 요청 1번만)');
         ok(await fileLast(ev) === other.mes, '3. 다른 기기의 메시지가 파일에 그대로');
-        ok(await ev(() => __savePoint.state().probe) === 'resend' && await ev(() => M.serverFiles.chatA[0].chat_metadata.savePoint.probe) === 'resend', '3. 들어간 변경은 화면에서 되돌리지 않음(파일에도 있음)');
+        ok(await ev(() => __savePoint.state().probe) === 'resend' && await ev(() => M.mem('chatA').probe) === 'resend', '3. 들어간 변경은 화면에서 되돌리지 않음(파일에도 있음)');
         ok(/저장했어요/.test(msg) && !/취소/.test(msg), `3. 안내: 저장은 했고 더 저장하지 않음 (${String(msg).slice(0, 60)})`);
         ok(await ev(() => __savePoint.autoBlocked()) === 'room', '3. 방을 막음');
         await page.close();
@@ -149,7 +149,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         await ev(() => { M.metaDelay = 300; M.failNth = 2; setTimeout(() => { M.noStSave = true; M.chat.push(window.__mine); }, 100); });
         const msg = await ev(m => { window.__mine = m; return new Promise(r => setTimeout(r, 0)).then(() => __savePoint.transact(() => { __savePoint.state().probe = 'ON'; }).then(() => 'ok', e => e.message)); }, mine);
         ok(await ev(() => M.saveBodies.length) === 2, '6. 준비: 두 번째 요청이 500으로 실패');
-        ok(await ev(() => __savePoint.state().probe) === 'ON' && await ev(() => M.serverFiles.chatA[0].chat_metadata.savePoint.probe) === 'ON', '6. 첫 요청이 들어갔으면 화면에서 되돌리지 않음(파일과 같음)');
+        ok(await ev(() => __savePoint.state().probe) === 'ON' && await ev(() => M.mem('chatA').probe) === 'ON', '6. 첫 요청이 들어갔으면 화면에서 되돌리지 않음(파일과 같음)');
         ok(msg === 'ok', `6. 파일을 읽어 이번 변경이 들어간 걸 확인 → "취소했어요" 없음 (${String(msg).slice(0, 50)})`);
         ok(await ev(() => __savePoint.autoBlocked()) !== 'unsure' && await ev(() => __savePoint.autoBlocked()) !== 'room', '6. 방도 막지 않음');
         await page.close();
@@ -174,7 +174,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         await ev(() => M.add(1));
         const msg = await ev(() => window.__done);
         ok(msg === 'ok' && await ev(() => M.saveBodies.length) === 2, '8. 이 화면 자신의 새 메시지면 다시 보냄(경고 없음)');
-        ok(await ev(() => M.serverFiles.chatA.length - 1) === 13 && await ev(() => M.serverFiles.chatA[0].chat_metadata.savePoint.probe) === 'normal', '8. 파일에 새 메시지와 변경이 모두 있음');
+        ok(await ev(() => M.serverFiles.chatA.length - 1) === 13 && await ev(() => M.mem('chatA').probe) === 'normal', '8. 파일에 새 메시지와 변경이 모두 있음');
         ok(await ev(() => __savePoint.autoBlocked()) !== 'room' && !/저장하지 않았어요/.test(await toasts(ev)), '8. 방을 막지 않음');
         await page.close();
     }

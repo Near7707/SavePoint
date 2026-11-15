@@ -70,7 +70,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         if (later) { await ev(() => { M.serverError = false; }); await page.waitForTimeout(3500); }
         const r2 = await keep(ev, 5);
         await page.waitForTimeout(300);
-        const f = await ev(() => ({ mem: M.serverFiles.chatA[0].chat_metadata.savePoint?.mem?.records?.[0]?.text ?? null, k3: !!M.serverFiles.chatA[4].extra?.savepointKeep, k5: !!M.serverFiles.chatA[6].extra?.savepointKeep, blocked: __savePoint.autoBlocked() }));
+        const f = await ev(() => ({ mem: M.mem('chatA')?.mem?.records?.[0]?.text ?? null, k3: !!M.serverFiles.chatA[4].extra?.savepointKeep, k5: !!M.serverFiles.chatA[6].extra?.savepointKeep, blocked: __savePoint.autoBlocked() }));
         ok(f.mem === 'Kept by the other device.' && f.k3 && !f.k5 && /RoomBlocked: 다른 기기에서 이 방의 SavePoint 기억/.test(r2) && (later ? /Unconfirmed/.test(r1) : /RoomBlocked: 이번 변경은 채팅 파일에 저장했어요/.test(r1)),
             `1${later ? 'b' : ''}. 첫 🔶는 파일에 있음, 다른 기기 기억은 기준이 되지 않아 다음 🔶가 덮지 않음 (${r1.slice(0, 30)} / ${r2.slice(0, 30)}, ${JSON.stringify(f)})`);
         await page.close();
@@ -147,7 +147,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         const r1 = await ev(() => __savePoint.transact(() => { __savePoint.state().note = 'x'; }, { verify: true }).then(() => 'ok', e => `${e.name}: ${e.message}`));
         const r2 = await keep(ev, 5);
         await page.waitForTimeout(300);
-        const f = await ev(() => ({ n: M.serverFiles.chatA.length - 1, last: M.serverFiles.chatA.at(-1).mes, note: M.serverFiles.chatA[0].chat_metadata.savePoint?.note ?? null, page: __savePoint.state().note ?? null }));
+        const f = await ev(() => ({ n: M.serverFiles.chatA.length - 1, last: M.serverFiles.chatA.at(-1).mes, note: M.mem('chatA')?.note ?? null, page: __savePoint.state().note ?? null }));
         ok(/그대로예요/.test(r1) && r2 === 'ok' && f.n === 13 && f.last === 'Thirteenth.' && f.note === null && f.page === null,
             `5. 파일이 쓰기 전 사본 그대로면 이번 변경은 취소, 다음 🔶가 13번째를 다시 씀(덮은 쪽은 13번째를 본 적 없음) (${r1.slice(0, 30)} / ${r2}, ${JSON.stringify(f)})`);
         await page.close();

@@ -44,18 +44,19 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await page.waitForTimeout(300);
     const ev = (fn, arg) => page.evaluate(fn, arg);
     const wait = ms => page.waitForTimeout(ms);
-    const look = () => ev(() => ({ inj: M.prompts.savepoint?.v || '', hidden: M.chat.filter(m => m.is_system).length, h5: !!M.chat[5].is_system, page: M.meta.savePoint.lastIndex, file: M.serverFiles.chatA[0].chat_metadata.savePoint.lastIndex }));
+    const look = () => ev(() => ({ inj: M.prompts.savepoint?.v || '', hidden: M.chat.filter(m => m.is_system).length, h5: !!M.chat[5].is_system, page: __savePoint.home().st.lastIndex, file: M.mem('chatA').lastIndex }));
     let r;
 
     await ev(() => { M.add(30); });
     await ev(() => __savePoint.handle('run'));
     await wait(1500);
     const chatA = await ev(() => JSON.parse(JSON.stringify(M.serverFiles.chatA)));
+    const filesA = await ev(() => [...M.files]);   // v0.7.0-b2c: the room's memory lives in its memory file: put back with the chat file
     r = await look();
     ok(r.page === 29 && r.hidden === 20 && r.h5 && r.inj.startsWith('[SavePoint memory'), `준비: #29까지 기록, 20개 하이드, 브리핑 있음 (${r.page}, ${r.hidden})`);
 
     for (const [label, gap, slow] of [['고치자마자', 0, false], ['되감기 저장이 파일 확인을 기다리는 중', 400, true]]) {
-        await ev(f => { M.serverFiles.chatA = f; }, chatA);
+        await ev(([f, files]) => { M.serverFiles.chatA = f; M.files = new Map(files); }, [chatA, filesA]);
         await ev(() => M.openFile('chatA'));
         await wait(800);
         if (slow) await ev(() => { M.readDelayFor = { chatA: 1500 }; });
@@ -66,7 +67,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         await wait(gap);
         r = await ev(async () => {
             await SillyTavern.getContext().eventSource.emit('generation_started', 'normal', {}, false);
-            return { inj: M.prompts.savepoint?.v || '', hidden: M.chat.filter(m => m.is_system).length, h5: !!M.chat[5].is_system, page: M.meta.savePoint.lastIndex };
+            return { inj: M.prompts.savepoint?.v || '', hidden: M.chat.filter(m => m.is_system).length, h5: !!M.chat[5].is_system, page: __savePoint.home().st.lastIndex };
         });
         ok(r.page === 29, `${label}: 준비: 생성 시작 때 기억은 아직 그대로 (#${r.page})`);
         ok(!r.h5 && r.hidden === 0, `${label}: 생성 시작 때 고친 메시지(#5)가 하이드에서 풀림 (하이드 ${r.hidden}개)`);

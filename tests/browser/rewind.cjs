@@ -106,19 +106,19 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const ask = () => ev(() => { M.confirm = new Promise(res => { window.__answer = res; }); });
     await ev(() => { const st = __savePoint.state(); st.mem.records.push({ id: 'rx2', type: 'world', kind: 'rule', text: 'Lamps stay lit.', src: [], msgs: [] }); __savePoint.adoptPage(); });
     const roomA = await ev(() => ({ chat: M.chat, meta: M.meta, id: M.chatId }));
-    const copyB = await ev(() => structuredClone({ chat: M.chat, meta: M.meta }));
+    const copyB = await ev(() => structuredClone({ chat: M.chat, st: __savePoint.home().st }));   // v0.7.0-b2c: the memory is the room's own (its file)
     for (const what of ['rec', 'point']) {
         await ask();
         const pid = await ev(() => { const s = __savePoint.state().mem.scenes[0], g = s.segs[0]; return `${s.id}|${g.id}|0`; });
         const asking = what === 'rec' ? ev(() => __savePoint.handle('del-rec', 'rx2')) : ev(id => __savePoint.handle('del-point', id), pid);
         await page.waitForTimeout(150);
-        await ev(b => M.switchChat('room-B-' + Math.random(), b.chat, b.meta), copyB);
+        await ev(async b => { await M.switchChat('room-B-' + Math.random(), b.chat, {}); await M.opened(); M.putMem(structuredClone(b.st)); }, copyB);
         await page.waitForTimeout(150);
         await ev(() => window.__answer(1)); await asking; await page.waitForTimeout(200);
         r = await ev(pid => ({ rec: !!__savePoint.state().mem.records.find(x => x.id === 'rx2'), point: (() => { const [sid, gid] = pid.split('|'); return __savePoint.state().mem.scenes.find(x => x.id === sid).segs.find(x => x.id === gid).points.length; })(), toast: toastr.log.at(-1)?.[1] || '' }), pid);
-        const pointsBefore = copyB.meta.savePoint.mem.scenes[0].segs[0].points.length;
+        const pointsBefore = copyB.st.mem.scenes[0].segs[0].points.length;
         ok(r.rec && r.point === pointsBefore && r.toast.includes('다시 눌러'), `8. ${what === 'rec' ? '항목' : '포인트'} 삭제 확인 중 방이 바뀌면 새 방의 같은 ID를 지우지 않음 (${JSON.stringify(r)})`);
-        await ev(a => M.switchChat(a.id, a.chat, a.meta), roomA);
+        await ev(async a => { await M.switchChat(a.id, a.chat, a.meta); await M.opened(); }, roomA);
         await page.waitForTimeout(150);
     }
     await ev(() => { M.confirm = 1; });

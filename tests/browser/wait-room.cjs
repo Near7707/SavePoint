@@ -46,28 +46,21 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const msgs = (n, tag) => Array.from({ length: n }, (_, i) => ({ name: i % 2 ? 'Me' : 'Ari', is_user: i % 2 === 1, is_system: false, mes: `${tag} message ${i} ${'and more '.repeat(6)}.`, swipe_id: 0, swipes: [`${tag} message ${i} ${'and more '.repeat(6)}.`], extra: {} }));
     // Holds the next chat file write whose metadata passes `test` (a function body over `st`, the memory sent) until
     // M.release(); M.held says it is being held.
-    const hold = test => ev(src => {
-        const f = new Function('st', src);
-        M.held = false;
-        M.beforeChatSave = async (name, data) => {
-            if (M.held || !f(data[0]?.chat_metadata?.savePoint)) return;
-            M.held = name;
-            await new Promise(r => { M.release = r; });
-        };
-    }, test);
-    const settle = () => ev(() => { M.beforeChatSave = null; M.release?.(); });
+    // v0.7.0-b2c: the memory's writes go to the room's memory file: they are the ones held.
+    const hold = test => ev(src => M.holdMem(new Function('st', src)), test);
+    const settle = () => ev(() => { M.beforeUpload = null; M.release?.(); });
 
     // Room A and room B, each with a memory of its first 8 messages, and new messages after it.
     await ev(() => { M.add(8); });
     await ev(() => __savePoint.handle('run'));
     await wait(1200);
-    await ev(([l]) => { M.serverFiles.roomB = JSON.parse(JSON.stringify([{ chat_metadata: {} }, ...l])); return M.openFile('roomB'); }, [msgs(8, 'Bee')]);
+    await ev(([l]) => { M.serverFiles.roomB = JSON.parse(JSON.stringify([{ chat_metadata: { integrity: 'int-' + Math.random().toString(36).slice(2) } }, ...l])); return M.openFile('roomB'); }, [msgs(8, 'Bee')]);
     await wait(500);
     await ev(() => __savePoint.handle('run'));
     await wait(1200);
     await ev(() => M.add(6, i => `Bee new ${i} ${'words '.repeat(8)}`));
     await wait(300);
-    const b0 = await ev(() => ({ page: __savePoint.state()?.lastIndex, file: M.serverFiles.roomB[0].chat_metadata.savePoint?.lastIndex }));
+    const b0 = await ev(() => ({ page: __savePoint.state()?.lastIndex, file: M.mem('roomB')?.lastIndex }));
     await ev(() => M.openFile('chatA'));
     await wait(500);
     await ev(() => M.add(6, i => `Ay new ${i} ${'words '.repeat(8)}`));
@@ -88,7 +81,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await settle();
     await ev(() => M.p);
     await wait(1200);
-    r = await ev(c => ({ calls: M.calls.length - c, page: __savePoint.state()?.lastIndex, file: M.serverFiles.roomB[0].chat_metadata.savePoint?.lastIndex }), c0);
+    r = await ev(c => ({ calls: M.calls.length - c, page: __savePoint.state()?.lastIndex, file: M.mem('roomB')?.lastIndex }), c0);
     ok(await beeSent(c0) === 0, `1. 시작 표시를 쓰는 사이 B방으로 옮김: B방 메시지를 요약 AI로 보내지 않음 (요청 ${r.calls}개)`);
     ok(r.page === 7 && r.file === 7, `1. B방 기억은 그대로 (화면 #${r.page}, 파일 #${r.file})`);
 
@@ -117,7 +110,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => SillyTavern.getContext().eventSource.emit('generation_ended', M.chat.length));
     await ev(() => M.p);
     await wait(2500);
-    r = await ev(c => ({ calls: M.calls.length - c, page: __savePoint.state()?.lastIndex, file: M.serverFiles.roomB[0].chat_metadata.savePoint?.lastIndex }), c0);
+    r = await ev(c => ({ calls: M.calls.length - c, page: __savePoint.state()?.lastIndex, file: M.mem('roomB')?.lastIndex }), c0);
     ok(await beeSent(c0) === 0, `2. 원문 변경 처리를 기다리는 사이 B방으로 옮김: B방 메시지를 보내지 않음 (요청 ${r.calls}개)`);
     ok(r.page === 7 && r.file === 7, `2. B방 기억은 그대로 (화면 #${r.page}, 파일 #${r.file})`);
     await ev(() => { M.settings.savePoint.profileId = ''; });
@@ -137,9 +130,9 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await settle();
     await ev(() => M.p);
     await wait(1500);
-    r = await ev(b => ({ same: __savePoint.state()?.line === JSON.parse(JSON.stringify(M.serverFiles.chatA[0].chat_metadata.savePoint)).line,
-        page: __savePoint.state()?.autoLast?.status || null, file: M.serverFiles[b][0].chat_metadata.savePoint?.autoLast?.status || null,
-        a: M.serverFiles.chatA[0].chat_metadata.savePoint?.autoFail ? 'fail' : null }), branch);
+    r = await ev(b => ({ same: __savePoint.state()?.line === JSON.parse(JSON.stringify(M.mem('chatA'))).line,
+        page: __savePoint.state()?.autoLast?.status || null, file: M.mem(b)?.autoLast?.status || null,
+        a: M.mem('chatA')?.autoFail ? 'fail' : null }), branch);
     ok(r.same, '3. 준비: 갈래 방은 A방과 같은 기억 줄');
     ok(r.page !== 'failed' && r.file !== 'failed', `3. A방의 체크포인트 실패 결과가 갈래 방에 기록되지 않음 (화면 ${r.page}, 파일 ${r.file})`);
     ok(r.a === 'fail', '3. A방에는 실패 기록이 남음');

@@ -34,7 +34,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     page.on('pageerror', e => { console.log('PAGE ERROR', e.message); failures++; });
     page.on('console', m => { if (m.type() === 'error' && !m.text().includes('[SavePoint]')) console.log('CONSOLE', m.text()); });
     await page.goto(`http://localhost:${srv.address().port}/`);
-    await page.waitForFunction(() => !!globalThis.__savePoint);
+    await page.waitForFunction(() => !!globalThis.__savePoint && __savePoint.vault.ready);
+    await page.evaluate(() => M.opened());   // v0.7.0-b2c: the room's memory file read first
     await page.evaluate(() => { M.settings.savePoint.check = false; });   // the record check has its own suite (checks.cjs)
     const ev = (fn, arg) => page.evaluate(fn, arg);
     const sleep = ms => page.waitForTimeout(ms);
@@ -133,13 +134,13 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await sleep(300);
     const saveId = await ev(() => __savePoint.listSaves().find(x => !x.auto).id);
     const mainChat = await ev(() => ({ chat: structuredClone(M.chat), last: __savePoint.state().lastIndex }));
-    await ev(async () => { await M.switchChat('chatB', [], {}); M.add(3); });
+    await ev(async () => { await M.switchChat('chatB', [], {}); await M.opened(); M.add(3); });
     await ev(id => __savePoint.handle('load', id), saveId);
     r = await ev(() => { const st = __savePoint.state(); return { last: st.lastIndex, ext: st.mem.scenes.every(s => s.external), linked: st.linkedSave, inj: (M.prompts.savepoint?.v || '').length }; });
     ok(r.last === -1 && r.ext && r.linked === saveId && r.inj > 0, '다른 방에서 불러오기 → 기억만 가져오고 이 방 메시지는 정리 전, 슬롯에 플레이 중');
     await ev(() => __savePoint.handle('run'));
     ok(await ev(() => __savePoint.state().mem.scenes.length) > await ev(() => 0) , '새 방에서 이어서 기록');
-    await ev(async c => { await M.switchChat('chatC', c.chat.map(m => ({ ...m, is_system: false, extra: {} })), {}); }, mainChat);
+    await ev(async c => { await M.switchChat('chatC', c.chat.map(m => ({ ...m, is_system: false, extra: {} })), {}); await M.opened(); }, mainChat);
     await ev(id => __savePoint.handle('load', id), saveId);
     r = await ev(() => { const st = __savePoint.state(); return { last: st.lastIndex, ext: st.mem.scenes.some(s => s.external), linked: st.linkedSave, hid: M.chat[5].is_system }; });
     ok(r.last === mainChat.last && !r.ext && r.linked === saveId && r.hid, '같은 원문 분기에서 불러오기 → 저장 위치 그대로 복원 + 하이드');
@@ -216,13 +217,13 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         M.metaDelay = 200; M.failMeta = true;
         const p = __savePoint.handle('pin', sid).catch(() => {});
         await new Promise(r => setTimeout(r, 50));
-        await M.switchChat('chatD', [], {}); M.add(2);
+        await M.switchChat('chatD', [], {}); await M.opened(); M.add(2);
         await p;
         M.metaDelay = 0; M.failMeta = false;
         const res = { oldPin: oldMeta.savePoint.mem.scenes[0].pin === pinBefore, newState: !!__savePoint.state(), newInj: M.prompts.savepoint?.v || '', newHidden: M.chat.some(m => m.is_system) };
         // v0.6.60: SillyTavern opens a room from its chat file (the first check compares the memory too).
         const f = JSON.parse(JSON.stringify(M.serverFiles.chatC));
-        await M.switchChat('chatC', f.slice(1), f[0].chat_metadata);
+        await M.switchChat('chatC', f.slice(1), f[0].chat_metadata); await M.opened();
         return res;
     });
     ok(r.oldPin && !r.newState && r.newInj === '' && !r.newHidden, '저장 중 방 이동 + 실패 → 원래 방만 원복, 새 방은 그대로');

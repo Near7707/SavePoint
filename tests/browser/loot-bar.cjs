@@ -33,7 +33,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: SHOTS ? 2 : 1 });
     page.on('pageerror', e => { console.log('PAGE ERROR', e.message); failures++; });
     await page.goto(`http://localhost:${srv.address().port}/`);
-    await page.waitForFunction(() => !!globalThis.__savePoint);
+    await page.waitForFunction(() => !!globalThis.__savePoint && __savePoint.vault.ready);
+    await page.evaluate(() => M.opened());   // v0.7.0-b2c: the room's memory file read first
     const ev = (fn, arg) => page.evaluate(fn, arg);
     const sleep = ms => page.waitForTimeout(ms);
 

@@ -80,7 +80,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         await page.waitForTimeout(300);
         const r3 = await keep(ev, 7);
         await page.waitForTimeout(300);
-        const f = await ev(() => ({ n: M.serverFiles.chatA.length - 1, k5: !!M.serverFiles.chatA[6].extra?.savepointKeep, note: M.serverFiles.chatA[0].chat_metadata.savePoint?.note ?? null }));
+        const f = await ev(() => ({ n: M.serverFiles.chatA.length - 1, k5: !!M.serverFiles.chatA[6].extra?.savepointKeep, note: M.mem('chatA')?.note ?? null }));
         const warned = (await toasts(ev)).some(x => /다른 곳에서 지운/.test(x));
         if (deleteElsewhere) ok(f.n === 12 && !f.k5 && /다른 곳에서 지운/.test(r2) && /다른 곳에서 지운/.test(r3) && (readFails ? /Unconfirmed/.test(r1) && warned : /RoomBlocked: 이번 변경은 채팅 파일에 저장했어요/.test(r1)),
             `${name}. 실리태번 저장 중 다시 읽은 같은 파일은 기준이 아님: 다른 곳에서 지운 13번째를 다음 🔶 두 번 모두 되살리지 않음 (${r1.slice(0, 30)} / ${r2.slice(0, 30)} / ${r3.slice(0, 30)}, ${JSON.stringify(f)})`);

@@ -33,7 +33,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: SHOTS ? 2 : 1 });
     page.on('pageerror', e => { console.log('PAGE ERROR', e.message); failures++; });
     await page.goto(`http://localhost:${srv.address().port}/`);
-    await page.waitForFunction(() => !!globalThis.__savePoint);
+    await page.waitForFunction(() => !!globalThis.__savePoint && __savePoint.vault.ready);
+    await page.evaluate(() => M.opened());   // v0.7.0-b2c: the room's memory file read first
     const ev = (fn, arg) => page.evaluate(fn, arg);
     const sleep = ms => page.waitForTimeout(ms);
 
@@ -103,7 +104,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.mem.scenes[0].title === 'User chosen title' && r.mem.scenes[0].segs[0].time.end.certainty === 'manual' && r.injection.includes('2026-10-28'), '4. 다음 세이브가 직접 지정 제목·날짜를 덮지 않음');
     await ev(()=>__savePoint.handle('save-new'));
     const slot=await ev(()=>__savePoint.state().linkedSave);
-    await ev(async()=>{await M.switchChat('room-B',[],{});M.add(2,()=> '그다음 날 아침, 새 방에서 이어 간다.');});
+    await ev(async()=>{await M.switchChat('room-B',[],{});await M.opened();M.add(2,()=> '그다음 날 아침, 새 방에서 이어 간다.');});
     await ev(id=>__savePoint.handle('load',id),slot);
     const beforeBranch=await ev(()=>JSON.stringify(__savePoint.state().mem));
     await ev(()=>__savePoint.handle('run'));
@@ -142,7 +143,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(()=>{M.timeCase='backward';M.add(2,()=> 'The letter was dated 2026-10-20.');});await ev(()=>__savePoint.handle('run'));
     r=await ev(()=>({t:__savePoint.state().mem.scenes[0].segs.at(-1).time.end,injection:M.prompts.savepoint.v}));
     ok(r.t.certainty==='unconfirmed'&&!r.injection.includes('Last recorded story time: 2026-10-20'),'12. 편지의 과거 날짜가 현재 시간으로 역행하지 않음');
-    await ev(async()=>{await M.switchChat('deleted-prefix',[],{});M.timeCase='initial';M.add(2,()=> '2026-10-24 night: a participant waited.');});
+    await ev(async()=>{await M.switchChat('deleted-prefix',[],{});await M.opened();M.timeCase='initial';M.add(2,()=> '2026-10-24 night: a participant waited.');});
     await ev(()=>__savePoint.handle('run'));
     await ev(()=>{M.timeCase='four-days';M.add(2,()=> '나흘 뒤에 다시 만났다.');});await ev(()=>__savePoint.handle('run'));
     for(let i=0;i<2;i++){
@@ -150,7 +151,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     }
     r=await ev(()=>({scenes:__savePoint.state().mem.scenes}));
     ok(r.scenes.length===3&&r.scenes.every(s=>s.segs.at(-1).time.end.day===4),'13. 세 장면은 같은 기준의 5일째');
-    const __snap13=await ev(()=>structuredClone(M.meta.savePoint));
+    const __snap13=await ev(()=>structuredClone(__savePoint.home().st));
     await ev(id=>__savePoint.handle('del-scene',id),r.scenes[0].id);
     const remaining=await ev(()=>JSON.stringify(__savePoint.state().mem));
     const last=r.scenes.at(-1);await ev(id=>__savePoint.handle('edit-segtime',id),last.id+'|'+last.segs[0].id);
@@ -158,7 +159,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r=await ev(()=>({scenes:__savePoint.state().mem.scenes,injection:M.prompts.savepoint.v}));
     ok(r.scenes.every(s=>s.segs[0].time.start.day===4&&s.segs.at(-1).time.end.day===4)&&r.injection.includes('Last recorded story time: 2026-10-28'),'13. 앞 장면 삭제 후 끝 시간만 고쳐도 남은 시작·끝 날짜와 일 수 유지');
     ok(await ev(()=>__savePoint.state().undoInfo?.kind!=='edit'),'13. 장면 삭제·시간 수정은 리와인드 지점을 바꾸지 않음');
-    await ev(s=>{M.meta.savePoint=s;__savePoint.adoptPage();__savePoint.refreshInjection();__savePoint.render(true);},__snap13);
+    await ev(s=>{M.putMem(s);__savePoint.refreshInjection();__savePoint.render(true);},__snap13);
     await ev(id=>__savePoint.handle('del-scene',id),await ev(()=>__savePoint.state().mem.scenes[0].id));
     ok(await ev(json=>JSON.stringify(__savePoint.state().mem.scenes.map(s=>s.id))===JSON.stringify(JSON.parse(json).scenes.map(s=>s.id)),remaining),'13. (검사용 복원 뒤) 삭제만 다시 적용한 상태');
     await ev(()=>{M.timeCase='bad-count';M.add(2,()=> '그날 밤 우리는 다음에 만나자고 했다.');});await ev(()=>__savePoint.handle('run'));

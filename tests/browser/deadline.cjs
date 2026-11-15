@@ -32,7 +32,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: SHOTS ? 2 : 1 });
     page.on('pageerror', e => { console.log('PAGE ERROR', e.message); failures++; });
     await page.goto(`http://localhost:${srv.address().port}/`);
-    await page.waitForFunction(() => !!globalThis.__savePoint);
+    await page.waitForFunction(() => !!globalThis.__savePoint && __savePoint.vault.ready);
+    await page.evaluate(() => M.opened());   // v0.7.0-b2c: the room's memory file read first
     const ev = (fn, arg) => page.evaluate(fn, arg);
 
     // The mock model dates every part and, for "PROMISE" messages, reads "내일" as a one-day deadline.
@@ -79,7 +80,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
 
     // 3. the user sets the deadline day by hand; a later AI reading does not replace it
     const qid = await ev(() => __savePoint.state().mem.records.find(x => x.type === 'quest').id);
-    await ev(() => { window.__beforeDue = structuredClone(M.meta.savePoint); });
+    await ev(() => { window.__beforeDue = structuredClone(__savePoint.home().st); });
     await ev(id => __savePoint.handle('edit-rec', id), qid);
     r = await ev(() => $('.sp-edit').text());
     ok(r.includes('기한 직접 지정') && r.includes('YYYY-MM-DD') && r.includes('2026-10-26'), '3. 편집 창에 기한 칸과 지금 시간 안내');
@@ -95,7 +96,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => __savePoint.handle('edit-cancel'));
     // v0.6.55: an edit is not a rewind point (⏪ stays on the last save); the test puts the state back itself.
     ok(await ev(() => !['edit'].includes(__savePoint.state().undoInfo?.kind)), '3. 편집은 리와인드 지점을 바꾸지 않음');
-    await ev(s => { M.meta.savePoint = s; __savePoint.adoptPage(); __savePoint.refreshInjection(); __savePoint.render(true); }, await ev(() => window.__beforeDue));
+    await ev(s => { M.putMem(s); __savePoint.refreshInjection(); __savePoint.render(true); }, await ev(() => window.__beforeDue));
     r = await ev(() => __savePoint.state().mem.records.find(x => x.type === 'quest').due);
     ok(!r.manual && r.days === 1, '3. (검사용 복원) 직접 지정 전으로');
 

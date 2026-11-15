@@ -26,6 +26,8 @@ function serve() {
 }
 let failures = 0;
 const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!cond) failures++; };
+// v0.7.0-b2c: a check that no longer applies (its reason given), or one kept for b3.
+const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
 
 (async () => {
     const srv = await serve();
@@ -46,7 +48,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const page = await session({ settings: { savePoint: { firstTab: 'journal', check: false, hideMode: 'off' } } });
     const ev = (fn, arg) => page.evaluate(fn, arg);
     const msgs = (n, tag) => Array.from({ length: n }, (_, i) => ({ name: i % 2 ? 'Me' : 'Ari', is_user: i % 2 === 1, is_system: false, mes: `${tag} message ${i} ${'and more '.repeat(6)}.`, swipe_id: 0, swipes: [`${tag} message ${i} ${'and more '.repeat(6)}.`], extra: {} }));
-    const file = (list, meta = {}) => JSON.parse(JSON.stringify([{ chat_metadata: meta }, ...list]));
+    // v0.7.0-b2c: a room file has its integrity (SillyTavern's own; a memory file is made only for a room that has one).
+    const file = (list, meta = {}) => JSON.parse(JSON.stringify([{ chat_metadata: { integrity: 'int-' + Math.random().toString(36).slice(2), ...meta } }, ...list]));
     const fileLen = name => ev(n => (M.serverFiles[n]?.length ?? 0) - 1, name);
     const toasts = () => ev(() => toastr.log.map(x => x[1]).join(' | '));
     // A QUICK save in the first room, to load from elsewhere.
@@ -72,7 +75,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     // 2. the same with "memory only": no write either.
     await ev(() => { M.onPopup = t => { M.confirm = t.includes('기억만') ? 1 : 0; }; });
     await ev(async id => { await __savePoint.loadSave(id); }, qid);
-    r = { len: await fileLen('chatB'), saves: await ev(() => M.saves - M.saves0), meta: await ev(() => !!M.meta.savePoint) };
+    r = { len: await fileLen('chatB'), saves: await ev(() => M.saves - M.saves0), meta: await ev(() => !!__savePoint.home().st) };
     ok(r.len === 12 && r.saves === 0 && !r.meta, `2. 열리는 중에 기억만 불러오기 → 저장 없음, 서버 12개 그대로 (${r.len})`);
     await ev(() => { M.onPopup = null; M.confirm = 1; });
     // finishing the load: the room is confirmed, has its own story, no offer, nothing changed
@@ -82,11 +85,11 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(!r.offer && r.n === 12 && r.file === 12, '1. 다 열린 뒤: 대화가 있는 방이라 이어하기를 묻지 않고 12개 그대로');
 
     // 3. an empty room asked about, and the messages arrive before the answer: nothing is changed.
-    await ev(() => { M.serverFiles.chatE = [{ chat_metadata: {} }]; });
+    await ev(() => { M.serverFiles.chatE = [{ chat_metadata: { integrity: 'int-E' } }]; });   // v0.7.0-b2c: a room file has its integrity
     await ev(() => M.switchChat('chatE', [], {}));
     await page.waitForTimeout(400);
     const five = msgs(5, 'Late');
-    await ev(f => { toastr.log.length = 0; M.onPopup = () => { M.chat.push(...JSON.parse(JSON.stringify(f))); M.serverFiles.chatE = [{ chat_metadata: {} }, ...JSON.parse(JSON.stringify(f))]; M.onPopup = null; }; }, five);
+    await ev(f => { toastr.log.length = 0; M.onPopup = () => { M.chat.push(...JSON.parse(JSON.stringify(f))); M.serverFiles.chatE = [{ chat_metadata: { integrity: 'int-E' } }, ...JSON.parse(JSON.stringify(f))]; M.onPopup = null; }; }, five);
     await ev(async id => { M.confirm = 1; await __savePoint.loadSave(id); }, qid);
     r = await ev(() => ({ first: M.chat[0]?.mes, n: M.chat.length, st: !!__savePoint.state(), t: toastr.log.map(x => x[1]).join(' | ') }));
     ok(r.first === five[0].mes && r.n === 5 && !r.st && r.t.includes('바뀌어서'), `3. 질문 사이 메시지가 도착 → 첫 메시지·기억 그대로 (${r.t.slice(0, 40)})`);
@@ -97,7 +100,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     for (const [label, m] of [['시스템 메시지', { name: 'System', is_user: false, is_system: true, mes: 'Ari joined the chat.', extra: {} }],
                               ['인사말이 아닌 메시지', { name: 'Ari', is_user: false, is_system: false, mes: 'A story already going on here.', swipe_id: 0, swipes: ['A story already going on here.'], extra: {} }]]) {
         const id = 'chatS' + label.length;
-        await ev(([id, m]) => { M.serverFiles[id] = [{ chat_metadata: {} }, m]; return M.switchChat(id, [JSON.parse(JSON.stringify(m))], {}); }, [id, m]);
+        await ev(([id, m]) => { M.serverFiles[id] = [{ chat_metadata: { integrity: 'int-' + id } }, m]; return M.switchChat(id, [JSON.parse(JSON.stringify(m))], {}); }, [id, m]);
         await page.waitForTimeout(400);
         await ev(async q => { M.confirm = 1; await __savePoint.loadSave(q); }, qid);
         r = await ev(id => ({ first: M.chat[0].mes, n: M.chat.length, mem: !!__savePoint.state()?.mem?.scenes?.length, file: M.serverFiles[id][1].mes, fn: M.serverFiles[id].length - 1 }), id);
@@ -198,14 +201,14 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await page.click(`#sp_resume [data-resume="${qid}"]`);
     await page.waitForTimeout(800);
     r = await ev(() => ({ first: M.chat[0].mes, file: M.serverFiles.chatNew?.[1]?.mes, mem: !!__savePoint.state()?.mem?.scenes?.length, t: toastr.log.map(x => x[1]).join(' | ') + ' // ' + (M.popups || []).slice(-2).join(' / ') }));
-    ok(r.first !== 'Hello! This is the very first greeting.' && r.file === r.first && r.mem, `9. 이어하기: 첫 메시지가 저장 당시 메시지로 바뀌고 파일에도 저장 (${r.t.slice(0, 30)})`);
+    skip('9. 이어하기: 첫 메시지가 저장 당시 메시지로 바뀌고 파일에도 저장', 'b3: #0 이어하기를 꺼 둠 (지금은 기억만 불러옴)');
 
     // 10. … and a long room that is already open loads only the memory, keeping every message.
     const thirty = msgs(30, 'Own');
     await ev(f => M.switchChat('chatLong', f, {}), thirty);
     await page.waitForTimeout(400);
     await ev(async id => { M.confirm = 1; toastr.log.length = 0; await __savePoint.loadSave(id); }, qid);
-    r = await ev(() => ({ n: M.chat.length, first: M.chat[0].mes, file: (M.serverFiles.chatLong?.length ?? 0) - 1, mem: !!M.serverFiles.chatLong?.[0]?.chat_metadata?.savePoint?.mem?.scenes?.length, t: toastr.log.map(x => x[1]).join(' | ') }));
+    r = await ev(() => ({ n: M.chat.length, first: M.chat[0].mes, file: (M.serverFiles.chatLong?.length ?? 0) - 1, mem: !!M.mem('chatLong')?.mem?.scenes?.length, t: toastr.log.map(x => x[1]).join(' | ') }));
     ok(r.n === 30 && r.first === thirty[0].mes && r.file === 30 && r.mem && r.t.includes('불러왔어요'), `10. 이미 열린 긴 방: 원문 30개 그대로, 기억만 불러와 저장 (${r.t.slice(0, 30)})`);
 
     await page.close();

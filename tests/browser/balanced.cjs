@@ -32,7 +32,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
     page.on('pageerror', e => { console.log('PAGE ERROR', e.message); failures++; });
     await page.goto(`http://localhost:${srv.address().port}/`);
-    await page.waitForFunction(() => !!globalThis.__savePoint);
+    await page.waitForFunction(() => !!globalThis.__savePoint && __savePoint.vault.ready);
+    await page.evaluate(() => M.opened());   // v0.7.0-b2c: the room's memory file read first
     const ev = (fn, arg) => page.evaluate(fn, arg);
     const snapshot = () => ev(() => {
         const st = __savePoint.state();
@@ -56,7 +57,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => __savePoint.summarize()); r = await snapshot();
     ok(r.last === 29 && JSON.stringify(r.ranges) === JSON.stringify([[0,14],[15,29]]), 'retry resumes at the next unsaved original message without duplicates');
 
-    await ev(async () => { await M.switchChat('balanced-auto', [], {}); M.add(32, i => `Short message ${i}.`);
+    await ev(async () => { await M.switchChat('balanced-auto', [], {}); await M.opened(); M.add(32, i => `Short message ${i}.`);
         M.chat.at(-1).is_user = false; M.chat.at(-1).name = 'Ari'; M.stSave();
         M.settings.savePoint.auto = true; M.settings.savePoint.autoEvery = 30; M.settings.savePoint.autoReserve = 2; });
     await ev(() => __savePoint.autoCollect()); r = await snapshot();
@@ -65,21 +66,21 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => __savePoint.summarize()); r = await snapshot();
     ok(r.last === 31 && r.ranges.at(-1)[0] === 30, 'manual quicksave still includes the retained tail');
 
-    await ev(async () => { await M.switchChat('balanced-25', [], {}); M.settings.savePoint.auto = false; M.add(25, i => `Short message ${i}.`); });
+    await ev(async () => { await M.switchChat('balanced-25', [], {}); await M.opened(); M.settings.savePoint.auto = false; M.add(25, i => `Short message ${i}.`); });
     await ev(() => __savePoint.summarize()); r = await snapshot();
     ok(JSON.stringify(r.ranges) === JSON.stringify([[0,12],[13,24]]), 'manual 25 messages -> 13 + 12');
 
     // v0.7.0-a: legacy metadata as a room would load it (a new memory object on the page, taken as the queue's: test
     // setup); its cleanup is a queued change (plan P2-3), so the check waits for the room's queue.
     await ev(async () => {
-        const st = SillyTavern.getContext().chatMetadata.savePoint, mem = structuredClone(st.mem);
+        const st = structuredClone(__savePoint.home().st), mem = st.mem;
         mem.entities.push({ id: 'e40', type: 'person', name: 'Theo', aliases: ['테오'] });
         mem.records.push({ id: 'r40', type: 'party', entity: 'e40', aspect: 'condition', text: 'Theo: tired', ko: '테오: 피곤함', src: [], msgs: [] });
-        st.mem = mem; __savePoint.adoptPage();
+        M.putMem(st);   // v0.7.0-b2c: the room's memory (its memory file), no longer the chat metadata
         __savePoint.handle('tab', 'inject');
         await new Promise(r => setTimeout(r, 300)); await __savePoint.transact(() => false, { autosave: false });
     });
-    const names = await ev(() => ({ page: SillyTavern.getContext().chatMetadata.savePoint.mem.records.find(x => x.id === 'r40'), rec: __savePoint.state().mem.records.find(x => x.id === 'r40'), injection: M.prompts.savepoint?.v || '' }));
+    const names = await ev(() => ({ page: __savePoint.home().st.mem.records.find(x => x.id === 'r40'), rec: __savePoint.state().mem.records.find(x => x.id === 'r40'), injection: M.prompts.savepoint?.v || '' }));
     ok(names.rec.text === 'tired' && names.rec.ko === '피곤함' && names.page.text === 'tired', 'opening legacy metadata cleans both record languages (v0.7.0-a: on the page by a queued change)');
     ok(names.injection.includes('[condition] Theo: tired') && !names.injection.includes('Theo: Theo:'), 'injected state contains a single owner label');
     await browser.close(); srv.close(); console.log(failures ? failures + ' FAILED' : 'ALL PASS'); process.exit(failures ? 1 : 0);

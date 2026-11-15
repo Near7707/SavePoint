@@ -48,7 +48,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const ev = (fn, arg) => page.evaluate(fn, arg);
     const wait = ms => page.waitForTimeout(ms);
     const msgs = (n, tag) => Array.from({ length: n }, (_, i) => ({ name: i % 2 ? 'Me' : 'Ari', is_user: i % 2 === 1, is_system: false, mes: `${tag} message ${i} ${'and more '.repeat(6)}.`, swipe_id: 0, swipes: [`${tag} message ${i} ${'and more '.repeat(6)}.`], extra: {} }));
-    const file = (list, meta = {}) => JSON.parse(JSON.stringify([{ chat_metadata: meta }, ...list]));
+    // v0.7.0-b2c: a room file has its integrity (SillyTavern's own; a memory file is made only for a room that has one).
+    const file = (list, meta = {}) => JSON.parse(JSON.stringify([{ chat_metadata: { integrity: 'int-' + Math.random().toString(36).slice(2), ...meta } }, ...list]));
     const open = async (id, list, meta = {}, serverFile = null) => {
         await ev(([id, f, l, m]) => { M.serverFiles[id] = f; return M.switchChat(id, l, m); }, [id, serverFile || file(list, meta), JSON.parse(JSON.stringify(list)), JSON.parse(JSON.stringify(meta))]);
         await wait(400);
@@ -59,7 +60,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => __savePoint.handle('run'));
     await wait(1500);
     const qid = await ev(() => __savePoint.listSaves().find(x => x.quick)?.id);
-    const memory = await ev(() => JSON.parse(JSON.stringify(M.meta.savePoint)));
+    const memory = await ev(() => JSON.parse(JSON.stringify(__savePoint.home().st)));
     ok(!!qid && memory?.mem?.scenes?.length > 0, '준비: QUICK과 기억');
     let r;
 
@@ -73,12 +74,12 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => { M.p2 = __savePoint.undo().catch(e => { M.e2 = e.message; }); });
     await ev(() => Promise.all([M.p1, M.p2]));
     await wait(200);
-    r = await ev(() => { const f = M.serverFiles.roomA[0].chat_metadata.savePoint; return { scenes: f.mem.scenes.length, undo: f.undoInfo?.kind || '', page: __savePoint.state().mem.scenes.length, t: toastr.log.map(x => x[1]).join(' | '), e: (M.e1 || '') + (M.e2 || '') }; });
+    r = await ev(() => { const f = M.mem('roomA'); return { scenes: f.mem.scenes.length, undo: f.undoInfo?.kind || '', page: __savePoint.state().mem.scenes.length, t: toastr.log.map(x => x[1]).join(' | '), e: (M.e1 || '') + (M.e2 || '') }; });
     ok(r.scenes === 0 && r.page === 0 && r.undo === 'reset' && r.t.includes('되돌릴 지점이 바뀌어서') && !r.e, `1. 리셋을 기다리던 리와인드는 예전 대상을 적용하지 않음 (${r.scenes}, ${r.undo}, ${r.t.slice(-40)})`);
     await ev(() => { M.readDelayFor = null; });
     await ev(() => __savePoint.undo());
     await wait(300);
-    r = await ev(() => M.serverFiles.roomA[0].chat_metadata.savePoint.mem.scenes.length);
+    r = await ev(() => M.mem('roomA').mem.scenes.length);
     ok(r > 0, `1. 다시 누르면 리셋 전으로 되돌아감 (${r})`);
 
     // 2. [P2] hide off, the page has 8 messages and the file 9: a quick save with nothing new keeps the QUICK.
@@ -121,7 +122,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => __savePoint.addLoot(0, M.chat[0].mes.slice(0, 14)).catch(e => { M.e3 = e.message; }));
     await ev(() => M.p);
     await wait(300);
-    r = await ev(() => ({ page: __savePoint.state()?.lootQueue?.length || 0, file: M.serverFiles.roomC[0].chat_metadata.savePoint?.lootQueue?.length || 0, scenes: M.serverFiles.roomC[0].chat_metadata.savePoint?.mem?.scenes?.length || 0, e: M.e3 || '' }));
+    r = await ev(() => ({ page: __savePoint.state()?.lootQueue?.length || 0, file: M.mem('roomC')?.lootQueue?.length || 0, scenes: M.mem('roomC')?.mem?.scenes?.length || 0, e: M.e3 || '' }));
     ok(r.page === 1 && r.file === 1 && r.scenes > 0 && !r.e, `3. 불러오기를 기다리는 사이 저장한 루팅이 남음 (${r.page}, ${r.file}, ${r.scenes})`);
     await ev(() => { M.readDelayFor = null; });
     //    … but a memory that appeared meanwhile stops it (the question was about an empty room)
@@ -129,9 +130,9 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => { M.readDelayFor = { roomC2: 700 }; toastr.log.length = 0; });
     await ev(id => { M.p = __savePoint.loadSave(id); }, qid);
     await wait(100);
-    await ev(m => { M.meta.savePoint = JSON.parse(JSON.stringify(m)); M.meta.savePoint.mem.scenes[0].title = 'Made meanwhile'; __savePoint.adoptPage(); M.stSave(); }, memory);
+    await ev(m => { const st = JSON.parse(JSON.stringify(m)); st.mem.scenes[0].title = 'Made meanwhile'; M.putMem(st); M.stSave(); }, memory);   // v0.7.0-b2c: the page's memory (no memory file yet)
     await ev(() => M.p);
-    r = await ev(() => ({ title: M.serverFiles.roomC2[0].chat_metadata.savePoint?.mem?.scenes?.[0]?.title, t: toastr.log.map(x => x[1]).join(' | ') }));
+    r = await ev(() => ({ title: __savePoint.home().st?.mem?.scenes?.[0]?.title, t: toastr.log.map(x => x[1]).join(' | ') }));
     ok(r.title === 'Made meanwhile' && r.t.includes('바뀌어서'), `3. 그사이 기억이 생겼으면 불러오지 않음 (${r.title}, ${r.t.slice(0, 30)})`);
     await ev(() => { M.readDelayFor = null; });
 
@@ -147,7 +148,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     // made (before: put on the page, then written by SillyTavern's own save — the path this version closes).
     ok(r.b === 'unsure' && r.last !== 'unsure', `4. 준비: 체크포인트 저장 확인 불가, 결과 메모는 기억에 넣지 않음 (${r.b}, ${r.last})`);
     await ev(() => { M.readFailAfterNth = 0; M.readFailAfterSave = false; M.serverError = false; M.add(1); toastr.log.length = 0; });
-    r = await ev(() => M.serverFiles.roomD[0].chat_metadata.savePoint.autoLast?.status);
+    r = await ev(() => M.mem('roomD').autoLast?.status);
     ok(r !== 'unsure', `4. 실리태번 자체 저장이 SavePoint의 확인 불가 메모를 쓰지 않음 (${r})`);
     await wait(3600);
     r = await ev(() => ({ b: __savePoint.autoBlocked(), t: toastr.log.map(x => x[1]).join(' | ') }));
@@ -161,9 +162,11 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => { M.p = __savePoint.handle('check-rerun').catch(e => { M.e5 = e.message; }); });
     await ev(() => M.p);
     await wait(600);
-    await ev(() => { M.readDelayFor = null; M.saves0 = M.saves; });
+    // v0.7.0-b2c: pressed before the room's memory file is read, it is turned away with that reason (nothing changes until
+    // the room is linked); the room is not blocked by it.
+    await ev(() => { M.readDelayFor = null; M.saves0 = M.saves; return M.opened(); });
     await ev(() => __savePoint.toggleKeep(1).catch(e => { M.e5b = e.message; }));
-    r = await ev(() => ({ mark: !!M.serverFiles.roomE[2].extra?.savepointKeep, e: (M.e5 || '') + (M.e5b || ''), t: toastr.log.map(x => x[1]).join(' | ') }));
+    r = await ev(() => ({ mark: !!M.serverFiles.roomE[2].extra?.savepointKeep, e: (/아직 찾는 중/.test(M.e5 || '') ? '' : M.e5 || '') + (M.e5b || ''), t: toastr.log.map(x => x[1]).join(' | ') }));
     ok(r.mark && !r.e && !r.t.includes('다른 기기에서'), `5. 방 확인 중 누른 기록 다시 확인이 방을 막지 않음 (${r.mark}, ${(r.e || r.t).slice(0, 30)})`);
 
     // 6. [P3] a translation stopped while its write waits for the file check is not saved.
@@ -175,7 +178,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => __savePoint.handle('stop'));
     await ev(() => M.p);
     await wait(200);
-    r = await ev(() => ({ file: JSON.stringify(M.serverFiles.roomF[0].chat_metadata.savePoint.mem).includes('한국어:'), page: JSON.stringify(__savePoint.state().mem).includes('한국어:'), t: toastr.log.map(x => x[1]).join(' | ') }));
+    r = await ev(() => ({ file: JSON.stringify(M.mem('roomF').mem).includes('한국어:'), page: JSON.stringify(__savePoint.state().mem).includes('한국어:'), t: toastr.log.map(x => x[1]).join(' | ') }));
     ok(!r.file && !r.page && r.t.includes('중지했어요'), `6. 쓰기를 기다리는 사이 중지한 번역은 저장하지 않음 (${r.t.slice(0, 30)})`);
     await ev(() => { M.readDelayFor = null; });
 

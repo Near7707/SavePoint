@@ -75,7 +75,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.page !== 1 && r.read === 1, `1. 준비: 정리 저장이 거절되어 화면 기억은 예전 형식, 읽기는 정리된 사본 (${r.page}, ${r.read})`);
     await ev(() => __savePoint.handle('run'));
     await wait(1500);
-    r = await ev(() => ({ page: M.meta.savePoint.lastIndex, file: M.serverFiles.chatA[0].chat_metadata.savePoint.lastIndex, ev: M.meta.savePoint.mem.evidenceVersion, read: __savePoint.state().lastIndex }));
+    r = await ev(() => ({ page: M.meta.savePoint.lastIndex, file: M.mem('chatA').lastIndex, ev: M.meta.savePoint.mem.evidenceVersion, read: __savePoint.state().lastIndex }));
     const t1 = await toasts();
     ok(r.page === 13 && r.file === 13 && r.read === 13 && r.ev === 1, `1. 퀵세이브가 실제 기억에 저장됨 (화면 #${r.page}, 파일 #${r.file}, 읽기 #${r.read}, 형식 ${r.ev})`);
     ok(!t1.includes('퀵세이브 완료') || r.page === 13, `1. 저장하지 않고 완료라고 알리지 않음 (${t1.slice(0, 120)})`);
@@ -120,7 +120,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await failNext("return st?.autoLast?.status === 'saved'");
     await ev(() => __savePoint.summarize({ auto: true }));
     await wait(2000);
-    r = await ev(() => ({ calls: M.checkCalls - M.k0, last: M.meta.savePoint.lastIndex, file: M.serverFiles.chatA[0].chat_metadata.savePoint.lastIndex, note: M.meta.savePoint.autoLast?.status }));
+    r = await ev(() => ({ calls: M.checkCalls - M.k0, last: M.meta.savePoint.lastIndex, file: M.mem('chatA').lastIndex, note: M.meta.savePoint.autoLast?.status }));
     ok(r.last === 19 && r.file === 19 && r.note !== 'saved', `3. 준비: 기록은 저장, 결과 메모만 실패 (#${r.last}, 파일 #${r.file}, 메모 ${r.note})`);
     ok(r.calls === 1, `3. 자동 기록 확인은 그대로 함 (확인 ${r.calls}회)`);
 

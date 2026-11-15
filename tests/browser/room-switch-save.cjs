@@ -68,7 +68,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
             await ev(() => M.stOpen('chatB'));
             await page.waitForTimeout(900);
             const r = await ev(() => ({ b: M.serverFiles.chatB.length - 1, bMeta: M.serverFiles.chatB[0].chat_metadata, a: M.serverFiles.chatA.length - 1,
-                aMem: !!M.serverFiles.chatA[0].chat_metadata.savePoint, empty: (M.saveBodies || []).filter(x => !x.count || !x.integrity).length }));
+                aMem: !!M.mem('chatA'), empty: (M.saveBodies || []).filter(x => !x.count || !x.integrity).length }));
             if (r.b !== 10 || r.bMeta.integrity !== 'int-b' || r.a !== 20 || !r.aMem || r.empty) bad.push(`${d}ms: B ${r.b}개 A ${r.a}개 A기억 ${r.aMem} 빈 저장 ${r.empty}`);
         }
         ok(!bad.length, `방을 옮기는 어느 순간에도 다른 방 파일을 덮지 않고 원래 방도 그대로 (${bad.join(' / ') || '12개 시점'})`);
@@ -133,14 +133,15 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         await ev(() => { M.add(12); });
         await ev(() => __savePoint.handle('run'));
         await page.waitForTimeout(1500);
+        // v0.7.0-b2c: the memory is in its own file; a chat file write is a mark or a hide (here 🔖, hides off).
         const lastBefore = await ev(() => __savePoint.state().lastIndex);
-        await ev(() => { M.add(6); toastr.log.length = 0; M.beforeChatSave = name => { M.beforeChatSave = null; M.serverFiles[name][0].chat_metadata = { ...M.serverFiles[name][0].chat_metadata, integrity: 'someone-else' }; }; });
-        await ev(() => __savePoint.handle('run'));
-        await page.waitForTimeout(1500);
-        const r = await ev(() => ({ refused: M.integrityRefused || 0, last: __savePoint.state().lastIndex, fileLast: M.serverFiles.chatA[0].chat_metadata.savePoint?.lastIndex,
-            toast: toastr.log.map(x => x[1]).join(' | '), blocked: __savePoint.autoBlocked() }));
-        ok(r.refused === 1 && r.fileLast === lastBefore, `고유값이 다른 파일에는 쓰지 않음 (${r.refused} ${r.fileLast}/${lastBefore})`);
-        ok(r.last === lastBefore && r.toast.includes('고유값') && r.blocked === 'room', `화면도 이전 상태로, 고유값 안내, 그 방 저장 멈춤 (${r.last} ${r.blocked} ${r.toast.slice(0, 120)})`);
+        await ev(() => { toastr.log.length = 0; M.beforeChatSave = name => { M.beforeChatSave = null; M.serverFiles[name][0].chat_metadata = { ...M.serverFiles[name][0].chat_metadata, integrity: 'someone-else' }; }; });
+        await ev(() => __savePoint.toggleKeep(3).catch(e => { M.e3 = e.message; }));
+        await page.waitForTimeout(500);
+        const r = await ev(() => ({ refused: M.integrityRefused || 0, mark: !!M.chat[3].extra?.savepointKeep, fileMark: !!M.serverFiles.chatA[4].extra?.savepointKeep, last: __savePoint.state().lastIndex,
+            toast: toastr.log.map(x => x[1]).join(' | ') + ' ' + (M.e3 || ''), blocked: __savePoint.autoBlocked() }));
+        ok(r.refused === 1 && !r.fileMark, `고유값이 다른 파일에는 쓰지 않음 (${r.refused} ${r.fileMark})`);
+        ok(!r.mark && r.last === lastBefore && r.toast.includes('고유값') && r.blocked === 'room', `화면도 이전 상태로, 고유값 안내, 그 방 저장 멈춤 (${r.mark} ${r.blocked} ${r.toast.slice(0, 120)})`);
         await page.close();
     }
 
@@ -151,12 +152,14 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         await ev(f => { M.groups = [{ id: 'g1', name: 'Team', chat_id: 'groupchat1' }]; M.groupId = 'g1'; M.serverFiles.groupchat1 = f; }, file(msgs(12, 'Dee'), { integrity: 'int-g' }));
         await ev(() => M.openFile('groupchat1'));
         await page.waitForTimeout(800);
-        await ev(() => { M.saveBodies = []; });
         await ev(() => __savePoint.handle('run'));
         await page.waitForTimeout(1500);
-        const r = await ev(() => ({ bodies: M.saveBodies, mem: !!M.serverFiles.groupchat1[0].chat_metadata.savePoint, n: M.serverFiles.groupchat1.length - 1 }));
+        // v0.7.0-b2c: the memory goes to its own file; the chat file write here is a 🔖 (hides off).
+        await ev(() => { M.saveBodies = []; return __savePoint.toggleKeep(2); });
+        await page.waitForTimeout(300);
+        const r = await ev(() => ({ bodies: M.saveBodies, mem: !!M.mem('groupchat1'), n: M.serverFiles.groupchat1.length - 1 }));
         ok(r.bodies.length > 0 && r.bodies.every(x => x.url === '/api/chats/group/save' && x.name === 'groupchat1' && x.integrity === 'int-g' && x.count === 12), `그룹방은 그룹 파일로 저장 (${JSON.stringify(r.bodies.slice(0, 2))})`);
-        ok(r.mem && r.n === 12, '그룹 파일에 기억이 들어가고 메시지는 그대로');
+        ok(r.mem && r.n === 12, '그룹방 기억 파일이 생기고 그룹 파일의 메시지는 그대로');
         await page.close();
     }
 

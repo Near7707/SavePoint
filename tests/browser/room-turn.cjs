@@ -26,6 +26,8 @@ function serve() {
 }
 let failures = 0;
 const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!cond) failures++; };
+// v0.7.0-b2c: a check that no longer applies (its reason given), or one kept for b3.
+const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
 
 (async () => {
     const srv = await serve();
@@ -48,7 +50,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const ev = (fn, arg) => page.evaluate(fn, arg);
     const wait = ms => page.waitForTimeout(ms);
     const msgs = (n, tag) => Array.from({ length: n }, (_, i) => ({ name: i % 2 ? 'Me' : 'Ari', is_user: i % 2 === 1, is_system: false, mes: `${tag} message ${i} ${'and more '.repeat(6)}.`, swipe_id: 0, swipes: [`${tag} message ${i} ${'and more '.repeat(6)}.`], extra: {} }));
-    const file = (list, meta = {}) => JSON.parse(JSON.stringify([{ chat_metadata: meta }, ...list]));
+    // v0.7.0-b2c: a room file has its integrity (SillyTavern's own; a memory file is made only for a room that has one).
+    const file = (list, meta = {}) => JSON.parse(JSON.stringify([{ chat_metadata: { integrity: 'int-' + Math.random().toString(36).slice(2), ...meta } }, ...list]));
     const toasts = () => ev(() => toastr.log.map(x => x[1]).join(' | '));
     const open = async (id, list, meta = {}, serverFile = null) => {
         await ev(([id, f, l, m]) => { M.serverFiles[id] = f; return M.switchChat(id, l, m); }, [id, serverFile || file(list, meta), JSON.parse(JSON.stringify(list)), JSON.parse(JSON.stringify(meta))]);
@@ -59,7 +62,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => __savePoint.handle('run'));
     await wait(1500);
     const qid = await ev(() => __savePoint.listSaves().find(x => x.quick)?.id);
-    const memory = await ev(() => JSON.parse(JSON.stringify(M.meta.savePoint)));
+    const memory = await ev(() => JSON.parse(JSON.stringify(__savePoint.home().st)));
     ok(!!qid && memory?.mem?.scenes?.length > 0, '준비: QUICK과 기억');
     let r;
 
@@ -74,32 +77,22 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => { const m = M.chat[0]; m.mes = 'An edited first line written here.'; m.swipes = [m.mes]; M.add(1); });
     await ev(() => M.p);
     await wait(300);
-    r = await ev(() => ({ page: M.chat[0].mes, file: M.serverFiles.roomP[1].mes, n: M.serverFiles.roomP.length - 1, mem: !!M.serverFiles.roomP[0].chat_metadata.savePoint, t: toastr.log.map(x => x[1]).join(' | ') }));
+    r = await ev(() => ({ page: M.chat[0].mes, file: M.serverFiles.roomP[1].mes, n: M.serverFiles.roomP.length - 1, mem: !!M.mem('roomP'), t: toastr.log.map(x => x[1]).join(' | ') }));
     ok(r.page === 'An edited first line written here.' && r.file === r.page && r.n === 2 && !r.mem && r.t.includes('확인하는 사이 대화나 기억이 바뀌어서'),
         `1. 이어하기를 기다리는 사이 고친 첫 메시지는 덮지 않음 (${r.file.slice(0, 16)}, ${r.n}, ${r.t.slice(0, 30)})`);
     await ev(() => { M.metaDelay = 0; });
-    //    the same continue with nothing changed still works
-    await open('roomP2', [greet]);
-    await ev(id => __savePoint.loadSave(id), qid);
-    await wait(300);
-    r = await ev(() => ({ file: M.serverFiles.roomP2[1].mes, mem: !!M.serverFiles.roomP2[0].chat_metadata.savePoint }));
-    ok(r.file !== greet.mes && r.mem, '1. 그대로면 이어하기는 평소대로');
+    skip('1. 그대로면 이어하기는 평소대로', 'b3: #0 이어하기를 꺼 둠');
 
     // 2. [P2] an unconfirmed save is found in the file, but another device deleted the last message since:
     //    that file does not become the base, and the message does not come back.
     await open('roomQ', msgs(20, 'Que'));
-    await ev(() => { M.readFailAfterSave = true; toastr.log.length = 0; });
-    await ev(() => __savePoint.handle('run'));
-    await wait(1500);
-    r = await ev(() => __savePoint.autoBlocked());
-    ok(r === 'unsure', `2. 준비: 저장 확인 불가 (${r})`);
-    await ev(() => { M.readFailAfterSave = false; M.serverError = false; M.serverFiles.roomQ.pop(); M.saves0 = M.saves; toastr.log.length = 0; });
-    await wait(3600);                                // the 3-second re-read
-    await ev(() => __savePoint.persistSoon());
-    await wait(800);
+    // v0.7.0-b2c: the unconfirmed save it started from was a memory in the chat file (now its own file, home-link); the
+    // deleted message is the check.
+    skip('2. 준비: 저장 확인 불가', '기억은 채팅 파일에 없음: 응답 없는 기억 쓰기는 home-link·h1-order');
+    await ev(() => { M.serverFiles.roomQ.pop(); M.saves0 = M.saves; toastr.log.length = 0; });
     await ev(() => __savePoint.toggleKeep(2).catch(e => { M.qErr = e.message; }));
     r = await ev(() => ({ n: M.serverFiles.roomQ.length - 1, saves: M.saves - M.saves0, t: toastr.log.map(x => x[1]).join(' | '), err: M.qErr || '' }));
-    ok(r.n === 19 && r.saves === 0 && r.t.includes('들어가 있어요') && r.err.includes('지운 메시지'), `2. 확인한 저장 뒤 다른 곳에서 지운 메시지가 되살아나지 않음 (${r.n}, ${r.saves}, ${r.err.slice(0, 20)})`);
+    ok(r.n === 19 && r.saves === 0 && r.err.includes('지운 메시지'), `2. 확인한 저장 뒤 다른 곳에서 지운 메시지가 되살아나지 않음 (${r.n}, ${r.saves}, ${r.err.slice(0, 20)})`);
     //    … nor when that message was edited here meanwhile (the page never saved the edit)
     await open('roomQ2', msgs(20, 'Qu2'));
     await ev(() => { M.serverFiles.roomQ2.pop(); M.chat[19].mes += ' (edited here)'; M.saves0 = M.saves; });
@@ -113,23 +106,11 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r = await ev(() => ({ n: M.serverFiles.roomQ3.length - 1, saves: M.saves - M.saves0, err: M.q3Err || '', last: M.serverFiles.roomQ3.at(-1).mes }));
     ok(r.n === 20 && r.saves === 1 && !r.err && r.last.startsWith('A fresh line'), `2. 여기서 지우고 새로 쓴 메시지는 평소대로 저장 (${r.n}, ${r.err})`);
 
-    // 3. [P2] the page loaded an older memory; by the room's first read another device had saved a newer one.
-    const newer = JSON.parse(JSON.stringify(memory)); newer.by = 'other-device';
-    const older = JSON.parse(JSON.stringify(memory)); older.mem.scenes = []; older.mem.records = [];
+    // 3. (v0.7.0-b2c) the memory was read from the chat metadata the page had loaded; it is read from the room's memory file
+    //    when the room opens (home-link), so an older one on the page is never there to write over a newer one.
     const arr = msgs(6, 'Ar');
-    await ev(() => { toastr.log.length = 0; });
-    await open('roomR', arr, { savePoint: older }, file(arr, { savePoint: newer }));
-    await ev(() => { M.saves0 = M.saves; __savePoint.adoptPage(); __savePoint.persistSoon(); });
-    await wait(700);
-    await ev(() => __savePoint.toggleKeep(1).catch(e => { M.rErr = e.message; }));
-    r = await ev(() => ({ scenes: M.serverFiles.roomR[0].chat_metadata.savePoint.mem.scenes.length, saves: M.saves - M.saves0, err: M.rErr || '' }));
-    ok(r.scenes > 0 && r.saves === 0 && r.err.includes('다른 기기에서'), `3. 방을 열 때 서버 기억이 더 새로우면 덮어쓰지 않음 (${r.scenes}, ${r.saves}, ${r.err.slice(0, 20)})`);
-    //    the same memory on both sides opens as usual
-    await open('roomR2', arr, { savePoint: older });
-    await ev(() => { M.saves0 = M.saves; });
-    await ev(() => __savePoint.toggleKeep(1).catch(e => { M.r2Err = e.message; }));
-    r = await ev(() => ({ saves: M.saves - M.saves0, err: M.r2Err || '' }));
-    ok(r.saves === 1 && !r.err, `3. 같은 기억이면 평소대로 (${r.err})`);
+    skip('3. 방을 열 때 서버 기억이 더 새로우면 덮어쓰지 않음', '기억은 방을 열 때 기억 파일에서 읽음 (home-link)');
+    skip('3. 같은 기억이면 평소대로', '위와 같음');
 
     // 4. [P2] a quick save whose last unrecorded message is edited (and saved) while the save waits for its
     //    file check: nothing is recorded from the old text, and no "done".
@@ -142,7 +123,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => { const m = M.chat[5]; m.mes = 'The last line, rewritten while saving.'; m.swipes = [m.mes]; M.stSave(); });
     await ev(() => M.p);
     await wait(200);
-    r = await ev(() => ({ last: __savePoint.state()?.lastIndex ?? -1, file: M.serverFiles.roomS[0].chat_metadata.savePoint?.lastIndex ?? -1, t: toastr.log.map(x => x[1]).join(' | ') }));
+    r = await ev(() => ({ last: __savePoint.state()?.lastIndex ?? -1, file: M.mem('roomS')?.lastIndex ?? -1, t: toastr.log.map(x => x[1]).join(' | ') }));
     ok(r.last === -1 && r.file === -1 && !r.t.includes('퀵세이브 완료') && r.t.includes('바뀌어서'), `4. 저장을 기다리는 사이 고친 메시지는 예전 원문으로 기록하지 않음 (${r.last}, ${r.t.slice(0, 40)})`);
     await ev(() => { M.readDelayFor = null; M.delay = 0; });
     await ev(() => __savePoint.summarize());
@@ -152,18 +133,21 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
 
     // 5. [P3] an old-format memory read while the room is being checked: a result marked 무시 there never
     //    reaches the room's metadata before the room is confirmed, and is then saved through the queue.
+    //    (v0.7.0-b2c: the old memory is moved into the room's memory file when the room is linked; the 무시 lands there.)
     const old = JSON.parse(JSON.stringify(memory));
     old.mem.evidenceVersion = 0;
     old.check = { at: 1, status: 'done', scope: { from: 0, to: 5 }, issues: [{ id: 'c1', about: old.mem.records[0]?.id || 'r1', kind: 'partial', ignored: false, note: 'A note.' }] };
     await ev(() => { M.readDelayFor = { roomT: 900 }; });
     await open('roomT', arr, { savePoint: old });
-    await ev(() => { __savePoint.state().check.issues[0].note = 'changed on the copy'; M.p = __savePoint.handle('check-ignore', 'c1').catch(e => { M.tErr = e.message; }); });
+    await ev(() => { M.st5 = __savePoint.state(); M.p = __savePoint.handle('check-ignore', 'c1').catch(e => { M.tErr = e.message; }); });
     await wait(100);
-    r = await ev(() => ({ ignored: M.meta.savePoint.check.issues[0].ignored, note: M.meta.savePoint.check.issues[0].note }));
-    ok(r.ignored === false && r.note === 'A note.', `5. 방 확인 중에는 원본 기록 확인 결과가 바뀌지 않음 (${r.ignored}, ${r.note})`);
+    // v0.7.0-b2c: the room's memory comes from its memory file once the room is linked: while it is being checked the page has
+    // none (no copy to change), and the 무시 waits for its turn.
+    r = await ev(() => ({ st: M.st5, file: M.mem('roomT') }));
+    ok(r.st === null && r.file === null, `5. 방 확인 중에는 화면에 기억이 없어 바뀔 것도 없음 (${JSON.stringify(r).slice(0, 60)})`);
     await ev(() => M.p);
     await wait(300);
-    r = await ev(() => ({ page: M.meta.savePoint.check.issues[0].ignored, file: M.serverFiles.roomT[0].chat_metadata.savePoint.check.issues[0].ignored, err: M.tErr || '' }));
+    r = await ev(() => ({ page: __savePoint.home().st.check.issues[0].ignored, file: M.mem('roomT').check.issues[0].ignored, err: M.tErr || '' }));
     ok(r.page === true && r.file === true && !r.err, `5. 확인이 끝나면 무시가 차례대로 저장됨 (${r.err})`);
     await ev(() => { M.readDelayFor = null; });
 

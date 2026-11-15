@@ -26,7 +26,8 @@ const ok = (condition, message) => { console.log(`${condition ? 'PASS' : 'FAIL'}
             const page = await browser.newPage({ viewport: { width, height: 844 } });
             page.on('pageerror', error => { console.log('PAGE ERROR', error.message); failures++; });
             await page.goto(`http://localhost:${server.address().port}/`);
-            await page.waitForFunction(() => !!globalThis.__savePoint);
+            await page.waitForFunction(() => !!globalThis.__savePoint && __savePoint.vault.ready);
+            await page.evaluate(() => M.opened());   // v0.7.0-b2c: the room's memory file read first
             await page.evaluate(async () => {
                 M.settings.savePoint.auto = false; M.settings.savePoint.check = false;
                 M.add(90, i => (i % 5 === 0 ? 'SCENEBREAK ' : '') + 'A traveler reached the station and checked the map.');
@@ -100,15 +101,15 @@ const ok = (condition, message) => { console.log(`${condition ? 'PASS' : 'FAIL'}
             ok(reopened === 600, `${width}px: closing and reopening keeps the reading position`);
             const rooms = await ev(async () => {
                 window.scrollRoomA = { chat: M.chat, meta: M.meta };
-                await M.switchChat('chatB', [], {}); const fresh = document.querySelector('.sp-body').scrollTop;
+                await M.switchChat('chatB', [], {}); await M.opened(); const fresh = document.querySelector('.sp-body').scrollTop;
                 M.add(45, i => (i % 5 === 0 ? 'SCENEBREAK ' : '') + 'A traveler stopped near another station.');
                 await __savePoint.handle('run'); document.querySelector('.sp-body').scrollTop = 250;
                 const roomB = { chat: M.chat, meta: M.meta }, bBefore = document.querySelector('.sp-body').scrollTop;
-                await M.switchChat('chatA', window.scrollRoomA.chat, window.scrollRoomA.meta); const aReturned = document.querySelector('.sp-body').scrollTop;
-                await M.switchChat('chatB', roomB.chat, roomB.meta);
+                await M.switchChat('chatA', window.scrollRoomA.chat, window.scrollRoomA.meta); await M.opened(); await new Promise(r => setTimeout(r, 300)); const aReturned = document.querySelector('.sp-body').scrollTop;
+                await M.switchChat('chatB', roomB.chat, roomB.meta); await M.opened(); await new Promise(r => setTimeout(r, 300));
                 return { fresh, aReturned, bBefore, bReturned: document.querySelector('.sp-body').scrollTop, calls: M.calls.length };
             });
-            ok(rooms.fresh === 0 && rooms.aReturned === 600 && rooms.bBefore === 250 && rooms.bReturned === 250, `${width}px: each chat room keeps its own tab position`);
+            ok(rooms.fresh === 0 && rooms.aReturned === 600 && rooms.bBefore === 250 && rooms.bReturned === 250, `${width}px: each chat room keeps its own tab position (${JSON.stringify(rooms)})`);
             await page.close();
         }
     } finally { await browser?.close(); server.close(); }
