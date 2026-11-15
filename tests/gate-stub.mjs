@@ -33,6 +33,7 @@ export function gateBox() {
         takeHome: () => true, freeHome() {}, homeSettled: async () => {}, 
         // v0.7.0-b2a: new hides are never held back here (the memory is always proved).
         hidesHeld: () => false,
+        endHold: () => {}, holds: new WeakMap(),
     };
 }
 

@@ -359,7 +359,9 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     // The hide SillyTavern's own save carried (`server`) is P1-5 of the b1 review: b2 (H1) sets a hide only after its memory.
     // v0.7.0-b1c (review of b1b, P1-2): hides before the edited message rest on unchanged messages and may still go out (a
     // chat save then); the edited one is never hidden by SavePoint's write.
-    ok(r.i >= 0 && (r.sp[0] === r.sp[1] || !r.server) && !r.page && r.edited, `19. 마지막 확인 중 숨길 원문이 바뀜 → SavePoint는 숨김 저장 안 함·화면 숨김 풀림 (${JSON.stringify(r)})`);
+    // v0.7.0-b2a2 (review of b2a1, P3): the server is checked whether SavePoint wrote the chat file or not — SillyTavern's own
+    // save may carry a new hide too (b2: none is on the page until the request).
+    ok(r.i >= 0 && !r.server && !r.page && r.edited, `19. 마지막 확인 중 숨길 원문이 바뀜 → SavePoint는 숨김 저장 안 함·화면 숨김 풀림 (${JSON.stringify(r)})`);
 
     // 20. P1-5: a rename seen before follows the room (A → B → C in the list); an imported copy renamed to B later is not
     // taken for A. Opening C still takes A's memory.
@@ -467,7 +469,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await wait(2500);
     r = { sp: [r, await spSaves()], ...(await ev(() => ({ i: window.__edited, n: window.__newHides, page: M.chat.map(m => ({ is_system: !!m.is_system })), server: M.serverFiles[M.chatId].slice(1) }))) };
     // SavePoint may still write the marks that rest on nothing changed; what it writes then carries no new hide.
-    ok(r.i >= 0 && r.n > 0 && noNewHides(before22, r.page) && (r.sp[0] === r.sp[1] || noNewHides(before22, r.server)), `22. 앞쪽 숨긴 원문이 바뀜 → 뒤쪽 새 숨김도 저장 안 함·화면에서도 풀림 (i=${r.i} n=${r.n} sp=${r.sp} page=${JSON.stringify(r.page.map(m => m.is_system))} server=${JSON.stringify(r.server.map(m => !!m.is_system))})`);
+    // v0.7.0-b2a2 (review of b2a1, P3): the server holds no new hide either way (SillyTavern's own save included).
+    ok(r.i >= 0 && r.n > 0 && noNewHides(before22, r.page) && noNewHides(before22, r.server), `22. 앞쪽 숨긴 원문이 바뀜 → 뒤쪽 새 숨김도 저장 안 함·화면에서도 풀림 (i=${r.i} n=${r.n} sp=${r.sp} page=${JSON.stringify(r.page.map(m => m.is_system))} server=${JSON.stringify(r.server.map(m => !!m.is_system))})`);
 
     // 23. P1-2: the same edit while SillyTavern saves during SavePoint's chat write (it sends the room again): the copy sent
     // again carries no new hide either.
@@ -826,7 +829,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.i >= 0 && /다시 풀어 저장하려 했는데 실패/.test(r.msg), `40. 숨김을 푸는 재전송이 거절됨 → 성공으로 끝내지 않고 알림 (${JSON.stringify(r)})`);
     await ev(() => __savePoint.handle('home-recheck')).catch(() => {});
 
-    // 41. P3 (the other side): SillyTavern saves the page after the last check (with the new hides on it) and an earlier hidden
+    // 41. P3 (the other side; v0.7.0-b2a2: the new hides are no longer on the page then): SillyTavern saves the page after the last check and an earlier hidden
     // message was edited just before: every new hide goes back inside the chat write, and a copy is still sent to take back
     // what SillyTavern's save carried.
     await linkedRoom('r41');
@@ -852,7 +855,9 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => __savePoint.handle('run').catch(() => {}));
     await wait(2000);
     r = { i: await ev(() => window.__i41), sp: [sp41, await spSaves()], after: await ev(() => M.serverFiles.r41.slice(1)) };
-    ok(r.i >= 0 && r.sp[1] > r.sp[0] && newHidesIn(before41, r.after) === 0, `41. 실리태번이 그사이 저장 → 첫 요청 생략 안 하고 보내서 새 숨김 없음 (i=${r.i} sp=${r.sp} ${JSON.stringify(hidOf(r.after))} ← ${JSON.stringify(hidOf(before41))})`);
+    // v0.7.0-b2a2 (review of b2a1, P1): the new hides go on the page only right before the first request, so SillyTavern's save
+    // in that wait carries none of them, and with every one gone stale nothing is left to send: the request is skipped.
+    ok(r.i >= 0 && r.sp[1] === r.sp[0] && newHidesIn(before41, r.after) === 0, `41. 실리태번이 그사이 저장 → 새 숨김은 화면에 없었으니 보낼 것 없음·요청 생략, 새 숨김 없음 (i=${r.i} sp=${r.sp} ${JSON.stringify(hidOf(r.after))} ← ${JSON.stringify(hidOf(before41))})`);
 
     // ───── v0.7.0-b1f (review of b1e) ─────
     // A reset of this room's memory put on the server by another device (rev + 1, nothing recorded).

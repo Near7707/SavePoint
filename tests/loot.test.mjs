@@ -32,7 +32,7 @@ function harness({ messages = ['A participant kept a token.'], recorded = false 
         homeOpen = () => true; homeStill = async () => ({ ok: true });
         homeWrite = async () => { try { await ctx().saveMetadata(); return { status: 'ok' }; } catch { return { status: 'refused' }; } };
         gateOpen = () => hasChat(); roomReady = async () => hasChat(); readServerChat = async () => ({ ok: true, snap: pageSnap(), count: chat().length, first: chat()[0], rev: state()?.rev ?? null });
-        setHidden = () => {}; render = () => {}; autosave = () => {}; quickSave = async () => null; persistSoon = () => {}; saveChatSoon = () => {}; writeChatFile = async () => {};
+        setHidden = () => {}; render = () => {}; autosave = () => {}; quickSave = async () => null; persistSoon = () => {}; saveChatSoon = () => {}; writeChatFile = async (m, guard) => { if (guard && guard({ sent: false }) === false) { const e = new Error('nothing to send'); e.nothingSent = true; throw e; } };
         // v0.6.83: no chat file here (the read above is the page itself): a failed write is taken back, as before.
         settleWrite = async e => (e?.landed ? e : 'revert');
         queueCheck = (st, before) => checks.push(checkScope(before, st.mem));

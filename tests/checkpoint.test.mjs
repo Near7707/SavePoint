@@ -46,7 +46,8 @@ function harness({ count = 20, chars = 30, reserve = 2, keep = 0, limit = 60000 
         setHidden = (m, i, hidden) => { m.is_system = !!hidden; };
         render = () => {}; persistSoon = () => {}; saveChatSoon = () => {};
         // v0.7.0-b2a: the chat file write of the marks puts the page in this room's file (the new hides go out after the memory).
-        writeChatFile = async () => { __saved(); };
+        // v0.7.0-b2a2: its check (guard) runs right before, as in writeChatFile: the held hides go on the page there.
+        writeChatFile = async (meta, guard) => { if (guard && guard({ sent: false }) === false) { const e = new Error('nothing to send'); e.nothingSent = true; throw e; } __saved(); };
         autosave = st => { if (st) backups.push({ lastIndex: st.lastIndex, mem: clone(st.mem) }); };
         quickSave = async st => { quicks.push(st.lastIndex); return null; };
         queueCheck = (st, before, opts) => checks.push(opts);

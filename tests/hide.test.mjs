@@ -29,7 +29,7 @@ function harness({ count = 10, lastIndex = 9, keepRecent = 2 } = {}) {
         chat: () => chat, settings: () => settings, num: k => settings[k], hasMemory: mem => !!(mem.scenes.length || mem.records.length),
         $(selector) { const index = Number(selector.match(/mesid="(\d+)"/)[1]); return { attr(k, value) { dom.set(index, value); } }; },
         saveChatSoon() {}, refreshInjection() {}, render() {}, autosave() {}, async quickSave() { return null; }, announceReturns() {},
-        async persist() { writes.push(structuredClone({ meta, chat })); },
+        async persist(m, guard) { if (guard && guard({ sent: false }) === false) { const e = new Error('nothing to send'); e.nothingSent = true; throw e; } writes.push(structuredClone({ meta, chat })); },
         hasChat: () => true, mainBusy: () => false, ensureState: () => meta.savePoint, reconcile: () => true, reconcileNow: async () => true,
         collect: (a, b) => chat.map((m, index) => ({ index, name: m.name, text: m.mes })).filter(m => m.index >= a && m.index <= b),
         openScene, closeOpenScene: mem => ({ ...mem, scenes: mem.scenes.map(s => ({ ...s, status: 'closed' })) }),
