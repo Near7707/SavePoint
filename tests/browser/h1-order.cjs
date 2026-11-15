@@ -172,7 +172,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(!x.unread && x.file === 13 && x.page.includes(11) && x.server.join() === x.page.join() && covered(x), `6. 기억이 확인된 다음 세이브에서 숨김 (${JSON.stringify(x)})`);
 
     // 6b. (P1-2) a held hide is set again only on messages unchanged since the change: #14 edited while the memory is on its way →
-    // when the hides are set again, nothing from #14 on is hidden (SillyTavern's save in the very next wait carries none of it).
+    // nothing from #14 on is hidden. (b2a1, review of b2a P1-2: the hides are set right before the copy is made, so SillyTavern's
+    // save in the wait after the memory read carries none of them, #13 included.)
     await ev(() => M.add(3));
     await ev(async () => {
         const H = await import('/ext/home.js'), name = H.memName(__savePoint.home().id), f = window.fetch;
@@ -192,8 +193,48 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => __savePoint.handle('run'));
     await wait(2000);
     r = { st: await ev(() => window.__st6b), x: await look() };
-    ok(Array.isArray(r.st) && r.st.includes(13) && !r.st.includes(14) && !r.st.includes(15) && !r.x.server.includes(14) && !r.x.page.includes(14),
+    ok(Array.isArray(r.st) && !r.st.includes(13) && !r.st.includes(14) && !r.st.includes(15) && r.x.server.includes(13) && !r.x.server.includes(14) && !r.x.page.includes(14),
         `6b. 기억 업로드 중 #14 수정 → 다시 걸 때 #14부터는 안 숨김 (${JSON.stringify(r)})`);
+    // #14 back as it was recorded (its memory is not rolled back here).
+    await ev(() => { M.chat[14].mes = M.chat[14].mes.replace(' (edited)', ''); });
+
+    // 6c. (review of b2a, P1-2) #14 edited after the memory was read back, while the chat file is read right before the write, and
+    // SillyTavern saves the page then: its copy carries no new hide, and none of #14–#16 is hidden on the server or the page.
+    await ev(() => M.add(1));
+    await ev(async () => {
+        const H = await import('/ext/home.js'), name = H.memName(__savePoint.home().id), f = window.fetch;
+        let up = false, reads = 0;
+        window.__st6c = null;
+        window.fetch = async (u, o) => {
+            const s = String(u);
+            if (s === '/api/files/upload' && JSON.parse(o.body).name === name) up = true;
+            if (up && s.startsWith('/user/files/' + name)) reads++;
+            if (up && reads >= 2 && s === '/api/chats/get') {
+                window.fetch = f;
+                M.chat[14].mes += ' (edited later)';
+                M.stSave();
+                window.__st6c = M.serverFiles[M.chatId].slice(1).map((m, i) => (m.is_system ? i : -1)).filter(i => i >= 0);
+            }
+            return f(u, o);
+        };
+    });
+    y = await look();
+    await ev(async () => { try { await __savePoint.handle('run'); } catch { /* reported */ } });
+    await wait(2000);
+    r = { st: await ev(() => window.__st6c), x: await look() };
+    ok(Array.isArray(r.st) && r.st.join() === y.server.join() && ![14, 15, 16].some(i => r.x.server.includes(i) || r.x.page.includes(i)),
+        `6c. 기억 확인 뒤 채팅 읽기 중 #14 수정·실리태번 저장 → 새 숨김 없음 (before=${JSON.stringify(y)} ${JSON.stringify(r)})`);
+    await ev(() => { M.chat[14].mes = M.chat[14].mes.replace(' (edited later)', ''); M.stSave(); });
+
+    // 6d. (review of b2a, P2) hide turned off while the memory is on its way: the held hides are not set; what was hidden stays.
+    await ev(() => M.add(1));
+    y = await look();
+    await ev(() => { M.beforeUpload = async n => { if (!n.startsWith('savepoint-mem-')) return; M.beforeUpload = null; M.settings.savePoint.hideMode = 'off'; }; });
+    await ev(async () => { try { await __savePoint.handle('run'); } catch { /* reported */ } });
+    await wait(2000);
+    x = await look();
+    ok(x.file === 18 && x.page.join() === y.page.join() && x.server.join() === y.server.join(), `6d. 저장 중 하이드 끔 → 새 숨김 안 걺, 이미 숨긴 건 그대로 (before=${JSON.stringify(y)} after=${JSON.stringify(x)})`);
+    await ev(() => { M.settings.savePoint.hideMode = 'auto'; });
 
     // 7. a reset whose release is in the chat file but whose memory write gets no answer: the messages stay shown (never hidden
     // again), the memory file is as before, the room writes no memory until it is opened again.
@@ -207,6 +248,28 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r = await order();
     ok(r[0] === 'chat' && x.pending && x.file === y.file && x.page.length === 0 && x.server.length === 0 && covered(x),
         `7. 풀기 저장 뒤 기억 응답 없음 → 풀린 채로 멈춤 (before=${JSON.stringify(y)} after=${JSON.stringify(x)} ${JSON.stringify(r)})`);
+
+    // 8. (review of b2a, P1-1) another device reset the room (memory emptied, every hide released on the server) while this tab still
+    // shows the old hides: a rewind here sends nothing (the memory file is not the one this tab saw), the server keeps no hide.
+    await ev(() => M.openFile(M.chatId)); await wait(1500);
+    await ev(() => M.add(2));
+    await ev(() => __savePoint.handle('run'));
+    await wait(1800);
+    y = await look();
+    await ev(async () => {
+        const H = await import('/ext/home.js'), name = H.memName(__savePoint.home().id), f = JSON.parse(M.files.get(name));
+        const st = JSON.parse(JSON.stringify(f.state));
+        st.mem = { scenes: [], records: [], entities: [] }; st.lastIndex = -1; st.hashes = []; st.undo = null; st.undoInfo = null;
+        M.otherPut(name, H.nextMem(f, st, 'other8'));
+        for (const m of M.serverFiles[M.chatId].slice(1)) { delete m.is_system; if (m.extra) delete m.extra.savepointHidden; }
+    });
+    await logOrder();
+    r = await ev(async () => { M.confirm = 1; try { await __savePoint.handle('undo'); return null; } catch (e) { return e.message; } });
+    await wait(1500);
+    x = await look();
+    const o8 = await order(), wid8 = await ev(async () => { const H = await import('/ext/home.js'); return JSON.parse(M.files.get(H.memName(__savePoint.home().id))).wid; });
+    ok(y.page.length > 0 && x.server.length === 0 && o8.length === 0 && wid8 === 'other8' && x.sp === y.sp,
+        `8. 다른 기기 리셋 뒤 오래된 화면의 리와인드 → 채팅 저장 안 함, 서버 숨김 0 (before=${JSON.stringify(y)} after=${JSON.stringify(x)} order=${JSON.stringify(o8)} err=${r})`);
 
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();

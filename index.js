@@ -27,7 +27,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.7.0-b2a';
+const VERSION = '0.7.0-b2a1';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -804,12 +804,17 @@ function holdNewHides(entry) {
 // hold left them, no 🔖 since) and resting on messages unchanged since the change (#0 up to it: dropStaleHides' rule).
 function putHeldHides(entry, held) {
     const list = chat(), order = entry.order || [], at = new Map(list.map((m, i) => [m, i]));
+    // v0.7.0-b2a1 (review of b2a, P2): the hide setting of now (hide off, SavePoint off, a larger "keep the latest N", a manual
+    // range that no longer reaches) is asked again; what is hidden already is left as it is.
+    const s = settings(), mode = hideModeOf(s), st = state();
+    let cutoff = s.enabled && mode !== 'off' && st && !st.review && hasMemory(st.mem) ? hideLimit(st, list) : -1;
+    if (mode === 'manual') cutoff = Math.min(cutoff, Number.isInteger(st?.hideManual?.to) ? st.hideManual.to : -1);
     let first = order.length;
     for (let k = 0; k < order.length; k++) if (list[k] !== order[k] || entry.prints?.get(order[k]) !== fingerprint(list[k])) { first = k; break; }
     let n = 0;
     for (const v of held) {
         const i = at.get(v.m), post = entry.after?.get(v.m);
-        if (i === undefined || i >= first || !post || kept(v.m)) continue;
+        if (i === undefined || i >= first || i > cutoff || !post || kept(v.m)) continue;
         const now = ownFlags(v.m);
         if (![0, 1, 2, 3].every(j => sameMark(now[j], v.flags[j]))) continue;
         setHidden(v.m, i, !!post.flags[0][1]);
@@ -854,6 +859,26 @@ async function releaseFirst(queue, entry, pre) {
         if (here) { ctx().swipe?.refresh?.(); refreshView(); }
     };
     const away = () => { restoreMemOnly(entry); return new Unconfirmed('방을 옮겨서 원문 숨김 풀기가 채팅 파일에 들어갔는지 확인하지 못했어요. 그 방을 다시 열어 확인해 주세요.'); };
+    // v0.7.0-b2a1 (review of b2a, P1-1): the release sends the whole page, so it is checked like every chat write first:
+    // SillyTavern's own write waited for, the memory file still the one this room last saw (another device's reset would make
+    // the page's other hides stale), then the chat file read again; the write goes out over that read. Nothing sent otherwise.
+    const gone = () => { restoreEntry(entry); trustQueue(); return cancelMoved(queue, entry); };
+    await stIdle();
+    if (moved()) throw gone();
+    const still = await homeStill();
+    if (moved()) throw gone();
+    if (!still.ok) {
+        undoAll('memory file');
+        throw new RoomBlocked(still.why === 'memRead' ? '기억 파일을 다시 읽지 못해서 이번 변경은 하지 않았어요. 잠시 뒤 다시 해 주세요.' : `이번 변경은 하지 않았어요. ${homeMessage() || '그사이 다른 곳에서 이 방의 기억 파일을 저장했어요. 방을 다시 열거나 새로고침해 주세요.'}`);
+    }
+    await stIdle();
+    if (moved()) throw gone();
+    let now;
+    try { now = await serverCovered(); } catch { now = { ok: false, why: 'error' }; }
+    if (moved() || now.why === 'moved') throw gone();
+    if (!now.ok) { undoAll(now.why); blockRoom(now.why, now.at); throw new RoomBlocked(`${gateMessage()} 이번 변경은 취소했어요.`); }
+    pre = now;
+    written = sendSnap(pre.meta);
     try { const last = await persist(pre.meta); if (last) written = last; }
     catch (e) {
         const err = await settleWrite(e, { written, rev, proof: null, pre, key: entry.key, epoch: entry.epoch, marks, tick });
@@ -1017,12 +1042,12 @@ async function writeEntry(queue, entry) {
     }
     // v0.7.0-b2a (H1; b2 design review P1-2): the memory is in its file (read back with this change's receipt): the new hides held
     // back are set again, each only where the message is still as the change left it (same room, same memory, no mark of it
-    // changed since). A message edited meanwhile is checked below (dropStaleHides).
-    if (w.status === MEM_OK && held.length && !moved() && (mine ? sameHome(mine) : !entry.box?.line)) {
-        if (putHeldHides(entry, held)) { ctx().swipe?.refresh?.(); refreshView(); }
-        marks = leftMarks();
-    }
-    if (!marks.length || w.status !== MEM_OK) {
+    // changed since, #0 up to it unchanged).
+    // v0.7.0-b2a1 (review of b2a, P1-2): set at the very moment the copy to send is made (below), after every wait and check:
+    // until then nothing of them is on the page, so no edit and no save of SillyTavern's in between can carry them.
+    const heldLeft = w.status === MEM_OK && held.length > 0 && !moved() && (mine ? sameHome(mine) : !entry.box?.line);
+    if (!heldLeft) held = [];
+    if ((!marks.length && !heldLeft) || w.status !== MEM_OK) {
         if (roomKey() === entry.key && roomEpoch === entry.epoch) { if (entry.autosave) autosave(state()); render(); }
         return true;
     }
@@ -1038,6 +1063,7 @@ async function writeEntry(queue, entry) {
     // go back; the other marks of the change (🔖, a hide taken away) still go out.
     if (!still.ok && still.why === 'relinked') {
         relinkedLate = true;
+        held = [];
         if (dropStaleHides(entry, { all: true }) && roomKey() === entry.key && roomEpoch === entry.epoch) { ctx().swipe?.refresh?.(); refreshView(); }
         // v0.7.0-b1g (review of b1f, P1-1): the notice comes once, at the end of the change (Relinked).
         if (!leftMarks().length) throw relinked();
@@ -1063,7 +1089,17 @@ async function writeEntry(queue, entry) {
             throw saved(new RoomBlocked(`기억은 저장했어요. 하지만 ${gateMessage()} 그래서 원문 숨김은 저장하지 않았어요.`));
         }
         pre = now; entry.pre = now;
+        // v0.7.0-b2a1 (review of b2a, P1-2): the held hides go on the page here, right before the copy is made (no wait between),
+        // each only where it still rests on unchanged messages and the hide setting of now still asks for it (P2).
+        // Another memory linked during the waits (`다시 확인` read another device's reset): they rest on this change's memory, so
+        // none is set, and with nothing else left to send the change ends with the notice of a memory linked meanwhile.
+        if (mine && !sameHome(mine)) { held = []; relinkedLate = true; }
+        if (held.length && putHeldHides(entry, held)) { ctx().swipe?.refresh?.(); refreshView(); }
         written = sendSnap(pre.meta); marks = leftMarks(); tick = delTick;
+        if (!marks.length) {
+            if (relinkedLate) throw relinked();
+            throw saved(new RoomBlocked('기억은 저장했어요. 하지만 그사이 원문이나 하이드 설정이 바뀌어서 원문 숨김은 저장하지 않았어요. 다시 세이브하면 맞춰요.'));
+        }
         // v0.7.0-b1a (review of b1a, P1-4): a message edited since the change (on this page, maybe saved by SillyTavern
         // already): its new text is not what the memory recorded, so no hide goes out.
         // v0.7.0-b1c (review of b1b, P1-2): a new hide rests on every message from #0 to it (an edit before it rewinds the

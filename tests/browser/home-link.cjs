@@ -343,7 +343,10 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
             if (s === '/api/files/upload' && JSON.parse(o.body).name.startsWith('savepoint-mem-')) up = true;
             else if (up && s === '/api/chats/get') {
                 window.fetch = f;
-                const server = M.serverFiles[M.chatId].slice(1), i = M.chat.findIndex((m, k) => m.is_system && !server[k]?.is_system);
+                // v0.7.0-b2a1 (review of b2a, P1-2): the new hides are not on the page yet at this read (set right before the copy is
+                // made): the message to edit is the first one this change hides (recorded, outside the latest N, shown).
+                const st = __savePoint.state(), cut = Math.min(st.lastIndex, M.chat.length - 1 - (M.settings.savePoint.keepRecent ?? 0));
+                const i = M.chat.findIndex((m, k) => k <= cut && !m.is_system);
                 window.__edited = i;
                 if (i >= 0) { M.chat[i].mes += ' (edited here)'; M.chat[i].swipes && (M.chat[i].swipes[M.chat[i].swipe_id || 0] = M.chat[i].mes); M.stSave(); }
             }
@@ -452,7 +455,9 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
                 window.fetch = f;
                 const server = M.serverFiles[M.chatId].slice(1), i = M.chat.findLastIndex((m, k) => m.is_system && server[k]?.is_system);
                 window.__edited = i;
-                window.__newHides = M.chat.filter((m, k) => m.is_system && !server[k]?.is_system).length;
+                // v0.7.0-b2a1: the hides this change is to set (not on the page yet at this read).
+                const st = __savePoint.state(), cut = Math.min(st.lastIndex, M.chat.length - 1 - (M.settings.savePoint.keepRecent ?? 0));
+                window.__newHides = M.chat.filter((m, k) => k <= cut && !m.is_system).length;
                 if (i >= 0) { M.chat[i].mes += ' (edited 22)'; M.chat[i].swipes && (M.chat[i].swipes[M.chat[i].swipe_id || 0] = M.chat[i].mes); M.stSave(); }
             }
             return f(u, o);
