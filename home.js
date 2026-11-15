@@ -119,7 +119,7 @@ export function cleanName(typed) {
 }
 
 // SavePoint's marks on messages (hide, shown, held, 🔖) and the old in-chat memory.
-export const OWN_KEYS = ['savepointHidden', 'savepointVisible', 'savepointHeld', 'savepointKeep'];
+export const OWN_KEYS = ['savepointHidden', 'savepointVisible', 'savepointHeld', 'savepointKeep', 'savepointLive'];
 export function hasTraces(meta, messages, module = 'savePoint') {
     if (plainObj(meta) && meta[module] !== undefined && meta[module] !== null) return true;
     return (Array.isArray(messages) ? messages : []).some(m => plainObj(m?.extra) && OWN_KEYS.some(k => m.extra[k] !== undefined));

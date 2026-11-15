@@ -342,6 +342,55 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(x.file === -1 && x.page.includes(3) && x.server.includes(3) && r.p.join() === 'true,false' && r.s.join() === 'true,false' && x.page.join() === x.server.join(),
         `10. 다시 리셋 → 사용자 숨김은 남음 (${JSON.stringify(r)} ${JSON.stringify(x)})`);
 
+    // 11. (b2b3, recheck 3) a hidden recorded message is edited and a reply starts: SavePoint shows it on the page for now (a value made
+    // for that release on it), SillyTavern saves that page (the file shows it too, with the value). The original is put back: the page
+    // hides it again. The next turn's read finds the file "not hidden" where this tab last saw it hidden.
+    // (#5: #1 and #2 keep the user's own hides of 8 and 9.)
+    //   11a: the file carries this release's value → this tab's own release: written as usual, the server hides it again, no notice.
+    //   11b: the file shows it without that value (another device took the hide away meanwhile) → held back as before (b2b).
+    //   11c: as 11a, but another device resets only the memory file meanwhile (the chat file already shows #5): the value matches, but
+    //   nothing hides #5 on the server again and the reset memory is not written over (the room stops writing: b1's conflict).
+    const MEM_RESET = `async () => {
+        const H = await import('/ext/home.js'), name = H.memName(__savePoint.home().id), f = JSON.parse(M.files.get(name));
+        const st = JSON.parse(JSON.stringify(f.state));
+        st.mem = { scenes: [], records: [], entities: [] }; st.lastIndex = -1; st.hashes = []; st.undo = null; st.undoInfo = null;
+        M.otherPut(name, H.nextMem(f, st, 'other11c'));
+    }`;
+    const editBack = async (strip, memReset = false) => {
+        const before = await ev(() => M.chat[5].mes);
+        await ev(async () => { M.chat[5].mes = 'An edited early line.'; M.stSave(); const c = SillyTavern.getContext();
+            await c.eventSource.emit('message_edited', 5); await c.eventSource.emit('generation_started', 'normal', {}, false); });
+        const shown = await ev(() => ({ page: !!M.chat[5].is_system, live: typeof M.chat[5].extra?.savepointLive === 'string' }));
+        await ev(() => M.stSave());   // SillyTavern saves the page as it is now (the release on it)
+        const saved = await ev(() => typeof M.serverFiles[M.chatId][6].extra?.savepointLive === 'string' && !M.serverFiles[M.chatId][6].is_system);
+        await ev(async t => { M.chat[5].mes = t; M.stSave(); await SillyTavern.getContext().eventSource.emit('message_edited', 5); }, before);
+        if (strip) await ev(() => { delete M.serverFiles[M.chatId][6].extra.savepointLive; });
+        if (memReset) await ev(`(${MEM_RESET})()`);
+        await wait(300);
+        await ev(() => { toastr.log.length = 0; return SillyTavern.getContext().eventSource.emit('generation_ended', M.chat.length); });
+        await wait(2500);
+        return { shown, saved };
+    };
+    for (const [n, strip, memReset] of [['11a', false, false], ['11b', true, false], ['11c', false, true]]) {
+        y = await fresh();
+        await ev(() => M.add(4));
+        await ev(() => __savePoint.handle('run').catch(() => {}));
+        await wait(2000);
+        y = await look();
+        const s0 = await mk(5);
+        const pre = await editBack(strip, memReset);
+        x = await look();
+        r = await mk(5);
+        const note = await said(/다른 곳\(다른 기기나 탭\)에서 SavePoint의 원문 숨김을 풀어서/);
+        ok(s0.p.join() === 'true,true' && s0.s.join() === 'true,true' && !pre.shown.page && pre.shown.live && pre.saved, `${n}. 준비: 숨긴 #5를 고치고 답변 시작 → 화면에서 임시로 펼침(값), 실리태번 저장 (${JSON.stringify({ s0, pre })})`);
+        if (memReset) ok(r.s.join() === 'false,false' && x.file === -1 && x.stop === 'conflict' && x.sp === y.sp,
+            `11c. 값은 맞지만 다른 기기가 기억만 리셋 → 서버에 다시 숨기지 않고 리셋을 덮지 않음 (${JSON.stringify({ r, note, file: x.file, stop: x.stop, sp: [y.sp, x.sp] })})`);
+        else if (!strip) ok(r.p.join() === 'true,true' && r.s.join() === 'true,true' && note === 0 && x.page.join() === x.server.join(),
+            `11a. 이 탭의 임시 해제 값이 파일에 있음 → 다시 숨겨 저장, 안내 없음 (${JSON.stringify({ r, note, x })})`);
+        else ok(r.p.join() === 'false,false' && r.s.join() === 'false,false' && note >= 1 && x.sp === y.sp,
+            `11b. 이 탭에 임시 해제 기록이 있어도 파일에 그 값이 없으면 보류(b2b 그대로) (${JSON.stringify({ r, note, before: y.sp, after: x.sp })})`);
+    }
+
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();
     process.exit(failures ? 1 : 0);

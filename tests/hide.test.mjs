@@ -11,7 +11,7 @@ const hiding = section('function setHidden(', '// ───────── ch
 const transaction = section('async function transact(', '\nfunction persistSoon');
 const summarizeCode = section('async function summarize(', '// ───────── automatic collection');
 const automaticCode = section('async function autoCollect(', '// ───────── record check');
-const HIDE_KEY = 'savepointHidden', VISIBLE_KEY = 'savepointVisible', HELD_KEY = 'savepointHeld', KEEP_KEY = 'savepointKeep';
+const HIDE_KEY = 'savepointHidden', VISIBLE_KEY = 'savepointVisible', HELD_KEY = 'savepointHeld', KEEP_KEY = 'savepointKeep', LIVE_KEY = 'savepointLive';
 
 function harness({ count = 10, lastIndex = 9, keepRecent = 2 } = {}) {
     const chat = Array.from({ length: count }, (_, n) => ({ mes: `Message ${n}`, name: 'Speaker', is_system: false, extra: {} }));
@@ -22,7 +22,7 @@ function harness({ count = 10, lastIndex = 9, keepRecent = 2 } = {}) {
     let calls = 0;
     const ui = {};
     const box = { ...gateBox(), ...memAccess(() => meta), clearInterrupted() {},
-        MODULE: 'savePoint', HIDE_KEY, VISIBLE_KEY, HELD_KEY, KEEP_KEY, ui, roomEpoch: 0,
+        MODULE: 'savePoint', HIDE_KEY, VISIBLE_KEY, HELD_KEY, KEEP_KEY, LIVE_KEY, ui, roomEpoch: 0,
         clone: structuredClone, roomKey: () => 'room', state: () => meta.savePoint,
         // v0.7.0-a1: no changed original waits for its turn here (the hides follow the room's memory itself).
         liveState: () => meta.savePoint, ctx: () => ({ chatMetadata: meta, swipe: { refresh() {} } }),

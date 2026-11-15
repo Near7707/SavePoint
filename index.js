@@ -27,7 +27,11 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.7.0-b2c1';
+// v0.7.0-b2b3 (recheck 3): a SavePoint hide shown on the page only for a changed original that waits for its turn (liveShown) carries
+// a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
+// message knows the file's "not hidden" is this release (not another device's), see releasedOf.
+const LIVE_KEY = 'savepointLive';
+const VERSION = '0.7.0-b2b3';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -483,6 +487,11 @@ function releasedOf(r, now, seen) {
         // opened it) that the file now hides without SavePoint's mark: a write sending the page would show it there. Not SavePoint's
         // hide to take away — held back the same way, whoever hid it.
         if (pageHid ? now.plain[i] !== r.snap.plain[i] : m.is_system || !(plan.has(m) || user)) continue;
+        // v0.7.0-b2b3 (recheck 3): hidden again here after this tab's own temporary release, which SillyTavern saved: the file carries
+        // that release's value, and the memory still covers the message. Not another device's release. Anything else (no value, another
+        // tab's or an older one, a hide of the user's there, a memory that no longer covers it) is held back as before.
+        const tok = liveTok.get(m), st = state();
+        if (pageHid && !user && tok && r.snap.live?.[i] === tok && st && !st.review && st.lastIndex >= i) continue;
         out.push({ m, user });
     }
     return out;
@@ -1546,7 +1555,7 @@ function guardedSave(write) {
 //   was: the change is taken back) or 'unsure' (the room stops saving until a later read confirms it).
 // What remains open: another device may save in the moment between the read and the write; only the
 // SillyTavern server could close that gap.
-const OWN_KEYS = [HIDE_KEY, VISIBLE_KEY, HELD_KEY, KEEP_KEY];
+const OWN_KEYS = [HIDE_KEY, VISIBLE_KEY, HELD_KEY, KEEP_KEY, LIVE_KEY];
 class RoomBlocked extends Error { constructor(m) { super(m); this.name = 'RoomBlocked'; } }
 class Unconfirmed extends Error { constructor(m) { super(m); this.name = 'Unconfirmed'; } }
 // v0.6.59: `seen` is the chat file as it was last confirmed (see covers: messages deleted elsewhere,
@@ -2596,8 +2605,12 @@ function syncHide({ rehide = false, grow = false } = {}) {
         if (kept(m)) {
             if (mark) { if (m.is_system) setHidden(m, i, false); delete m.extra[HIDE_KEY]; changed = true; }
             for (const k of [VISIBLE_KEY, HELD_KEY]) if (Object.hasOwn(m.extra, k)) { delete m.extra[k]; changed = true; }
+            dropLive(m);
             return;
         }
+        // v0.7.0-b2b3: a temporary release made final (its change rewound the memory below it: a rewind, a reset, a changed original
+        // that went through): its value goes (it rides the next write; the comparisons do not count it).
+        if (!live && i > floor && !m.is_system && m.extra?.[LIVE_KEY] !== undefined) { liveShown.delete(m); dropLive(m); }
         // v0.7.0-a2 (review P3-1): what was shown only for a changed original still waiting for its turn (live) is hidden
         // again in manual mode when that change is gone (the original put back exactly) and it is still in the range.
         // Only these: a message the user opened themselves is left as it is.
@@ -2605,13 +2618,15 @@ function syncHide({ rehide = false, grow = false } = {}) {
         // gives the memory as it is (not live) while the change is still there.
         if (!live && liveShown.has(m) && !sourcePending && (may || hold())) {
             liveShown.delete(m);
+            // v0.7.0-b2b3: the page's value goes; this tab still knows it (liveTok) for the file SillyTavern saved meanwhile.
+            if (m.extra && Object.hasOwn(m.extra, LIVE_KEY)) delete m.extra[LIVE_KEY];
             if (can && mode === 'manual' && !mark && !m.is_system && i <= reach) { m.extra ||= {}; m.extra[HIDE_KEY] = 1; setHidden(m, i, true); changed = true; return; }
         }
         // v0.7.0-a4 (review of v0.7.0-a3, P2): while the change is still there, no hide (auto, a save's rescan, 👻) takes it back.
         if (liveShown.has(m) && sourcePending && !m.is_system) return;
         if (mark && m.is_system && i > floor) {
             setHidden(m, i, false); delete m.extra[HIDE_KEY]; dropHeld(m); changed = true;
-            if (live) liveShown.add(m);
+            if (live) { liveShown.add(m); const t = `${SESSION}.${++liveSeq}`; m.extra[LIVE_KEY] = t; liveTok.set(m, t); }
             return;
         }
         // v0.7.0-b2b: shown because the server file took its hide away: only a save or 👻 pressed hides it again.
@@ -2653,6 +2668,11 @@ function syncHide({ rehide = false, grow = false } = {}) {
     return changed || ranged;
 }
 const liveShown = new WeakSet();
+// v0.7.0-b2b3: the value of this tab's latest temporary release of a message (a new one each time: an older release never vouches
+// for a later one). Kept after the message is hidden again, until that release is made final or the message released again.
+const liveTok = new WeakMap();
+let liveSeq = 0;
+function dropLive(m) { liveTok.delete(m); if (m?.extra && typeof m.extra === 'object' && Object.hasOwn(m.extra, LIVE_KEY)) delete m.extra[LIVE_KEY]; }
 // The manual hidden range as it should be now: { h, changed }.
 // Messages that went back to unrecorded (rewind, a rolled-back record, even all of them) leave the range for good:
 // recorded again, they stay shown until the button is pressed again.

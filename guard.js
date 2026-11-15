@@ -94,6 +94,8 @@ export function snapshot(meta, messages, own) {
         hid: list.map(m => !!(m && typeof m === 'object' && m.is_system && m.extra && typeof m.extra === 'object' && m.extra[own[0]])),
         // v0.7.0-b2b1 (review of b2b, P2): per message, is it hidden at all (SavePoint's mark or not)?
         sys: list.map(m => !!(m && typeof m === 'object' && m.is_system)),
+        // v0.7.0-b2b3: per message, the value of a temporary release (own[4]), or null.
+        live: list.map(m => (m && typeof m === 'object' && m.extra && typeof m.extra === 'object' && typeof m.extra[own[4]] === 'string' ? m.extra[own[4]] : null)),
         meta: meta && typeof meta === 'object' ? Object.fromEntries(Object.keys(meta).filter(k => meta[k] !== undefined).map(k => [k, hashOf(meta[k])])) : null,
     };
 }
