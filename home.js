@@ -708,6 +708,9 @@ export async function placeMemory(io, { id, from, addr, integrity = null, copy =
                 }
                 return { hold: 'tagChanged', step };
             }
+            // v0.7.0-b1k (review of b1j, P2): planned to add ids to a tag that was there (no recheckStart then), and it is gone
+            // now → hold (moves and branches alike); the next opening decides again. Never made here without those checks.
+            if (checked(reads.tag, validTag(addr)).kind === OK) return { hold: 'tagChanged', step };
             if (!await wr(tagName(addr), tagBody({ addr, integrity, mem: id, copy, prints: pickPrints(body.state.hashes), closes }))) return { stop: 'write', step };
         }
     }

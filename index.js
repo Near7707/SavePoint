@@ -27,7 +27,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.7.0-b1j';
+const VERSION = '0.7.0-b1k';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);

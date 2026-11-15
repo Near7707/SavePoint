@@ -1323,6 +1323,42 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(ha60.verdict === 'rename' && ha60.status === 'linked' && hb60.id !== hx60.id && r.home && Array.isArray(r.closes) && r.closes.length > 0
         && h.status === 'linked' && h.id === hx60.id && r.settled.every(Boolean) && r.left === 0, `60. 이름 변경 중 다른 탭이 올린 이름표 → 막을 기록 채움·B가 안 가져감 (a=${JSON.stringify(ha60)} b=${JSON.stringify(hb60)} a again=${JSON.stringify(h)} ${JSON.stringify(r)})`);
 
+    // ───── v0.7.0-b1k (review of b1j) ─────
+    // P2: a move planned to add ids to the other tab's tag (as 58, so no recheckStart); right before the tag step the tag is gone
+    // and the copy hint now lists another room C. Held: the tag is not made again, nothing seen away from a61 is settled.
+    await newRoom('a61'); await wait(900);
+    await ev(() => M.openFile('branchB')); await wait(900);
+    await ev(() => M.renameChat('a61', 'b61'));
+    await ev(() => M.openFile('p54')); await wait(1200);
+    await ev(async () => {
+        const H = await import('/ext/home.js'), addr = JSON.stringify(['ari.png', 'a61']), c = JSON.stringify(['ari.png', 'c61']);
+        const st = { ...JSON.parse(JSON.stringify(__savePoint.state())), roomKey: addr, wid: 'old61' };
+        delete st.by;
+        const hash = H.copyHash(st), id = H.migrateId(addr, hash), f = window.fetch;
+        M.serverFiles.a61 = [{ chat_metadata: { integrity: 'a61-int', savePoint: st } }, ...JSON.parse(JSON.stringify(M.chat))];
+        let put = false;
+        window.fetch = async (u, o) => {
+            if (!put && String(u).startsWith('/user/files/' + H.memName(id)) && __savePoint.home().d?.verdict === 'migrate') {
+                put = true;
+                M.otherPut(H.memName(id), H.memBody({ id, state: st, wid: 'other61', from: { kind: 'migrate', addr, copy: hash }, home: { addr, integrity: 'a61-int' }, copy: hash }));
+                M.otherPut(H.tagName(addr), H.tagBody({ addr, integrity: 'a61-int', mem: id, copy: hash }));
+            }
+            const res = await f(u, o);
+            if (put && String(u) === '/api/files/upload' && JSON.parse(o.body).name === H.clueName('a61-int')) {
+                window.fetch = f;
+                M.otherDel(H.tagName(addr));
+                M.otherPut(H.copyName(hash), H.copyHintBody(hash, [addr, c]));
+            }
+            return res;
+        };
+        return M.openFile('a61');
+    });
+    await wait(1500);
+    const ha61 = await H();
+    r = { tag: await tagOf('a61'), ...(await leftOf('a61')) };
+    ok(ha61.verdict === 'migrate' && ha61.status !== 'linked' && r.tag === null && r.settled.length > 0 && !r.settled.some(Boolean) && r.left > 0,
+        `61. 보강하려던 이름표가 마지막 읽기에서 사라짐 → 보류·이름표 다시 안 만듦·옛 기록 정리 안 함 (a=${JSON.stringify(ha61)} ${JSON.stringify(r)})`);
+
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();
     process.exit(failures ? 1 : 0);
