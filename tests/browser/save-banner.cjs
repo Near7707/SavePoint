@@ -67,11 +67,18 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     // 3. leaving the room mid-save: the notice names the room and what was saved; the room is remembered
     await ev(() => { M.add(60, i => `Long message ${i} ${'words '.repeat(60)}`); M.settings.savePoint.inputChars = 23500;   /* tight on purpose: just above the fixed format (v0.6.34, v0.6.39, v0.6.40) */ });
     const roomA = await ev(() => ({ chat: M.chat, meta: M.meta, key: JSON.stringify(['ari.png', M.chatId]) }));
+    // v0.7.0-b2c2a (G): the room is left while the first batch's chat file write is on its way (its answer held a little), so
+    // that write's check is always cut off by the move (before: only when the timing happened to fall there).
+    await ev(() => { const f = window.fetch; window.__cut = 0; window.__plainFetch = f;
+        window.fetch = async (u, o) => {
+            if (String(u) === '/api/chats/save' && !window.__cut && __savePoint.state()?.lastIndex >= 40) { window.__cut = 1; const r = await f(u, o); await new Promise(z => setTimeout(z, 400)); return r; }
+            return f(u, o);
+        }; });
     const p3 = ev(() => __savePoint.handle('run').catch(() => {}));
-    await page.waitForFunction(() => __savePoint.state().lastIndex >= 40, null, { timeout: 15000 });
+    await page.waitForFunction(() => window.__cut === 1, null, { timeout: 15000 });
     const savedTo = await ev(() => __savePoint.state().lastIndex);
     await ev(async () => { window.__roomA = { chat: M.chat, meta: M.meta }; await M.switchChat('chatB', [], {}); await M.opened(); M.add(2); });
-    await p3; await sleep(200);
+    await p3; await sleep(600); await ev(() => { window.fetch = window.__plainFetch; });
     // v0.7.0-b2c: the notice looked up among the warnings (not only the last); another warning about the part cut by the move
     // is checked on its own below.
     r = await ev(() => ({ toast: toastr.log.filter(x => x[0] === 'warning').map(x => x.slice(1).join(' ')).find(x => x.includes('방을 나가서')) || '', all: toastr.log.slice(-4).map(x => x[1]).join(' | '), interrupted: M.settings.savePoint.interrupted }));

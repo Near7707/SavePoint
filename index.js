@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b2c2';
+const VERSION = '0.7.0-b2c2a';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -603,9 +603,12 @@ function marksInFile(changes, written, r) {
 // may have put the change in the file even when every SavePoint request was refused: then it stays.
 // Returns null (in the file, nothing foreign), 'revert', or the error to throw (the change stays on the page).
 // A request with no answer keeps the room `pending` whatever the file shows (writeChatFile).
+// v0.7.0-b2c2a (G): the check of a write cut off by leaving its room. A save or checkpoint run that left the room has said so
+// already (noteLeftDuringRun), so it does not say this again in the new room (`away`); a button change says it.
+function awayUnsure() { const e = new Unconfirmed('방을 옮겨서 마지막 저장이 채팅 파일에 들어갔는지 확인하지 못했어요. 그 방을 다시 열어 확인해 주세요.'); e.away = true; return e; }
 async function settleWrite(e, { written, rev, proof, pre, key, epoch, marks = null, tick = delTick }) {
     const moved = () => roomKey() !== key || roomEpoch !== epoch;
-    const away = () => e?.landed ? new Unconfirmed('방을 옮겨서 마지막 저장이 채팅 파일에 들어갔는지 확인하지 못했어요. 그 방을 다시 열어 확인해 주세요.') : 'revert';
+    const away = () => e?.landed ? awayUnsure() : 'revert';
     if (moved()) return away();
     const r = await readServerChat();
     if (moved()) return away();
@@ -1142,14 +1145,14 @@ async function writeEntry(queue, entry) {
         restoreMemOnly(entry);
         for (const x of queue.pending) if (x !== entry && !x.replay && !x.cancelled) x.cancelled = new Error(`앞선 변경을 기억 파일에 저장하지 못해서 이 변경도 취소했어요. (${homeWriteError(w)})`);
         if (roomKey() === entry.key && roomEpoch === entry.epoch) { refreshInjection(); render(); }
-        throw w.status === 'moved' ? cancelMoved(queue, entry) : new RoomBlocked(`원문 숨김은 풀어 저장했지만 ${homeWriteError(w)}`);
+        throw w.status === 'moved' ? cancelMoved(queue, entry) : memBlocked(w, `원문 숨김은 풀어 저장했지만 ${homeWriteError(w)}`);
     }
     if (MEM_NOT_WRITTEN.has(w.status)) {
         const here = restoreEntry(entry);
         trustQueue();
         for (const x of queue.pending) if (x !== entry && !x.replay && !x.cancelled) x.cancelled = new Error(`앞선 변경을 기억 파일에 저장하지 못해서 이 변경도 취소했어요. (${homeWriteError(w)})`);
         if (here) { if (!entry.visibility) syncHide(); else ctx().swipe?.refresh?.(); refreshInjection(); render(); }
-        throw w.status === 'moved' ? cancelMoved(queue, entry) : new RoomBlocked(homeWriteError(w));
+        throw w.status === 'moved' ? cancelMoved(queue, entry) : memBlocked(w, homeWriteError(w));
     }
     if (w.status !== MEM_OK) {
         // No answer (may still land), written but overwritten, or written but not read back: the memory stays as the page
@@ -1352,7 +1355,8 @@ async function writeEntry(queue, entry) {
         // write (no mark taken back, nothing waiting cancelled, no failure kept on the memory linked now).
         if (e?.name === 'Relinked') throw e;
         // v0.7.0-b1: the memory is in its file already: only the marks this change set go back.
-        const error = new Error(`기억은 저장했지만 채팅 파일에 원문 숨김을 저장하지 못해서 숨김만 되돌렸어요. (${e?.message || e})`);
+        // v0.7.0-b2c2a (C): said for any mark (🔖, 🔶, a hide or its release), not only hides.
+        const error = new Error(`기억은 저장했어요. 채팅 파일에 남은 변경을 저장하지 못해서 그 부분만 되돌렸어요. (${e?.message || e})`);
         const here = takeBack();
         trustQueue();
         // Waiting changes: button edits run at their turn on what is there then; the rest are cancelled.
@@ -1366,8 +1370,7 @@ async function writeEntry(queue, entry) {
     }
     if (unsure) {
         // v0.6.58: not taken back automatically: the file may have it.
-        const error = new Unconfirmed(unsure.moved ? '방을 옮겨서 마지막 저장이 채팅 파일에 들어갔는지 확인하지 못했어요. 그 방을 다시 열어 확인해 주세요.'
-            : '저장은 보냈지만 채팅 파일에 들어갔는지 확인하지 못했어요. 확인될 때까지 SavePoint는 새로 저장하지 않아요(자동 저장·QUICK 백업 포함). 잠시 뒤 다시 확인하고, 안 되면 새로고침해서 마지막 기록이 남아 있는지 봐 주세요.');
+        const error = unsure.moved ? awayUnsure() : new Unconfirmed('저장은 보냈지만 채팅 파일에 들어갔는지 확인하지 못했어요. 확인될 때까지 SavePoint는 새로 저장하지 않아요(자동 저장·QUICK 백업 포함). 잠시 뒤 다시 확인하고, 안 되면 새로고침해서 마지막 기록이 남아 있는지 봐 주세요.');
         if (!unsure.moved) markUnsure(unsure);
         throw saved(error);
     }
@@ -2391,6 +2394,9 @@ async function placeFirst(h, st, state, was) {
         return { status: res.hold ? CONFLICT : res.stop === 'write' ? REFUSED : READ_ERROR, why: res.hold || res.stop, reopen: !(res.stop === 'write' && res.step === 'writeTag') };
     }
 }
+// v0.7.0-b2c2a (A): a change stopped by its own memory write (refused, unreadable, another device's) is marked, so a checkpoint
+// that could not write its start mark says so; a room already closed or busy deciding (`linking`) stays quiet as before.
+function memBlocked(w, text) { const e = new RoomBlocked(text); if (w.status !== 'linking') e.memWrite = w.status; return e; }
 // Status of a memory write that changed nothing in the file: taken back whole.
 const MEM_NOT_WRITTEN = new Set([REFUSED, CONFLICT, READ_ERROR, 'moved', 'linking']);
 function homeWriteError(w) {
@@ -3415,7 +3421,7 @@ async function summarize({ close = false, auto = false } = {}) {
         }, { undoable: false, autosave: false });
     } catch (e) {
         if (!auto) reportError(e);
-        else if (e instanceof RoomBlocked) console.warn('[SavePoint] checkpoint not started', e?.message || e);
+        else if (e instanceof RoomBlocked && !e.memWrite) console.warn('[SavePoint] checkpoint not started', e?.message || e);
         // The start mark could not be written (the chat file write failed): no request is sent; said each time, as a
         // failed checkpoint was before.
         else if (here()) toastr.warning(`체크포인트를 시작하지 못했어요 · ${errorText(e)} · 다음 간격에 다시 시도해요`, 'SavePoint');
@@ -3585,7 +3591,7 @@ async function summarize({ close = false, auto = false } = {}) {
             : e?.memSaved ? '' : done ? ` ${done}개 구간(${cursor}개 메시지)은 저장했고, 남은 ${msgs.length - cursor}개 메시지의 원문은 그대로 남겨 뒀어요.` : ' 기억과 원문은 바뀌지 않았어요.';
         // Leaving the room has its own notice (onChatChanged); don't repeat it in the new room.
         if (e instanceof Cancelled) { if (run.key === roomKey()) toastr.info(e.message + where, 'SavePoint'); }
-        else if (unconfirmed) { console.warn('[SavePoint]', e); toastr.warning(e.message + where, 'SavePoint', { timeOut: 15000 }); }
+        else if (unconfirmed) { console.warn('[SavePoint]', e); if (!(e.away && run.key !== roomKey() && BANNER[run.kind])) toastr.warning(e.message + where, 'SavePoint', { timeOut: 15000 }); }
         else { console.error('[SavePoint]', e, e.detail || ''); if (!auto) toastr.error(e.message + where, 'SavePoint', { timeOut: 12000 }); }
         // v0.7.0-b1g (review of b1f, P1-1): a memory linked during the save gets no note of it (it is not this save's memory).
         if (auto && relinkedRun) run.notice = { text: '체크포인트 중 이 방의 기억이 바뀜 · 다시 불러온 기억에 맞춤', tone: 'warning' };

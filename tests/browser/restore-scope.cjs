@@ -90,7 +90,7 @@ const B3 = 'b3: #0 이어하기를 꺼 둠';
         await ev(() => { M.chat[3].swipe_info = [{ extra: {} }, {}]; M.stSave(); M.failOnce = true; });
         const msg = await ev(() => __savePoint.toggleKeep(3).then(() => 'ok', e => `${e.name}: ${e.message}`));
         const r = await ev(() => ({ body: !!M.chat[3].extra?.savepointKeep, swipes: JSON.stringify(M.chat[3].swipe_info), file: JSON.stringify(M.serverFiles.chatA[4].swipe_info) }));
-        ok(/기억은 저장했지만/.test(msg) && !r.body && r.swipes === '[{"extra":{}},{}]' && r.file === r.swipes, `2c. (b2c) 🔶 채팅 저장만 실패: 메시지·스와이프 표시 되돌림 (${r.swipes} · ${msg.slice(0, 40)})`);
+        ok(/기억은 저장했어요.*그 부분만 되돌렸어요/.test(msg) && !r.body && r.swipes === '[{"extra":{}},{}]' && r.file === r.swipes, `2c. (b2c) 🔶 채팅 저장만 실패: 메시지·스와이프 표시 되돌림 (${r.swipes} · ${msg.slice(0, 40)})`);
         await page.close();
     }
     // 2b. 🔶 refused, but one swipe's mark was changed again while the write was on its way → that swipe
