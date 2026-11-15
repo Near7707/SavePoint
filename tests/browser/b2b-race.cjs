@@ -321,6 +321,27 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r = await mk(2);
     ok(x.file === -1 && x.page.join() === '1,2' && x.server.join() === '1,2', `9. 이 기기에서 리셋 → 사용자 숨김만 남음 (${JSON.stringify(r)} ${JSON.stringify(x)})`);
 
+    // 10. (b2b1 review P2-1) a reset pressed here shows SavePoint's hides on the page first (its release goes to the chat file before
+    // the memory). Right after its memory check another device takes SavePoint's hide of #3 away and the user hides #3 there
+    // themselves: the release would show it on the server. Nothing is sent, the reset is taken back, the page keeps #3 hidden with
+    // no mark of SavePoint's; a reset pressed again keeps the user's hide.
+    y = await fresh();
+    await ev(() => M.add(3));
+    y = await look();
+    ok(y.page.includes(3) && y.server.includes(3) && y.file >= 0, `10. 준비 (${JSON.stringify(y)})`);
+    await afterMem(1, USER_HIDES(3));
+    const err10 = await ev(async () => { M.confirm = 1; try { await __savePoint.handle('clear-room'); return ''; } catch (e) { return String(e?.message || e); } });
+    await wait(3000);
+    x = await look();
+    r = await mk(3);
+    ok(x.sp === y.sp && x.file === y.file && r.p.join() === 'true,false' && r.s.join() === 'true,false' && /이번 변경은 하지 않았어요/.test(err10),
+        `10. 리셋 도중 서버에서 사용자가 숨김 → 리셋 안 함, 화면 숨김·표시 없음, 요청 0회 (${JSON.stringify(r)} ${JSON.stringify(err10)} before=${JSON.stringify(y)} after=${JSON.stringify(x)})`);
+    await resetHere();
+    x = await look();
+    r = await mk(3);
+    ok(x.file === -1 && x.page.includes(3) && x.server.includes(3) && r.p.join() === 'true,false' && r.s.join() === 'true,false' && x.page.join() === x.server.join(),
+        `10. 다시 리셋 → 사용자 숨김은 남음 (${JSON.stringify(r)} ${JSON.stringify(x)})`);
+
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();
     process.exit(failures ? 1 : 0);

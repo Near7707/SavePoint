@@ -27,7 +27,7 @@ const HELD_KEY = 'savepointHeld';
 // v0.6.52: 🔖 원문 유지 — this message is never hidden by SavePoint (kept on the message, so it
 // follows the message, its swipes and a branch of the chat).
 const KEEP_KEY = 'savepointKeep';
-const VERSION = '0.7.0-b2b1';
+const VERSION = '0.7.0-b2b2';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -469,6 +469,8 @@ async function fileAllows(sentSnap = null) {
 // hides, `heldNow`: shown on the page until then). Their server copy only has to be the same message as in the last file seen
 // (the page may show it edited). P2: { m, user } — `user`: the file hides it still, without SavePoint's mark (the user hid it
 // there after the release), so the page keeps it hidden and only SavePoint's marks go.
+// v0.7.0-b2b2 (review of b2b1, P2-1): and every message the page shows that the file hides without SavePoint's mark now (it had
+// SavePoint's hide in the last file seen): shown by a change of this turn (a reset's release) or on the page before it.
 let heldNow = null;
 function releasedOf(r, now, seen) {
     if (!seen?.hid || !r?.snap?.hid || !now?.plain) return [];
@@ -476,9 +478,12 @@ function releasedOf(r, now, seen) {
     for (let i = 0; i < list.length && i < r.snap.plain.length; i++) {
         const m = list[i];
         if (!m || !seen.hid[i] || r.snap.hid[i] || seen.plain?.[i] !== r.snap.plain[i]) continue;
-        const pageHid = !!(m.is_system && m.extra?.[HIDE_KEY]);
-        if (pageHid ? now.plain[i] !== r.snap.plain[i] : m.is_system || !plan.has(m)) continue;
-        out.push({ m, user: !!r.snap.sys?.[i] });
+        const pageHid = !!(m.is_system && m.extra?.[HIDE_KEY]), user = !!r.snap.sys?.[i];
+        // v0.7.0-b2b2 (review of b2b1, P2-1): a message the page shows (a reset or rewind here took SavePoint's hide away, the user
+        // opened it) that the file now hides without SavePoint's mark: a write sending the page would show it there. Not SavePoint's
+        // hide to take away — held back the same way, whoever hid it.
+        if (pageHid ? now.plain[i] !== r.snap.plain[i] : m.is_system || !(plan.has(m) || user)) continue;
+        out.push({ m, user });
     }
     return out;
 }
