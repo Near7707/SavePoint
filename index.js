@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b2b3';
+const VERSION = '0.7.0-b2b4';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -2626,6 +2626,9 @@ function syncHide({ rehide = false, grow = false } = {}) {
         if (liveShown.has(m) && sourcePending && !m.is_system) return;
         if (mark && m.is_system && i > floor) {
             setHidden(m, i, false); delete m.extra[HIDE_KEY]; dropHeld(m); changed = true;
+            // v0.7.0-b2b4 (review of b2b3, P1): a release made final here takes any temporary release's value with it (another
+            // tab's, kept on a hide made over it before b2b4): the file it writes must not vouch for that tab's release.
+            if (!live) dropLive(m);
             if (live) { liveShown.add(m); const t = `${SESSION}.${++liveSeq}`; m.extra[LIVE_KEY] = t; liveTok.set(m, t); }
             return;
         }
@@ -2637,7 +2640,7 @@ function syncHide({ rehide = false, grow = false } = {}) {
             if (m.extra && Object.hasOwn(m.extra, VISIBLE_KEY)) { delete m.extra[VISIBLE_KEY]; changed = true; }
             dropHeld(m);
             if (!m.is_system) {
-                m.extra ||= {}; m.extra[HIDE_KEY] = 1; changed = true;
+                m.extra ||= {}; m.extra[HIDE_KEY] = 1; changed = true; liveOff(m);
             }
             // Also repair a stale rendered hide attribute when the saved flag
             // already says hidden. Do not take ownership of user-hidden messages.
@@ -2646,7 +2649,9 @@ function syncHide({ rehide = false, grow = false } = {}) {
         }
         if (mark && !m.is_system) {
             // The user unhid it on purpose; leave it visible until the next save.
-            delete m.extra[HIDE_KEY]; m.extra[VISIBLE_KEY] = true; dropHeld(m); changed = true; return;
+            // v0.7.0-b2b4: no temporary release of any tab is left on it (this tab's own release never comes here: it takes
+            // SavePoint's mark off).
+            delete m.extra[HIDE_KEY]; m.extra[VISIBLE_KEY] = true; dropHeld(m); dropLive(m); changed = true; return;
         }
         if (can && mode === 'manual') {
             // v0.6.51: manual mode only keeps what the button hid. Nothing new is hidden here, so a
@@ -2654,12 +2659,12 @@ function syncHide({ rehide = false, grow = false } = {}) {
             // v0.6.74: a hidden message is no longer shown for "keep the latest N"; a "held" mark from
             // before (shown for that reason) is still hidden again when it falls outside the latest N.
             if (m.extra?.[HELD_KEY] && (m.is_system || i > reach)) dropHeld(m);
-            else if (m.extra?.[HELD_KEY] && i <= cutoff && (may || hold())) { m.extra[HIDE_KEY] = 1; dropHeld(m); setHidden(m, i, true); changed = true; }
+            else if (m.extra?.[HELD_KEY] && i <= cutoff && (may || hold())) { m.extra[HIDE_KEY] = 1; dropHeld(m); liveOff(m); setHidden(m, i, true); changed = true; }
             return;
         }
         dropHeld(m);
         if (!mark && i <= cutoff && !m.is_system && !m.extra?.[VISIBLE_KEY] && (may || hold())) {
-            m.extra ||= {}; m.extra[HIDE_KEY] = 1; setHidden(m, i, true); changed = true;
+            m.extra ||= {}; m.extra[HIDE_KEY] = 1; liveOff(m); setHidden(m, i, true); changed = true;
         }
     });
     // v0.7.0-b1: inside a queued change its own write sends the marks (after its memory); outside one, a chat save.
@@ -2672,6 +2677,9 @@ const liveShown = new WeakSet();
 // for a later one). Kept after the message is hidden again, until that release is made final or the message released again.
 const liveTok = new WeakMap();
 let liveSeq = 0;
+// v0.7.0-b2b4 (review of b2b3): hidden again (shown → hidden): the value on the message goes (a temporary release, this tab's or
+// another's, is over). This tab keeps its own value (liveTok) for the file SillyTavern may have saved during the release.
+function liveOff(m) { if (m?.extra && typeof m.extra === 'object' && Object.hasOwn(m.extra, LIVE_KEY)) delete m.extra[LIVE_KEY]; }
 function dropLive(m) { liveTok.delete(m); if (m?.extra && typeof m.extra === 'object' && Object.hasOwn(m.extra, LIVE_KEY)) delete m.extra[LIVE_KEY]; }
 // The manual hidden range as it should be now: { h, changed }.
 // Messages that went back to unrecorded (rewind, a rolled-back record, even all of them) leave the range for good:

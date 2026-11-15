@@ -391,6 +391,71 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
             `11b. 이 탭에 임시 해제 기록이 있어도 파일에 그 값이 없으면 보류(b2b 그대로) (${JSON.stringify({ r, note, before: y.sp, after: x.sp })})`);
     }
 
+    // 11d–f. (b2b4, review of b2b3) a temporary release's value lives only while that release shows the message. Here this page plays the
+    // other tab (B) of a room where tab A released #5 for a while and SillyTavern saved it with A's value ('other.1'; never this tab's).
+    //   11d (P1): the page and the file hide #5 with SavePoint's mark and A's value still on it (a hide made over it before b2b4). A reset
+    //   pressed here writes its release first (before its memory): that write shows #5 without A's value (A, reading it before the
+    //   memory is emptied, would take it for its own release and hide #5 again on the server).
+    //   11e: the user shows #5 here themselves (SavePoint's hide taken away on the page): the value goes with it.
+    //   11f: the file shows #5 with A's value (A's release, saved): hidden here again, the value goes.
+    const OTHER_LIVE = 'other.1';
+    const putLive = (i, hidden) => ev(({ i, hidden, v }) => {
+        for (const m of [M.chat[i], M.serverFiles[M.chatId][i + 1]]) {
+            m.extra ||= {}; m.extra.savepointLive = v; m.is_system = hidden;
+            if (hidden) m.extra.savepointHidden = 1; else delete m.extra.savepointHidden;
+        }
+        __savePoint.adoptPage();
+    }, { i, hidden, v: OTHER_LIVE });
+    const liveAt = i => ev(i => ({ p: M.chat[i].extra?.savepointLive ?? null, s: M.serverFiles[M.chatId][i + 1].extra?.savepointLive ?? null }), i);
+    const room11 = async () => {
+        y = await fresh();
+        await ev(() => M.add(4));
+        await ev(() => __savePoint.handle('run').catch(() => {}));
+        await wait(2000);
+        return look();
+    };
+
+    y = await room11();
+    await putLive(5, true);
+    r = await mk(5);
+    ok(y.file >= 5 && r.p.join() === 'true,true' && r.s.join() === 'true,true' && (await liveAt(5)).s === OTHER_LIVE, `11d. 준비: #5 숨김 + 다른 탭 값 (${JSON.stringify({ r, y })})`);
+    await ev(() => {
+        window.__saves11d = [];
+        const f = window.fetch;
+        window.__fetch11d = f;
+        window.fetch = async (u, o) => {
+            if (String(u) === '/api/chats/save') { const c = JSON.parse(o.body).chat; window.__saves11d.push({ hid: !!c[6]?.is_system, live: c[6]?.extra?.savepointLive ?? null, mem: M.files.size }); }
+            return f(u, o);
+        };
+    });
+    await resetHere();
+    const saves11d = await ev(() => { window.fetch = window.__fetch11d; return window.__saves11d; });
+    x = await look();
+    r = await liveAt(5);
+    ok(x.file === -1 && saves11d.length > 0 && saves11d.every(v => v.live === null) && !saves11d[0].hid && r.s === null && r.p === null,
+        `11d. 이 화면에서 리셋 → 숨김 해제를 먼저 쓰는 저장부터 다른 탭 값 없음 (${JSON.stringify({ saves11d, r, x })})`);
+
+    y = await room11();
+    await putLive(5, true);
+    await ev(() => { M.chat[5].is_system = false; __savePoint.syncHide(); });   // the user shows it on the page (SavePoint's mark still on it)
+    await wait(2000);
+    r = await liveAt(5);
+    x = await ev(() => ({ p: [!!M.chat[5].is_system, M.chat[5].extra?.savepointVisible ?? null], s: [!!M.serverFiles[M.chatId][6].is_system, M.serverFiles[M.chatId][6].extra?.savepointVisible ?? null] }));
+    ok(r.p === null && r.s === null && x.p.join() === 'false,true' && x.s.join() === 'false,true',
+        `11e. 사용자가 직접 펼침 → 다른 탭 값도 지움 (${JSON.stringify({ r, x })})`);
+
+    y = await room11();
+    await putLive(5, false);
+    r = await mk(5);
+    ok(r.p.join() === 'false,false' && r.s.join() === 'false,false', `11f. 준비: 다른 탭이 임시로 펼친 #5 (${JSON.stringify(r)})`);
+    await ev(() => M.openFile(M.chatId));   // this tab opens the room from that file: its hiding hides #5 again
+    await ev(() => M.opened());
+    await wait(2500);
+    r = await mk(5);
+    const v11f = await liveAt(5);
+    ok(r.p.join() === 'true,true' && r.s.join() === 'true,true' && v11f.p === null && v11f.s === null,
+        `11f. 방을 열며 다시 숨김 → 다른 탭 값 지움 (${JSON.stringify({ r, v11f })})`);
+
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();
     process.exit(failures ? 1 : 0);
