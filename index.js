@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b2c2c';
+const VERSION = '0.7.0-b2c3';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -562,7 +562,10 @@ function writeHeld(x, { copies, proof, before, marks, written, status }) {
     // a memory the marks it set (marksInFile) — the same rule for the file after the write and for one read during it.
     // `status`: a save of SavePoint's status marks only (the receipt stays): held when the file has the memory part this
     // save wrote (it differs from the one before it), so SillyTavern saved the page after this change.
-    if (holdsWrite(x, { copies, proof, before }) || ((proof === null || proof === undefined) && marksInFile(marks, written, x) === 'in')) return true;
+    if (holdsWrite(x, { copies, proof, before })) return true;
+    // v0.7.0-b2c3: held by the marks alone ('marks', truthy): the file is not a copy sent, so SillyTavern saved the page with
+    // these marks — a message the page got after the file read before this write is not proved to be in the file (vagueFrom).
+    if ((proof === null || proof === undefined) && marksInFile(marks, written, x) === 'in') return 'marks';
     if (!status || !x?.ok || !before) return false;
     // v0.6.93: 'status' (truthy) — held by the status value alone. That value was on the page before the check that came
     // before this save, so SillyTavern may have saved it then: a message the page got after that check is not proved to
@@ -575,7 +578,8 @@ function vagueFrom(how, before) {
     // before it: one of them missing from the file now may be deleted elsewhere or never saved yet. Until a file is the
     // base again (setSeen), every block is told as unclear (gateMessage, vagueWhy; v0.6.94: whatever is found first, not
     // only a 'gone' from this message on), never with "reload" (that would lose a message only this page has).
-    return how === 'status' && Array.isArray(before?.plain) ? before.plain.length : null;
+    // v0.7.0-b2c3: the same for a write held by its marks alone (writeHeld 'marks', the 🔖 writes since b2).
+    return (how === 'status' || how === 'marks') && Array.isArray(before?.plain) ? before.plain.length : null;
 }
 function marksInFile(changes, written, r) {
     // v0.6.85: SavePoint's own marks a change set (changedMarks), looked up in the file: each message must be the
@@ -5959,8 +5963,10 @@ function render(force = false) {
     const tabScroll = ui.tabScroll || 0;
     // v0.6.63: on a phone the quick settings take the whole window below the top bar (style.css).
     win.toggleClass('sp-qs-open', !!ui.qs);
-    const scrollKey = JSON.stringify([roomKey(), ui.tab]);
-    const scroll = ui.scrollPositions.get(scrollKey) ?? 0;
+    // v0.7.0-b2c3: while the room's memory is not on the page yet (the memory file still being read), the body is an empty
+    // placeholder: it gets no key, so its top position is never kept over the room's own (restored once the memory is shown).
+    const scrollKey = st ? JSON.stringify([roomKey(), ui.tab]) : '';
+    const scroll = scrollKey ? ui.scrollPositions.get(scrollKey) ?? 0 : 0;
     // v0.6.57: the quick settings panel keeps its own scroll across redraws (a changed value redraws the window).
     const qsScroll = win.find('.sp-qs').scrollTop() || 0;
     const counts = st ? {
