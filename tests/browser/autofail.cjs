@@ -45,6 +45,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     // failing that mark cannot be written: no request is sent, the failure is said (before: the request was sent, the
     // record failed to save and the failure note was put on the page, where SillyTavern could save it in its own time).
     ok(r.st.lastIndex===38&&r.calls===callsBefore&&!r.st.autoFail&&r.notices.some(x=>x.includes('체크포인트를 시작하지 못했어요')),'(b2c) 시작 표시의 기억 저장 거절: 요청 없이 시작 못 함을 알림, 기억은 그대로');
+    // v0.7.0-b2c2c (review P3): the room can still save after a refusal → the retry is promised.
+    ok(r.notices.some(x=>x.includes('체크포인트를 시작하지 못했어요')&&x.includes('다음 간격에 다시 시도해요')),'(b2c2c) 거절 뒤 방이 열려 있으면 다음 간격 재시도 안내');
     ok(r.st.lastRecord.at===old.at&&r.st.lastRecord.to===old.to,'저장 실패로 마지막 저장을 갱신하지 않음');
     // v0.7.0-a: the start mark written, the record's write fails: the failure note is written at the next turn.
     await ev(()=>{M.memFail=null;M.memFailNth=2;M.memFailKind='refused';M.add(20);});await run();r=await snap();
@@ -65,6 +67,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     // v0.7.0-b2c: the start mark's memory write unanswered (`lost`): no request, the failure said (the room then waits for a reopen).
     await ev(()=>{M.checkBad=false;M.memFail='lost';M.add(20);});const c2=(await snap()).calls;await run();r=await snap();
     ok(r.calls===c2&&r.notices.some(x=>x.includes('체크포인트를 시작하지 못했어요')&&x.includes('응답이 오지 않았어요')),'(b2c) 시작 표시의 기억 저장에 응답 없음: 요청 없이 알림');
+    // v0.7.0-b2c2c (review P3): no answer stops the room until it is opened again → no retry promised.
+    ok(r.notices.filter(x=>x.includes('응답이 오지 않았어요')&&x.includes('체크포인트를 시작하지 못했어요')).every(x=>!x.includes('다음 간격')),'(b2c2c) 응답 없음으로 방이 멈추면 재시도 안내 없음');
     await ev(()=>{M.memFail=null;});
     await browser.close();srv.close();console.log(failures?failures+' FAILED':'ALL PASS');process.exit(failures?1:0);
 })();

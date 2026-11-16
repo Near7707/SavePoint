@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b2c2b';
+const VERSION = '0.7.0-b2c2c';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -3445,7 +3445,9 @@ async function summarize({ close = false, auto = false } = {}) {
         else if (e instanceof RoomBlocked && !e.memWrite) console.warn('[SavePoint] checkpoint not started', e?.message || e);
         // The start mark could not be written (the chat file write failed): no request is sent; said each time, as a
         // failed checkpoint was before.
-        else if (here()) toastr.warning(`체크포인트를 시작하지 못했어요 · ${errorText(e)} · 다음 간격에 다시 시도해요`, 'SavePoint');
+        // v0.7.0-b2c2c (review of b2c2a·b2c2b, P3): "tried again" only while the room can still save; a room the failure
+        // stopped (conflict, no answer, first save unconfirmed) waits for what its own reason says.
+        else if (here()) toastr.warning(`체크포인트를 시작하지 못했어요 · ${errorText(e)}${gateOpen() ? ' · 다음 간격에 다시 시도해요' : ''}`, 'SavePoint');
         return;
     }
     if (!here()) return;
