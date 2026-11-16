@@ -470,10 +470,21 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r = { page: await ev(() => __savePoint.state()?.wid ?? null), last: h.last, file: (await memOf(id21))?.wid ?? null };
     ok(h.status === 'linked' && r.page === 'other21' && r.last === 2 && r.file === 'other21', `21. 첫 저장 중 다시 확인 → 변경 안 함, 화면은 다른 기기 기억 그대로·파일 안 덮음 (${JSON.stringify(h)} ${JSON.stringify(r)})`);
 
+    // v0.7.0-b3b1: an original edited by an earlier step put back on the page (saved by SillyTavern), then `다시 확인`.
+    const unstop = () => ev(async () => {
+        for (const m of M.chat) if (/ \(edited \w+\)$/.test(m.mes || '')) { m.mes = m.mes.replace(/ \(edited \w+\)$/, ''); if (m.swipes) m.swipes[m.swipe_id || 0] = m.mes; }
+        M.stSave(); await __savePoint.handle('home-recheck'); await M.opened(); await new Promise(z => setTimeout(z, 600));
+        return __savePoint.home().h2 || null;
+    });
     // 22. P1-2: an earlier message hidden already is edited during the last chat check (saved by SillyTavern, as 19) while
     // this change hides later ones: no new hide goes out from SavePoint (they rest on the edited message) and the page
     // shows them again. (The hides SillyTavern's own save carried are P1-5 of the b1 review: b2.)
     await ev(() => M.openFile('rC')); await wait(900);
+    // v0.7.0-b3b1 (H2): 19's edit (saved by SillyTavern; the page was never told) left a recorded original changed against rC's memory:
+    // it opens stopped now (before b3b1 it was rolled back as it opened). The original put back, `다시 확인` goes on as before.
+    r = await ev(() => __savePoint.home().h2);
+    ok(r?.why === 'source', `22. 준비: 19에서 바뀐 원문 → 열 때 멈춤 (${JSON.stringify(r)})`);
+    await unstop();
     await ev(() => M.add(4)); await wait(300);
     const before22 = await ev(() => M.chat.map(m => ({ is_system: !!m.is_system })));
     r = await spSaves();
@@ -504,6 +515,9 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     // 23. P1-2: the same edit while SillyTavern saves during SavePoint's chat write (it sends the room again): the copy sent
     // again carries no new hide either.
     await ev(() => M.openFile('rC')); await wait(900);
+    // v0.7.0-b3b1 (H2): 22's edit opens it stopped (as above): put back first.
+    r = await ev(() => __savePoint.home().h2);
+    ok(r?.why === 'source' && !(await unstop()), `23. 준비: 22에서 바뀐 원문 → 열 때 멈춤, 되돌리면 이어짐 (${JSON.stringify(r)})`);
     await ev(() => M.add(4)); await wait(300);
     const before23 = await ev(() => JSON.parse(JSON.stringify(M.serverFiles[M.chatId].slice(1))));
     await ev(() => {

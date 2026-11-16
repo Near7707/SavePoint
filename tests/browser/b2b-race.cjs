@@ -231,6 +231,42 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     x = await look();
     ok(x.page.length === 0 && x.server.length === 0 && x.file === -1, `5. 다시 확인 → 새 기억을 따라 모두 보임 (${JSON.stringify(x)})`);
 
+    // 5b. v0.7.0-b3b1 (b3 design, H2; pair of 5): the memory followed (another device's save, read again here) recorded an original the
+    // server chat file does not have: the room stops (H2) — no rewind of that memory, no hide taken away or set, nothing written.
+    y = await fresh();
+    const OTHER_HASH = h => `async () => {
+        const H = await import('/ext/home.js'), name = H.memName(__savePoint.home().id), f = JSON.parse(M.files.get(name)), st = JSON.parse(JSON.stringify(f.state));
+        window.__hash1 ??= st.hashes[1]; st.hashes[1] = ${JSON.stringify(h)} ?? window.__hash1;
+        M.otherPut(name, H.nextMem(f, st, 'other5b' + Date.now()));
+    }`;
+    await ev(`(${OTHER_HASH('x:0:0')})()`);
+    const c5 = await ev(() => ({ s: M.spSaves, n: M.fileLog.length }));
+    await ev(() => __savePoint.recheckHome()); await wait(2500);
+    x = await ev(async c => ({ h2: __savePoint.home().h2 || null, status: __savePoint.home().status, s: M.spSaves - c.s, puts: M.fileLog.slice(c.n).filter(x => x[0] === 'put').length }), c5);
+    Object.assign(x, await look());
+    ok(x.status === 'linked' && x.h2?.why === 'source' && x.h2.at === 1 && x.s === 0 && x.puts === 0 && x.server.join() === y.server.join() && x.page.join() === y.page.join(),
+        `5b. (짝) 따라간 새 기억의 기록 원문이 서버와 다르면 멈춤, 되감기·숨김 변경·쓰기 0 (${JSON.stringify(x)})`);
+    // put right (the other device saves the true original again): `다시 확인` goes on.
+    await ev(`(${OTHER_HASH(null)})()`);
+    await ev(() => __savePoint.recheckHome()); await wait(2000);
+    x = await ev(() => ({ h2: __savePoint.home().h2 || null, blocked: __savePoint.autoBlocked() }));
+    ok(!x.h2 && x.blocked !== 'room', `5b. 기억이 다시 맞으면 다시 확인으로 이어짐 (${JSON.stringify(x)})`);
+    // 5c. v0.7.0-b3b1 (b3 design): following a memory whose originals agree only takes hides away: another device recorded 4 more
+    // messages (the page shows them); `다시 확인` follows it without hiding anything new or saving the chat (the next save hides them).
+    await ev(() => M.add(4)); await wait(400);
+    y = await look();
+    await ev(async () => {
+        const fp = m => { const t = JSON.stringify([m.name || '', !!m.is_user, m.mes || '', m.swipe_id ?? null]); let a = 2166136261, b = 5381;
+            for (let i = 0; i < t.length; i++) { const n = t.charCodeAt(i); a = Math.imul(a ^ n, 16777619); b = Math.imul(b, 33) ^ n; } return `${t.length}:${a >>> 0}:${b >>> 0}`; };
+        const H = await import('/ext/home.js'), name = H.memName(__savePoint.home().id), f = JSON.parse(M.files.get(name)), st = JSON.parse(JSON.stringify(f.state));
+        st.lastIndex = M.chat.length - 1; st.hashes = M.chat.map(fp);
+        M.otherPut(name, H.nextMem(f, st, 'other5c'));
+    });
+    await ev(() => __savePoint.recheckHome()); await wait(2500);
+    x = await look();
+    ok(x.file > y.file && x.page.join() === y.page.join() && x.server.join() === y.server.join() && x.sp === y.sp && !(await ev(() => __savePoint.home().h2)),
+        `5c. 원문이 맞는 새 기억을 따라갈 땐 숨김을 새로 걸지 않고 채팅 저장 0 (${JSON.stringify({ y: y.page.length, x })})`);
+
     // v0.7.0-b2b1 (review of b2b). The marks of message i on the page and in the server chat file: [hidden, SavePoint's mark].
     const mk = i => ev(i => { const f = m => [!!m?.is_system, !!m?.extra?.savepointHidden]; return { p: f(M.chat[i]), s: f((M.serverFiles[M.chatId] || [])[i + 1]) }; }, i);
     // The user shows on the page (not saved yet) messages SavePoint hid: the next save hides them again (its held hides).

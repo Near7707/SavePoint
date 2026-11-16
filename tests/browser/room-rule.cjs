@@ -61,6 +61,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await wait(1500);
     const qid = await ev(() => __savePoint.listSaves().find(x => x.quick)?.id);
     const memory = await ev(() => JSON.parse(JSON.stringify(__savePoint.home().st)));
+    // v0.7.0-b3b1 (H2): the messages that memory recorded (a room given it with other messages is stopped as it opens).
+    const memMsgs = await ev(() => JSON.parse(JSON.stringify(M.chat)));
     ok(!!qid && memory?.mem?.scenes?.length > 0, '준비: QUICK과 기억');
     let r;
 
@@ -159,7 +161,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const checked = JSON.parse(JSON.stringify(memory));
     checked.check = { at: 1, status: 'ok', scope: { records: [], segs: [] }, issues: [] };
     await ev(() => { M.readDelayFor = { roomE: 700 }; toastr.log.length = 0; });
-    await open('roomE', msgs(6, 'Ee'), { savePoint: checked });
+    await open('roomE', memMsgs, { savePoint: checked });
     await ev(() => { M.p = __savePoint.handle('check-rerun').catch(e => { M.e5 = e.message; }); });
     await ev(() => M.p);
     await wait(600);

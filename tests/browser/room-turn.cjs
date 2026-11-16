@@ -63,6 +63,8 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     await wait(1500);
     const qid = await ev(() => __savePoint.listSaves().find(x => x.quick)?.id);
     const memory = await ev(() => JSON.parse(JSON.stringify(__savePoint.home().st)));
+    // v0.7.0-b3b1 (H2): the messages that memory recorded (a room given it with other messages is stopped as it opens).
+    const memMsgs = await ev(() => JSON.parse(JSON.stringify(M.chat)));
     ok(!!qid && memory?.mem?.scenes?.length > 0, '준비: QUICK과 기억');
     let r;
 
@@ -138,7 +140,7 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     old.mem.evidenceVersion = 0;
     old.check = { at: 1, status: 'done', scope: { from: 0, to: 5 }, issues: [{ id: 'c1', about: old.mem.records[0]?.id || 'r1', kind: 'partial', ignored: false, note: 'A note.' }] };
     await ev(() => { M.readDelayFor = { roomT: 900 }; });
-    await open('roomT', arr, { savePoint: old });
+    await open('roomT', memMsgs, { savePoint: old });
     await ev(() => { M.st5 = __savePoint.state(); M.p = __savePoint.handle('check-ignore', 'c1').catch(e => { M.tErr = e.message; }); });
     await wait(100);
     // v0.7.0-b2c: the room's memory comes from its memory file once the room is linked: while it is being checked the page has

@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b3a2b2';
+const VERSION = '0.7.0-b3b1';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -1883,7 +1883,11 @@ async function confirmUnsure() {
 function roomOpened() {
     if (!hasChat()) return;
     // v0.7.0-b1: a branch's memory is decided when the room is linked (linkHome); nothing of another room's is fixed up here.
-    if (!homeOpen()) { refreshInjection(); render(true); return; }
+    if (!homeOpen()) {
+        // v0.7.0-b3b1 (H2): told once as the room opens (the window shows it with `다시 확인`).
+        if (homeHere() && home.h2) toastr.warning(h2Text(home.h2), 'SavePoint', { timeOut: 12000 });
+        refreshInjection(); render(true); return;
+    }
     reconcile();
     syncHide();
     const it = interruptedNote(state());
@@ -1915,7 +1919,8 @@ function homeHere() { return hasChat() && home.key === roomKey() && home.epoch =
 // May SavePoint change this room's memory now (as far as its memory file goes)?
 function homeOpen() {
     if (!homeHere()) return false;
-    if (home.status === 'linked') return !!home.line && !home.line.pending && !home.line.stop;
+    // v0.7.0-b3b1 (b3 design, H2): linked, but the chat file and the memory disagree (h2Of): nothing is written until they agree.
+    if (home.status === 'linked') return !!home.line && !home.line.pending && !home.line.stop && !home.h2;
     return home.status === 'new' && !!home.id;
 }
 function homeMessage() {
@@ -1930,7 +1935,26 @@ function homeMessage() {
     if (home.status === 'readFail') return '이 방의 기억 파일을 읽지 못했어요. 그래서 아무것도 저장하지 않고 자동 기록도 멈췄어요. 잠시 뒤 `다시 확인`을 눌러 주세요.';
     if (home.status === 'stopped') return `이 방의 기억 파일을 만드는 중에 멈췄어요(${home.why}). 그래서 아무것도 저장하지 않았어요. \`다시 확인\`을 눌러 이어서 해 주세요.`;
     if (home.status === 'held') return `이 방의 기억을 정하지 못해서 보류했어요: ${HOLD_TEXT[home.why] || home.why}. 그동안 아무것도 저장하지 않고 자동 기록도 멈춰요.`;
+    if (home.status === 'linked' && home.h2) return h2Text(home.h2);
     return '';
+}
+// v0.7.0-b3b1 (b3 design, H2): what the room's chat file (read by the link, server side) shows against the memory linked: a recorded
+// original changed or gone (`source`, even with no hide), or a hide of SavePoint's the memory does not cover (`hides`). The memory is
+// read as it is (not through state(): that can queue a tidy-up). A user's own hide (no mark), a shown original and a covered hide are
+// left alone; `savepointLive` is no proof of anything. Read and worked out only: nothing is written.
+function h2Of(st, msgs) {
+    if (!st || st.v !== 1 || !Array.isArray(msgs)) return null;
+    if (!st.review && st.lastIndex >= 0 && Array.isArray(st.hashes)) {
+        for (let i = 0; i < st.hashes.length; i++) if (i >= msgs.length || st.hashes[i] !== fingerprint(msgs[i])) return { why: 'source', at: i };
+    }
+    const floor = !st.review && hasMemory(st.mem) ? st.lastIndex : -1;
+    for (let i = floor + 1; i < msgs.length; i++) { const m = msgs[i]; if (m?.is_system && m.extra?.[HIDE_KEY]) return { why: 'hides', at: i }; }
+    return null;
+}
+function h2Text(x) {
+    return x.why === 'source'
+        ? `기록한 원문 #${x.at}이(가) 이 방의 기억과 달라졌어요(다른 곳에서 고쳤거나 지웠을 수 있어요). 기억을 잘못 되감지 않도록 이 방은 저장과 자동 기록을 멈췄어요. 원문을 되돌렸다면 \`다시 확인\`을 눌러 주세요.`
+        : `기억이 기록하지 않은 메시지 #${x.at}이(가) SavePoint 숨김으로 남아 있어요(다른 곳에서 기억을 되돌렸거나 숨김이 복사됐을 수 있어요). 이 방은 저장과 자동 기록을 멈췄어요. 정리한 뒤 \`다시 확인\`을 눌러 주세요.`;
 }
 const FIRST_UNSURE_TEXT = '서버가 저장을 수락했지만, 기억 파일을 다시 읽어 확인하지 못했어요. 다시 확인해 주세요. 확인될 때까지 이 방은 새로 저장하지 않아요.';
 const LINK_PART_TEXT = '기억은 기억 파일에 저장했지만, 이 방과 기억 파일을 잇는 표시(이름표)를 저장하지 못했어요. `다시 확인`을 눌러 이어 주세요. 이어질 때까지 이 방은 새로 저장하지 않아요.';
@@ -2109,7 +2133,7 @@ async function linkHome(r0, owned = false) {
 async function linkRounds(h, r0, owned) {
     const mine = () => homeHere() && home === h;
     if (h.line?.pending) { setHome(h, 'pending'); return; }
-    h.status = 'opening'; h.why = ''; if (!owned) h.again = false; h.wasOf = new Map();
+    h.status = 'opening'; h.why = ''; if (!owned) h.again = false; h.wasOf = new Map(); h.h2 = null;
     let r = r0;
     for (let round = 0; round < 3; round++) {
         if (h.line?.pending) { setHome(h, 'pending'); return; }
@@ -2136,6 +2160,13 @@ async function linkRounds(h, r0, owned) {
         if (!mine()) return;
         if (h.line?.pending) { if (h.status !== 'pending') setHome(h, 'pending'); return; }
         if (h.again && h.status !== 'linked') { r = null; h.again = false; continue; }
+        // v0.7.0-b3b1 (b3 design, H2): a link confirmed (no stop of its own: those notices come first) is checked against the chat file
+        // read last (`again`: the first read can miss a hide changed in between, sameInput compares originals only), before anything
+        // may be written in the room. `다시 확인` comes through here every time, so a room put right goes on.
+        if (h.status === 'linked' && h.line && !h.line.pending && !h.line.stop) {
+            h.h2 = h2Of(h.st, again.messages || []);
+            if (h.h2) { console.warn('[SavePoint] room stopped (H2)', h.h2); trustQueue(); refreshView(); }
+        }
         return;
     }
     if (mine()) setHome(h, 'held', 'changing');
@@ -2331,7 +2362,13 @@ async function recheckHome() {
         const r = await serverCovered();
         if (!homeHere() || home !== h || !r.ok) { if (homeHere() && home === h) { blockRoom(r.why, r.at); render(); } return; }
         const wasOpen = homeOpen(), was = h.status, mark = homeMark(h);
+        // v0.7.0-b3b1 (b3 design, H2): the memory the room was on (stopped or not), to tell a memory followed from one found again.
+        const prior = h.status === 'linked' && h.line?.seen ? JSON.stringify([h.id, h.line.seen.rev ?? null, h.line.seen.wid ?? null]) : null;
         await linkHome(r, true);
+        // A room on a memory that changed (another device's save or reset, read while this tab was saving): hides it no longer covers are
+        // taken away below (followHome: the b2b recovery), not a reason to stop. Its recorded originals changed still stop it.
+        if (homeHere() && home === h && h.h2?.why === 'hides' && prior && h.status === 'linked' && h.line?.seen
+            && JSON.stringify([h.id, h.line.seen.rev ?? null, h.line.seen.wid ?? null]) !== prior) { h.h2 = null; trustQueue(); refreshView(); }
         // v0.7.0-b1a (review of b1a, P2-1): a room that can save now (linked, or new with its id) gets what opening gives it.
         // v0.7.0-b1c (review of b1b, P2-3): also a new room that found its memory (new → linked): the hides and the briefing
         // follow that memory now.
@@ -2350,10 +2387,11 @@ function homeMark(h) {
 // v0.7.0-b1g (review of b1f, P1-1): the room now follows another memory than the one it was on (as when opened, without the
 // "continue?" offer). A hide the page takes away goes to the file in SillyTavern's save (syncHide → saveChatSoon); a hide only
 // the server file still has (taken away on the page before, by the change that was running) gets a save of its own (4).
+// v0.7.0-b3b1 (b3 design): only hides the memory followed no longer covers are taken away here (the b2b recovery); no rewind is queued
+// and no new hide is set. Its recorded originals were checked on the server file when it was linked (H2: stopped there otherwise).
 function followHome() {
     if (!hasChat() || !homeOpen()) return;
-    reconcile();
-    syncHide();
+    syncHide({ release: true });
     refreshInjection(); render(true);
     unhideOnServer();
 }
@@ -2531,7 +2569,7 @@ function homeAlert() {
     if (!text) return '';
     // v0.7.0-b2c2b (E): a new room's first body not read back (FIRST_UNSURE) is checked again from here too.
     // v0.7.0-b3a1: and one whose memory is in its file with the link left unfinished (LINK_PART).
-    const again = homeHere() && (['held', 'readFail', 'stopped'].includes(home.status) || home.line?.stop === FIRST_UNSURE || home.line?.stop === LINK_PART) || home.status === 'new' && !home.id;
+    const again = homeHere() && (['held', 'readFail', 'stopped'].includes(home.status) || home.line?.stop === FIRST_UNSURE || home.line?.stop === LINK_PART || home.h2) || home.status === 'new' && !home.id;
     return `<div class="sp-alert sp-home-alert">${esc(text)}${again ? `<div class="sp-row">${btn('home-recheck', '', '다시 확인', '채팅 파일과 기억 파일을 다시 읽어 이 방의 기억을 다시 찾아요')}</div>` : ''}</div>`;
 }
 
@@ -2669,12 +2707,13 @@ function manualHidePlan(st, list = chat()) {
 // for the 👻 button (rescans the range, like a save in auto mode).
 // v0.7.0-b2a (H1): `grow` — inside a queued change, may it set new hides (see applyChange)? Outside one, new hides wait while
 // the memory is not proved in its file (hidesHeld); hides are taken away either way.
-function syncHide({ rehide = false, grow = false } = {}) {
+// v0.7.0-b3b1: `release` — hides are only taken away (followHome): nothing new is hidden, no range is queued, nothing is left to redo.
+function syncHide({ rehide = false, grow = false, release = false } = {}) {
     // v0.7.0-a1 (review P2-2): while a changed original waits for its turn, the hides follow the memory it will leave.
     const st = liveState(), live = st !== state(), s = settings(), list = chat();
-    const may = inApply ? grow : !hidesHeld();
+    const may = release ? false : inApply ? grow : !hidesHeld();
     let skipped = false;
-    const hold = () => { skipped = true; return false; };
+    const hold = () => { if (!release) skipped = true; return false; };
     const own = state(), sourcePending = !!own && own.lastIndex >= 0 && firstMismatch(own.hashes) >= 0;
     const mode = hideModeOf(s);
     const can = s.enabled && mode !== 'off' && st && !st.review && hasMemory(st.mem);
@@ -2686,7 +2725,7 @@ function syncHide({ rehide = false, grow = false } = {}) {
         // v0.7.0-a (plan P2-3): the range is memory: changed only at a turn of the room's queue (inApply). Found
         // anywhere else, this pass uses the new range and a queued change writes it.
         const m = manualRange(st, s, list, can);
-        if (m.changed) { if (inApply) { st.hideManual = m.h; ranged = true; } else if (!live) manualQueued(); }
+        if (m.changed) { if (inApply) { st.hideManual = m.h; ranged = true; } else if (!live && !release) manualQueued(); }
         if (can) {
             reach = Math.min(m.h.to, st.lastIndex);
             cutoff = Math.min(cutoff, reach);
@@ -2852,13 +2891,16 @@ function liveState() {
     return view;
 }
 let reconcileJob = null;
+// v0.7.0-b3b1 (b3 design, H2): never in a stopped room: neither queued nor, when it was waiting already, run.
+function h2Here() { return homeHere() && !!home.h2; }
 function reconcileQueued() {
     const id = `${roomKey()}|${roomEpoch}`;
+    if (h2Here()) return Promise.resolve(false);
     if (reconcileJob?.id === id) return reconcileJob.done;
     const job = { id };
     job.done = (async () => {
         for (let i = 0; i < 400 && mainBusy(); i++) await wait(1500);
-        if (`${roomKey()}|${roomEpoch}` !== id) return false;
+        if (`${roomKey()}|${roomEpoch}` !== id || h2Here()) return false;
         let what = null;
         try {
             await transact(() => {
@@ -4890,6 +4932,8 @@ async function toggleKeep(index) {
 }
 // A swipe (or a new reply in place) brings that swipe's own extra; a kept message gets its mark back.
 function repairKeep(index) {
+    // v0.7.0-b3b1: not even on the page while the room may not be saved (a stopped room: the mark would wait for a later save).
+    if (!gateOpen()) return false;
     const m = chat()[Number(index)];
     if (!m || kept(m) || !(Array.isArray(m.swipe_info) && m.swipe_info.some(x => x?.extra?.[KEEP_KEY]))) return false;
     setKeep(m, true); saveChatSoon(); return true;

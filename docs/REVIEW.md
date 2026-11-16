@@ -1,3 +1,56 @@
+# v0.7.0-b3b1 · 방 열 때 H2 판정과 멈춤 (브랜치 `v0.7-b`)
+
+기준: `0887f18`(b3a2b2 리뷰 요청서, 코드 `8b40291`, 리뷰 깨끗 → b3a2 끝). b3b를 둘로 나눔(사용자 동의): b3b1 = 어긋난 방을 멈춤, b3b2 = 정상 방의 열기 처리 채팅 저장 0회. 기준은 PLAN "v0.7.0-b3 설계"의 b3b 줄과 GPT 의견 1·2차(아래 표). 파일: `index.js`, `manifest.json`(버전만), 검사(`h2-open.cjs` 새 묶음, `b2b-race.cjs` 5b·5c), 문서.
+
+| 항목(GPT 의견) | 처리 |
+|---|---|
+| 판정은 추가 읽기 없이, 연결 직전 두 번째 서버 읽기(`again`)로. 처음 읽기는 숨김만 바뀐 경우를 놓침(`sameInput`은 원문만 비교) | 🔴 반영. `linkRounds`에서 `actHome` 뒤 `again.messages`로 판정. |
+| 판정에서 `state()`를 부르지 말 것(정리 예약) | 🔴 반영. 연결한 본체 `h.st`를 직접 읽음. |
+| H2는 `home`에 따로. 기존 보류·읽기 실패·`linkPart` 안내가 우선, `다시 확인`은 영수증이 같아도 다시 판정 | 🔴 반영. `home.h2`, `homeOpen()` 거짓. 판정이 `linkRounds` 안이라 누를 때마다 다시 계산, 풀리면 `!wasOpen` → `roomOpened()`. |
+| 미연결 방의 복사된 표식 = 기존 11행 `traces` 보류 | ⚪ 그대로(새 판정 안 겹침). |
+| 예약 0회: 🔖 복구는 표시 바꾸기 전에, 되감기는 예약할 때와 실행할 때, `gate.held → persistSoon` 확인 | 🔴 반영. `repairKeep` 처음 `gateOpen()`, `reconcileQueued` 두 곳 `h2Here()`. `persistSoon`은 `guardedSave`의 `gateOpen()`으로 이미 막힘(코드 안 바꿈). |
+| `followHome`은 풀기만, 예외는 그 경로에만 | 🔴 반영. `syncHide({ release: true })`(새 숨김·수동 범위 예약·건너뜀 기록 없음), `reconcile()` 뺌. |
+| 따라간 새 기억의 기록 원문이 서버와 다르면 멈춤(2차) | 🔴 반영. `linkRounds` 판정이 그대로 걸림. 원문이 맞고 못 덮는 숨김만 있으면 `recheckHome`이 `h2`를 지우고 따라감(b2b 복구). |
+| 멈춘 방의 이름 변경 증거 | 🟡 반영(코드 변경 없음). `leftRoom`은 `line.stop`만 보고 `h2`는 `home`에 있어서 그대로 인정, 새 이름에서 다시 판정. 검사 11. |
+| 열기의 채팅 저장 0회(7e `NOTE`) | b3b2. |
+
+## 바뀐 것
+- `h2Of(st, msgs)`: 검토 중이 아니고 `lastIndex >= 0`이면 `st.hashes`를 서버 메시지 지문과 비교 → 첫 어긋남·없어짐 `{ why: 'source', at }`. 아니면 덮는 범위(`!review && hasMemory ? lastIndex : -1`, `syncHide`와 같은 `floor`) 밖에서 `is_system && savepointHidden` → `{ why: 'hides', at }`. 표시 없는 숨김·보이는 원문·`savepointLive`는 안 봄.
+- `linkRounds`: 시작에 `h.h2 = null`. 끝에 `linked` · 줄 멈춤·대기 없음이면 `h.h2 = h2Of(h.st, again.messages)`.
+- `homeOpen()`에 `&& !home.h2`. `homeMessage`·`homeAlert`(다시 확인 버튼)·`roomOpened`(멈춘 채 열리면 알림 한 번, `reconcile`·`syncHide` 안 함 — 예전 `!homeOpen()` 분기).
+- `recheckHome`: 연결 전 기억(`id`·영수증)을 `prior`로. 다시 연결한 기억이 다르고 판정이 `hides`면 `h2` 지움 → `followHome`(열려 있던 방) 또는 `roomOpened`.
+- `followHome`: `syncHide({ release: true })` + `unhideOnServer()`(되감기 예약 없음).
+- `syncHide`의 `release`: `may = false`, 건너뜀 기록·`manualQueued` 없음. 푸는 분기는 그대로.
+- `reconcileQueued`: 예약 전·실행 전 `h2Here()`. `repairKeep`: `gateOpen()`.
+
+## ★ 특히 봐 줄 곳
+1. 판정 근거가 서버 파일이라, 열어 둔 방에서 원문을 고친 직후(실리태번이 저장, 되감기는 아직 대기열) `다시 확인`이 돌면(다른 기기 저장을 알아챈 `freeReleased`·`recheckAfter` 등) 그 방이 멈춰요. 기다리던 되감기도 실행 전 확인에서 멈춤. 안전한 쪽(기억 그대로)이라 README 알려진 한계로 둠. 괜찮은지.
+2. `recheckHome`의 "다른 기억을 따라감" 판단: 연결 전 `id`·`rev`·`wid`와 다르면. 충돌로 멈춘 줄(`MF_CONFLICT`, 영수증은 옛것)도 여기에 들어가 `hides`면 멈추지 않음(이때는 `!wasOpen`이라 `roomOpened()`가 돌아 새 숨김도 걸 수 있음 — b3b2에서 열기 처리를 바꿈).
+3. 멈춘 방에도 브리핑은 들어감(`refreshInjection`이 화면 기억을 씀, `linkPart`와 같음). 일반 전송 보호(c)에서 정함.
+4. `reconcileQueued`의 `h2Here()` 두 곳은 망가뜨려도 안 잡힘(겹 장치: 부르는 곳이 모두 `gateOpen()`을 보고, 실행돼도 `transact`가 막음).
+
+## 바뀐 기대(기존 검사)
+열 때 원문이 바뀐 방은 이제 되감지 않고 멈춰요. 그 동작에 기대던 준비 단계만 고쳤어요(검사하는 내용은 그대로).
+- `home-link` 22·23: 앞 단계(19·22)가 실리태번 저장으로만 원문을 고치고(화면엔 알림 없음) 방을 다시 열어요. 예전엔 열 때 되감고 진행, 이제 열 때 멈춤 → 준비 줄 두 개(멈춤 확인) + 도우미 `unstop()`(고친 꼬리 떼고 실리태번 저장 → `다시 확인`).
+- `wait-room` 3: 2에서 원문이 바뀐 채 떠난 A방 → 열 때 멈춤 확인 줄 + 원문 되돌리고 `다시 확인`.
+- `room-rule` 5·`room-turn` 5: 다른 방에서 만든 기억을 다른 메시지(`msgs(6, …)`)의 방에 넣어 열었음 → #0부터 원문이 달라 멈춤. 그 기억을 만든 메시지(`memMsgs`)로 방을 열게 바꿈.
+
+## 검사 준비
+- `h2-open.cjs`(새 묶음): `recorded(id, mode)`(8개 기록, `hideMode`), `reopen(id, edit)`(서버 파일을 고친 뒤 `M.openFile`), `look(c)`(상태·`h2`·`autoBlocked`·기억 파일 `lastIndex`·화면/서버 숨김·채팅 저장·기억 업로드·알림·창 안내(`#sp_wand` 클릭)). 0 준비 · 1 원문 바뀜 숨김 0개 · 5 멈춘 방에서 원문 변경 알림·`GENERATION_STARTED`·`repairKeep`·세이브 · 7 원문 되돌리고 다시 확인(같은 영수증) → 재개, 그 뒤 세이브 · 8 짝: 열어 둔 방에서 직접 고침 → 자동 되감기 · 2 기록한 메시지 없어짐 · 11 멈춘 방 이름 변경 · 3 못 덮는 숨김 · 4 사용자 숨김·덮인 숨김·`savepointLive`만 · 9 두 번째 읽기에서만 숨김(`fetch` 감싸 첫 `/api/chats/get` 뒤 서버 파일 고침) → 멈춤, 되돌리고 다시 확인 → 재개 · 6 `linkPart`(이름표 400)가 먼저, 풀린 뒤 H2.
+- `b2b-race` 5b(5의 짝): `fresh()` 뒤 다른 기기가 `hashes[1]`만 다른 기억 저장 → `recheckHome` → `source` 멈춤, 채팅 저장·업로드 0, 숨김 그대로 → 참 지문으로 다시 저장 → 다시 확인으로 재개. 5c: `M.add(4)` 뒤 다른 기기가 그 4개까지 기록(지문은 검사 안에서 같은 식으로 계산) → 따라가도 새 숨김·채팅 저장 0.
+
+## 검사와 망가뜨리기 결과
+- 고치기 전 코드(`8b40291`, 새 `h2-open.cjs`·`b2b-race.cjs`·`mock.js` 복사): `h2-open` 11줄 FAIL(1·1 안내·5·5 🔖·7·2·11·3·3 안내·9·6), `b2b-race` 5b·5c FAIL(그 뒤 6~11은 5b가 방을 멈춘 채 남겨 연쇄 실패). 4·8·6 준비는 예전 코드도 통과(지키는 줄).
+- 망가뜨리기 6개:
+  - 판정을 첫 읽기(`r0`)로 → `h2-open` 9 FAIL
+  - `repairKeep`의 `gateOpen()` 빼기 → 5 🔖 FAIL
+  - `h2Of`가 표시 없는 숨김도 셈 → 4 FAIL
+  - `recheckHome`의 "다른 기억을 따라감" 예외 빼기 → `b2b-race` 5 FAIL(+ 연쇄)
+  - `followHome`을 예전(`reconcile` + 일반 `syncHide`)으로 → `b2b-race` 5c FAIL
+  - `reconcileQueued`의 `h2Here()` 빼기 → 안 잡힘(겹 장치, ★ 4)
+- Node 510 통과 / 0 실패 / 3 건너뜀.
+- 브라우저 59묶음(새 `h2-open` 포함) 한꺼번에: 55 통과 + 4 실패(`home-link`·`room-rule`·`room-turn`·`wait-room`, 위 "바뀐 기대") → 준비를 고친 뒤 넷 다 따로 통과. 검사 모드 오류 0. `h2-open` 19줄, `b2b-race` 5b·5c 3줄.
+
 # v0.7.0-b3a2b2 · b3a2b1 리뷰 반영 (증거 없는 "이미 옮겨짐" 보류 · 옛 본체 이름표 보류 · 정리 범위) (브랜치 `v0.7-b`)
 
 기준: `f8c5788`(b3a2b1 리뷰 요청서, 코드 `ac97b8a`). b3a2b1 GPT 리뷰: P1 1, P2 1, P3 없음. 2차 의견(아래 표)과 사용자 동의대로. 파일: `home.js`, `index.js`, `manifest.json`(버전만), 검사(`room-gate.cjs` 7m 도우미 확장 + 7n, `home.test.mjs`), 문서.

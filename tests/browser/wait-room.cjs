@@ -99,6 +99,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     c0 = await ev(() => M.calls.length);
     await ev(async () => {
         await SillyTavern.getContext().eventSource.emit('generation_started', 'normal', {}, false);
+        window.__orig2 = M.chat[2].mes;
         M.chat[2].mes = 'Edited text of an early message.'; M.stSave();
         await SillyTavern.getContext().eventSource.emit('message_edited', 2);
     });
@@ -119,6 +120,11 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     //    is opened. The result note ("체크포인트 실패") is not written there.
     await ev(() => M.openFile('chatA'));
     await wait(1500);
+    // v0.7.0-b3b1 (H2): room A was left with #2 changed and its rewind not made: it opens stopped; the original put back, it goes on.
+    r = await ev(() => __savePoint.home().h2);
+    ok(r?.why === 'source' && r.at === 2, `3. 준비: 원문이 바뀐 채 떠난 A방은 열 때 멈춤 (${JSON.stringify(r)})`);
+    await ev(async () => { M.chat[2].mes = window.__orig2; M.stSave(); await __savePoint.handle('home-recheck'); await M.opened(); });
+    await wait(600);
     const branch = await ev(() => M.branchChat('Branch of A', M.chat.length - 1));
     await ev(() => { M.stSave(); });
     await wait(300);
