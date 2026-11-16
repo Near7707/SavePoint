@@ -260,9 +260,11 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
         const n = M.fileLog.length, s = (M.saveBodies || []).length, ups = [], tag = M.H.tagName(__savePoint.home().key), f = window.fetch; let reads = 0, failed = 0;
         window.fetch = async (u, o = {}) => {
             if (String(u) === '/api/files/upload') ups.push(JSON.parse(o.body).name);
+            // b3a1c: the integrity hint unreadable once the tag was read again (the placement's own reads).
+            if (how === 'other+clue' && reads > 1 && String(u).startsWith('/user/files/savepoint-int-')) { failed++; return new Response('down', { status: 500 }); }
             if (String(u).startsWith('/user/files/' + tag) && ++reads > 1) {
                 failed++;
-                if (how === 'other') return new Response(JSON.stringify(M.H.tagBody({ addr: __savePoint.home().key, mem: 'other-mem-7e' })), { status: 200 });
+                if (how.startsWith('other')) return new Response(JSON.stringify(M.H.tagBody({ addr: __savePoint.home().key, mem: 'other-mem-7e' })), { status: 200 });
                 return new Response('down', { status: 500 });
             }
             return f(u, o);
@@ -281,6 +283,10 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     r = await tagReadFails('other');
     ok(r.failed > 0 && r.status === 'held' && r.last === -1 && r.ups.length === 0 && r.s === 0,
         `7e. (b3a1b) 다시 읽은 이름표가 다른 기억을 가리키면(충돌) 예전처럼 보류 (${JSON.stringify(r)})`);
+    // v0.7.0-b3a1c (review of b3a1b, P2): the same conflict with the integrity hint unreadable too: the conflict is answered first.
+    r = await tagReadFails('other+clue');
+    ok(r.failed > 1 && r.status === 'held' && r.last === -1 && r.ups.length === 0 && r.s === 0,
+        `7e. (b3a1c) 이름표 충돌에 단서 읽기 실패가 겹쳐도 보류, 화면 기억 없음, 업로드 0 (${JSON.stringify(r)})`);
     r = await ev(async () => { const n = M.fileLog.length, s = (M.saveBodies || []).length; await __savePoint.handle('home-recheck'); await M.opened(); await new Promise(z => setTimeout(z, 300));
         const out = { n, s: (M.saveBodies || []).length - s, puts: M.fileLog.slice(n).filter(x => x[0] === 'put').map(x => x[1]), status: __savePoint.home().status, stop: __savePoint.home().line?.stop ?? null,
             last: __savePoint.state()?.lastIndex, blocked: __savePoint.autoBlocked() };

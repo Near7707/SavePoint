@@ -545,9 +545,14 @@ export function writePlan({ id, from, addr, integrity = null, copy = null, mem, 
     if (move) reads.push(['start', start, validStart(addr)], ['moved', moved, validMoved(addr, copy)], ['hint', hint, validCopyHint(copy)]);
     if (str(integrity)) reads.push(['clue', clue, validClue(integrity)]);
     const r = {};
+    // v0.7.0-b3a1c (review of b3a1b, P2): the tag or the integrity hint unreadable is answered only after every check the other
+    // reads allow (a conflict seen is held first: a valid tag pointing at another link wins over a hint that could not be read).
+    let late = null;
     for (const [k, res, valid] of reads) {
         r[k] = checked(res, valid);
-        if (bad(r[k])) return { stop: 'read', file: k };
+        if (!bad(r[k])) continue;
+        if (k === 'tag' || k === 'clue') { late ??= k; continue; }
+        return { stop: 'read', file: k };
     }
     const steps = [];
     if (move) {
@@ -572,10 +577,12 @@ export function writePlan({ id, from, addr, integrity = null, copy = null, mem, 
     if (r.hint?.kind === OK && r.hint.data.rooms.some(a => a !== addr)) return { hold: 'copyMoved' };
     if (r.hint && !(r.hint.kind === OK && r.hint.data.rooms.includes(addr))) steps.push('writeCopy');
     if (r.clue && !(r.clue.kind === OK && r.clue.data.rooms.some(x => x.addr === addr && x.mem === id))) steps.push('writeClue');
+    if (late === 'tag') return { stop: 'read', file: 'tag' };
     if (r.tag.kind === MISSING) steps.push(...move ? ['recheckStart'] : [], 'writeTag');
     else if (!sameLink(r.tag.data, { id, integrity, copy })) return { hold: 'tagChanged' };
     // v0.7.0-b1j (review of b1i, P1): the same link already there, without the renames this room closes: written again with them.
     else if (withCloses(r.tag.data, closes)) steps.push('writeTag');
+    if (late) return { stop: 'read', file: late };
     return { steps };
 }
 
@@ -647,7 +654,8 @@ export async function placeMemory(io, { id, from, addr, integrity = null, copy =
     if (str(integrity)) reads.clue = await rd(clueName(integrity));
     const plan = writePlan({ id, from, addr, integrity, copy, ...reads, closes });
     // v0.7.0-b3a1b (review of b3a1a, P2-1): a resume over the body seen (checked above) whose tag or integrity hint alone could not
-    // be read now: that body is kept (`placed`), the same as a write turned away later. Any other early answer stays as it was.
+    // be read now: that body is kept (`placed`), the same as a write turned away later. Any other early answer stays as it was
+    // (b3a1c: writePlan answers a held conflict before such a read failure).
     if (!plan.steps) return resume && plan.stop === 'read' && (plan.file === 'tag' || plan.file === 'clue') ? { ...plan, placed: { rev: resume.rev, wid: resume.wid } } : plan;
     if (resume && plan.steps.includes('writeMem')) return { stop: 'memGone' };
     if (resume && plan.steps.includes('writeTag')) plan.steps.splice(plan.steps.indexOf('writeTag'), 0, 'recheckMem');
