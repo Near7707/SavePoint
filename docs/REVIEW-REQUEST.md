@@ -1,22 +1,18 @@
-# 코드 리뷰 요청 · v0.7.0-b2c2a·b2c2b (b2c2 버그 고치기, 브랜치 `v0.7-b`)
+# 코드 리뷰 요청 · v0.7.0-b3a1 (첫 저장의 단서·이름표만 실패, 브랜치 `v0.7-b`)
 
-- 범위: `git diff 131d7ff 774317e` — 커밋 두 개.
-  - `b8a527a` (b2c2a, A·C·G 안내): `index.js`(`memBlocked`, `summarize` 시작 `catch`, `writeEntry` 채팅 쓰기 `catch` 문구, `awayUnsure`·`settleWrite`의 `away`·실행 `catch`의 `Unconfirmed` 알림 조건), 검사(`save-banner.cjs` 3 준비, `restore-scope.cjs` 2c 문구).
-  - `774317e` (b2c2b, E·D, B는 검사만): `home.js` `placeMemory`(`checkMem` 보류에 `read`·`wrote`), `memfile.js` `writeMem`(`quiet`), `index.js`(`MEM_MISSING`·`FIRST_UNSURE`, `placeFirst` 새 분기, `homeWriteError`·`homeMessage`·`homeAlert`), 검사(`room-gate.cjs` 6·7c·7d, `run.cjs`, `loot-bar.cjs` 11·12).
-- 처리 표와 자세한 내용: [REVIEW.md](REVIEW.md) 맨 위 v0.7.0-b2c2b, v0.7.0-b2c2a. 범위는 b2c2 1차의 버그 후보 중 사용자가 고른 것(E는 GPT 의견대로: 방 멈춤 → 다시 확인·다시 열기로 본체를 다시 쓰지 않고 연결).
-- 다음 조각: `save-*` 다섯 묶음 옮기기, b2c3(scroll·전체 통과).
-- 결과는 P1/P2/P3로 주세요. 브라우저 묶음은 우리 쪽에서 돌려요(전체 58묶음: 통과 50 / 실패 8 = 안 옮긴 `save-*` 5(FAIL 수 고치기 전과 같음) + scroll + 가끔 실패하는 `inject-wait`·`status`(따로 통과), 검사 모드 오류 0. 고치기 전 코드에서 새 검사 실패, 망가뜨리기 7개 각각 잡힘).
+- 범위: `git diff bdb857d 6ecac5f` — 커밋 하나.
+  - `6ecac5f`: `home.js` `placeMemory`(`checkMem`이 이번 영수증이면 기억, 그 뒤 단계의 멈춤·보류에 `placed`), `index.js`(`LINK_PART`·`LINK_PART_TEXT`, `placeFirst` 새 분기, `homeMessage`·`homeWriteError`·`homeAlert`), 검사(`room-gate.cjs` 7e~7i), 문서(PLAN의 b3 설계 정리 포함).
+- 처리 표와 자세한 내용: [REVIEW.md](REVIEW.md) 맨 위 v0.7.0-b3a1. 범위는 b3 설계(PLAN "v0.7.0-b3 설계", GPT 의견 1·2차)의 b3a1: 본체 확인 뒤 단서·이름표만 복구, 이름 변경 기록이 걸린 방은 기존 보류 유지.
+- 다음 조각: b3a2(`closes` 보관·복원·정리 + 5행 차단).
+- 결과는 P1/P2/P3로 주세요. 브라우저 묶음은 우리 쪽에서 돌려요(전체 58묶음 모두 통과, `status`는 알려진 타이밍 오류로 따로 다시 돌려 통과, 검사 모드 오류 0. 고치기 전 코드에서 새 검사 8줄 실패, 망가뜨리기 3개 각각 잡힘). Node 506 / 0 / 3.
 
 ## 고친 것
-- A: 자동 체크포인트의 시작 표시가 기억 파일 저장 거절로 못 쓰이면 알림(전엔 콘솔만). 방 이동·판정 중·게이트 막힘은 지금처럼 조용히.
-- C: 기억은 저장되고 채팅 파일만 실패하면 "채팅 파일에 남은 변경을 저장하지 못해서 그 부분만 되돌렸어요"(🔖·🔶도).
-- G: 세이브·체크포인트 도중 방을 옮기면 떠날 때 안내만, "들어갔는지 확인하지 못했어요"는 새 방에 다시 안 띄움.
-- E: 새 방 첫 본체를 쓴 직후 다시 읽기가 실패하면 화면 기억을 남기고 방 멈춤(전엔 "다른 곳에서 저장" + 화면 기억 버림 → 다음 세이브 충돌).
-- D: 서버가 ok라 하고 안 쓴 경우(새 방: 파일 없음, 이어진 방: 파일 그대로)를 다른 기기 탓으로 말하지 않음.
+- 새 방 첫 저장에서 기억 본체가 이번 영수증으로 다시 읽힌 뒤 고유값 단서나 이름표만 실패(거절·읽기 실패·응답 없음)하면, 전엔 "취소했어요"로 화면 기억을 되돌렸지만 본체는 서버에 있어서 다음 저장이 `CONFLICT`로 멈추고 다시 열면 그 변경이 기억에 들어와 있었음(b1b 리뷰 P2-1).
+- 이제 화면 기억은 남기고 `linked` + `stop = linkPart`(저장·새 숨김·자동 기록 없음), 안내와 `다시 확인` 버튼. 복구는 기존 6행 `relink` → `relinkMemory`(본체·채팅 쓰기 0회, 같은 이름표가 있으면 안 씀). 그사이 다른 기기 본체는 그 파일을 따름.
 
 ## 특히 봐 줄 곳
-1. E에서 멈춘 방을 `다시 확인`·다시 열기가 6행 `relink`로 잇는 것: 본체가 안 다시 써지는지(`resume`이면 `writeMem` 단계가 있으면 멈춤), 그사이 다른 기기가 같은 이름표·본체를 만들었을 때 기존 판정이 맞게 보류하는지.
-2. E의 `reopen: true`와 `relink`의 `closes`·`clearLeft` 없음(b3 "이미 있는 이름표 재연결 ①"과 같은 한계로 봄) — 이번에 따로 막아야 하는지.
-3. `checkMem` 뒤 단계(`writeClue`·`writeTag`)의 실패는 손대지 않음(본체는 써짐, 지금처럼 되돌림 → b1b 리뷰 P2-1·b3). 이번 범위에 넣어야 하는지.
-4. G의 조건(세이브·체크포인트 실행 + 방 바뀜 + `away`)으로 정말 필요한 경고를 숨기는 길이 없는지(🔖 같은 버튼 변경은 그대로 경고).
-5. A의 `memWrite`: `CONFLICT`·`READ_ERROR`도 알림 — 다른 안내와 겹치는 곳이 없는지.
+1. `placed` 조건(`checkMem`이 `mine`이고 이번 실행이 본체를 씀): 받아들인 남의 본체(`theirs`)는 예전처럼 `CONFLICT`. 이 경계가 맞는지.
+2. `LINK_PART`에서 닫아 둔 이름 변경 기록을 다시 열지 않음(단서 실패처럼 이름표 전에 멈춘 경우도). 이 이름을 떠난 방이 있으면 다시 확인 때 6행 `renamedAway`로 보류(7i) — b3a2까지 의도한 동작. 다시 여는 쪽이 더 안전한 경우가 있는지.
+3. 이름표 거절과 응답만 잃은 경우를 한 상태로 묶고 다음 읽기에 맡김. `relinkMemory`가 이미 있는 같은 연결 이름표를 그대로 두는지(7g).
+4. 기다리는 사이 본체가 지워지면 6행이 못 찾아 예전처럼 새 방으로 판정(⚪로 둠). 보류가 필요한지.
+5. `writeEntry`에서 `LINK_PART`가 FIRST_UNSURE와 같은 길(표시 되돌림, 대기열 다음 변경 막음, `Unconfirmed`)을 타는 것 — 세이브·체크포인트 후속(AUTO 백업, QUICK, 체크포인트 메모)이 안 도는 게 맞는지.
