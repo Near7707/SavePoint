@@ -650,6 +650,9 @@ export async function placeMemory(io, { id, from, addr, integrity = null, copy =
     if (resume && plan.steps.includes('writeMem')) return { stop: 'memGone' };
     if (resume && plan.steps.includes('writeTag')) plan.steps.splice(plan.steps.indexOf('writeTag'), 0, 'recheckMem');
     let body = reads.mem?.kind === OK ? reads.mem.data : null, adopted = false, wrote = null, mine = null;
+    // v0.7.0-b3a1a (review of b3a1, P2-1): a resume runs on the very body seen when the room was decided (checked above): a stop
+    // in the steps after it leaves that body as it was (`placed` too).
+    if (resume) mine = { rev: resume.rev, wid: resume.wid };
     // v0.7.0-b3a1: a stop after this run's own body was read back (`placed`: its rev and receipt) — only the hints or the tag are
     // missing; the caller keeps that memory and the room waits for them (the next decision finds the body, relinkMemory).
     const left = x => mine ? { ...x, placed: mine } : x;

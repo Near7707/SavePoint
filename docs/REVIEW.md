@@ -1,3 +1,33 @@
+# v0.7.0-b3a1a · b3a1 코드 리뷰 반영 (브랜치 `v0.7-b`)
+
+기준: `bf7bb7c`(b3a1 리뷰 요청서, 코드 `6ecac5f`). 파일: `home.js`, `index.js`, `manifest.json`, 검사(`room-gate.cjs` 7e·7j, `mock.js` `M.failFileStatus`), 문서. 리뷰 결과 P1 없음 · P2 3 · P3(지금 범위 동의) — 코드로 확인함.
+
+| 항목 | 처리 |
+|---|---|
+| P2-1 `다시 확인`에서 이름표가 또 실패하면 화면 기억이 비워짐 | 🔴 반영. `relink`가 확인한 본체(`resume`) 뒤 단계에서 멈추면 `placed`, `actHome`이 그 본체를 다시 읽어 같으면 화면 기억으로 두고 `linkPart` 유지. |
+| P2-3 응답 없는 단서·이름표를 같은 열기의 `다시 확인`이 바로 다시 보냄(늦은 요청이 그 뒤 단서 변경을 덮을 수 있음) | 🔴 반영(드물지만 다른 방의 단서 항목 손실). `placeIO`가 그 파일 업로드의 `PENDING`을 `h.linkLate`로 → 같은 열기에서는 `placeIO` 쓰기를 보내지 않음(읽기·이미 있으면 연결은 됨). 다시 열면 새 `home`이라 씀. 문구 `LINK_LATE_TEXT`. |
+| P2-2 이어진 직후 열기 처리(`roomOpened` → `syncHide`)가 채팅 저장을 예약 | 🟡 b3b에서(열기 경로를 막는 조각). 이번엔 검사가 1.5초 더 관찰해 `NOTE` 줄로 기록(지금 1회). 이름표 복구 자체는 0회. |
+| P3 `placed` 경계 · 기록 다시 안 엶 · 본체 사라짐 · 후속 저장 안 함 | ⚪ 그대로(리뷰 동의). |
+
+## 바뀐 것
+- `home.js placeMemory`: `resume`(6행 `relink`)이면 처음 읽어 확인한 본체를 `mine`으로 → 뒤 단계 멈춤·보류에 `placed`.
+- `index.js actHome`: `relink`가 `stop` + `placed`면 기억 파일을 다시 읽어 rev·wid가 같을 때 `attachHome` + `line.stop = LINK_PART`. 다르거나 못 읽으면 예전처럼 `placed()`(멈춤·읽기 실패).
+- `placeIO`: 기억 본체가 아닌 업로드가 `PENDING`이면 `h.linkLate = true`, 이 표시가 있으면 쓰기 요청을 보내지 않고 실패로(`stop: 'write'`). `placeFirst`의 `LINK_PART` 결과에 `late`, `homeWriteError`·`homeMessage`가 `LINK_LATE_TEXT`.
+- 검사 모의 환경: `M.failFileStatus`(기본 500 = 응답 없음으로 분류, 400 = 거절). b3a1의 7e·7f·7h·7i는 사실 500(응답 없음)이었음 → 거절(400)로 바꾸고, 응답 없음은 7j로 따로.
+- 버전 `0.7.0-b3a1a`.
+
+## ★ 특히 봐 줄 곳
+1. `linkLate`는 그 열기(`home` 상자) 동안 단서·이름표·고유값 채우기(`fill`) 쓰기를 모두 막음. 기억 본체 쓰기는 원래 `line.pending` 규칙.
+2. P2-1의 유지 조건: 다시 읽은 본체가 `relink`가 확인한 rev·wid와 같을 때만. 그사이 다른 기기가 본체를 바꾸면 예전처럼 멈춤(다시 확인으로 그 파일을 따름).
+
+## 바뀐 기대(기존 검사)
+- `room-gate` 7e·7f·7h·7i: 실패 응답을 400(거절)으로. 7g(쓰기 뒤 500)는 그대로 — 이제 `linkLate`라 다시 확인은 읽기만 하고, 이름표가 이미 있어 이어짐.
+
+## 검사와 망가뜨리기 결과
+- 고치기 전 코드(`bf7bb7c`): 7e(b3a1a) 1줄 + 7j 3줄 FAIL. 고친 뒤 모두 PASS.
+- 망가뜨리기: `resume`의 `mine` 빼기 → 7e·7j 2줄. `actHome` 유지 분기 빼기 → 7e·7j 2줄. `linkLate`로 안 막기 → 7j 2줄. `PENDING`을 `linkLate`로 안 남기기 → 7j 3줄.
+- Node 506 / 0 / 3. 브라우저 전체(58묶음): 한꺼번에 **모두 통과**. 검사 모드 오류 0.
+
 # v0.7.0-b3a1 · 새 방 첫 저장의 단서·이름표만 실패 → 기억 남기고 연결 미완료 (브랜치 `v0.7-b`)
 
 기준: `bdb857d`(b2c3). 파일: `home.js`, `index.js`, `manifest.json`, 검사(`room-gate.cjs` 7e~7i), 문서. b3 설계(GPT 의견 1·2차, PLAN "v0.7.0-b3 설계")의 첫 조각.

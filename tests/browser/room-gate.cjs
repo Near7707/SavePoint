@@ -234,9 +234,8 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
             status: __savePoint.home().status, blocked: __savePoint.autoBlocked(), hid: M.chat.filter(m => m.extra?.savepointHidden).length,
             tag: [...M.files.keys()].some(k => k === M.H.tagName(__savePoint.home().key)) }));
     };
-    // 7e. the tag refused
-    r = await firstSave('chatA5', () => { M.failFile = 'savepoint-room-'; });
-    await ev(() => { M.failFile = null; });
+    // 7e. the tag refused (400: turned away, nothing written)
+    r = await firstSave('chatA5', () => { M.failFile = 'savepoint-room-'; M.failFileStatus = 400; });
     Object.assign(r, await ev(async () => { $('#sp_wand').trigger('click'); await new Promise(z => setTimeout(z, 200));
         const out = { alert: $('.sp-home-alert').text(), btn: $('.sp-home-alert [data-act="home-recheck"]').length };
         __savePoint.ui.open = false; $('#sp_overlay').hide(); return out; }));
@@ -247,19 +246,29 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     r = await ev(async () => { const n = M.fileLog.length, s = (M.saveBodies || []).length; M.add(2); toastr.log.length = 0; await __savePoint.handle('run').catch(() => {});
         return { n, s: (M.saveBodies || []).length - s, last: __savePoint.state()?.lastIndex, file: M.mem()?.lastIndex, t: toastr.log.map(x => x[1]).join(' | ') }; });
     ok(r.last === 9 && r.file === 9 && (await putsSince(r.n)).length === 0 && r.s === 0, `7e. (b3a1) 이어지기 전 다음 세이브는 아무것도 쓰지 않음 (${r.t.slice(0, 60)})`);
+    // v0.7.0-b3a1a (review of b3a1, P2-1): `다시 확인` while the tag is still refused: the memory kept on the page stays, the room still waits.
     r = await ev(async () => { const n = M.fileLog.length, s = (M.saveBodies || []).length; await __savePoint.handle('home-recheck'); await M.opened(); await new Promise(z => setTimeout(z, 300));
-        return { n, s: (M.saveBodies || []).length - s, puts: M.fileLog.slice(n).filter(x => x[0] === 'put').map(x => x[1]), status: __savePoint.home().status, stop: __savePoint.home().line?.stop ?? null,
-            last: __savePoint.state()?.lastIndex, blocked: __savePoint.autoBlocked() }; });
+        return { s: (M.saveBodies || []).length - s, puts: M.fileLog.slice(n).filter(x => x[0] === 'put').map(x => x[1]), status: __savePoint.home().status, stop: __savePoint.home().line?.stop ?? null,
+            last: __savePoint.state()?.lastIndex ?? -1, blocked: __savePoint.autoBlocked() }; });
+    ok(r.status === 'linked' && r.stop === 'linkPart' && r.last === 9 && r.blocked === 'room' && r.puts.length === 0 && r.s === 0,
+        `7e. (b3a1a) 다시 확인에서 이름표가 또 거절돼도 화면 기억은 남고 계속 기다림 (${JSON.stringify(r)})`);
+    await ev(() => { M.failFile = null; M.failFileStatus = null; });
+    r = await ev(async () => { const n = M.fileLog.length, s = (M.saveBodies || []).length; await __savePoint.handle('home-recheck'); await M.opened(); await new Promise(z => setTimeout(z, 300));
+        const out = { n, s: (M.saveBodies || []).length - s, puts: M.fileLog.slice(n).filter(x => x[0] === 'put').map(x => x[1]), status: __savePoint.home().status, stop: __savePoint.home().line?.stop ?? null,
+            last: __savePoint.state()?.lastIndex, blocked: __savePoint.autoBlocked() };
+        // v0.7.0-b3a1a (review of b3a1, P2-2): what the opening that follows the link schedules (a hide's chat save 0.5 s on) is seen too.
+        await new Promise(z => setTimeout(z, 1500)); out.later = (M.saveBodies || []).length - s - out.s; return out; });
     ok(r.status === 'linked' && !r.stop && r.last === 9 && r.blocked !== 'room' && r.puts.length === 1 && r.puts[0].startsWith('savepoint-room-') && r.s === 0,
         `7e. (b3a1) 다시 확인 → 이름표만 써서 이어짐, 기억 본체·채팅 파일은 안 씀 (${JSON.stringify(r)})`);
+    console.log(`NOTE  7e. (b3a1a, 리뷰 P2-2) 이어진 뒤 방 열기 처리가 예약한 채팅 저장 ${r.later}회 — 이름표 복구 자체는 0회, 열기 쪽은 b3b에서 0회로`);
     await ev(() => { M.add(2); toastr.log.length = 0; });
     await ev(() => __savePoint.handle('run').catch(() => {}));
     await page.waitForTimeout(1500);
     r = await ev(() => ({ last: __savePoint.state()?.lastIndex, file: M.mem()?.lastIndex, hid: M.chat.filter(m => m.extra?.savepointHidden).length, t: toastr.log.map(x => x[1]).join(' | ') }));
     ok(r.last === 13 && r.file === 13 && r.hid > 0 && r.t.includes('완료'), `7e. (b3a1) 그 뒤 세이브는 평소대로(새 숨김도) (${JSON.stringify(r).slice(0, 120)})`);
     // 7f. the integrity hint refused, then the room opened again (no `다시 확인`): the hint and the tag written, nothing else.
-    r = await firstSave('chatA6', () => { M.failFile = 'savepoint-int-'; });
-    await ev(() => { M.failFile = null; });
+    r = await firstSave('chatA6', () => { M.failFile = 'savepoint-int-'; M.failFileStatus = 400; });
+    await ev(() => { M.failFile = null; M.failFileStatus = null; });
     ok(r.last === 9 && r.file === 9 && r.stop === 'linkPart' && !r.tag && r.blocked === 'room', `7f. (b3a1) 첫 저장의 고유값 단서가 거절: 기억은 남기고 방을 멈춤 (${JSON.stringify({ last: r.last, file: r.file, stop: r.stop, t: r.t.slice(0, 40) })})`);
     r = await ev(async () => { const n = M.fileLog.length, s = (M.saveBodies || []).length; await M.openFile('chatA6'); await M.opened(); await new Promise(z => setTimeout(z, 300));
         return { s: (M.saveBodies || []).length - s, puts: M.fileLog.slice(n).filter(x => x[0] === 'put').map(x => x[1]).sort(), status: __savePoint.home().status, stop: __savePoint.home().line?.stop ?? null,
@@ -276,8 +285,8 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
         return { s: (M.saveBodies || []).length - s, puts: M.fileLog.slice(n).filter(x => x[0] === 'put').map(x => x[1]), status: __savePoint.home().status, stop: __savePoint.home().line?.stop ?? null, last: __savePoint.state()?.lastIndex }; });
     ok(r.status === 'linked' && !r.stop && r.last === 9 && r.puts.length === 0 && r.s === 0, `7g. (b3a1) 다시 확인 → 같은 이름표가 이미 있으면 아무것도 안 씀 (${JSON.stringify(r)})`);
     // 7h. another device writes the memory file while the link waits: `다시 확인` follows that file (never ours written again).
-    r = await firstSave('chatA8', () => { M.failFile = 'savepoint-room-'; });
-    await ev(() => { M.failFile = null; });
+    r = await firstSave('chatA8', () => { M.failFile = 'savepoint-room-'; M.failFileStatus = 400; });
+    await ev(() => { M.failFile = null; M.failFileStatus = null; });
     r = await ev(async () => {
         const id = __savePoint.home().id, doc = M.memDoc();
         M.otherPut(M.H.memName(id), { ...doc, rev: doc.rev + 1, wid: 'other.8h', state: { ...doc.state, lastIndex: 5, hashes: doc.state.hashes.slice(0, 6) } });
@@ -289,15 +298,31 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
         `7h. (b3a1) 기다리는 사이 다른 기기가 기억을 저장: 그 파일을 따르고 이 화면 기억은 다시 쓰지 않음 (${JSON.stringify(r)})`);
     // 7i. a room seen leaving this name on this device: the link left is not finished by itself — held, as before.
     r = await firstSave('chatA9', () => {
-        M.failFile = 'savepoint-room-';
+        M.failFile = 'savepoint-room-'; M.failFileStatus = 400;
         const s = M.settings.savePoint; (s.leftNames ||= []).push({ from: __savePoint.home().key, to: JSON.stringify([M.charKey(), 'chatGone9']) });
     });
-    await ev(() => { M.failFile = null; });
+    await ev(() => { M.failFile = null; M.failFileStatus = null; });
     ok(r.stop === 'linkPart' && r.last === 9, `7i. (b3a1) 떠난 이름 기록이 있는 방도 처음엔 같은 멈춤 (${JSON.stringify({ stop: r.stop, last: r.last })})`);
     r = await ev(async () => { const n = M.fileLog.length, s = (M.saveBodies || []).length; await __savePoint.handle('home-recheck'); await M.opened(); await new Promise(z => setTimeout(z, 300));
         return { s: (M.saveBodies || []).length - s, puts: M.fileLog.slice(n).filter(x => x[0] === 'put').map(x => x[1]), status: __savePoint.home().status, why: __savePoint.home().why }; });
     ok(r.status === 'held' && r.why === 'renamedAway' && r.puts.length === 0 && r.s === 0, `7i. (b3a1) 다시 확인해도 이어 쓰지 않고 보류 (b3a2에서 정리) (${JSON.stringify(r)})`);
     await ev(() => { const s = M.settings.savePoint; s.leftNames = (s.leftNames || []).filter(x => !String(x.to).includes('chatGone9')); });
+    // 7j. v0.7.0-b3a1a (review of b3a1, P2-3): the tag write got no answer and has not landed (it may still): `다시 확인` only reads (the
+    //     request is not sent again by this opening), the room keeps waiting with that said; opening the room again writes it.
+    r = await firstSave('chatA10', () => { M.failFile = 'savepoint-room-'; });
+    await ev(() => { M.failFile = null; });
+    ok(r.stop === 'linkPart' && r.last === 9 && !r.tag && r.t.includes('응답이 오지 않았어요') && r.t.includes('다시 보내지 않아요'),
+        `7j. (b3a1a) 이름표 쓰기에 응답 없음: 기억은 남기고, 늦게 도착할 수 있어 다시 보내지 않는다고 알림 (${JSON.stringify({ stop: r.stop, tag: r.tag })} ${r.t.slice(0, 60)})`);
+    r = await ev(async () => { const n = M.fileLog.length, s = (M.saveBodies || []).length, ups = []; const f = window.fetch;
+        window.fetch = async (u, o = {}) => { if (String(u) === '/api/files/upload') ups.push(JSON.parse(o.body).name); return f(u, o); };
+        try { await __savePoint.handle('home-recheck'); await M.opened(); await new Promise(z => setTimeout(z, 300)); } finally { window.fetch = f; }
+        return { s: (M.saveBodies || []).length - s, ups, status: __savePoint.home().status, stop: __savePoint.home().line?.stop ?? null, last: __savePoint.state()?.lastIndex ?? -1, blocked: __savePoint.autoBlocked() }; });
+    ok(r.status === 'linked' && r.stop === 'linkPart' && r.last === 9 && r.blocked === 'room' && r.ups.length === 0 && r.s === 0,
+        `7j. (b3a1a) 같은 열기의 다시 확인은 읽기만(이름표를 다시 보내지 않음), 화면 기억 유지 (${JSON.stringify(r)})`);
+    r = await ev(async () => { const n = M.fileLog.length, s = (M.saveBodies || []).length; await M.openFile('chatA10'); await M.opened(); await new Promise(z => setTimeout(z, 300));
+        return { s: (M.saveBodies || []).length - s, puts: M.fileLog.slice(n).filter(x => x[0] === 'put').map(x => x[1]), status: __savePoint.home().status, stop: __savePoint.home().line?.stop ?? null, last: __savePoint.state()?.lastIndex }; });
+    ok(r.status === 'linked' && !r.stop && r.last === 9 && r.puts.length === 1 && r.puts[0].startsWith('savepoint-room-') && r.s === 0,
+        `7j. (b3a1a) 방을 다시 열면 이름표만 써서 이어짐 (${JSON.stringify(r)})`);
     await ev(([m, k]) => { Object.assign(M.settings.savePoint, { hideMode: m, keepRecent: k }); }, hideWas);
 
     // 8. an empty answer from the server (a new room or a failed read, no way to tell): no "continue?".

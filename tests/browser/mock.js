@@ -369,7 +369,8 @@ window.fetch = async (url, opts = {}) => {
     if (u === '/api/files/upload') {
         const b = JSON.parse(opts.body);
         if (!/^[a-zA-Z0-9_\-.]+$/.test(b.name)) return res('bad name', 400);
-        if (M.failFile && b.name.includes(M.failFile)) return res('fail', 500);
+        // M.failFileStatus (v0.7.0-b3a1a): the status of that failure (default 500: no answer, may still land; 400: refused).
+        if (M.failFile && b.name.includes(M.failFile)) return res('fail', M.failFileStatus || 500);
         // v0.7.0-b2c: a failed write of a room's memory file (older suites failed the chat file, where the memory was).
         // M.memFail (every write) · M.memFailOnce (the next) · M.memFailNth = n (the n-th from now): 'refused' (400: turned
         // away, nothing written), 'lost' (500: no answer, nothing written), 'landed' (written, then 500: the answer lost).

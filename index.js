@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b3a1';
+const VERSION = '0.7.0-b3a1a';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -1923,7 +1923,7 @@ function homeMessage() {
     if (!homeHere() || home.status === 'opening' || home.status === 'idle') return '이 방의 기억 파일을 아직 찾는 중이에요. 잠시 뒤 다시 해 주세요.';
     if (home.status === 'pending' || home.line?.pending) return '응답을 받지 못한 기억 저장이 아직 기억 파일에 도착할 수 있어요. 그 저장이 새 기억을 덮지 않도록, 이 방은 다시 열거나 새로고침할 때까지 기억을 저장하지 않아요.';
     if (home.line?.stop === FIRST_UNSURE) return FIRST_UNSURE_TEXT;
-    if (home.line?.stop === LINK_PART) return LINK_PART_TEXT;
+    if (home.line?.stop === LINK_PART) return home.linkLate ? LINK_LATE_TEXT : LINK_PART_TEXT;
     if (home.line?.stop === MF_OVERWRITTEN && home.line.quiet) return QUIET_TEXT;
     if (home.line?.stop === MF_CONFLICT || home.line?.stop === MF_OVERWRITTEN) return '다른 곳(다른 기기나 창)에서 이 방의 기억 파일을 저장해서, 이 화면의 기억이 오래됐어요. 덮어쓰지 않도록 저장하지 않아요. 방을 다시 열거나 새로고침해 주세요.';
     if (home.status === 'new' && !home.id) return '이 방의 채팅 파일에 아직 고유값이 없어서 기억 파일을 만들 수 없어요. 메시지를 하나 보내거나 방을 다시 열어 주세요.';
@@ -1934,6 +1934,7 @@ function homeMessage() {
 }
 const FIRST_UNSURE_TEXT = '서버가 저장을 수락했지만, 기억 파일을 다시 읽어 확인하지 못했어요. 다시 확인해 주세요. 확인될 때까지 이 방은 새로 저장하지 않아요.';
 const LINK_PART_TEXT = '기억은 기억 파일에 저장했지만, 이 방과 기억 파일을 잇는 표시(이름표)를 저장하지 못했어요. `다시 확인`을 눌러 이어 주세요. 이어질 때까지 이 방은 새로 저장하지 않아요.';
+const LINK_LATE_TEXT = '기억은 기억 파일에 저장했지만, 이 방과 기억 파일을 잇는 표시(이름표)를 저장하는 요청에 응답이 오지 않았어요. 그 요청이 늦게 도착할 수 있어서 다시 보내지 않아요. `다시 확인`으로 들어갔는지 볼 수 있고, 안 들어갔으면 방을 다시 열거나 새로고침해 주세요. 이어질 때까지 이 방은 새로 저장하지 않아요.';
 const QUIET_TEXT = '서버는 기억 파일을 저장했다고 답했지만, 다시 읽어 보니 파일이 그대로라서 이번 변경은 저장하지 않았어요. 화면의 기억이 파일보다 앞서 있어서, 이 방은 다시 열거나 새로고침할 때까지 기억을 저장하지 않아요.';
 const HOLD_TEXT = {
     integrity: '기억 이름표와 채팅 파일의 고유값이 달라요', copyChanged: '채팅 파일 속 예전 기억이 기억 파일을 만든 뒤에 바뀌었어요(예전 버전에서 저장했을 수 있어요)',
@@ -2148,9 +2149,13 @@ function placeIO(h) {
     return {
         read: name => readUserFile(fetch, name, { headers: serverHeaders() }),
         async write(name, body) {
+            if (h.linkLate) throw new Error(`upload ${name}: an earlier write got no answer`);
             const up = await io.upload(name, JSON.stringify(body));
             if (up.kind === MEM_OK) return;
             if (up.kind === PENDING && name.startsWith('savepoint-mem-') && h.line) { h.line.pending = { rev: body.rev, wid: body.wid, at: Date.now() }; h.line.stop = PENDING; }
+            // v0.7.0-b3a1a (review of b3a1, P2-3): a hint or tag write with no answer may still land: until the room is opened again
+            // nothing more is written by this opening (`다시 확인` only reads; a later write could be undone by the late one).
+            else if (up.kind === PENDING) h.linkLate = true;
             throw new Error(`upload ${name}: ${up.kind} ${up.status ?? ''}`);
         },
     };
@@ -2214,6 +2219,17 @@ async function actHome(h, d, input, files) {
     else if (d.verdict === 'branch') res = await placeMemory(placeIO(h), { id: d.mem, from: { kind: 'branch', addr, integrity, parent: d.parent }, addr, integrity, copy: input.copy?.hash ?? null, state: d.state, wid: newId(), closes: input.closes });
     else { setHome(h, 'held', d.why || d.verdict); return; }
     if (!mine()) return;
+    // v0.7.0-b3a1a (review of b3a1, P2-1): the link finished again on the body seen (relinkMemory checked it) and only a hint or the
+    // tag failed: that memory stays the page's, the room still waits for its link (LINK_PART), never emptied by the try.
+    if (d.verdict === 'relink' && res.stop && res.placed) {
+        const m = await readMemFile(d.mem);
+        if (!mine()) return;
+        if (m.kind === OK && m.data.rev === res.placed.rev && m.data.wid === res.placed.wid) {
+            attachHome(h, m.data); h.line.stop = LINK_PART;
+            trustQueue(); refreshView();
+            return;
+        }
+    }
     if (await placed(h, res) && d.verdict !== 'relink' && mine()) clearLeft(input.was);
 }
 // P2-4, a rename seen here (decideRoom row 5): the memory's home moves to the new address first (its old one kept in
@@ -2417,7 +2433,7 @@ async function placeFirst(h, st, state, was) {
         // held then, as before).
         if (res.stop && res.placed && res.placed.wid === st.wid) {
             lineFor(h, res.placed); h.status = 'linked'; h.line.stop = LINK_PART;
-            return { status: LINK_PART, why: res.step };
+            return { status: LINK_PART, why: res.step, late: !!h.linkLate };
         }
         // v0.7.0-b1g (review of b1f, P1-2): not placed, no request left without an answer: this room's tag is not on the server
         // (written last; one refused at that very step is not proved either way), so the renames closed for it open again.
@@ -2436,7 +2452,7 @@ function homeWriteError(w) {
     if (w.status === MEM_MISSING) return '서버는 기억 파일을 저장했다고 답했지만, 다시 읽어 보니 파일이 없어서 이번 변경은 저장하지 않았어요. 잠시 뒤 다시 해 주세요.';
     if (w.status === MF_OVERWRITTEN && w.quiet) return QUIET_TEXT;
     if (w.status === FIRST_UNSURE) return FIRST_UNSURE_TEXT;
-    if (w.status === LINK_PART) return LINK_PART_TEXT;
+    if (w.status === LINK_PART) return w.late ? LINK_LATE_TEXT : LINK_PART_TEXT;
     if (w.status === CONFLICT || w.status === MF_OVERWRITTEN) return '다른 곳(다른 기기나 창)에서 이 방의 기억 파일을 저장해서 이번 변경은 저장하지 않았어요. 방을 다시 열거나 새로고침해 주세요.';
     if (w.status === REFUSED) return '서버가 기억 파일 저장을 거절해서 이번 변경을 취소했어요.';
     if (w.status === READ_ERROR) return '기억 파일을 읽지 못해서 이번 변경은 저장하지 않았어요. 잠시 뒤 다시 해 주세요.';
