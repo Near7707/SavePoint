@@ -35,6 +35,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
 //    Both: the 13th deleted elsewhere is not written back, by the first 🔶 nor by the next one.
 // 2. Same order without the deletion elsewhere: the write is in the file, no warning, the 🔶 after it saves.
 // (A request answered with success stays the base: save-base.cjs 4–4b.)
+// v0.7.0-b2c2d: the memory goes to its own file; the reset-like write also sets a 🔖 on #2 (hides off) so the chat file is written.
 (async () => {
     const srv = await serve();
     const browser = await chromium.launch();
@@ -72,7 +73,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
                 if (String(u) === '/api/chats/get' && armed && M.readFailOnce) { M.readFailOnce = false; return new Response('x', { status: 500 }); }
                 const r = await f(u, o); if (String(u) === '/api/chats/save') armed = true; return r; };
         }, [readFails, deleteElsewhere]);
-        const r1 = await ev(m => __savePoint.transact(() => { __savePoint.state().note = 'x'; M.chat.push(m);
+        const r1 = await ev(m => __savePoint.transact(() => { __savePoint.state().note = 'x'; M.chat[2].extra = { ...(M.chat[2].extra || {}), savepointKeep: 1 }; M.chat.push(m);
             M.stScript.setChatSaving(true); setTimeout(() => M.stScript.setChatSaving(false), 150);
         }, { verify: true }).then(() => 'ok', e => `${e.name}: ${e.message}`), msg('Thirteenth.'));
         if (readFails) await page.waitForTimeout(3500);
@@ -80,11 +81,11 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         await page.waitForTimeout(300);
         const r3 = await keep(ev, 7);
         await page.waitForTimeout(300);
-        const f = await ev(() => ({ n: M.serverFiles.chatA.length - 1, k5: !!M.serverFiles.chatA[6].extra?.savepointKeep, note: M.mem('chatA')?.note ?? null }));
+        const f = await ev(() => ({ n: M.serverFiles.chatA.length - 1, k5: !!M.serverFiles.chatA[6].extra?.savepointKeep, k2: !!M.serverFiles.chatA[3].extra?.savepointKeep, note: M.mem('chatA')?.note ?? null }));
         const warned = (await toasts(ev)).some(x => /다른 곳에서 지운/.test(x));
         if (deleteElsewhere) ok(f.n === 12 && !f.k5 && /다른 곳에서 지운/.test(r2) && /다른 곳에서 지운/.test(r3) && (readFails ? /Unconfirmed/.test(r1) && warned : /RoomBlocked: 이번 변경은 채팅 파일에 저장했어요/.test(r1)),
             `${name}. 실리태번 저장 중 다시 읽은 같은 파일은 기준이 아님: 다른 곳에서 지운 13번째를 다음 🔶 두 번 모두 되살리지 않음 (${r1.slice(0, 30)} / ${r2.slice(0, 30)} / ${r3.slice(0, 30)}, ${JSON.stringify(f)})`);
-        else ok(r1 === 'ok' && r2 === 'ok' && f.n === 13 && f.k5 && f.note === 'x' && !warned,
+        else ok(r1 === 'ok' && r2 === 'ok' && f.n === 13 && f.k5 && f.k2 && f.note === 'x' && !warned,
             `${name}. 다른 곳 삭제가 없으면 경고 없이 이번 변경이 파일에 있고 🔶도 저장 (${r1.slice(0, 30)} / ${r2}, ${JSON.stringify(f)})`);
         await page.close();
     }

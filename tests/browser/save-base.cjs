@@ -39,6 +39,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
 //    this page. The later check uses the newest copy (the 12): no warning, the 🔶 saves (4: at once, 4b: after the timer).
 // 5. (v0.6.89, kept) 12 ok, new message, 13 ok, then the file becomes exactly the copy before the write (written by
 //    someone who never saw it): the write is cancelled and the next 🔶 puts the 13th back.
+// v0.7.0-b2c2d: the memory goes to its own file. 1: another device's message in the file (was: its memory). 2, 4, 5: the write
+// also sets a 🔖 on #2 (hides off) so the chat file is written.
 (async () => {
     const srv = await serve();
     const browser = await chromium.launch();
@@ -64,15 +66,15 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         await ev(later => { M.noStSave = false; let n = 0;
             M.beforeChatSave = async () => { if (++n !== 1) return;
                 M.stSave();
-                M.serverFiles.chatA[0].chat_metadata = { ...M.serverFiles.chatA[0].chat_metadata, savePoint: { rev: 7, by: 'otherdev', wid: 'w-other', mem: { scenes: [], records: [{ id: 'r1', text: 'Kept by the other device.' }], entities: [] } } };
+                M.serverFiles.chatA.push({ name: 'Me', is_user: true, is_system: false, mes: 'Written on the other device.', swipe_id: 0, extra: {} });
                 M.noStSave = true; M.failOnce = true; if (later) M.serverError = true; }; }, later);
         const r1 = await keep(ev, 3);
         if (later) { await ev(() => { M.serverError = false; }); await page.waitForTimeout(3500); }
         const r2 = await keep(ev, 5);
         await page.waitForTimeout(300);
-        const f = await ev(() => ({ mem: M.mem('chatA')?.mem?.records?.[0]?.text ?? null, k3: !!M.serverFiles.chatA[4].extra?.savepointKeep, k5: !!M.serverFiles.chatA[6].extra?.savepointKeep, blocked: __savePoint.autoBlocked() }));
-        ok(f.mem === 'Kept by the other device.' && f.k3 && !f.k5 && /RoomBlocked: 다른 기기에서 이 방의 SavePoint 기억/.test(r2) && (later ? /Unconfirmed/.test(r1) : /RoomBlocked: 이번 변경은 채팅 파일에 저장했어요/.test(r1)),
-            `1${later ? 'b' : ''}. 첫 🔶는 파일에 있음, 다른 기기 기억은 기준이 되지 않아 다음 🔶가 덮지 않음 (${r1.slice(0, 30)} / ${r2.slice(0, 30)}, ${JSON.stringify(f)})`);
+        const f = await ev(() => ({ mem: M.serverFiles.chatA.at(-1).mes, k3: !!M.serverFiles.chatA[4].extra?.savepointKeep, k5: !!M.serverFiles.chatA[6].extra?.savepointKeep, blocked: __savePoint.autoBlocked() }));
+        ok(f.mem === 'Written on the other device.' && f.k3 && !f.k5 && /RoomBlocked/.test(r2) && (later ? /Unconfirmed/.test(r1) : /RoomBlocked: 이번 변경은 채팅 파일에 저장했어요/.test(r1)),
+            `1${later ? 'b' : ''}. 첫 🔶는 파일에 있음, 다른 기기 메시지는 기준이 되지 않아 다음 🔶가 덮지 않음 (${r1.slice(0, 30)} / ${r2.slice(0, 30)}, ${JSON.stringify(f)})`);
         await page.close();
     }
     // 2–2b.
@@ -84,14 +86,16 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
                     if (k === 1) M.chat.push({ name: 'Me', is_user: true, is_system: false, mes: 'Sent again with the write.', swipe_id: 0, extra: {} });
                     if (k === 2) { M.serverFiles.chatA.pop(); if (later) M.serverError = true; } }
                 return r; }; }, later);
-        const r1 = await ev(() => __savePoint.transact(() => { __savePoint.state().note = 'x'; }, { verify: true }).then(() => 'ok', e => `${e.name}: ${e.message}`));
+        const r1 = await ev(() => __savePoint.transact(() => { __savePoint.state().note = 'x'; M.chat[2].extra = { ...(M.chat[2].extra || {}), savepointKeep: 1 }; }, { verify: true }).then(() => 'ok', e => `${e.name}: ${e.message}`));
         if (later) { await ev(() => { M.serverError = false; }); await page.waitForTimeout(3500); }
         const sends = await ev(() => M.saveBodies.length);
         const r2 = await keep(ev, 5);
         await page.waitForTimeout(300);
         const f = await ev(() => ({ n: M.serverFiles.chatA.length - 1, sends: M.saveBodies.length }));
-        ok(sends === 2 && f.n === 12 && f.sends === 2 && /RoomBlocked: 다른 곳에서 지운 메시지/.test(r2),
-            `2${later ? 'b' : ''}. 성공한 13개 사본이 기준: 다른 기기에서 지운 13번째를 되살리지 않음 (${r1.slice(0, 30)} / ${r2.slice(0, 30)}, ${JSON.stringify(f)})`);
+        // v0.7.0-b2c2d: the memory's receipt is no longer in the chat file, so the file (exactly the first copy: 12 + 🔖) cannot be
+        // shown to hold this write; the room stays unconfirmed (before: "deleted elsewhere"). Still nothing is brought back.
+        ok(sends === 2 && f.n === 12 && f.sends === 2 && /Unconfirmed/.test(r1) && /RoomBlocked: 직전 저장이 채팅 파일에 들어갔는지/.test(r2),
+            `2${later ? 'b' : ''}. 성공한 13개 사본 뒤 다른 기기에서 지운 13번째를 되살리지 않음(b2c2d: 확인 못 함으로 멈춤) (${r1.slice(0, 30)} / ${r2.slice(0, 30)}, ${JSON.stringify(f)})`);
         await page.close();
     }
     // 3.
@@ -125,7 +129,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
                     if (k === 1) { M.chat.pop(); await SillyTavern.getContext().eventSource.emit('message_deleted', M.chat.length); }
                     if (k === 2) M.serverError = true; }
                 return r; }; });
-        const r1 = await ev(() => __savePoint.transact(() => { __savePoint.state().note = 'x'; }, { verify: true }).then(() => 'ok', e => `${e.name}: ${e.message}`));
+        const r1 = await ev(() => __savePoint.transact(() => { __savePoint.state().note = 'x'; M.chat[2].extra = { ...(M.chat[2].extra || {}), savepointKeep: 1 }; }, { verify: true }).then(() => 'ok', e => `${e.name}: ${e.message}`));
         await ev(() => { M.serverError = false; M.chat.push({ name: 'Me', is_user: true, is_system: false, mes: 'Brand new.', swipe_id: 0, extra: {} }); });
         await page.waitForTimeout(wait);
         const r2 = await keep(ev, 5);
@@ -144,12 +148,14 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
                     if (k === 1) M.chat.push({ name: 'Me', is_user: true, is_system: false, mes: 'Thirteenth.', swipe_id: 0, extra: {} });
                     if (k === 2) M.serverFiles.chatA = JSON.parse(JSON.stringify(M.pre)); }
                 return r; }; });
-        const r1 = await ev(() => __savePoint.transact(() => { __savePoint.state().note = 'x'; }, { verify: true }).then(() => 'ok', e => `${e.name}: ${e.message}`));
+        const r1 = await ev(() => __savePoint.transact(() => { __savePoint.state().note = 'x'; M.chat[2].extra = { ...(M.chat[2].extra || {}), savepointKeep: 1 }; }, { verify: true }).then(() => 'ok', e => `${e.name}: ${e.message}`));
         const r2 = await keep(ev, 5);
         await page.waitForTimeout(300);
         const f = await ev(() => ({ n: M.serverFiles.chatA.length - 1, last: M.serverFiles.chatA.at(-1).mes, note: M.mem('chatA')?.note ?? null, page: __savePoint.state().note ?? null }));
-        ok(/그대로예요/.test(r1) && r2 === 'ok' && f.n === 13 && f.last === 'Thirteenth.' && f.note === null && f.page === null,
-            `5. 파일이 쓰기 전 사본 그대로면 이번 변경은 취소, 다음 🔶가 13번째를 다시 씀(덮은 쪽은 13번째를 본 적 없음) (${r1.slice(0, 30)} / ${r2}, ${JSON.stringify(f)})`);
+        // v0.7.0-b2c2d: the memory is in its own file and was saved; only the chat file part (the 🔖 on #2) goes back.
+        const k2 = await ev(() => ({ page: !!M.chat[2].extra?.savepointKeep, file: !!M.serverFiles.chatA[3].extra?.savepointKeep }));
+        ok(/기억은 저장했어요/.test(r1) && /그대로예요/.test(r1) && r2 === 'ok' && f.n === 13 && f.last === 'Thirteenth.' && f.note === 'x' && f.page === 'x' && !k2.page && !k2.file,
+            `5. 파일이 쓰기 전 사본 그대로면 채팅 쪽 변경(🔖)만 되돌림·기억은 남음, 다음 🔶가 13번째를 다시 씀(덮은 쪽은 13번째를 본 적 없음) (${r1.slice(0, 30)} / ${r2}, ${JSON.stringify(f)})`);
         await page.close();
     }
 

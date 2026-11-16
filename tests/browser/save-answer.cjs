@@ -35,6 +35,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
 //    paused — no more SavePoint writes until it is opened again (the request may still land later).
 //    4. A refused request (the server answered with an error) is still taken back.
 // 5–6. A room without a SavePoint memory (no receipt) is confirmed by the messages and marks written.
+// v0.7.0-b2c2d: the memory goes to its own file; the chat file write in 1–4 is a 🔖 (hides off): on #2, in 3 then on #4.
 (async () => {
     const srv = await serve();
     const browser = await chromium.launch();
@@ -55,6 +56,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const mine = { name: 'Me', is_user: true, is_system: false, mes: 'Written on this page.', swipe_id: 0, extra: {} };
     const toasts = ev => ev(() => toastr.log.slice(M.toastLog).map(x => x.join(': ')).join(' / '));
     const count = ev => ev(() => M.serverFiles.chatA.length - 1);
+    const keep = (ev, i) => ev(i => __savePoint.toggleKeep(i).then(() => 'ok', e => `${e.name}: ${e.message}`), i);
+    const kept = (ev, i) => ev(i => ({ page: !!M.chat[i].extra?.savepointKeep, file: !!M.serverFiles.chatA[i + 1]?.extra?.savepointKeep }), i);
     // The first chat save: the request reaches the server after `land` ms (never: null), the page gets no answer.
     const noAnswer = (ev, land) => ev(land => {
         const f = window.fetch; let n = 0;
@@ -79,21 +82,21 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
             } };
         });
         const before = await count(ev);
-        const msg = await ev(() => __savePoint.transact(() => { __savePoint.state().probe = 'one'; }).then(() => 'ok', e => `${e.name}: ${e.message}`));
+        const msg = await keep(ev, 2);
         await page.waitForTimeout(300);
-        const r = await ev(() => ({ sends: M.saveBodies.length, probe: __savePoint.state().probe ?? null, blocked: __savePoint.autoBlocked() }));
+        const r = await ev(() => ({ sends: M.saveBodies.length, probe: !!M.chat[2].extra?.savepointKeep, blocked: __savePoint.autoBlocked() }));
         ok(await count(ev) === before - 1 && r.sends === 1, `1. 다른 기기에서 지운 메시지를 되살리지 않음 (파일 ${await count(ev)}개, 보낸 것 ${r.sends})`);
         ok(/RoomBlocked/.test(msg) && r.blocked === 'room', `1. 방을 막고 알림 (${msg.slice(0, 50)})`);
-        ok(r.probe === 'one', '1. 첫 사본은 들어갔으니 화면의 변경은 그대로');
+        ok(r.probe && (await kept(ev, 2)).file, '1. 첫 사본은 들어갔으니 화면의 변경은 그대로(파일에도 있음)');
         await page.close();
     }
     // 2. The request reaches the file, only the answer is lost → done, nothing taken back.
     {
         const { page, ev } = await session();
         await noAnswer(ev, 0);
-        const msg = await ev(() => __savePoint.transact(() => { __savePoint.state().probe = 'two'; }).then(() => 'ok', e => `${e.name}: ${e.message}`));
-        const r = await ev(() => ({ page: __savePoint.state().probe ?? null, file: M.mem('chatA').probe ?? null, blocked: __savePoint.autoBlocked() }));
-        ok(/저장했어요/.test(msg) && r.page === 'two' && r.file === 'two' && r.blocked === 'room', `2. 응답만 끊김: 파일에서 찾아 화면 유지, 방은 멈춤 (${msg.slice(0, 40)}, ${JSON.stringify(r)})`);
+        const msg = await keep(ev, 2);
+        const r = { ...await kept(ev, 2), blocked: await ev(() => __savePoint.autoBlocked()) };
+        ok(/저장했어요/.test(msg) && r.page && r.file && r.blocked === 'room', `2. 응답만 끊김: 파일에서 찾아 화면 유지, 방은 멈춤 (${msg.slice(0, 40)}, ${JSON.stringify(r)})`);
         await page.close();
     }
     // 3. The request is still on its way when the file is read (it lands 4 s later) → kept on the page,
@@ -101,25 +104,26 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     {
         const { page, ev } = await session();
         await noAnswer(ev, 4000);
-        const msg = await ev(() => __savePoint.transact(() => { __savePoint.state().probe = 'three'; }).then(() => 'ok', e => `${e.name}: ${e.message}`));
-        let r = await ev(() => ({ page: __savePoint.state().probe ?? null, file: M.mem('chatA').probe ?? null, blocked: __savePoint.autoBlocked() }));
-        ok(/Unconfirmed/.test(msg) && r.page === 'three' && r.file === null && r.blocked === 'unsure', `3. 아직 가는 중: 화면은 그대로, 확인 못 함 (${JSON.stringify(r)})`);
+        const msg = await keep(ev, 2);
+        let r = { ...await kept(ev, 2), blocked: await ev(() => __savePoint.autoBlocked()) };
+        ok(/Unconfirmed/.test(msg) && r.page && !r.file && r.blocked === 'unsure', `3. 아직 가는 중: 화면은 그대로, 확인 못 함 (${JSON.stringify(r)})`);
         await page.waitForTimeout(3500);
         ok(!/들어가지 않았어요/.test(await toasts(ev)), '3. 파일이 아직 그대로여도 "들어가지 않았어요"라고 하지 않음');
         await page.waitForTimeout(1000);
         const sends = await ev(() => M.saveBodies.length);
-        const msg2 = await ev(() => __savePoint.transact(() => { __savePoint.state().probe2 = 'after'; }).then(() => 'ok', e => `${e.name}: ${e.message}`));
-        r = await ev(() => ({ file: M.mem('chatA').probe ?? null, file2: M.mem('chatA').probe2 ?? null, page2: __savePoint.state().probe2 ?? null }));
-        ok(/RoomBlocked/.test(msg2) && r.file === 'three' && r.file2 === null && r.page2 === null && await ev(() => M.saveBodies.length) === sends, `3. 늦게 들어간 뒤에도 다음 변경은 보내지 않음 (${msg2.slice(0, 40)}, ${JSON.stringify(r)})`);
+        const msg2 = await keep(ev, 4);
+        const k4 = await kept(ev, 4);
+        r = { file: (await kept(ev, 2)).file, file2: k4.file, page2: k4.page };
+        ok(/RoomBlocked/.test(msg2) && r.file && !r.file2 && !r.page2 && await ev(() => M.saveBodies.length) === sends, `3. 늦게 들어간 뒤에도 다음 변경은 보내지 않음 (${msg2.slice(0, 40)}, ${JSON.stringify(r)})`);
         await page.close();
     }
     // 4. The server answers with an error → the change is taken back, as before.
     {
         const { page, ev } = await session();
         await ev(() => { M.failOnce = true; });
-        const msg = await ev(() => __savePoint.transact(() => { __savePoint.state().probe = 'four'; }).then(() => 'ok', e => `${e.name}: ${e.message}`));
-        const r = await ev(() => ({ page: __savePoint.state().probe ?? null, blocked: __savePoint.autoBlocked() }));
-        ok(/취소했어요/.test(msg) && r.page === null && r.blocked !== 'unsure', `4. 서버가 거절: 되돌림 (${msg.slice(0, 40)})`);
+        const msg = await keep(ev, 2);
+        const r = { ...await kept(ev, 2), blocked: await ev(() => __savePoint.autoBlocked()) };
+        ok(/되돌렸어요/.test(msg) && !r.page && !r.file && r.blocked !== 'unsure', `4. 서버가 거절: 되돌림 (${msg.slice(0, 40)})`);
         await page.close();
     }
     // 5. No memory in the room: 🔶 lands, the page changes meanwhile and the re-read fails → unconfirmed;

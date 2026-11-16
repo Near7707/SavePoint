@@ -63,9 +63,11 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         M.meta.extState.fix = [];          // the extension fixes its key on the page and does not save it
         M.meta.pageOnly = 5;               // and adds one the file never had
     }, [id, fileMeta]);
-    const run = async (ev, page) => { const r = await ev(() => __savePoint.handle('run').then(() => 'ok', e => `${e.name}: ${e.message}`)); await page.waitForTimeout(800); return r; };
+    // v0.7.0-b2c2d: the memory goes to its own file; the chat file write here is a 🔖 on #7, then #8 (hides off). `saved` — how
+    // many of those are in the file (was: the memory's last index there, 12 then 14).
+    const run = async (ev, page) => { const r = await ev(() => { window.__k = (window.__k || 6) + 1; return __savePoint.toggleKeep(window.__k).then(() => 'ok', e => `${e.name}: ${e.message}`); }); await page.waitForTimeout(800); return r; };
     const look = (ev, id) => ev(id => { const m = M.serverFiles[id][0].chat_metadata; return {
-        saved: m.savePoint?.lastIndex ?? null, ext: JSON.stringify(m.extState), pageOnly: Object.hasOwn(m, 'pageOnly'), fileOnly: m.fileOnly ?? null,
+        saved: M.serverFiles[id].slice(8).filter(x => x?.extra?.savepointKeep).length || null, ext: JSON.stringify(m.extState), pageOnly: Object.hasOwn(m, 'pageOnly'), fileOnly: m.fileOnly ?? null,
         pageExt: JSON.stringify(M.meta.extState), blocked: __savePoint.autoBlocked(), t: toastr.log.map(x => x[1]).join(' | ').slice(0, 160) }; }, id);
 
     {   // 1, 3
@@ -73,14 +75,14 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         await openRoom(ev, 'roomF', { fileOnly: 'kept' });
         await page.waitForTimeout(600);
         const r1 = await run(ev, page), r = await look(ev, 'roomF');
-        ok(r1 === 'ok' && r.saved === 12 && r.ext === '{"v":1}' && !r.pageOnly && r.pageExt === '{"v":1,"fix":[]}' && !['room', 'unsure'].includes(r.blocked) && !/채팅 정보/.test(r.t),
+        ok(r1 === 'ok' && r.saved === 1 && r.ext === '{"v":1}' && !r.pageOnly && r.pageExt === '{"v":1,"fix":[]}' && !['room', 'unsure'].includes(r.blocked) && !/채팅 정보/.test(r.t),
             `1. 방을 연 직후 다른 확장이 화면에서 키를 고쳐도 저장됨, 파일 값 유지·화면에만 있는 키는 안 씀 (${r1.slice(0, 40)}, ${JSON.stringify(r)})`);
         ok(r.fileOnly === 'kept', `3. 파일에만 있는 키는 그대로 남음 (${r.fileOnly})`);
         // A second save after SillyTavern saved the page (the extension's value is in the file now) keeps that value too.
         await ev(() => { M.stSave(); M.add(2); });
         await page.waitForTimeout(300);
         const r2 = await run(ev, page), q = await look(ev, 'roomF');
-        ok(r2 === 'ok' && q.saved === 14 && q.ext === '{"v":1,"fix":[]}' && q.pageOnly && !['room', 'unsure'].includes(q.blocked), `1b. 실리태번이 화면을 저장한 뒤의 저장은 그 값을 유지 (${JSON.stringify(q)})`);
+        ok(r2 === 'ok' && q.saved === 2 && q.ext === '{"v":1,"fix":[]}' && q.pageOnly && !['room', 'unsure'].includes(q.blocked), `1b. 실리태번이 화면을 저장한 뒤의 저장은 그 값을 유지 (${JSON.stringify(q)})`);
         await page.close();
     }
     {   // 2
@@ -89,7 +91,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         await page.waitForTimeout(600);
         await ev(() => { M.serverFiles.roomG[0].chat_metadata.extState = { v: 9 }; });
         const r1 = await run(ev, page), r = await look(ev, 'roomG');
-        ok(r1 === 'ok' && r.saved === 12 && r.ext === '{"v":9}' && r.pageExt === '{"v":1,"fix":[]}', `2. 다른 기기가 파일에서 바꾼 값은 덮지 않음 (${r1.slice(0, 40)}, ${JSON.stringify(r)})`);
+        ok(r1 === 'ok' && r.saved === 1 && r.ext === '{"v":9}' && r.pageExt === '{"v":1,"fix":[]}', `2. 다른 기기가 파일에서 바꾼 값은 덮지 않음 (${r1.slice(0, 40)}, ${JSON.stringify(r)})`);
         await page.close();
     }
     {   // 4
@@ -146,7 +148,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
                 if (armed && String(u) === '/api/chats/get') { armed = false; const body = await r.text(); M.stSave(); return new Response(body, { status: 200 }); }
                 return r; }; });
         const r1 = await run(ev, page), r = await look(ev, 'roomK');
-        ok(r1 === 'ok' && r.saved === 12 && r.ext === '{"v":2}' && !['room', 'unsure'].includes(r.blocked), `7. 읽는 사이 실리태번이 저장한 새 값을 옛 값으로 되돌리지 않음 (${r1.slice(0, 60)}, ${JSON.stringify(r)})`);
+        ok(r1 === 'ok' && r.saved === 1 && r.ext === '{"v":2}' && !['room', 'unsure'].includes(r.blocked), `7. 읽는 사이 실리태번이 저장한 새 값을 옛 값으로 되돌리지 않음 (${r1.slice(0, 60)}, ${JSON.stringify(r)})`);
         await page.close();
     }
     {   // 8
@@ -203,7 +205,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         await ev(() => { M.add(2); toastr.log.length = 0; });
         await page.waitForTimeout(300);
         const r1 = await run(ev, page), r = await look(ev, 'roomB' + tag);
-        ok(held && r1 === 'ok' && r.saved === 14 && !['room', 'unsure'].includes(r.blocked),
+        ok(held && r1 === 'ok' && r.saved === 1 && !['room', 'unsure'].includes(r.blocked),
             `9${tag}. 방을 옮긴 뒤 끝난 이전 방의 읽기가 새 방의 비교 기준을 바꾸지 않음 (${held}, ${r1.slice(0, 120)}, ${JSON.stringify(r)})`);
         await page.close();
     }
@@ -235,7 +237,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         await ev(() => { M.add(2); toastr.log.length = 0; });
         await page.waitForTimeout(300);
         const r1 = await run(ev, page), r = await look(ev, 'roomBc');
-        ok(where.id === 'roomBc' && /readSettled/.test(where.where) && r1 === 'ok' && r.saved === 14 && !['room', 'unsure'].includes(r.blocked),
+        ok(where.id === 'roomBc' && /readSettled/.test(where.where) && r1 === 'ok' && r.saved === 1 && !['room', 'unsure'].includes(r.blocked),
             `9c. 읽기 확인 직후 방을 옮겨도 이전 방의 파일이 새 방의 비교 기준이 되지 않음 (${r0.slice(0, 60)}, ${JSON.stringify(where)}, ${r1.slice(0, 120)}, ${JSON.stringify(r)})`);
         await page.close();
     }
