@@ -649,7 +649,10 @@ export async function placeMemory(io, { id, from, addr, integrity = null, copy =
     if (!plan.steps) return plan;
     if (resume && plan.steps.includes('writeMem')) return { stop: 'memGone' };
     if (resume && plan.steps.includes('writeTag')) plan.steps.splice(plan.steps.indexOf('writeTag'), 0, 'recheckMem');
-    let body = reads.mem?.kind === OK ? reads.mem.data : null, adopted = false, wrote = null;
+    let body = reads.mem?.kind === OK ? reads.mem.data : null, adopted = false, wrote = null, mine = null;
+    // v0.7.0-b3a1: a stop after this run's own body was read back (`placed`: its rev and receipt) — only the hints or the tag are
+    // missing; the caller keeps that memory and the room waits for them (the next decision finds the body, relinkMemory).
+    const left = x => mine ? { ...x, placed: mine } : x;
     for (const step of plan.steps) {
         if (step === 'writeStart') { if (!await wr(startName(addr), startBody({ addr, copy, mem: id, wid }))) return { stop: 'write', step }; }
         else if (step === 'checkStart' || step === 'recheckStart') {
@@ -687,37 +690,38 @@ export async function placeMemory(io, { id, from, addr, integrity = null, copy =
             // is told apart for the caller (`wrote`: what was written; nothing else here changes).
             if (v !== 'mine' && v !== 'theirs') return { hold: v, step, read: checked(back, validMem(id)).kind, wrote };
             body = back.data; adopted = v === 'theirs';
-        } else if (step === 'writeMoved') { if (!await wr(movedName(addr, copy), movedBody({ addr, copy, mem: id, rev: body.rev }))) return { stop: 'write', step }; }
+            if (v === 'mine' && wrote) mine = { rev: body.rev, wid: body.wid };
+        } else if (step === 'writeMoved') { if (!await wr(movedName(addr, copy), movedBody({ addr, copy, mem: id, rev: body.rev }))) return left({ stop: 'write', step }); }
         else if (step === 'writeCopy') {
             const h = checked(await rd(copyName(copy)), validCopyHint(copy));
-            if (bad(h)) return { stop: 'read', step };
+            if (bad(h)) return left({ stop: 'read', step });
             // v0.6.67: another room moved this old copy out since the plan was made → hold.
-            if (h.kind === OK && h.data.rooms.some(a => a !== addr)) return { hold: 'copyMoved', step };
-            if (!await wr(copyName(copy), copyHintWith(h.kind === OK ? h.data : null, copy, addr))) return { stop: 'write', step };
+            if (h.kind === OK && h.data.rooms.some(a => a !== addr)) return left({ hold: 'copyMoved', step });
+            if (!await wr(copyName(copy), copyHintWith(h.kind === OK ? h.data : null, copy, addr))) return left({ stop: 'write', step });
         } else if (step === 'writeClue') {
             const c = checked(await rd(clueName(integrity)), validClue(integrity));
-            if (bad(c)) return { stop: 'read', step };
-            if (!await wr(clueName(integrity), clueWith(c.kind === OK ? c.data : null, integrity, addr, id))) return { stop: 'write', step };
+            if (bad(c)) return left({ stop: 'read', step });
+            if (!await wr(clueName(integrity), clueWith(c.kind === OK ? c.data : null, integrity, addr, id))) return left({ stop: 'write', step });
         } else if (step === 'writeTag') {
             // v0.6.78: the tag read again right before it is written. Another device may have written it since
             // the plan (linked this name elsewhere, or marked it renamed away): never written over. None yet →
             // written; already this very link (sameLink, v0.6.82: the old copy too, as when the plan was made) → kept
             // as it is; anything else → hold; unreadable → stop.
             const t = checked(await rd(tagName(addr)), validTag(addr));
-            if (bad(t)) return { stop: 'read', step };
+            if (bad(t)) return left({ stop: 'read', step });
             if (t.kind === OK) {
                 if (sameLink(t.data, { id, integrity, copy })) {
                     // v0.7.0-b1j (review of b1i, P1): another tab put the same link first: the ids it lacks are added to it.
                     const more = withCloses(t.data, closes);
-                    if (more && !await wr(tagName(addr), more)) return { stop: 'write', step };
+                    if (more && !await wr(tagName(addr), more)) return left({ stop: 'write', step });
                     continue;
                 }
-                return { hold: 'tagChanged', step };
+                return left({ hold: 'tagChanged', step });
             }
             // v0.7.0-b1k (review of b1j, P2): planned to add ids to a tag that was there (no recheckStart then), and it is gone
             // now → hold (moves and branches alike); the next opening decides again. Never made here without those checks.
-            if (checked(reads.tag, validTag(addr)).kind === OK) return { hold: 'tagChanged', step };
-            if (!await wr(tagName(addr), tagBody({ addr, integrity, mem: id, copy, prints: pickPrints(body.state.hashes), closes }))) return { stop: 'write', step };
+            if (checked(reads.tag, validTag(addr)).kind === OK) return left({ hold: 'tagChanged', step });
+            if (!await wr(tagName(addr), tagBody({ addr, integrity, mem: id, copy, prints: pickPrints(body.state.hashes), closes }))) return left({ stop: 'write', step });
         }
     }
     return { done: true, mem: id, adopted, seen: { rev: body.rev, wid: body.wid } };

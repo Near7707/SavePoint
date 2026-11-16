@@ -1,3 +1,36 @@
+# v0.7.0-b3a1 · 새 방 첫 저장의 단서·이름표만 실패 → 기억 남기고 연결 미완료 (브랜치 `v0.7-b`)
+
+기준: `bdb857d`(b2c3). 파일: `home.js`, `index.js`, `manifest.json`, 검사(`room-gate.cjs` 7e~7i), 문서. b3 설계(GPT 의견 1·2차, PLAN "v0.7.0-b3 설계")의 첫 조각.
+
+| 항목 | 처리 |
+|---|---|
+| b1b 리뷰 P2-1(첫 본체 저장 뒤 이름표만 실패하면 재시도가 자기 파일을 남의 것으로) | 🔴 반영. 화면 기억을 되돌렸지만 본체는 서버에 있어서, 다음 저장이 그 본체(전 영수증)를 보고 `CONFLICT`로 멈추고, 다시 열면 "취소했다"던 변경이 기억에 들어와 있었음. |
+| 이름 변경 기록이 걸린 방(이 이름을 떠난 방이 있음) | ⚪ 이번엔 기존 보류 그대로(6행 `renamedAway`). `closes` 보관·복원·정리는 b3a2(5행 차단과 함께). |
+| 기다리는 사이 본체가 지워진 경우 | ⚪ 손대지 않음. 6행이 본체를 못 찾으면 예전처럼 새 방으로 판정(서버에도 기억 없음). 다른 기기가 지운 드문 경우. |
+
+## 바뀐 것
+- `home.js placeMemory`: `checkMem`에서 이번 실행이 쓴 본체가 이 영수증(`mine`)으로 다시 읽히면 그 rev·wid를 기억해 두고, 그 뒤 단계(`writeMoved`·`writeCopy`·`writeClue`·`writeTag`)에서 멈추거나 보류하면 결과에 `placed`를 붙임. 다른 결과는 그대로.
+- `index.js placeFirst`: `res.stop && res.placed`(이번 변경의 영수증)이면 `LINK_PART` — 화면 기억은 남기고 `linked` + 줄 `stop = LINK_PART`(새 저장·새 숨김·자동 기록 없음, `hidesHeld` 참), 닫아 둔 이름 변경 기록은 그대로 닫음(`reopen` 없음, 이름표가 들어갔을 수 있음). `writeEntry`는 FIRST_UNSURE와 같은 길(표시만 되돌림, 대기열 다음 변경 막음, `Unconfirmed`로 안내). 보류(`tagChanged` 등)는 예전처럼 `CONFLICT`.
+- 문구 `LINK_PART_TEXT`("기억은 기억 파일에 저장했지만, 이 방과 기억 파일을 잇는 표시(이름표)를 저장하지 못했어요. `다시 확인`을 눌러 이어 주세요…"), `homeMessage`·`homeWriteError`, `homeAlert`에 `다시 확인` 버튼.
+- 복구는 새 길 없이 기존 경로: `다시 확인`(`recheckHome`) 또는 다시 열기 → `decideRoom` 6행이 `homeId`로 본체를 찾음 → `relink` → `relinkMemory`(본체 안 씀, 지금 읽은 rev·wid 기준 `recheckMem`) → 빠진 단서·이름표만. 이름표가 이미 같은 연결이면 안 씀. 다른 기기가 그사이 본체를 저장했으면 그 파일을 따름(이번 저장의 성공으로 보지 않음, 다시 쓰지 않음).
+- 버전 `0.7.0-b3a1`.
+
+## ★ 특히 봐 줄 곳
+1. `placed`는 `checkMem`이 `mine`이고 이번 실행이 본체를 썼을 때(`wrote`)만. 다른 기기의 본체를 받아들인 경우(`theirs`)는 예전처럼 `CONFLICT`.
+2. `LINK_PART`에서 `reopen` 안 함: 단서 실패(이름표 전)도 닫아 둔 기록을 그대로 둠. 이 이름을 떠난 방이 있으면 다시 확인 때 6행이 `renamedAway`로 보류(7i). b3a2 전까지의 의도된 동작.
+3. 이름표 응답만 잃은 경우(들어감, 7g)와 거절(안 들어감, 7e)을 같은 상태로 묶음. 구분은 다음 읽기가 함(이미 있으면 안 씀).
+
+## 바뀐 기대(기존 검사)
+- 없음.
+
+## 검사 준비
+- `room-gate` 7e~7i(7d 뒤, 같은 자동 하이드 설정): 새 방 `chatA5`~`chatA9`에서 10개 + 퀵세이브. 7e 이름표 거절(`M.failFile = 'savepoint-room-'`) → 기억 #9 남음·`linkPart`·방 멈춤·새 숨김 0·창 안내와 버튼 → 다음 세이브는 파일·채팅 쓰기 0 → `다시 확인`은 이름표 하나만 씀 → 그 뒤 세이브 평소대로(새 숨김). 7f 단서 거절(`savepoint-int-`) → 다시 열기(`M.openFile`)로 단서+이름표만. 7g 이름표 응답만 500(`fetch` 감싸 쓰기 뒤 500) → 다시 확인은 아무것도 안 씀. 7h 기다리는 사이 다른 기기 본체(`M.otherPut`, wid `other.8h`, #5까지) → 다시 확인은 그 파일을 따름, 기억 본체 쓰기 0. 7i 떠난 이름 기록(`leftNames`에 이 방 주소) → 처음엔 같은 멈춤, 다시 확인은 `renamedAway` 보류·쓰기 0. 모두 채팅 쓰기 0(`M.saveBodies`).
+
+## 검사와 망가뜨리기 결과
+- 고치기 전 코드(`bdb857d`): 7e·7f·7g·7i 8줄 FAIL(화면 #-1·파일 #9, "서버가 … 거절해서 취소", 다음 세이브 "다른 곳에서 저장"). 고친 뒤 모두 PASS.
+- 망가뜨리기: `placed`를 안 남김 → 7e 5줄 FAIL. `stop = LINK_PART` 빼기 → 7e 5줄 FAIL(다음 세이브가 그냥 저장). `homeAlert`에서 `LINK_PART` 빼기 → 7e 버튼 1줄 FAIL.
+- Node 506 / 0 / 3. 브라우저 전체(58묶음): 한꺼번에 57 통과 + `status` 1(알려진 `autoFail` null 오류, 따로 다시 돌려 통과) → **모두 통과**. 검사 모드 오류 0.
+
 # v0.7.0-b2c3 · 🔖 표시로만 확인된 쓰기의 애매 안내 + scroll 옮기기 (브랜치 `v0.7-b`)
 
 기준: `f40de31`(b2c2d 2차). 파일: `index.js`, `manifest.json`, 검사(`save-adopt.cjs`), 문서. b2c2d에서 보류한 두 건 중 GPT 의견(2차)대로 🔖 안내만 고치고 save-base 2 나중 확인은 계속 보류.
