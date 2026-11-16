@@ -253,6 +253,34 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     ok(r.status === 'linked' && r.stop === 'linkPart' && r.last === 9 && r.blocked === 'room' && r.puts.length === 0 && r.s === 0,
         `7e. (b3a1a) 다시 확인에서 이름표가 또 거절돼도 화면 기억은 남고 계속 기다림 (${JSON.stringify(r)})`);
     await ev(() => { M.failFile = null; M.failFileStatus = null; });
+    // v0.7.0-b3a1b (review of b3a1a, P2-1): the room decided again (row 6 finds the body: relink), then the tag read again fails (the
+    // first read of it, for the decision, answers): the memory stays on the page, the room still waits, nothing uploaded — by
+    // `다시 확인` and by opening the room again alike.
+    const tagReadFails = how => ev(async how => {
+        const n = M.fileLog.length, s = (M.saveBodies || []).length, ups = [], tag = M.H.tagName(__savePoint.home().key), f = window.fetch; let reads = 0, failed = 0;
+        window.fetch = async (u, o = {}) => {
+            if (String(u) === '/api/files/upload') ups.push(JSON.parse(o.body).name);
+            if (String(u).startsWith('/user/files/' + tag) && ++reads > 1) {
+                failed++;
+                if (how === 'other') return new Response(JSON.stringify(M.H.tagBody({ addr: __savePoint.home().key, mem: 'other-mem-7e' })), { status: 200 });
+                return new Response('down', { status: 500 });
+            }
+            return f(u, o);
+        };
+        try { if (how === 'open') await M.openFile('chatA5'); else await __savePoint.handle('home-recheck'); await M.opened(); await new Promise(z => setTimeout(z, 300)); } finally { window.fetch = f; }
+        return { failed, ups, s: (M.saveBodies || []).length - s, puts: M.fileLog.slice(n).filter(x => x[0] === 'put').length, status: __savePoint.home().status,
+            stop: __savePoint.home().line?.stop ?? null, last: __savePoint.state()?.lastIndex ?? -1, blocked: __savePoint.autoBlocked() };
+    }, how);
+    r = await tagReadFails('recheck');
+    ok(r.failed > 0 && r.status === 'linked' && r.stop === 'linkPart' && r.last === 9 && r.blocked === 'room' && r.ups.length === 0 && r.puts === 0 && r.s === 0,
+        `7e. (b3a1b) 다시 확인 중 이름표를 다시 읽지 못해도 화면 기억은 남고, 자동 기록은 멈추고, 아무것도 올리지 않음 (${JSON.stringify(r)})`);
+    r = await tagReadFails('open');
+    ok(r.failed > 0 && r.status === 'linked' && r.stop === 'linkPart' && r.last === 9 && r.blocked === 'room' && r.ups.length === 0 && r.puts === 0 && r.s === 0,
+        `7e. (b3a1b) 방을 다시 열 때 같은 실패도 같은 결과 (${JSON.stringify(r)})`);
+    // ... but a tag read that answers with another link (a conflict seen) is held as before: the memory is not kept on the page.
+    r = await tagReadFails('other');
+    ok(r.failed > 0 && r.status === 'held' && r.last === -1 && r.ups.length === 0 && r.s === 0,
+        `7e. (b3a1b) 다시 읽은 이름표가 다른 기억을 가리키면(충돌) 예전처럼 보류 (${JSON.stringify(r)})`);
     r = await ev(async () => { const n = M.fileLog.length, s = (M.saveBodies || []).length; await __savePoint.handle('home-recheck'); await M.opened(); await new Promise(z => setTimeout(z, 300));
         const out = { n, s: (M.saveBodies || []).length - s, puts: M.fileLog.slice(n).filter(x => x[0] === 'put').map(x => x[1]), status: __savePoint.home().status, stop: __savePoint.home().line?.stop ?? null,
             last: __savePoint.state()?.lastIndex, blocked: __savePoint.autoBlocked() };

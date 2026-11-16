@@ -646,7 +646,9 @@ export async function placeMemory(io, { id, from, addr, integrity = null, copy =
     if (move) Object.assign(reads, { start: await rd(startName(addr)), moved: await rd(movedName(addr, copy)), hint: await rd(copyName(copy)) });
     if (str(integrity)) reads.clue = await rd(clueName(integrity));
     const plan = writePlan({ id, from, addr, integrity, copy, ...reads, closes });
-    if (!plan.steps) return plan;
+    // v0.7.0-b3a1b (review of b3a1a, P2-1): a resume over the body seen (checked above) whose tag or integrity hint alone could not
+    // be read now: that body is kept (`placed`), the same as a write turned away later. Any other early answer stays as it was.
+    if (!plan.steps) return resume && plan.stop === 'read' && (plan.file === 'tag' || plan.file === 'clue') ? { ...plan, placed: { rev: resume.rev, wid: resume.wid } } : plan;
     if (resume && plan.steps.includes('writeMem')) return { stop: 'memGone' };
     if (resume && plan.steps.includes('writeTag')) plan.steps.splice(plan.steps.indexOf('writeTag'), 0, 'recheckMem');
     let body = reads.mem?.kind === OK ? reads.mem.data : null, adopted = false, wrote = null, mine = null;

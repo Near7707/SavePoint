@@ -1,3 +1,30 @@
+# v0.7.0-b3a1b · b3a1a 코드 리뷰 반영 (브랜치 `v0.7-b`)
+
+기준: `8ee2cb4`(b3a1a 리뷰 요청서, 코드 `ff82e3d`). 파일: `home.js`, `index.js`·`manifest.json`(버전만), 검사(`room-gate.cjs` 7e), 문서. 리뷰 결과 P1 없음 · P2 2 · P3 없음 — 코드로 확인함. 범위는 GPT 2차 의견 + 사용자 동의.
+
+| 항목 | 처리 |
+|---|---|
+| P2-1 `다시 확인` 중 이름표·단서를 **읽지** 못하면 화면 기억이 비워짐(`writePlan`이 `placed` 없이 먼저 반환 → `readFail`) | 🟡 반영. 기준은 "이 방의 기억 본체를 확인했는지": 6행 `relink`(`resume`)에서 계획 단계가 이름표·단서 읽기 실패(`stop: 'read'`, `file: 'tag' | 'clue'`)로 멈출 때만 확인한 본체를 `placed`로. 나머지는 b3a1a의 유지 분기 그대로(본체를 다시 읽어 rev·wid가 같을 때만 `linkPart`). `다시 확인`이든 평소 방 열기든 같음. |
+| P2-2 `linkLate` 상태에서도 5행 `renameHome`이 본체 주소를 씀 | 🟡 b3a2에서(5행을 고치는 조각). PLAN b3a2 줄에 적어 둠. 이 상태에서 업로드 0회 검사도 그때. |
+| P3 | 없음. 7e `NOTE`(이어진 뒤 채팅 저장 1회)는 b3b에서 0회 검사로. |
+
+## 바뀐 것
+- `home.js placeMemory`: `writePlan`의 이른 반환 중 `resume && stop === 'read' && file ∈ { tag, clue }`만 `{ ...plan, placed: resume의 rev·wid }`. 그 밖의 이른 반환(본체 바뀜·사라짐은 그 앞 `same`, 이름표 충돌 `tagChanged`·`copyChanged` 등 보류, 시작 표시·옮김 표시·사본 힌트 읽기 실패, `resume` 아닌 경로)은 그대로.
+- 버전 `0.7.0-b3a1b`.
+
+## ★ 특히 봐 줄 곳
+1. 범위: 이름표·단서 읽기 실패만. 이전(`migrate`)에서 오는 `relink`의 시작 표시(`start`)·옮김 표시(`moved`)·사본 힌트(`hint`) 읽기 실패는 예전처럼 `readFail`(화면 기억 비움). 넓힐지는 묻고 싶음.
+2. 이름표 충돌(`hold`)에는 `placed`를 안 붙임 + `actHome` 유지 분기도 `res.stop`만 받음(겹 장치).
+
+## 검사 준비
+- 7e(이름표 거절 중 다시 확인 뒤, 거절을 푼 다음): `fetch`를 감싸 이 방 이름표 파일 읽기의 **두 번째부터** 500(첫 읽기 = 방 판정은 통과 → 6행 `relink`, 두 번째 = `placeMemory`의 읽기). `다시 확인`과 `M.openFile('chatA5')` 두 번. 충돌 장면은 두 번째 읽기에 다른 기억(`other-mem-7e`)을 가리키는 이름표를 돌려줌.
+
+## 검사와 망가뜨리기 결과
+- 새 줄: 7e (b3a1b) 다시 확인 중 이름표 다시 읽기 실패 → 화면 기억·`linkPart`·자동 기록 멈춤·업로드 0·채팅 저장 0 / 방을 다시 열 때 같은 결과 / 다시 읽은 이름표가 충돌 → `held`, 화면 기억 없음.
+- 고치기 전 코드(`ff82e3d`): 앞 두 줄 FAIL(`readFail`, 화면 기억 비움), 충돌 줄은 통과(원래 동작).
+- 망가뜨리기: 이름표 조건 빼기(`file === 'clue'`만) → 2줄. `placed`를 모든 이른 반환에 붙이기 → **안 잡힘**(`actHome` 유지 분기가 `res.stop`만 받아 보류는 그대로 — 겹 장치). 그것 + 유지 분기가 `hold`도 받기 → 충돌 줄 1줄.
+- Node 506 / 0 / 3. 브라우저 전체(58묶음): 한꺼번에 **모두 통과**. 검사 모드 오류 0.
+
 # v0.7.0-b3a1a · b3a1 코드 리뷰 반영 (브랜치 `v0.7-b`)
 
 기준: `bf7bb7c`(b3a1 리뷰 요청서, 코드 `6ecac5f`). 파일: `home.js`, `index.js`, `manifest.json`, 검사(`room-gate.cjs` 7e·7j, `mock.js` `M.failFileStatus`), 문서. 리뷰 결과 P1 없음 · P2 3 · P3(지금 범위 동의) — 코드로 확인함.
