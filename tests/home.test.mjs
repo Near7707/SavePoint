@@ -261,7 +261,7 @@ test('a tag that says this name was renamed away → hold, unless a rename back 
     files[tagName(B)] = tagBody({ addr: B, integrity: 'i-A', mem: id });
     let r = await decideRoom(room(), world(files).read);
     assert.deepEqual([r.verdict, r.why, r.to], ['hold', 'renamedAway', B]);
-    r = await decideRoom(room({ renames: [{ from: A, to: B }, { from: B, to: A }] }), world(files).read);
+    r = await decideRoom(room({ renames: [{ from: A, to: B }, { from: B, to: A, mem: { id, rev: 0, wid: 'w0' } }] }), world(files).read);
     assert.deepEqual([r.verdict, r.row, r.from, r.mem], ['rename', 5, B, id]);
 });
 
@@ -270,7 +270,7 @@ test('a tag that says this name was renamed away → hold, unless a rename back 
 test('row 5: a rename seen on this device with the same integrity moves the tag', async () => {
     const id = homeId(A, 'i-A');
     const files = { [tagName(A)]: tagBody({ addr: A, integrity: 'i-A', mem: id }), [memName(id)]: memFile(id) };
-    const at = { ...room(), addr: B, renames: [{ from: A, to: B }] };
+    const at = { ...room(), addr: B, renames: [{ from: A, to: B, mem: { id, rev: 0, wid: 'w0' } }] };
     let r = await decideRoom(at, world(files).read);
     assert.deepEqual([r.verdict, r.row, r.from, r.mem], ['rename', 5, A, id]);
     // A retry after the old tag was already marked: still this rename.
@@ -287,6 +287,45 @@ test('row 5: a rename seen on this device with the same integrity moves the tag'
     // The renamed room's memory file is gone.
     r = await decideRoom(at, world({ [tagName(A)]: files[tagName(A)] }).read);
     assert.deepEqual([r.verdict, r.why], ['hold', 'memGone']);
+});
+
+test('v0.7.0-b3a2b row 5: the move needs the memory the room had when renamed; a memory linked at the old name later is skipped', async () => {
+    const id = homeId(A, 'i-A');
+    const files = { [tagName(A)]: tagBody({ addr: A, integrity: 'i-A', mem: id }), [memName(id)]: memFile(id) };
+    const at = (mem, id2 = 'A|1') => ({ ...room(), addr: B, renames: [{ from: A, to: B, id: id2, ...(mem !== undefined ? { mem } : {}) }] });
+    // No record of the memory (renamed in the list, or before b3a2b) → hold, nothing moved.
+    let r = await decideRoom(at(), world(files).read);
+    assert.deepEqual([r.verdict, r.row, r.why, r.from], ['hold', 5, 'renameUnproven', A]);
+    // Another receipt (saved since anywhere, or another memory the same id) → hold.
+    r = await decideRoom(at({ id, rev: 0, wid: 'other' }), world(files).read);
+    assert.deepEqual([r.verdict, r.why], ['hold', 'renameUnproven']);
+    r = await decideRoom(at({ id, rev: 1, wid: 'w0' }), world(files).read);
+    assert.deepEqual([r.verdict, r.why], ['hold', 'renameUnproven']);
+    r = await decideRoom(at({ id: 'other', rev: 0, wid: 'w0' }), world(files).read);
+    assert.deepEqual([r.verdict, r.why], ['hold', 'renameUnproven']);
+    // The memory at the old name keeps this rename in its own list (linked there after it): not this room's → skipped.
+    const f2 = { ...files, [memName(id)]: { ...memFile(id), closes: ['A|1'] } };
+    r = await decideRoom(at({ id, rev: 0, wid: 'w0' }), world(f2).read);
+    assert.notEqual(r.verdict, 'rename');
+    // Already at home here, moved from the old name: the rest of the move, no record needed.
+    const f3 = { ...files, [memName(id)]: memBody({ id, state: recorded(P80, 19), rev: 1, wid: 'w1', from: { kind: 'new', addr: A, integrity: 'i-A' }, home: { addr: B, integrity: 'i-A', was: [A] } }) };
+    r = await decideRoom(at(), world(f3).read);
+    assert.deepEqual([r.verdict, r.row, r.from, r.moved], ['rename', 5, A, true]);
+});
+
+test('v0.7.0-b3a2b: a memory body keeps `closes` (known empty, or none) through saves; row 6 tells it', async () => {
+    const id = homeId(A, 'i-A');
+    const none = memFile(id), empty = memBody({ id, state: recorded(P80, 19), wid: 'w0', from: { kind: 'new', addr: A, integrity: 'i-A' }, home: { addr: A, integrity: 'i-A' }, closes: [] });
+    assert.equal('closes' in none, false);
+    assert.deepEqual(empty.closes, []);
+    assert.deepEqual(nextMem(empty, empty.state, 'w1').closes, []);
+    assert.equal('closes' in nextMem(none, none.state, 'w1'), false);
+    assert.deepEqual(nextMem({ ...empty, closes: ['x|1'] }, empty.state, 'w1').closes, ['x|1']);
+    assert.equal(checked({ kind: OK, data: { ...empty, closes: [1] } }, validMem(id)).kind, BROKEN);
+    let r = await decideRoom(room(), world({ [memName(id)]: none }).read);
+    assert.deepEqual([r.verdict, r.row, r.closes], ['relink', 6, null]);
+    r = await decideRoom(room(), world({ [memName(id)]: { ...empty, closes: ['x|1'] } }).read);
+    assert.deepEqual([r.verdict, r.closes], ['relink', ['x|1']]);
 });
 
 test('row 5 without integrity: an old copy already moved from the old name holds (row 9), not a second move', async () => {

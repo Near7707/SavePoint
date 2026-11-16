@@ -367,7 +367,8 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
         const key = __savePoint.home().key, old = JSON.stringify([M.charKey(), 'chatOld11']), integrity = M.meta.integrity, doc = M.memDoc();
         M.otherPut(M.H.tagName(old), M.H.tagBody({ addr: old, integrity, mem: 'mem-7k' }));
         M.otherPut(M.H.memName('mem-7k'), { ...doc, id: 'mem-7k', rev: 3, wid: 'other.7k', recent: [{ rev: 3, wid: 'other.7k' }], home: { addr: old, integrity } });
-        const s = M.settings.savePoint; (s.renames ||= []).push({ from: old, to: key, at: Date.now() });
+        // v0.7.0-b3a2b: the record keeps the memory the room had when renamed (as an open room's rename does), so row 5 decides a rename.
+        const s = M.settings.savePoint; (s.renames ||= []).push({ from: old, to: key, at: Date.now(), mem: { id: 'mem-7k', rev: 3, wid: 'other.7k' } });
         const n = M.fileLog.length, c = (M.saveBodies || []).length, ups = [], f = window.fetch;
         window.fetch = async (u, o = {}) => { if (String(u) === '/api/files/upload') ups.push(JSON.parse(o.body).name); return f(u, o); };
         try { await __savePoint.handle('home-recheck'); await M.opened(); await new Promise(z => setTimeout(z, 300)); } finally { window.fetch = f; }
@@ -411,6 +412,76 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     await ev(async id => { M.confirm = 1; toastr.log.length = 0; await __savePoint.loadSave(id); }, qid);
     r = await ev(() => ({ n: M.chat.length, first: M.chat[0].mes, file: (M.serverFiles.chatLong?.length ?? 0) - 1, mem: !!M.mem('chatLong')?.mem?.scenes?.length, t: toastr.log.map(x => x[1]).join(' | ') }));
     ok(r.n === 30 && r.first === thirty[0].mes && r.file === 30 && r.mem && r.t.includes('불러왔어요'), `10. 이미 열린 긴 방: 원문 30개 그대로, 기억만 불러와 저장 (${r.t.slice(0, 30)})`);
+
+    // 7l (run last: its rooms add QUICK saves that would crowd the 이어하기 list of 9). v0.7.0-b3a2b (b3 design): the rename of an open room (SillyTavern opens it under the new name, then tells of the rename) moves its
+    //     memory; when the old name's tag shows another memory by then (another tab linked one there: same integrity), or the same memory
+    //     saved once more elsewhere, nothing is moved (held). `mess`: what happens right when the new room first reads the old tag.
+    const renamedRoom = async (a, b, mess) => {
+        const f = await firstSave(a, () => {});
+        if (f.status !== 'linked' || f.stop || !f.tag) return { prep: f };
+        return ev(async ([a, b, mess]) => {
+            const A = JSON.stringify([M.charKey(), a]), integrity = M.meta.integrity, doc = M.memDoc(), id = __savePoint.home().id;
+            const n = M.fileLog.length, c = (M.saveBodies || []).length, ups = [], g = window.fetch;
+            let done = !mess;
+            window.fetch = async (u, o = {}) => {
+                if (String(u) === '/api/files/upload') ups.push(JSON.parse(o.body).name);
+                if (!done && String(u).startsWith('/user/files/' + M.H.tagName(A))) {
+                    done = true;
+                    if (mess === 'other') {
+                        M.otherPut(M.H.memName('mem-7l-' + a), { ...doc, id: 'mem-7l-' + a, rev: 0, wid: 'other.7l', recent: [{ rev: 0, wid: 'other.7l' }], home: { addr: A, integrity }, closes: [] });
+                        M.otherPut(M.H.tagName(A), M.H.tagBody({ addr: A, integrity, mem: 'mem-7l-' + a }));
+                    } else M.otherPut(M.H.memName(id), { ...doc, rev: doc.rev + 1, wid: 'other.7l', recent: [...doc.recent, { rev: doc.rev + 1, wid: 'other.7l' }] });
+                }
+                return g(u, o);
+            };
+            try { await M.renameChat(a, b); await M.opened(); await new Promise(z => setTimeout(z, 600)); await M.opened(); } finally { window.fetch = g; }
+            const B = __savePoint.home().key, body = JSON.parse(M.files.get(M.H.memName(id)));
+            const rec = M.settings.savePoint.renames.filter(x => x.from === A).pop();
+            return { done, ups, c: (M.saveBodies || []).length - c, puts: M.fileLog.slice(n).filter(x => x[0] === 'put').map(x => x[1]), status: __savePoint.home().status,
+                why: __savePoint.home().why, d: __savePoint.home().d?.verdict, at: body.home.addr === B ? 'B' : body.home.addr === A ? 'A' : body.home.addr, closes: body.closes ?? null,
+                evid: !!rec?.mem && rec.mem.id === id && rec.mem.rev === doc.rev && rec.mem.wid === doc.wid, tagB: M.files.has(M.H.tagName(B)), last: __savePoint.state()?.lastIndex ?? -1, memName: M.H.memName(id) };
+        }, [a, b, mess]);
+    };
+    r = await renamedRoom('chatL1', 'chatL1b', null);
+    ok(r.evid && r.d === 'rename' && r.status === 'linked' && r.at === 'B' && Array.isArray(r.closes) && r.tagB && r.last === 9 && r.c === 0,
+        `7l. (b3a2b) 열어 둔 방의 이름 변경: 기록에 그 방의 기억·영수증이 남고, 기억이 새 이름으로 따라감 (${JSON.stringify(r)})`);
+    r = await ev(async () => { const n = M.fileLog.length; M.add(2); await __savePoint.handle('run').catch(() => {});
+        return { last: __savePoint.state()?.lastIndex, file: M.mem()?.lastIndex, status: __savePoint.home().status, stop: __savePoint.home().line?.stop ?? null }; });
+    ok(r.last === 11 && r.file === 11 && r.status === 'linked' && !r.stop, `7l. (b3a2b) 따라간 방에서 다음 세이브도 평소대로 (${JSON.stringify(r)})`);
+    r = await renamedRoom('chatL2', 'chatL2b', 'other');
+    ok(r.done && r.evid && r.status === 'held' && r.why === 'renameUnproven' && r.at === 'A' && !r.ups.includes(r.memName) && !r.tagB && r.c === 0,
+        `7l. (b3a2b) 그사이 옛 이름에 다른 기억이 붙음(같은 고유값): 기억을 옮기지 않고 보류 (${JSON.stringify(r)})`);
+    r = await renamedRoom('chatL3', 'chatL3b', 'saved');
+    ok(r.done && r.evid && r.status === 'held' && r.why === 'renameUnproven' && r.at === 'A' && !r.ups.includes(r.memName) && !r.tagB && r.c === 0,
+        `7l. (b3a2b) 그사이 같은 기억을 다른 곳에서 한 번 더 저장: 기억을 옮기지 않고 보류 (${JSON.stringify(r)})`);
+    // The same rename made from the chat list (the room not open): no record of its memory → held, nothing moved.
+    r = await ev(async () => {
+        await M.switchChat('chatL4', [], {}); await M.opened(); M.add(10); await __savePoint.handle('run').catch(() => {});
+        const A = __savePoint.home().key, id = __savePoint.home().id;
+        await M.switchChat('chatL4x', [], {}); await M.opened();
+        await M.renameChat('chatL4', 'chatL4b'); await M.openFile('chatL4b'); await M.opened(); await new Promise(z => setTimeout(z, 300)); await M.opened();
+        const body = JSON.parse(M.files.get(M.H.memName(id)));
+        return { status: __savePoint.home().status, why: __savePoint.home().why, at: body.home.addr === A, ok: !!id };
+    });
+    ok(r.ok && r.status === 'held' && r.why === 'renameUnproven' && r.at, `7l. (b3a2b) 목록에서 바꾼 이름(방이 안 열려 있음): 증거가 없어 보류, 기억 그대로 (${JSON.stringify(r)})`);
+    // A memory made before b3a2b (no `closes`) whose tag is lost: made again with an empty list only when no room was ever seen leaving
+    // this name here (a settled record counts); otherwise held, the body never written.
+    r = await ev(async () => {
+        await M.switchChat('chatL5', [], {}); await M.opened(); M.add(10); await __savePoint.handle('run').catch(() => {});
+        const A = __savePoint.home().key, id = __savePoint.home().id, doc = M.memDoc(), had = Array.isArray(doc.closes);
+        delete doc.closes; M.otherPut(M.H.memName(id), doc); M.otherDel(M.H.tagName(A));
+        const s = M.settings.savePoint; s.renames.push({ from: A, to: JSON.stringify([M.charKey(), 'chatL5gone']), at: Date.now(), settled: true });
+        const n = M.fileLog.length;
+        await M.openFile('chatL5'); await M.opened(); await new Promise(z => setTimeout(z, 300));
+        const held = { status: __savePoint.home().status, why: __savePoint.home().why, tag: M.files.has(M.H.tagName(A)), puts: M.fileLog.slice(n).filter(x => x[0] === 'put').length };
+        s.renames = s.renames.filter(x => x.from !== A);
+        await __savePoint.handle('home-recheck'); await M.opened(); await new Promise(z => setTimeout(z, 300));
+        const body = JSON.parse(M.files.get(M.H.memName(id)));
+        return { had, held, status: __savePoint.home().status, tag: M.files.has(M.H.tagName(A)), closes: body.closes ?? null, rev: body.rev === doc.rev && body.wid === doc.wid };
+    });
+    ok(r.had && r.held.status === 'held' && r.held.why === 'closesUnknown' && !r.held.tag && r.held.puts === 0,
+        `7l. (b3a2b) 예전 기억(목록 없음)의 이름표 복구: 이 이름을 떠난 기록이 있으면 보류, 쓰기 0 (${JSON.stringify(r.held)})`);
+    ok(r.status === 'linked' && r.tag && r.closes === null && r.rev, `7l. (b3a2b) 떠난 기록이 없으면 빈 목록으로 이름표만 다시 만들고 기억 파일은 안 씀 (${JSON.stringify(r)})`);
 
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');

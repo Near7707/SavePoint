@@ -55,6 +55,21 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const names = () => ev(() => [...M.files.keys()].filter(n => /^savepoint-(mem|room|int|moved|moving|copy)-/.test(n)).sort());
     let r, h;
 
+    // v0.7.0-b3a2b: decideRoom row 5 moves a memory only over the one the room had when it was renamed — kept by a rename of the open
+    // room (room-gate 7l). Renames made here in the list (another room open) keep nothing and are held since then (room-gate 7l), so
+    // for the older checks of this run that rename in the list, the record gets what the room's memory was right then (the old name's
+    // linked tag and its memory file's id, rev and receipt), as if it had been open. A name with no linked tag gets nothing.
+    await ev(() => {
+        const raw = M.renameChat;
+        M.renameChat = async (from, to, o) => {
+            const open = M.chatId === from, A = JSON.stringify([M.charKey(), from]);
+            let mem = null;
+            try { const t = JSON.parse(M.files.get(M.H.tagName(A))); if (t.state === 'linked') { const m = JSON.parse(M.files.get(M.H.memName(t.mem))); mem = { id: m.id, rev: m.rev, wid: m.wid }; } } catch { /* none */ }
+            await raw(from, to, o);
+            if (!open && mem) for (const x of M.settings.savePoint.renames || []) if (x.from === A && !x.mem) x.mem = mem;
+        };
+    });
+
     // 1. a new room: no file until the first change; a save writes the memory file (and its tag and hint), no chat file.
     h = await H();
     ok(h.status === 'new' && !!h.id && (await names()).length === 0, `1. 새 방: 파일 없이 'new' (${JSON.stringify(h)})`);
@@ -1045,7 +1060,10 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => { M.serverFiles.c50 = M.serverFiles.a50; delete M.serverFiles.a50; return M.openFile('branchB'); }); await wait(900);
     await ev(() => M.openFile('c50')); await wait(1200);
     h = await H();
-    ok(h.status === 'linked' && h.id === id50, `50. 첫 저장 중 A → C 이름 변경 → C에서 같은 기억 연결 (${JSON.stringify(h)} id=${id50})`);
+    // v0.7.0-b3a2b: the rename came while the room's first write was still on its way (no memory confirmed for it yet), so its record
+    // keeps no memory: c50 is held (row 5, renameUnproven), the memory stays where it was written (a50), nothing is lost or moved.
+    const home50 = await ev(id => { const t = M.files.get('savepoint-mem-' + id + '.json'); return t ? JSON.parse(t).home.addr : null; }, id50);
+    ok(h.status === 'held' && h.why === 'renameUnproven' && home50 === JSON.stringify(['ari.png', 'a50']), `50. (b3a2b) 첫 저장 중 A → C 이름 변경 → C는 보류, 기억은 A에 그대로 (${JSON.stringify(h)} ${home50})`);
 
     // 51. P2: a51 → b51 (no memory), then another room (its own integrity) renamed x51 → a51 saves first there; renamed again
     // a51 → c51: c51 is linked (the takeover mark went with that room's first write), not held.

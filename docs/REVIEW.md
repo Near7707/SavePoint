@@ -1,3 +1,42 @@
+# v0.7.0-b3a2b · 이름 변경 판정 엄격하게 (`closes` 본체 보관 · 5행 차단) (브랜치 `v0.7-b`)
+
+기준: `493ea98`(b3a2a 리뷰 요청서, 코드 `3921dff`). b3a2a 리뷰 P1·P2·P3 없음. 파일: `home.js`, `index.js`, `manifest.json`(버전만), 검사(`room-gate.cjs` 7k·7l, `home-link.cjs`, `home.test.mjs`), 문서. 기준은 PLAN "v0.7.0-b3 설계"의 b3a2 줄과 인계 "b3a2b 기준"(GPT 답 + 사용자 동의).
+
+| 항목 | 처리 |
+|---|---|
+| b1i·b1j 리뷰: 이름표 복구 때 `closes`가 사라짐 | 🔴 반영. 기억 본체가 `closes`를 보관하고 이름표를 다시 만들 때 씀. |
+| b3 설계: 5행이 "A 이름표 linked + 본체 A + 같은 고유값"만으로 옮김(다른 탭이 옛 이름에 붙인 기억일 수 있음) | 🔴 반영. 이름 변경 기록에 그 방의 기억 ID·영수증을 적고, 정확히 같을 때만 옮김. |
+| 목록에서 바꾼 다른 방(증거 없음) | 🟡 보류 + README 알려진 한계(v0.7.0-b3a2b). 방별 캐시는 안 만듦. |
+
+## 바뀐 것
+- `home.js memBody`·`nextMem`·`validMem`: 본체에 선택 항목 `closes`(문자열 배열). 배열이면 그대로(빈 목록 포함), 없으면 안 적음 = "모름". 평소 저장(`nextMem`)이 이어 감. `placeMemory`가 새 본체를 만들 때 `closes`를 같이 적음(첫 저장·이전·갈래).
+- `index.js renameHome`: 본체를 새 이름으로 옮길 때 `closes: input.closes`(새 이름을 떠난 기록). 이름표는 본체 목록이 있으면 그것, 없으면(옛 버전이 옮긴 본체) 예전처럼 `input.closes`.
+- `home.js decideRoom` 6행 `relink` 답에 `closes`(본체 목록, 없으면 `null`). `relinkMemory`는 목록을 받아 이름표에 씀(배열 아니면 `{ hold: 'closesUnknown' }`). `index.js actHome`: 본체 목록이 없으면 `input.was.from`(`settled`·`closed` 포함)과 `input.was.left`가 모두 비었을 때만 `[]`, 아니면 쓰기 전에 `held`(`closesUnknown`). 본체는 안 씀.
+- `index.js onChatChanged`: 방을 바꾸기 직전 떠나는 방이 `linked`이고 기억이 확인돼 있으면(`line.seen`의 rev·wid, `unread`·`pending` 아님) `leftRoom = { addr, id, rev, wid, at }`. `onChatRenamed`: 그 값을 꺼내(한 번만) 출발지가 그 방, 10초 안, 지금 열린 방이 도착지(입력 이름 또는 서버가 정리한 이름)면 이 알림의 기록(정리된 이름으로 더하는 기록 포함)에 `mem: { id, rev, wid }`. `homeInput`의 `renames`에 `mem`.
+- `home.js decideRoom` 5행(이름표·고유값 확인 뒤, 본체를 읽은 다음): ① 본체 `closes`에 이번 기록 ID가 있으면 건너뜀 ② 본체가 이미 이 주소이고 `home.was`에 옛 이름이 있으면 `rename`(`moved: true`, 증거 없이 — 뒤 단계만 남음) ③ 아니면 기록의 `mem`이 이름표의 기억 ID·본체 rev·wid와 정확히 같을 때만 `rename`, 아니면 `hold`(`renameUnproven`).
+- 안내 `HOLD_TEXT.renameUnproven`·`closesUnknown`. 버전 `0.7.0-b3a2b`.
+
+## ★ 특히 봐 줄 곳
+1. 증거로 쓰는 떠난 방의 조건: `linked` + `line.seen.wid` + `!unread` + `!pending`. `line.stop`(충돌·`linkPart`)은 막지 않음 — 그 rev·wid는 서버에서 읽은 본체라 판단. 저장이 진행 중일 때 방을 바꾸면 그 저장이 끝난 뒤 영수증이 달라 보류(⚪ 드물고 안전한 쪽, 설계에서 동의).
+2. 5행에서 증거가 안 맞으면 다음 기록을 보지 않고 곧바로 보류. 이름표·고유값까지 맞은 기록이라 다른 기록으로 넘어가는 것보다 보류가 맞다고 봤음.
+3. ② "이미 이 주소 + `home.was`" 분기는 증거 없이 통과 — 그 이동 자체가 증거가 있던 판정에서만 일어난다고 봄(예전 버전이 옮긴 본체도 포함).
+4. 첫 저장이 끝나기 전에 이름을 바꾸면 기록에 증거가 없어 새 이름이 보류됨(`home-link` 50 기대 바뀜, b1g P1-2의 "C에서 같은 기억 연결"이 보류로). 기억은 옛 이름에 그대로.
+5. 옛 본체의 이름표 복구 판정에 `input.was.left`(떠난 이름 기록)도 넣었음 — "그 이름에서 떠난 기록" 조건을 넓게 읽음.
+
+## 바뀐 기대(기존 검사)
+- `home.test` 이름 변경 두 곳: 기록에 `mem`을 넣음.
+- `room-gate` 7k: 손으로 넣는 기록에 `mem`(판정이 `rename`이어야 b3a2a 차단을 봄).
+- `home-link`: 목록에서 이름을 바꾸는 예전 검사들은 처음에 `M.renameChat`을 감싸서, 열려 있지 않은 방을 바꿀 때 그 순간 옛 이름 이름표의 기억 ID·rev·wid를 기록에 붙임(열어 둔 방이었다면 남았을 증거). 이름표가 없는 이름(가져온 사본 등)은 안 붙임. 목록 변경이 보류되는 건 `room-gate` 7l이 확인. 50: 첫 저장 중 이름 변경 → 새 이름 `held`(`renameUnproven`), 기억 `home.addr`은 `a50` 그대로.
+
+## 검사 준비
+- `room-gate` 7l(맨 끝에 둠 — 앞에 두면 새 방들의 QUICK이 9의 이어하기 목록 8칸을 밀어냄): `renamedRoom(a, b, mess)` = 새 방 첫 저장(연결) → `fetch`를 감싸 옛 이름 이름표의 **첫 읽기** 순간에 `mess` 실행 → `M.renameChat(a, b)`(방 열기 먼저 → 이름 변경 알림, 실제 순서와 같음). `mess`: `null` · `'other'`(옛 이름에 같은 고유값의 다른 기억 `mem-7l-*` 본체+이름표) · `'saved'`(같은 기억을 rev+1, 다른 영수증으로 다시 씀). 목록 이름 변경: `chatL4` 저장 → `chatL4x`로 옮긴 뒤 `chatL4 → chatL4b` → 열기. 옛 본체: `chatL5` 저장 뒤 본체에서 `closes` 빼고 이름표 지움 + `settled` 떠난 기록 → 다시 열기, 기록 지우고 `다시 확인`.
+
+## 검사와 망가뜨리기 결과
+- 새 줄(`room-gate` 7l 7줄): 열어 둔 방 A → B(기록 증거, `rename`, 본체 B, `closes` 배열, 새 이름표, 채팅 저장 0) · 그 뒤 세이브 평소대로 · 다른 기억 → `renameUnproven`, 본체 업로드 0 · 같은 기억 재저장 → 같음 · 목록 이름 변경 → 보류·본체 그대로 · 옛 본체 + 떠난 기록 → `closesUnknown`·쓰기 0 · 기록 없으면 이름표만(본체 rev·wid 그대로, 목록 없음 그대로). Node 새 2개(5행 증거·건너뜀·이미 옮김 / 본체 `closes` 보관·6행 전달).
+- 고치기 전 코드(`3921dff`/`493ea98`): 7l 5줄 FAIL(따라간 뒤 세이브와 기록 없을 때 이름표 복구만 PASS).
+- 망가뜨리기: 5행 증거 확인 빼기 → 7l 3줄 · `onChatRenamed`가 증거를 안 붙임 → 7l 4줄 · 옛 본체를 늘 `[]` → 7l 1줄 · 5행 본체 `closes` 건너뛰기 빼기 → Node 1개 · `nextMem`이 `closes`를 안 이어 감 → Node 1개. 모두 잡힘.
+- Node 508 / 0 / 3(새 2개). 브라우저 전체(58묶음): 한꺼번에 57 통과, `status` 1개만 알려진 `autoFail` null 오류 → 따로 돌려 통과. 검사 모드 오류 0. `room-gate` 통과 62줄(SKIP 1).
+
 # v0.7.0-b3a2a · b3a1a 리뷰 P2-2 (브랜치 `v0.7-b`)
 
 기준: `87bb177`(b3a1c 리뷰 요청서, 코드 `13b08e1`). b3a1c 리뷰 결과 P1·P2·P3 없음 → b3a1 리뷰 반복 끝. 파일: `index.js`, `manifest.json`(버전만), 검사(`room-gate.cjs` 7k), 문서. b3a2를 둘로 나눔: b3a2a(이번, `linkLate` 상태의 본체 이동 차단) → b3a2b(`closes` 보관·5행 차단, GPT 기준 받음).

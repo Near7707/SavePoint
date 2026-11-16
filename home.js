@@ -163,7 +163,8 @@ export const validState = s => plainObj(s) && s.v === 1 && plainObj(s.mem)
 const validFrom = f => plainObj(f) && ['migrate', 'branch', 'new'].includes(f.kind) && str(f.addr);
 export const validMem = id => d => plainObj(d) && d.format === 'savepoint-mem' && d.v === 1 && d.id === id && int(d.rev) && d.rev >= 0 && str(d.wid)
     && Array.isArray(d.recent) && d.recent.every(x => plainObj(x) && int(x.rev) && str(x.wid))
-    && validFrom(d.from) && plainObj(d.home) && str(d.home.addr) && optStr(d.home.integrity) && optStr(d.copy) && validState(d.state);
+    && validFrom(d.from) && plainObj(d.home) && str(d.home.addr) && optStr(d.home.integrity) && optStr(d.copy) && validState(d.state)
+    && (d.closes === undefined || Array.isArray(d.closes) && d.closes.every(str));
 export const validTag = addr => d => plainObj(d) && d.format === 'savepoint-room' && d.v === 1 && d.addr === addr && str(d.mem)
     && optStr(d.integrity) && optStr(d.copy) && Array.isArray(d.prints) && d.prints.every(p => plainObj(p) && int(p.i) && p.i >= 0 && str(p.h))
     && (d.state === 'linked' || d.state === 'renamed' && str(d.to));
@@ -174,8 +175,10 @@ export const validStart = addr => d => plainObj(d) && d.format === 'savepoint-mo
 export const validCopyHint = copy => d => plainObj(d) && d.format === 'savepoint-copy' && d.v === 1 && d.copy === copy && Array.isArray(d.rooms) && d.rooms.every(str);
 
 // `copy`: the old in-chat copy the chat file had when this memory was linked to the room (null: none).
-export const memBody = ({ id, state, rev = 0, wid, recent = [], from, home, copy = null }) =>
-    ({ format: 'savepoint-mem', v: 1, id, rev, wid, recent: [...recent, { rev, wid }].slice(-RECENT), from, home, copy, state });
+// v0.7.0-b3a2b (b3 design): `closes`: the ids of the renames seen away from its home's name when the memory was linked there (the
+// same list its tag got). An empty list is a known one; none at all (a memory made before b3a2b) is unknown. Kept by every save.
+export const memBody = ({ id, state, rev = 0, wid, recent = [], from, home, copy = null, closes }) =>
+    ({ format: 'savepoint-mem', v: 1, id, rev, wid, recent: [...recent, { rev, wid }].slice(-RECENT), from, home, copy, ...(Array.isArray(closes) ? { closes: [...closes] } : {}), state });
 // v0.7.0-b1h (review of b1g, P1): `closes`: the renames seen away from this name before a new room's first write here (their ids,
 // `from|at` on the device that saw them). The tag carries them, so they are never proof for it, whatever the settings say.
 export const tagBody = ({ addr, integrity = null, mem, copy = null, prints = [], at = Date.now(), closes = [] }) =>
@@ -349,6 +352,15 @@ export async function decideRoom(input, read, { readMem = id => read(memName(id)
         const m = await mem(t.data.mem);
         if (bad(m)) return fail(5, [memName(t.data.mem)]);
         if (m.kind === MISSING) return hold(5, 'memGone', { mem: t.data.mem, from: r.from });
+        // v0.7.0-b3a2b (b3 design): the memory linked at the old name after this rename was seen (its own `closes` names it, as the
+        // tag would) is another room's.
+        if (Array.isArray(m.data.closes) && m.data.closes.includes(r.id)) continue;
+        // Already moved here (this rename, by this tab or another one): only the steps after the move are left.
+        if (m.data.home.addr === addr && Array.isArray(m.data.home.was) && m.data.home.was.includes(r.from)) return out('rename', 5, { from: r.from, mem: t.data.mem, moved: true });
+        // Otherwise the tag at the old name may be a memory another tab linked there after the rename (same integrity: a copy):
+        // the move is made only over the very memory the room had when it was renamed (`r.mem`, kept from the room open then:
+        // its id, rev and receipt). No such record (renamed in the list, or before b3a2b), or saved since anywhere → hold.
+        if (!plainObj(r.mem) || r.mem.id !== t.data.mem || r.mem.rev !== m.data.rev || r.mem.wid !== m.data.wid) return hold(5, 'renameUnproven', { mem: t.data.mem, from: r.from });
         return out('rename', 5, { from: r.from, mem: t.data.mem });
     }
     // This name's tag says it was renamed away and no rename back to it was seen here: a room under the
@@ -396,7 +408,8 @@ export async function decideRoom(input, read, { readMem = id => read(memName(id)
         if (input.left) return hold(6, 'renamedAway', { mem: id, to: input.left });
         // v0.6.71: no tag means the writes stopped before the end (the tag is last): not the tag alone but the
         // rest of those writes (relinkMemory), with the memory's own old copy and the receipt seen here.
-        return out('relink', 6, { mem: id, from: m.data.from, copy: m.data.copy ?? null, seen: { rev: m.data.rev, wid: m.data.wid } });
+        // v0.7.0-b3a2b: the renames the memory's tag named (`closes`, null when the memory has no list: made before b3a2b).
+        return out('relink', 6, { mem: id, from: m.data.from, copy: m.data.copy ?? null, seen: { rev: m.data.rev, wid: m.data.wid }, closes: Array.isArray(m.data.closes) ? m.data.closes : null });
     }
     if (movedHere?.kind === OK) return hold(6, 'movedNoBody', { mem: movedHere.data.mem });
     if (start?.kind === OK && !copy) return hold(6, 'moveStarted', { mem: start.data.mem });
@@ -591,7 +604,7 @@ export function writePlan({ id, from, addr, integrity = null, copy = null, mem, 
 // Write only over the file last seen: same rev and same receipt.
 export const canWrite = (file, seen) => !!file && !!seen && file.rev === seen.rev && file.wid === seen.wid;
 // The next body of a memory file (rev + 1, a new receipt, the recent list kept short).
-export const nextMem = (file, state, wid) => memBody({ id: file.id, state, rev: file.rev + 1, wid, recent: file.recent, from: file.from, home: file.home, copy: file.copy ?? null });
+export const nextMem = (file, state, wid) => memBody({ id: file.id, state, rev: file.rev + 1, wid, recent: file.recent, from: file.from, home: file.home, copy: file.copy ?? null, closes: file.closes });
 // After writing, read it back: ours only when it holds our receipt.
 export const wroteMine = (after, wid) => !!after && after.wid === wid;
 // When a room opens: AUTO saves of this room that the memory file's recent list does not know about.
@@ -691,7 +704,8 @@ export async function placeMemory(io, { id, from, addr, integrity = null, copy =
                 const v = checkMem(pre, { id, from, addr, integrity, copy, wid });
                 if (v !== 'theirs' && v !== 'mine') return { hold: v, step };
             } else {
-                const made = memBody({ id, state, wid, from, home: { addr, integrity }, copy });
+                // v0.7.0-b3a2b: the memory keeps the renames its tag names (`closes`), so a tag made again later names them too.
+                const made = memBody({ id, state, wid, from, home: { addr, integrity }, copy, closes });
                 if (!await wr(memName(id), made)) return { stop: 'write', step };
                 wrote = { rev: made.rev, wid };
             }
@@ -745,7 +759,10 @@ export async function placeMemory(io, { id, from, addr, integrity = null, copy =
 // never the body. The memory's own old copy is used (the chat may have lost it, the integrity proved the
 // room; a chat copy that differs was held by row 6 already), and only over the memory file decideRoom saw.
 // d: decideRoom's answer; in: { addr, integrity, wid }.
-export async function relinkMemory(io, d, { addr, integrity = null, wid }) {
+// v0.7.0-b3a2b: the tag made again names the renames the memory keeps (`closes`); for a memory without a list the caller gives
+// the list it may use (an empty one, only when nothing was seen leaving this name) or holds.
+export async function relinkMemory(io, d, { addr, integrity = null, wid, closes = d?.closes }) {
     if (d?.verdict !== 'relink' || !plainObj(d.seen)) return { stop: 'notRelink' };
-    return placeMemory(io, { id: d.mem, from: d.from, addr, integrity, copy: d.copy ?? null, wid, resume: d.seen });
+    if (!Array.isArray(closes)) return { hold: 'closesUnknown' };
+    return placeMemory(io, { id: d.mem, from: d.from, addr, integrity, copy: d.copy ?? null, wid, resume: d.seen, closes });
 }
