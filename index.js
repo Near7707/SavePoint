@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b3b1';
+const VERSION = '0.7.0-b3b1a';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -528,7 +528,8 @@ function freeReleased(list) {
     if (homeHere()) home.freed = true;
     ctx().swipe?.refresh?.(); refreshView();
     toastr.info(RELEASED_NOTE, 'SavePoint', { timeOut: 8000 });
-    Promise.resolve().then(() => recheckHome()).catch(() => {});
+    // v0.7.0-b3b1a (review of b3b1, P1): asked by the save flow itself (`auto`), not by the user.
+    Promise.resolve().then(() => recheckHome('auto')).catch(() => {});
     return n;
 }
 // At the end of a save turn (writeEntry), in the room it ran in: what freeReleased did is done again after anything taken back.
@@ -2350,24 +2351,34 @@ async function renameHome(h, d, input, files) {
 }
 // `다시 확인`: the chat file is read again and the room decided again. Reads only for a line whose write got no answer
 // (P1-2: that room waits to be opened again).
-async function recheckHome() {
+// v0.7.0-b3b1a (review of b3b1, P1): `by` — who asked: 'auto' only when a save flow of this room asked itself (freeReleased: hides
+// another device took away, read in a save); anything else ('user': `다시 확인`, a rename notice…) is the user's. An ask put off
+// (a memory write running: recheckAfter) or made while one runs (userDuring) keeps who asked; an ask of the user's merged with an
+// automatic one is the user's.
+const mergeAsk = (a, by) => (a && a !== 'auto') || by !== 'auto' ? 'user' : 'auto';
+async function recheckHome(by = 'user') {
     if (!homeHere() || home.status === 'pending' || home.line?.pending) return;
     const h = home;
     // v0.7.0-b1c (review of b1b, P1-1): a change on its way to the memory file (takeHome) is let finish; the check runs
     // right after it (freeHome).
-    if (h.writing) { h.recheckAfter = true; return; }
-    if (h.linking || h.status === 'opening') { h.again = true; return; }
-    h.linking = true; h.again = false;
+    if (h.writing) { h.recheckAfter = mergeAsk(h.recheckAfter, by); return; }
+    if (h.linking || h.status === 'opening') { h.again = true; if (by !== 'auto') h.userDuring = true; return; }
+    h.linking = true; h.again = false; h.userDuring = false;
     try {
         const r = await serverCovered();
         if (!homeHere() || home !== h || !r.ok) { if (homeHere() && home === h) { blockRoom(r.why, r.at); render(); } return; }
         const wasOpen = homeOpen(), was = h.status, mark = homeMark(h);
         // v0.7.0-b3b1 (b3 design, H2): the memory the room was on (stopped or not), to tell a memory followed from one found again.
         const prior = h.status === 'linked' && h.line?.seen ? JSON.stringify([h.id, h.line.seen.rev ?? null, h.line.seen.wid ?? null]) : null;
+        // v0.7.0-b3b1a (review of b3b1, P1): a room stopped already (H2) stays stopped until the chat file and the memory agree.
+        const stoppedBefore = !!h.h2;
         await linkHome(r, true);
         // A room on a memory that changed (another device's save or reset, read while this tab was saving): hides it no longer covers are
         // taken away below (followHome: the b2b recovery), not a reason to stop. Its recorded originals changed still stop it.
-        if (homeHere() && home === h && h.h2?.why === 'hides' && prior && h.status === 'linked' && h.line?.seen
+        // v0.7.0-b3b1a (review of b3b1, P1): only for a check the save flow asked itself, with no ask of the user's merged in, in a room
+        // that was not stopped: `다시 확인` never takes a stop away while hides the memory does not cover are left on the server.
+        if (by === 'auto' && !h.userDuring && !stoppedBefore
+            && homeHere() && home === h && h.h2?.why === 'hides' && prior && h.status === 'linked' && h.line?.seen
             && JSON.stringify([h.id, h.line.seen.rev ?? null, h.line.seen.wid ?? null]) !== prior) { h.h2 = null; trustQueue(); refreshView(); }
         // v0.7.0-b1a (review of b1a, P2-1): a room that can save now (linked, or new with its id) gets what opening gives it.
         // v0.7.0-b1c (review of b1b, P2-3): also a new room that found its memory (new → linked): the hides and the briefing
@@ -2419,7 +2430,7 @@ function freeHome(box) {
     // v0.7.0-b2a: a hide syncHide held back while this write ran (hidesHeld) is worked out again once the memory is proved.
     // v0.7.0-b2a2 (review of b2a1, P1): inside a save turn (`holds`) this waits for the turn's end (endHold).
     if (box.hideSkipped && !holds.has(box)) { box.hideSkipped = false; setTimeout(() => { if (home === box && homeHere() && gateOpen() && !hidesHeld()) syncHide(); }, 0); }
-    if (box.recheckAfter) { box.recheckAfter = false; setTimeout(() => { if (home === box && homeHere()) recheckHome(); }, 0); }
+    if (box.recheckAfter) { const by = box.recheckAfter; box.recheckAfter = false; setTimeout(() => { if (home === box && homeHere()) recheckHome(by); }, 0); }
 }
 // v0.7.0-b2a (H1; b2 design review P1-2): a new hide rests on a memory proved to be in its file. Outside a queued change none
 // is set while a memory write of the room runs (`writing`), after one answered but not read back (`unread`), or while its line
@@ -2710,7 +2721,9 @@ function manualHidePlan(st, list = chat()) {
 // v0.7.0-b3b1: `release` — hides are only taken away (followHome): nothing new is hidden, no range is queued, nothing is left to redo.
 function syncHide({ rehide = false, grow = false, release = false } = {}) {
     // v0.7.0-a1 (review P2-2): while a changed original waits for its turn, the hides follow the memory it will leave.
-    const st = liveState(), live = st !== state(), s = settings(), list = chat();
+    // v0.7.0-b3b1a (review of b3b1, P2): following a memory (release), what is taken away is worked out on the memory confirmed, not
+    // on the rewind a changed original on this page only would make (that one is the queue's: reconcile).
+    const st = release ? state() : liveState(), live = st !== state(), s = settings(), list = chat();
     const may = release ? false : inApply ? grow : !hidesHeld();
     let skipped = false;
     const hold = () => { if (!release) skipped = true; return false; };

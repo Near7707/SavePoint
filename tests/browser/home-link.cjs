@@ -1018,9 +1018,11 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => __savePoint.handle('run').catch(() => {}));
     await wait(5000);
     h = await H();
-    r = await ev(t => ({ wid: __savePoint.state()?.wid ?? null, toasts: toastr.log.slice(t).map(x => x[1]), page: M.chat.map(m => !!(m.is_system && m.extra?.savepointHidden)), file: M.serverFiles.r46.slice(1).map(m => !!(m.is_system && m.extra?.savepointHidden)) }), t46);
-    ok(h.last === -1 && r.wid === 'other46' && !r.page.some(Boolean) && !r.file.some(Boolean) && r.toasts.some(t => t.includes('저장하는 사이 이 방의 기억이 바뀌었어요')) && !r.toasts.some(t => t.includes('퀵세이브 완료')),
-        `46. 마지막 저장 확인 중 다시 확인이 리셋 연결 → 화면·파일 숨김 풀고 완료 안내 대신 한 번 알림 (${JSON.stringify(h)} ${JSON.stringify(r)})`);
+    r = await ev(t => ({ wid: __savePoint.state()?.wid ?? null, h2: __savePoint.home().h2?.why ?? null, toasts: toastr.log.slice(t).map(x => x[1]), page: M.chat.map(m => !!(m.is_system && m.extra?.savepointHidden)), file: M.serverFiles.r46.slice(1).map(m => !!(m.is_system && m.extra?.savepointHidden)) }), t46);
+    // v0.7.0-b3b1a (review of b3b1, P1): `다시 확인` is the user's ask: the hides the reset no longer covers stay where they are and the room
+    // stops (H2) — before, it followed the reset and took them away (that recovery is the save flow's own ask now: b2b-race 5d).
+    ok(h.last === -1 && r.wid === 'other46' && r.h2 === 'hides' && r.page.some(Boolean) && r.file.join() === r.page.join() && r.toasts.some(t => t.includes('저장하는 사이 이 방의 기억이 바뀌었어요')) && !r.toasts.some(t => t.includes('퀵세이브 완료')),
+        `46. 마지막 저장 확인 중 다시 확인이 리셋 연결 → 숨김은 그대로 두고 멈춤(H2), 완료 안내 대신 한 번 알림 (${JSON.stringify(h)} ${JSON.stringify(r)})`);
 
     // 47. (4) a hide the server file still has on a message the page already shows (taken away on the page only): another
     // memory linked by `다시 확인` sends the file its own save.
@@ -1030,8 +1032,10 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => { M.chat.forEach((m, i) => { if (m.is_system && m.extra?.savepointHidden) { m.is_system = false; delete m.extra.savepointHidden; } }); });
     await ev(async () => { const H = await import('/ext/home.js'), hm = __savePoint.home(); resetMem(H, hm, H.memName(hm.id), 'other47'); await __savePoint.handle('home-recheck'); });
     await wait(3000);
-    r = { ...r, wid: await ev(() => __savePoint.state()?.wid ?? null), file: await ev(() => M.serverFiles.r47.slice(1).filter(m => m.is_system && m.extra?.savepointHidden).length) };
-    ok(r.before > 0 && r.wid === 'other47' && r.file === 0, `47. 화면만 풀린 숨김 → 다른 기억 연결 때 서버 파일도 풀어 저장 (${JSON.stringify(r)})`);
+    r = { ...r, wid: await ev(() => __savePoint.state()?.wid ?? null), h2: await ev(() => __savePoint.home().h2?.why ?? null), file: await ev(() => M.serverFiles.r47.slice(1).filter(m => m.is_system && m.extra?.savepointHidden).length) };
+    // v0.7.0-b3b1a (review of b3b1, P1): linked by `다시 확인`, the hides the server file still has past the reset stop the room (H2): the
+    // file is not written. Following another memory with a save of its own is the save flow's ask (b2b-race 5d).
+    ok(r.before > 0 && r.wid === 'other47' && r.h2 === 'hides' && r.file === r.before, `47. 화면만 풀린 숨김 → 다시 확인으로 다른 기억을 읽어도 서버에 숨김이 남아 멈춤, 파일 쓰기 없음 (${JSON.stringify(r)})`);
 
     // 48. P1-2: a room with no memory renamed (a48 → b48); an imported copy (the same integrity) put at a48 saves first; b48
     // opened then does not take the copy's memory (an old a48 → b48 rename is no proof for the tag at a48 now).

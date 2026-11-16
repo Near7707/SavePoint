@@ -227,9 +227,21 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await wait(2500);
     x = await look();
     ok(x.sp === y.sp + 1 && x.server.length > 0, `5. (한계) 마지막 확인 뒤 리셋이 끝나고 이미 떠난 요청이 그 위에 도착 → 옛 숨김이 서버에 남음 (${JSON.stringify(x)})`);
+    // v0.7.0-b3b1a (review of b3b1, P1): put right by `다시 확인` (the user's ask): the room reads the emptied memory, but the old hides it
+    // does not cover are still on the server, so it stops (H2) — nothing taken away, nothing written — until they are gone.
+    const probe = c => ev(c => ({ h2: __savePoint.home().h2 || null, status: __savePoint.home().status, s: M.spSaves - c.s, puts: M.fileLog.slice(c.n).filter(x => x[0] === 'put').length }), c);
+    const mark5 = () => ev(() => ({ s: M.spSaves, n: M.fileLog.length }));
+    let c = await mark5();
     await ev(() => __savePoint.recheckHome()); await wait(2500);
-    x = await look();
-    ok(x.page.length === 0 && x.server.length === 0 && x.file === -1, `5. 다시 확인 → 새 기억을 따라 모두 보임 (${JSON.stringify(x)})`);
+    x = { ...(await probe(c)), ...(await look()) };
+    ok(x.h2?.why === 'hides' && x.status === 'linked' && x.file === -1 && x.server.length > 0 && x.s === 0 && x.puts === 0,
+        `5. 다시 확인(버튼) → 새 기억은 읽지만 덮지 못하는 숨김이 서버에 남아 멈춤, 쓰기 0 (${JSON.stringify(x)})`);
+    // the hides are taken away on the server (by the user, elsewhere): `다시 확인` goes on and the page follows.
+    const STRIP = () => ev(() => { for (const m of M.serverFiles[M.chatId].slice(1)) if (m.extra?.savepointHidden) { m.is_system = false; delete m.extra.savepointHidden; } });
+    await STRIP();
+    await ev(() => __savePoint.recheckHome()); await wait(2500);
+    x = { ...(await probe(c)), ...(await look()) };
+    ok(!x.h2 && x.page.length === 0 && x.server.length === 0 && x.file === -1, `5. 서버의 숨김을 정리하면 다시 확인으로 이어져 모두 보임 (${JSON.stringify(x)})`);
 
     // 5b. v0.7.0-b3b1 (b3 design, H2; pair of 5): the memory followed (another device's save, read again here) recorded an original the
     // server chat file does not have: the room stops (H2) — no rewind of that memory, no hide taken away or set, nothing written.
@@ -266,6 +278,112 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     x = await look();
     ok(x.file > y.file && x.page.join() === y.page.join() && x.server.join() === y.server.join() && x.sp === y.sp && !(await ev(() => __savePoint.home().h2)),
         `5c. 원문이 맞는 새 기억을 따라갈 땐 숨김을 새로 걸지 않고 채팅 저장 0 (${JSON.stringify({ y: y.page.length, x })})`);
+
+    // v0.7.0-b3b1a (review of b3b1, P1). Another device rewinds the memory (`memKeep`: its last recorded message, -1 emptied) and takes
+    // SavePoint's hides past `hideKeep` away in the chat file, in one go.
+    // (both at once: nothing of this tab's runs between them)
+    const PARTIAL = (tag, hideKeep, memKeep) => `async () => {
+        const H = await import('/ext/home.js'), name = H.memName(__savePoint.home().id), f = JSON.parse(M.files.get(name)), st = JSON.parse(JSON.stringify(f.state));
+        for (const [i, m] of M.serverFiles[M.chatId].slice(1).entries()) if (i > ${hideKeep} && m.extra?.savepointHidden) { m.is_system = false; delete m.extra.savepointHidden; }
+        if (${memKeep} < 0) { st.mem = { scenes: [], records: [], entities: [] }; st.lastIndex = -1; st.hashes = []; }
+        else { st.lastIndex = ${memKeep}; st.hashes = st.hashes.slice(0, ${memKeep} + 1); }
+        st.undo = null; st.undoInfo = null;
+        M.otherPut(name, H.nextMem(f, st, ${JSON.stringify(tag)}));
+    }`;
+    // `body` runs right before the first chat file read after the room's memory upload is sent (5d: the save's own last check; 5e: the
+    // put-off `다시 확인`, which starts as soon as the memory write ends).
+    const beforeGet = body => ev(`(async () => {
+        const H = await import('/ext/home.js'), name = H.memName(__savePoint.home().id), f = window.fetch;
+        let up = false;
+        window.fetch = async (u, o) => {
+            const s = String(u);
+            if (s === '/api/files/upload' && JSON.parse(o.body).name === name) up = true;
+            else if (up && s === '/api/chats/get') { window.fetch = f; await (${body})(); }
+            return f(u, o);
+        };
+    })()`);
+    // 5d. the save flow asks itself (auto): a save reads the hides past #2 taken away (freeReleased) and the emptied memory; #0–#2 are still
+    // hidden on the server, which that memory does not cover. The room follows it (the b2b recovery): all shown, on the server too.
+    y = await fresh();
+    await ev(() => M.add(3));
+    y = await look();
+    await beforeGet(PARTIAL('other5d', 2, -1));
+    await ev(() => __savePoint.handle('run').catch(() => {}));
+    await wait(3500);
+    x = { ...(await probe({ s: 0, n: 0 })), ...(await look()) };
+    ok(!x.h2 && x.status === 'linked' && x.file === -1 && x.page.length === 0 && x.server.length === 0,
+        `5d. 저장 흐름의 자동 재확인 → 덮지 못하는 숨김이 남은 새 기억도 따라가 모두 보임, 서버도 (before=${JSON.stringify(y)} after=${JSON.stringify(x)})`);
+    // 5e. (pair of 5d) the same save, with `다시 확인` pressed while its memory write runs: put off until the write ends, it is still the
+    // user's ask (the save's own ask comes while it runs): the room stops (H2), the hides stay on the server, no chat save after the
+    // reset (the save's own write may go before it).
+    y = await fresh();
+    await ev(() => M.add(3));
+    y = await look();
+    await beforeGet(`async () => { await (${PARTIAL('other5e', 2, -1)})(); window.__sp5e = M.spSaves; }`);
+    await ev(() => { M.holdMem(st => st?.lastIndex >= 0); __savePoint.handle('run').catch(() => {}); });
+    for (let i = 0; i < 100 && !(await ev(() => M.held)); i++) await wait(50);
+    r = await ev(() => { const w = !!__savePoint.home().writing; __savePoint.recheckHome(); const after = __savePoint.home().recheckAfter; M.beforeUpload = null; M.release(); return { w, after }; });
+    await wait(3500);
+    x = { ...(await ev(() => ({ h2: __savePoint.home().h2 || null, status: __savePoint.home().status, s: M.spSaves - window.__sp5e }))), ...(await look()) };
+    ok(r.w && r.after === 'user' && x.h2?.why === 'hides' && x.status === 'linked' && x.file === -1 && x.server.join() === '0,1,2' && x.s === 0,
+        `5e. (짝) 저장 중 누른 다시 확인은 미뤄져도 버튼 요청 → 멈춤, 서버 숨김 그대로, 리셋 뒤 채팅 저장 0 (${JSON.stringify({ r, y, x })})`);
+    // 5f. a room stopped already stays stopped, even on a check the save flow asks (another device saves the memory again meanwhile).
+    await ev(`(${OTHER_SAVE('other5f')})()`);
+    c = await mark5();
+    await ev(() => __savePoint.recheckHome('auto')); await wait(2500);
+    x = { ...(await probe(c)), ...(await look()) };
+    ok(x.h2?.why === 'hides' && x.server.join() === '0,1,2' && x.s === 0 && x.puts === 0,
+        `5f. 이미 멈춘 방은 자동 재확인이어도 숨김이 남아 있으면 멈춤 유지, 쓰기 0 (${JSON.stringify(x)})`);
+    await STRIP();
+    await ev(() => __savePoint.recheckHome()); await wait(2500);
+    x = await ev(() => ({ h2: __savePoint.home().h2 || null, blocked: __savePoint.autoBlocked() }));
+    ok(!x.h2 && x.blocked !== 'room', `5f. 서버의 숨김을 정리하면 이어짐 (${JSON.stringify(x)})`);
+    // 5g. (review of b3b1, P2) following a memory (auto) while an original it records is changed on this page only (not saved): what is
+    // taken away is worked out on the memory followed (to #3), not on the rewind that change would make — #1–#3 stay hidden, no chat save.
+    y = await fresh();
+    await ev(() => M.add(3));
+    y = await look();
+    // the edit comes while the memory is decided again (the first read of its file after the reset): the save and the check's first read
+    // of the chat file see none (a page that differs from the file holds a save back).
+    await beforeGet(`async () => {
+        await (${PARTIAL('other5g', 3, 3)})();
+        const f = window.fetch;
+        window.fetch = async (u, o) => {
+            const res = await f(u, o);
+            if (String(u).startsWith('/user/files/savepoint-mem-')) { window.fetch = f; window.__mes1 = M.chat[1].mes; M.chat[1].mes += ' (edited here)'; }
+            return res;
+        };
+    }`);
+    await ev(() => __savePoint.handle('run').catch(() => {}));
+    await wait(3500);
+    x = { ...(await ev(() => ({ h2: __savePoint.home().h2 || null }))), ...(await look()) };
+    ok(!x.h2 && x.file === 3 && x.page.join() === '0,1,2,3' && x.server.join() === '0,1,2,3' && x.sp === y.sp,
+        `5g. 화면에서만 고친 원문이 있어도 따라간 기억이 덮는 숨김은 그대로, 채팅 저장 0 (before=${JSON.stringify(y)} after=${JSON.stringify(x)})`);
+    await ev(() => { M.chat[1].mes = window.__mes1; });
+    // 5h. (pair of 5d, the other way round) the save's own check is running when `다시 확인` is pressed (while it decides the memory): the
+    // two asks are one, the user's: the room stops (H2), the hides stay on the server, no chat save after the reset.
+    y = await fresh();
+    await ev(() => M.add(3));
+    y = await look();
+    await beforeGet(`async () => {
+        await (${PARTIAL('other5h', 2, -1)})();
+        window.__sp5h = M.spSaves;
+        const f = window.fetch;
+        window.fetch = async (u, o) => {
+            const res = await f(u, o);
+            if (String(u).startsWith('/user/files/savepoint-mem-')) { window.fetch = f; window.__l5h = !!__savePoint.home().linking; __savePoint.recheckHome(); }
+            return res;
+        };
+    }`);
+    await ev(() => __savePoint.handle('run').catch(() => {}));
+    await wait(3500);
+    x = { ...(await ev(() => ({ h2: __savePoint.home().h2 || null, linking: window.__l5h, s: M.spSaves - window.__sp5h }))), ...(await look()) };
+    ok(x.linking && x.h2?.why === 'hides' && x.file === -1 && x.server.join() === '0,1,2' && x.s === 0,
+        `5h. (짝) 저장 흐름의 자동 재확인 중 누른 다시 확인 → 합쳐서 버튼 규칙, 멈춤 유지, 리셋 뒤 채팅 저장 0 (${JSON.stringify(x)})`);
+    await STRIP();
+    await ev(() => __savePoint.recheckHome()); await wait(2500);
+    x = await ev(() => ({ h2: __savePoint.home().h2 || null }));
+    ok(!x.h2, `5h. 서버의 숨김을 정리하면 이어짐 (${JSON.stringify(x)})`);
 
     // v0.7.0-b2b1 (review of b2b). The marks of message i on the page and in the server chat file: [hidden, SavePoint's mark].
     const mk = i => ev(i => { const f = m => [!!m?.is_system, !!m?.extra?.savepointHidden]; return { p: f(M.chat[i]), s: f((M.serverFiles[M.chatId] || [])[i + 1]) }; }, i);
