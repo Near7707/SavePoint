@@ -690,6 +690,8 @@ node tests/browser/room-gate.cjs # (v0.7.0-b2c2) 저장 실패 흉내를 기억 
 node tests/browser/autofail.cjs # (v0.7.0-b2c2a) 체크포인트 시작 표시의 기억 저장 거절을 알림(A), save-banner 3 방 이동 경고 하나만(G), restore-scope 2c 문구(C)
 node tests/browser/room-gate.cjs # (v0.7.0-b2c2b) 7c·7d 새 방 첫 저장을 다시 읽지 못함 → 방 멈춤, 다시 확인·다시 열기로 본체를 다시 쓰지 않고 연결(E), 6 조용한 실패 문구(D)
 node tests/browser/autofail.cjs # (v0.7.0-b2c2c) 시작 표시 기억 저장 거절은 재시도 안내, 응답 없음으로 방이 멈추면 재시도 안내 없음
+node tests/browser/save-base.cjs # (v0.7.0-b2c2d) 2c·2d 🔖 저장이 성공 응답을 받은 뒤 다음 요청만 실패: 그 사본이 기준(새 메시지는 저장, 다른 탭이 지운 메시지는 안 되살림)
+node tests/browser/save-adopt.cjs # (v0.7.0-b2c2d) 백그라운드 채팅 저장은 🔖 복구로, 상태만 바꾼 저장 장면은 SKIP
 ```
 
 ## 라이선스

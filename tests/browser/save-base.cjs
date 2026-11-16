@@ -98,6 +98,30 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
             `2${later ? 'b' : ''}. 성공한 13개 사본 뒤 다른 기기에서 지운 13번째를 되살리지 않음(b2c2d: 확인 못 함으로 멈춤) (${r1.slice(0, 30)} / ${r2.slice(0, 30)}, ${JSON.stringify(f)})`);
         await page.close();
     }
+    // 2c–2d. v0.7.0-b2c2d: the copy last answered with success is the base (writeBase). A 🔖 on #2: 12 sent (ok), a 13th comes,
+    //     13 sent (ok), a 14th comes, the third request gets the 500. The file holds the 🔖 (marks) and 13 messages.
+    //     2c: against the 13-message copy the 14th is only this page's new message: no warning, the next 🔖 saves it (against
+    //     the 14-message copy that failed it would look deleted elsewhere). 2d: another tab also deleted the 13th: not written back.
+    for (const del of [false, true]) {
+        const { page, ev } = await session();
+        await ev(del => { M.noStSave = true; const f = window.fetch; let k = 0, n = 0;
+            const m = t => ({ name: 'Me', is_user: true, is_system: false, mes: t, swipe_id: 0, extra: {} });
+            M.beforeChatSave = async name => { if (++n === 3) { if (del) M.serverFiles[name].pop(); M.failOnce = true; } };
+            window.fetch = async (u, o) => { const r = await f(u, o);
+                if (String(u) === '/api/chats/save') { k++; if (k === 1) M.chat.push(m('Thirteenth.')); if (k === 2) M.chat.push(m('Fourteenth.')); }
+                return r; }; }, del);
+        const r1 = await keep(ev, 2);
+        const sends = await ev(() => M.saveBodies.map(x => x.count).join(','));
+        const r2 = await keep(ev, 5);
+        await page.waitForTimeout(300);
+        const f = await ev(() => ({ n: M.serverFiles.chatA.length - 1, has13: M.serverFiles.chatA.some(x => x.mes === 'Thirteenth.'), k2: !!M.serverFiles.chatA[3].extra?.savepointKeep, k5: !!M.serverFiles.chatA[6].extra?.savepointKeep,
+            warned: toastr.log.slice(M.toastLog).some(x => /다른 곳에서 지운/.test(String(x.msg ?? x))) }));
+        if (del) ok(sends === '12,13,14' && /RoomBlocked: 이번 변경은 채팅 파일에 저장했어요.*다른 곳에서 지운/.test(r1) && /다른 곳에서 지운/.test(r2) && f.n === 12 && !f.has13 && f.k2 && !f.k5,
+            `2d. 🔖 표시로 확인된 쓰기: 다른 탭이 지운 13번째를 되살리지 않음 (${sends}; ${r1.slice(0, 40)} / ${r2.slice(0, 30)}, ${JSON.stringify(f)})`);
+        else ok(sends === '12,13,14' && r1 === 'ok' && r2 === 'ok' && f.n === 14 && f.has13 && f.k2 && f.k5 && !f.warned,
+            `2c. 🔖 표시로 확인된 쓰기: 성공 응답을 받은 13개 사본이 기준이라 실패한 요청의 14번째는 이 화면의 새 메시지, 다음 🔖가 저장 (${sends}; ${r1.slice(0, 40)} / ${r2.slice(0, 30)}, ${JSON.stringify(f)})`);
+        await page.close();
+    }
     // 3.
     for (const withLoad of [false, true]) {
         const { page, ev } = await session();
