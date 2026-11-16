@@ -313,6 +313,22 @@ test('v0.7.0-b3a2b row 5: the move needs the memory the room had when renamed; a
     assert.deepEqual([r.verdict, r.row, r.from, r.moved], ['rename', 5, A, true]);
 });
 
+test('v0.7.0-b3a2b1 row 5 (review of b3a2b, P1-2): "already moved here" needs the memory kept for the rename, and no room seen leaving this name', async () => {
+    const id = homeId(A, 'i-A');
+    const files = { [tagName(A)]: tagBody({ addr: A, integrity: 'i-A', mem: id }),
+        [memName(id)]: memBody({ id, state: recorded(P80, 19), rev: 4, wid: 'w4', from: { kind: 'new', addr: A, integrity: 'i-A' }, home: { addr: B, integrity: 'i-A', was: [A] } }) };
+    const at = (mem, extra = {}) => ({ ...room(), addr: B, renames: [{ from: A, to: B, id: 'A|1', mem }], ...extra });
+    // Another memory than the one kept for the rename → hold.
+    let r = await decideRoom(at({ id: 'other', rev: 0, wid: 'w0' }), world(files).read);
+    assert.deepEqual([r.verdict, r.row, r.why], ['hold', 5, 'renameUnproven']);
+    // The same memory, saved since (the move gives a new receipt) → the rest of the move.
+    r = await decideRoom(at({ id, rev: 0, wid: 'w0' }), world(files).read);
+    assert.deepEqual([r.verdict, r.row, r.moved], ['rename', 5, true]);
+    // The room of this name was seen leaving it → hold.
+    r = await decideRoom(at({ id, rev: 0, wid: 'w0' }, { left: roomAddr('ari.png', 'Ari - later') }), world(files).read);
+    assert.deepEqual([r.verdict, r.row, r.why], ['hold', 5, 'renamedAway']);
+});
+
 test('v0.7.0-b3a2b: a memory body keeps `closes` (known empty, or none) through saves; row 6 tells it', async () => {
     const id = homeId(A, 'i-A');
     const none = memFile(id), empty = memBody({ id, state: recorded(P80, 19), wid: 'w0', from: { kind: 'new', addr: A, integrity: 'i-A' }, home: { addr: A, integrity: 'i-A' }, closes: [] });

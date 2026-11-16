@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b3a2b';
+const VERSION = '0.7.0-b3a2b1';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -2035,7 +2035,9 @@ function onChatRenamed(data) {
     // v0.7.0-b1a (review of b1a, P1-5): a rename seen before names the room by its address then. That room has now left
     // `n.from`: its record follows it (A → B, then B → C is A → C), so another chat taking the name later (a copy renamed
     // to B) is never taken for it.
-    for (const x of list) if (x.to === n.from) x.to = n.to;
+    // v0.7.0-b3a2b1 (review of b3a2b, P1-3): the memory kept for the earlier rename (`mem`) is dropped: this rename may be of another
+    // chat under that name by now (renamed in the list). The room open now gets this notice's own record with its proof.
+    for (const x of list) if (x.to === n.from) { x.to = n.to; delete x.mem; }
     const left = leftSeen();
     for (const x of left) if (!x.gone && x.to === n.from) x.to = n.to;
     left.splice(0, left.length, ...left.filter(x => x.to !== x.from));
@@ -2301,7 +2303,14 @@ async function renameHome(h, d, input, files) {
     if (!mine()) return;
     if (why) { setHome(h, why === 'read' ? 'readFail' : why === 'tagChanged' ? 'held' : 'stopped', why); return; }
     attachHome(h, data);
-    if (sure) clearLeft(input.was);
+    // v0.7.0-b3a2b1 (review of b3a2b, P2): only the renames the memory itself names (`closes`, the list its tag got) are settled.
+    // A memory without the list (made before b3a2b) settles nothing; the rooms kept as having left this name and the takeover
+    // marks go only when every rename seen away from it is named (and there was one to name).
+    if (sure && Array.isArray(data.closes)) {
+        const from = input.was.from.filter(x => data.closes.includes(renameId(x)));
+        const all = from.length === input.was.from.length && (from.length || !input.was.left.length);
+        clearLeft({ ...input.was, from, took: all ? input.was.took : [], left: all ? input.was.left : [] });
+    }
 }
 // `다시 확인`: the chat file is read again and the room decided again. Reads only for a line whose write got no answer
 // (P1-2: that room waits to be opened again).
@@ -6742,7 +6751,9 @@ function onChatChanged() {
     // v0.7.0-b3a2b (b3 design): the room left, as far as its memory was confirmed (its id, rev and receipt). SillyTavern opens a
     // room renamed while it is open under its new name first, then tells of the rename (onChatRenamed): that rename record gets
     // it as the proof the memory moved with it (decideRoom row 5). Kept only for that next notice.
-    leftRoom = home.epoch === roomEpoch && home.key && home.status === 'linked' && home.id && home.line?.seen?.wid && !home.line.unread && !home.line.pending
+    // v0.7.0-b3a2b1 (review of b3a2b, P1-1): not while the room is stopped (`line.stop`: a conflict seen at its first write keeps the
+    // other body's receipt, an unconfirmed write or link): what it holds then is no proof of the room's own memory.
+    leftRoom = home.epoch === roomEpoch && home.key && home.status === 'linked' && home.id && home.line?.seen?.wid && !home.line.unread && !home.line.pending && !home.line.stop
         ? { addr: home.key, id: home.id, rev: home.line.seen.rev, wid: home.line.seen.wid, at: Date.now() } : null;
     roomEpoch++; cancelRun(); clearTimeout(autoTimer);
     // v0.7.0-b1: the room left takes its memory (and so its briefing) with it; the new one is linked once its chat file is checked.

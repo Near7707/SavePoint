@@ -483,6 +483,87 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
         `7l. (b3a2b) 예전 기억(목록 없음)의 이름표 복구: 이 이름을 떠난 기록이 있으면 보류, 쓰기 0 (${JSON.stringify(r.held)})`);
     ok(r.status === 'linked' && r.tag && r.closes === null && r.rev, `7l. (b3a2b) 떠난 기록이 없으면 빈 목록으로 이름표만 다시 만들고 기억 파일은 안 씀 (${JSON.stringify(r)})`);
 
+    // 7m. v0.7.0-b3a2b1 (review of b3a2b). P1-1: a room stopped at its first write by another tab's body (a conflict: the line keeps that
+    //     body's receipt) gives no proof when renamed while open → the new name is held, nothing moved.
+    r = await ev(async () => {
+        await M.switchChat('chatM1', [], {}); await M.opened(); M.add(10);
+        const id = __savePoint.home().id, A = __savePoint.home().key, g = window.fetch, b64 = t => btoa(unescape(encodeURIComponent(t))), un = t => decodeURIComponent(escape(atob(t)));
+        let flipped = false;
+        // The body this first write uploads lands as another tab's (another receipt): placeMemory takes it as theirs → conflict.
+        window.fetch = async (u, o = {}) => {
+            if (!flipped && String(u) === '/api/files/upload') {
+                const b = JSON.parse(o.body);
+                if (b.name === M.H.memName(id)) {
+                    flipped = true;
+                    const d = JSON.parse(un(b.data)); d.wid = 'other.7m'; d.recent = [{ rev: d.rev, wid: 'other.7m' }];
+                    o = { ...o, body: JSON.stringify({ ...b, data: b64(JSON.stringify(d)) }) };
+                }
+            }
+            return g(u, o);
+        };
+        try { await __savePoint.handle('run').catch(() => {}); } finally { window.fetch = g; }
+        const prep = { flipped, status: __savePoint.home().status, stop: __savePoint.home().line?.stop ?? null };
+        const n = M.fileLog.length, ups = [];
+        window.fetch = async (u, o = {}) => { if (String(u) === '/api/files/upload') ups.push(JSON.parse(o.body).name); return g(u, o); };
+        try { await M.renameChat('chatM1', 'chatM1b'); await M.opened(); await new Promise(z => setTimeout(z, 600)); await M.opened(); } finally { window.fetch = g; }
+        const rec = M.settings.savePoint.renames.filter(x => x.from === A).pop(), body = JSON.parse(M.files.get(M.H.memName(id)));
+        return { prep, mem: rec?.mem ?? null, status: __savePoint.home().status, why: __savePoint.home().why, at: body.home.addr === A, up: ups.includes(M.H.memName(id)), tagB: M.files.has(M.H.tagName(__savePoint.home().key)) };
+    });
+    ok(r.prep.flipped && r.prep.status === 'linked' && r.prep.stop === 'conflict', `7m. (b3a2b1) 준비: 첫 저장에서 다른 탭의 기억을 만나 멈춤 (${JSON.stringify(r.prep)})`);
+    ok(!r.mem && r.status === 'held' && r.why === 'renameUnproven' && r.at && !r.up && !r.tagB,
+        `7m. (b3a2b1) 멈춘 방의 이름을 바꾸면 증거를 안 남기고 새 이름은 보류, 기억 그대로 (${JSON.stringify(r)})`);
+    // P1-3: the open room renamed A → B, its move stopped (the memory write refused), then B → C in the list: the record's proof is dropped
+    //     with it (this rename may be of another chat under B by now) → C held, the memory still at A.
+    r = await ev(async () => {
+        await M.switchChat('chatM3', [], {}); await M.opened(); M.add(10); await __savePoint.handle('run').catch(() => {});
+        const id = __savePoint.home().id, A = __savePoint.home().key, ok0 = __savePoint.home().status === 'linked' && !__savePoint.home().line?.stop;
+        M.memFailOnce = 'refused';
+        await M.renameChat('chatM3', 'chatM3b'); await M.opened(); await new Promise(z => setTimeout(z, 600)); await M.opened();
+        const mid = { status: __savePoint.home().status, mem: !!M.settings.savePoint.renames.filter(x => x.from === A).pop()?.mem };
+        M.memFailOnce = null;
+        await M.switchChat('chatM3x', [], {}); await M.opened();
+        await M.renameChat('chatM3b', 'chatM3c'); await M.openFile('chatM3c'); await M.opened(); await new Promise(z => setTimeout(z, 300)); await M.opened();
+        const rec = M.settings.savePoint.renames.find(x => x.from === A), body = JSON.parse(M.files.get(M.H.memName(id)));
+        return { ok0, mid, to: rec?.to === __savePoint.home().key, mem: rec?.mem ?? null, status: __savePoint.home().status, why: __savePoint.home().why, at: body.home.addr === A };
+    });
+    ok(r.ok0 && r.mid.status === 'stopped' && r.mid.mem, `7m. (b3a2b1) 준비: 열어 둔 방 A → B, 기억 옮기기가 거절돼 멈춤 (${JSON.stringify({ ok0: r.ok0, mid: r.mid })})`);
+    ok(r.to && !r.mem && r.status === 'held' && r.why === 'renameUnproven' && r.at,
+        `7m. (b3a2b1) 그 뒤 목록에서 B → C: 앞 기록의 증거를 떼서 C는 보류, 기억은 A에 그대로 (${JSON.stringify(r)})`);
+    // P1-2 · P2: "already moved here" (the old name's tag shows a memory at home under this name, moved from the old name). Another memory
+    //     than the one kept for the rename, or a room seen leaving this name → held, nothing written. The very memory (saved since): the
+    //     rest of the move, and only the renames the memory names (`closes`) are settled here.
+    const movedHere = how => ev(async how => {
+        await M.switchChat('chatM4' + how, [], {}); await M.opened();
+        const B = __savePoint.home().key, A = JSON.stringify([M.charKey(), 'chatOld7m' + how]), integrity = M.meta.integrity, s = M.settings.savePoint;
+        const Z = n => JSON.stringify([M.charKey(), 'chatZ7m' + how + n]), at = Date.now() - 1000;
+        const y = 'mem-7m-y' + how, doc = { ...JSON.parse(M.files.get([...M.files.keys()].find(k => k.startsWith('savepoint-mem-')))) };
+        M.otherPut(M.H.memName(y), { ...doc, id: y, rev: 4, wid: 'other.7m', recent: [{ rev: 4, wid: 'other.7m' }], home: { addr: B, integrity, was: [A] }, closes: [`${B}|${at + 1}`] });
+        M.otherPut(M.H.tagName(A), M.H.tagBody({ addr: A, integrity, mem: y }));
+        s.renames.push({ from: A, to: B, at, mem: { id: how === 'other' ? 'mem-7m-x' : y, rev: 1, wid: 'w.old' } });
+        // Renames away from this name made by a room that had taken it over (`foreign`: no hold), the first named by the memory.
+        s.renames.push({ from: B, to: Z(1), at: at + 1, foreign: true }, { from: B, to: Z(2), at: at + 2, foreign: true });
+        (s.leftNames ||= []).push({ from: B, to: Z(2), at: at + 2, foreign: true });
+        if (how === 'left') s.leftNames.push({ from: B, to: Z(3), at: at + 3 });
+        const n = M.fileLog.length, g = window.fetch, ups = [];
+        // Only the room's own files count (an AUTO backup of the room left may be written then).
+        window.fetch = async (u, o = {}) => { if (String(u) === '/api/files/upload' && /^savepoint-(mem|room|int)-/.test(JSON.parse(o.body).name)) ups.push(JSON.parse(o.body).name); return g(u, o); };
+        try { await M.openFile('chatM4' + how); await M.opened(); await new Promise(z => setTimeout(z, 300)); await M.opened(); } finally { window.fetch = g; }
+        const f = s.renames.filter(x => x.from === B);
+        const out = { d: __savePoint.home().d?.verdict, status: __savePoint.home().status, why: __savePoint.home().why, ups: ups.length, upn: ups, tagB: M.files.has(M.H.tagName(B)),
+            mem: __savePoint.home().id === y, s1: !!f.find(x => x.to === Z(1))?.settled, s2: !!f.find(x => x.to === Z(2))?.settled, kept: s.leftNames.some(x => x.from === B && x.to === Z(2)) };
+        s.renames = s.renames.filter(x => x.from !== A && x.from !== B); s.leftNames = s.leftNames.filter(x => x.from !== B);
+        return out;
+    }, how);
+    r = await movedHere('other');
+    ok(r.d === 'hold' && r.status === 'held' && r.why === 'renameUnproven' && r.ups === 0 && !r.tagB,
+        `7m. (b3a2b1) 이미 새 이름으로 옮겨진 기억이라도 기록의 기억과 다르면 보류, 쓰기 0 (${JSON.stringify(r)})`);
+    r = await movedHere('left');
+    ok(r.d === 'hold' && r.status === 'held' && r.why === 'renamedAway' && r.ups === 0 && !r.tagB,
+        `7m. (b3a2b1) 이 이름을 떠난 방의 기록이 있으면 보류, 쓰기 0 (${JSON.stringify(r)})`);
+    r = await movedHere('same');
+    ok(r.d === 'rename' && r.status === 'linked' && r.mem && r.tagB, `7m. (b3a2b1) 같은 기억(그 뒤 저장해서 영수증만 다름)은 나머지 옮기기를 마침 (${JSON.stringify(r)})`);
+    ok(r.s1 && !r.s2 && r.kept, `7m. (b3a2b1) 정리는 기억의 목록(closes)에 있는 기록만, 나머지 기록·떠난 이름은 그대로 (${JSON.stringify(r)})`);
+
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();

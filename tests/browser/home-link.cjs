@@ -391,8 +391,22 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(h.status === 'held' && h.verdict !== 'rename' && home20 === JSON.stringify(['ari.png', 'cleaned']), `20. 옛 이름을 이어받은 사본 → 원래 기억을 옮기지 않음 (${JSON.stringify(h)} ${home20})`);
     await ev(() => M.openFile('rC')); await wait(1200);
     h = await H();
+    // v0.7.0-b3a2b1 (review of b3a2b, P1-3): the record followed the room to rC, but its proof (kept for cleaned → rB) is dropped with
+    // it — rB → rC was renamed in the list before the memory moved to rB: held, the memory still at its old name.
+    const rec20 = await ev(() => { const x = M.settings.savePoint.renames.find(x => x.from === JSON.stringify(['ari.png', 'cleaned']) && x.to === JSON.stringify(['ari.png', 'rC'])); return x ? { mem: x.mem ?? null } : null; });
+    const home20b = await ev(id => JSON.parse(M.files.get('savepoint-mem-' + id + '.json')).home.addr, mem20);
+    ok(rec20 && !rec20.mem && h.status === 'held' && h.why === 'renameUnproven' && home20b === JSON.stringify(['ari.png', 'cleaned']),
+        `20. (b3a2b1) 목록에서 두 번 바꾼 원래 방: 기록은 따라오지만 앞 증거는 떼서 보류, 기억은 옛 이름에 그대로 (${JSON.stringify(h)} ${JSON.stringify(rec20)} ${home20b})`);
+    // The same record with that room's proof (as when renamed while open): rC takes the memory (and the checks after it use rC).
+    await ev(id => {
+        const m = JSON.parse(M.files.get('savepoint-mem-' + id + '.json'));
+        const x = M.settings.savePoint.renames.find(x => x.from === JSON.stringify(['ari.png', 'cleaned']) && x.to === JSON.stringify(['ari.png', 'rC']));
+        x.mem = { id: m.id, rev: m.rev, wid: m.wid };
+    }, mem20);
+    await ev(() => __savePoint.handle('home-recheck')); await wait(1200);
+    h = await H();
     const home20c = await ev(id => JSON.parse(M.files.get('savepoint-mem-' + id + '.json')).home.addr, mem20);
-    ok(h.status === 'linked' && h.verdict === 'rename' && h.id === mem20 && home20c === JSON.stringify(['ari.png', 'rC']), `20. 두 번 바꾼 원래 방 → 기억 이어받음 (${JSON.stringify(h)} ${home20c})`);
+    ok(h.status === 'linked' && h.verdict === 'rename' && h.id === mem20 && home20c === JSON.stringify(['ari.png', 'rC']), `20. 같은 기록에 그 방의 기억 증거가 있으면 두 번 바꾼 원래 방이 기억 이어받음 (${JSON.stringify(h)} ${home20c})`);
 
     // 16. P1-1: another device made this new room's memory first and the read after it fails: still not this change's.
     const newRoom = name => ev(([n, i]) => { const list = JSON.parse(JSON.stringify(M.chat.slice(0, 6))); list.forEach(m => { delete m.is_system; if (m.extra) for (const k of Object.keys(m.extra)) if (k.startsWith('savepoint')) delete m.extra[k]; }); M.serverFiles[n] = [{ chat_metadata: { integrity: i } }, ...list]; return M.openFile(n); }, [name, name + '-int']);
@@ -551,7 +565,18 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => M.openFile('rHx')); await wait(1200);
     h = await H();
     r = await memHome();
-    ok(h.status === 'linked' && h.verdict === 'rename' && h.id === mem24 && r === JSON.stringify(['ari.png', 'rHx']), `27. 목록에서 두 번 바꾼 특수문자 이름 → 기억 찾음 (${JSON.stringify(h)} ${r})`);
+    // v0.7.0-b3a2b1 (review of b3a2b, P1-3): the record finds rHx (the cleaned name), its proof dropped at the second rename → held.
+    const rec27 = await ev(() => { const k = __savePoint.home().key, x = M.settings.savePoint.renames.find(x => x.from === JSON.stringify(['ari.png', 'rD']) && x.to === k); return x ? { mem: x.mem ?? null } : null; });
+    ok(rec27 && !rec27.mem && h.status === 'held' && h.why === 'renameUnproven' && r === JSON.stringify(['ari.png', 'rD']),
+        `27. (b3a2b1) 목록에서 두 번 바꾼 특수문자 이름: 기록은 정리된 이름을 찾지만 앞 증거는 떼서 보류 (${JSON.stringify(h)} ${JSON.stringify(rec27)} ${r})`);
+    await ev(id => {
+        const m = JSON.parse(M.files.get('savepoint-mem-' + id + '.json')), k = __savePoint.home().key;
+        M.settings.savePoint.renames.find(x => x.from === JSON.stringify(['ari.png', 'rD']) && x.to === k).mem = { id: m.id, rev: m.rev, wid: m.wid };
+    }, mem24);
+    await ev(() => __savePoint.handle('home-recheck')); await wait(1200);
+    h = await H();
+    r = await memHome();
+    ok(h.status === 'linked' && h.verdict === 'rename' && h.id === mem24 && r === JSON.stringify(['ari.png', 'rHx']), `27. 같은 기록에 그 방의 기억 증거가 있으면 목록에서 두 번 바꾼 특수문자 이름 → 기억 찾음 (${JSON.stringify(h)} ${r})`);
     // 28. P1-4: SillyTavern names a deleted chat without ".jsonl" (a chat named "d28.jsonl" is sent as that): its record goes.
     await ev(() => M.eventSource.emit(M.event_types.CHAT_RENAMED, { avatarId: 'ari.png', oldFileName: 'zz-g.jsonl', newFileName: 'd28.jsonl.jsonl' }));
     const rec28 = () => ev(() => __savePoint.settings().renames.some(x => JSON.parse(x.to)[1] === 'd28.jsonl'));

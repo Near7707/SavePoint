@@ -356,7 +356,13 @@ export async function decideRoom(input, read, { readMem = id => read(memName(id)
         // tag would) is another room's.
         if (Array.isArray(m.data.closes) && m.data.closes.includes(r.id)) continue;
         // Already moved here (this rename, by this tab or another one): only the steps after the move are left.
-        if (m.data.home.addr === addr && Array.isArray(m.data.home.was) && m.data.home.was.includes(r.from)) return out('rename', 5, { from: r.from, mem: t.data.mem, moved: true });
+        // v0.7.0-b3a2b1 (review of b3a2b, P1-2): not over another memory than the one kept for the rename (its id: the move itself
+        // gives a new receipt), nor when the room of this name was seen leaving it (`left`).
+        if (m.data.home.addr === addr && Array.isArray(m.data.home.was) && m.data.home.was.includes(r.from)) {
+            if (plainObj(r.mem) && r.mem.id !== t.data.mem) return hold(5, 'renameUnproven', { mem: t.data.mem, from: r.from });
+            if (input.left) return hold(5, 'renamedAway', { mem: t.data.mem, to: input.left });
+            return out('rename', 5, { from: r.from, mem: t.data.mem, moved: true });
+        }
         // Otherwise the tag at the old name may be a memory another tab linked there after the rename (same integrity: a copy):
         // the move is made only over the very memory the room had when it was renamed (`r.mem`, kept from the room open then:
         // its id, rev and receipt). No such record (renamed in the list, or before b3a2b), or saved since anywhere → hold.

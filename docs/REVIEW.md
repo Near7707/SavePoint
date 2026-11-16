@@ -1,3 +1,48 @@
+# v0.7.0-b3a2b1 · b3a2b 리뷰 반영 (멈춘 방 증거 · 이전 증거 떼기 · "이미 옮겨짐" 확인 · 정리 범위) (브랜치 `v0.7-b`)
+
+기준: `62fa3bc`(b3a2b 리뷰 요청서, 코드 `2a93e8c`). b3a2b GPT 리뷰: P1 3, P2 1, P3 없음. 2차 의견에서 P1-1을 P2로 내림. 파일: `home.js`, `index.js`, `manifest.json`(버전만), 검사(`room-gate.cjs` 7m, `home.test.mjs`), 문서.
+
+| 항목 | 처리 |
+|---|---|
+| P1-1(→P2): 첫 저장 충돌로 멈춘 방(`line.seen`이 상대 본체 영수증)의 이름을 바꾸면 그 영수증이 증거가 됨 | 🟡 반영. `onChatChanged`의 `leftRoom` 조건에 `!home.line.stop`. 멈춘 방(충돌·`linkPart`·`FIRST_UNSURE` 등)을 연 채 바꾸면 새 이름은 보류. |
+| P1-2: 5행 "이미 여기로 옮겨짐"이 기록의 기억 ID를 안 봄, 이 이름을 떠난 기록도 안 봄 | 🔴 반영. 그 분기에서 `r.mem`이 있고 ID가 다르면 `renameUnproven`, `input.left`면 `renamedAway` 보류. ID만 비교(옮기기가 새 영수증을 만듦). `r.mem`이 없는 기록은 예전처럼 통과(b3a2b "특히 봐 줄 곳 3"). |
+| P1-3: A → B의 `mem`이 확인 안 된 B → C에도 따라감 | 🔴 반영. `onChatRenamed`가 앞 기록의 도착지를 바꿀 때 `delete x.mem`(조건 없이, GPT 2차 의견). 열어 둔 방이면 이번 알림의 기록에 새 증거가 붙음. |
+| P2-a: `closes`가 덮는 방도 1행·6행이 `input.left`로 보류 | ⚪ b4로(자동 복구와 함께, 사용자·GPT 동의). 기억 파일은 남고 다른 방에 안 붙음. |
+| P2-b: `renameHome`이 이름표엔 본체 목록을 쓰고 이 기기에선 `input.was` 전체를 정리 | 🟡 반영. 본체 `closes`에 있는 기록만 `settled`. 목록 없는 옛 본체면 정리 안 함. `left`(떠난 이름)·`took`은 그때 본 기록이 모두 목록에 있을 때만(기록이 하나도 없는데 떠난 이름만 있으면 안 지움 — `relink`의 `closesUnknown`과 같은 기준). |
+
+## 바뀐 것
+- `index.js onChatChanged`: 떠나는 방 증거(`leftRoom`) 조건에 `!home.line.stop`.
+- `index.js onChatRenamed`: `for (const x of list) if (x.to === n.from) { x.to = n.to; delete x.mem; }`.
+- `home.js decideRoom` 5행 "이미 여기" 분기: ID 다름 → `hold(5, 'renameUnproven')`, `input.left` → `hold(5, 'renamedAway')`.
+- `index.js renameHome` 끝: `sure && Array.isArray(data.closes)`일 때만 `clearLeft({ ...input.was, from: 목록에 있는 것, took/left: 전부 덮일 때만 })`. 이 실행이 본체를 옮긴 경우는 `data.closes = input.closes`(그때 본 기록 전부)라 예전과 같음.
+
+## ★ 특히 봐 줄 곳
+1. P1-2에서 `r.mem`이 없는 기록(목록 이름 변경, b3a2b 전 기록)은 "이미 옮겨짐" 분기를 여전히 증거 없이 통과해요. P1-3 뒤로는 도착지가 바뀐 기록도 `mem`이 없어지는데, 이 경우 본체는 이미 그 도착지에 있어야(`home.addr === addr`) 이 분기에 와요. 이걸로 충분한지.
+2. P2-b의 `left`·`took` 정리 조건(그때 본 `from` 기록이 모두 목록에 있고, 기록이 0개면 떠난 이름도 0개일 때만).
+3. P1-1로 `linkPart`·`FIRST_UNSURE`처럼 본체는 이 방 것인 멈춤도 증거를 안 남겨요(보류 쪽, 안전). 괜찮은지.
+4. P1-3의 결과로 `home-link` 20·27(목록에서 두 번 바꾼 방)의 기대가 "이어받음" → "보류"로 바뀌었어요. 의도대로인지.
+
+## 바뀐 기대(기존 검사)
+- `home-link` 20(cleaned → rB → rC)·27(rD → rG → rH:x = rHx): 목록에서 두 번 바꾼 방은 이제 보류(`renameUnproven`, 기억은 옛 이름에 그대로) — P1-3 그대로의 결과(GPT 2차 의견: "A → B 이동이 끝나지 않아 B에서 확인한 기억이 없으면 C는 보류"). 두 검사 모두 보류를 먼저 확인하고, 같은 기록에 그 방의 기억 증거를 손으로 넣은 뒤(열어 둔 채 바꾼 경우처럼) `다시 확인` → 예전 기대(이어받음)를 확인해요. 그래서 그 방을 쓰는 22~26은 그대로.
+
+## 검사 준비
+- `room-gate` 7m(7l 뒤, 파일 끝): 
+  - P1-1: 새 방 `chatM1` 첫 저장의 본체 업로드를 `fetch`에서 다른 영수증(`other.7m`)으로 바꿔 올림 → `placeMemory`가 상대 본체로 봄 → `conflict`로 멈춤 → 열어 둔 채 `M.renameChat`.
+  - P1-3: `chatM3` 저장 → `M.memFailOnce = 'refused'` 후 열어 둔 방 이름 변경(기억 옮기기 거절, `stopped`, 기록엔 `mem`) → 다른 방에서 목록 이름 변경 B → C → C 열기.
+  - P1-2·P2: 새 방 B에 옛 이름 A 이름표(기억 Y) + Y 본체(`home: { addr: B, was: [A] }`, `closes: [B → Z1 기록 ID]`) + 기록 A → B(`mem`의 ID: `other`면 X, 아니면 Y, rev·wid는 옛 값) + B를 떠난 `foreign` 기록 둘(Z1·Z2)·떠난 이름 Z2(`foreign`), `left`면 떠난 이름 Z3(보통) 추가 → B 다시 열기. 업로드는 방 파일(`mem`·`room`·`int`)만 셈(떠난 방의 AUTO 백업 제외).
+- `home.test` "v0.7.0-b3a2b1 row 5": ID 다름 → 보류, 같은 ID·다른 rev → `moved`, `left` → 보류.
+
+## 검사와 망가뜨리기 결과
+- 고치기 전 코드(`2a93e8c`, 새 `room-gate.cjs`·`mock.js` 복사): 7m 새 줄 5개 FAIL(준비 줄은 통과). `home.test` 새 검사도 FAIL.
+- 망가뜨리기 5개, 각각 정확히 한 줄씩 잡힘:
+  - `leftRoom`의 `!home.line.stop` 빼기 → "멈춘 방의 이름을 바꾸면 …" FAIL
+  - `delete x.mem` 빼기 → "그 뒤 목록에서 B → C …" FAIL
+  - 5행 "이미 여기" ID 비교 빼기 → "기록의 기억과 다르면 보류" FAIL
+  - 5행 "이미 여기" `input.left` 빼기 → "떠난 방의 기록이 있으면 보류" FAIL
+  - `renameHome` 정리를 `clearLeft(input.was)`로 되돌리기 → "정리는 기억의 목록에 있는 기록만" FAIL
+- Node 509 통과 / 0 실패 / 3 건너뜀.
+- 브라우저 58묶음 한꺼번에: 56 통과 + `home-link`(위 20·27 기대 바뀜, 고친 뒤 따로 통과) + `status`(알려진 `autoFail` null 오류. 따로 세 번 돌려 1번째 같은 오류, 2·3번째 통과). 검사 모드 오류 0. `room-gate` 통과 69줄(SKIP 1).
+
 # v0.7.0-b3a2b · 이름 변경 판정 엄격하게 (`closes` 본체 보관 · 5행 차단) (브랜치 `v0.7-b`)
 
 기준: `493ea98`(b3a2a 리뷰 요청서, 코드 `3921dff`). b3a2a 리뷰 P1·P2·P3 없음. 파일: `home.js`, `index.js`, `manifest.json`(버전만), 검사(`room-gate.cjs` 7k·7l, `home-link.cjs`, `home.test.mjs`), 문서. 기준은 PLAN "v0.7.0-b3 설계"의 b3a2 줄과 인계 "b3a2b 기준"(GPT 답 + 사용자 동의).
