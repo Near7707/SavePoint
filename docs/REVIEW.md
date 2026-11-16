@@ -1,3 +1,49 @@
+# v0.7.0-b3b1b · b3b1a 리뷰 반영 (재확인 출처를 읽기 시작점에서 · 따라가기 저장 한 번) (브랜치 `v0.7-b`)
+
+기준: `badd3ab`(b3b1a 리뷰 요청서, 코드 `14ead7b`). b3b1a GPT 리뷰: P1 1, P2 1, P3 없음. 2차 의견과 사용자 동의대로 둘 다 반영. 파일: `index.js`, `manifest.json`(버전만), 검사(`b2b-race.cjs` 5i~5l), 문서.
+
+| 항목 | 처리 |
+|---|---|
+| P1: `freeReleased()`가 늘 `'auto'` → 불러오기 사전 확인(`serverCovered(…, { adopt: false })`) 같은 읽기만 하는 곳에서 해제를 알아채도 저장 중 복구로 분류, 못 덮는 숨김이 남아도 멈추지 않음 | 🔴 반영. 기본값 `'user'`. 출처는 채팅 파일을 읽은 곳이 넘김: `serverCovered(…, { by })`, `persist(meta, guard, by) → writeChatFile(…, by) → fileAllows(sentSnap, by)`. `'auto'`는 `writeEntry`·`releaseFirst`가 시작한 읽기·쓰기(그리고 자동 재확인이 자기 읽기에 그대로 넘김)뿐. 백그라운드 저장(`guardedSave`, 같은 쓰기 함수를 써서 `fileAllows`에 고정하면 재전송 검사에 구멍 — 2차 의견)·QUICK 백업 전 확인·불러오기 사전 확인·방 열기·버튼은 `'user'`. |
+| P2: `unhideOnServer()`가 확인된 기억이 덮는 메시지도 "화면은 보임 + 서버는 SavePoint 숨김"이면 채팅 저장 | 🔴 반영. 저장 조건에 `i > lastIndex`(확인된 기억 `state()`, `syncHide`의 따라가기와 같은 `floor`). 2차 의견대로 따라가기의 저장을 한 곳으로: `syncHide({ release: true })`는 화면만 맞추고 `saveChatSoon()`을 예약하지 않음 → 저장 여부는 `unhideOnServer`가 한 번 정함(예전엔 둘이 따로 저장해 2회). |
+| 섞인 경우 범위 안 해제도 함께 서버로 감 | ⚪ 허용(GPT 동의). 채팅 전체를 보내니 화면에서 이미 풀린 범위 안 메시지도 서버에서 풀림. 다음 하이드 차례(세이브·체크포인트·👻)에 설정대로 다시 숨김, 사용자 숨김(표시 없음) 보호는 그대로. |
+
+## 바뀐 것
+- `freeReleased(list, by = 'user')` → `recheckHome(by)`.
+- `serverCovered(page, tries, { adopt, by = 'user' })`, `fileAllows(sentSnap, by = 'user')`, `writeChatFile(fileMeta, guard, by = 'user')`, `persist(fileMeta, guard, by = 'user')`.
+- `'auto'`를 넘기는 곳: `releaseFirst`의 채팅 확인·풀기 저장, `writeEntry`의 변경 전 확인·마지막 확인·채팅 저장. `recheckHome`은 자기 읽기에 받은 출처를 그대로(`{ by }`) — 자동 재확인 중 또 알아챈 해제가 사용자 요청으로 바뀌지 않게.
+- `syncHide`: `if (!inApply && !release) saveChatSoon()`.
+- `unhideOnServer`: `const st = state(), floor = …; chat().some((m, i) => i > floor && …)`.
+
+## ★ 특히 봐 줄 곳
+1. `recheckHome('auto')`가 자기 읽기(`serverCovered`)에 `'auto'`를 넘겨요. 그 읽기에서 또 해제를 알아채면 `again`만 남고(`userDuring` 안 붙음) 예전과 같아요. 망가뜨리기(이 읽기를 `'user'`로)는 안 잡혔어요 — 그 장면은 만들지 못했어요.
+2. 백그라운드 저장의 재전송 검사(`writeChatFile` → `fileAllows`) 경로는 검사로 못 지켜요. `persist` 기본값을 `'auto'`로 망가뜨려도 통과: 그 경로는 실리태번 저장을 기다린 뒤라 바로 앞 `homeStill()`이 기억 변경을 먼저 막아서, 해제 + 다른 영수증이 함께 보이는 장면이 거의 안 생겨요(겹 장치). 코드상 `'user'`로 내려가는 것만 확인.
+3. 따라가기에서 화면만 바뀐 다른 표시(🔖 정리·사용자 해제 표시·`HELD` 떼기)는 이제 그 자리에서 저장하지 않고 다음 저장에 실려요(못 덮는 해제가 있으면 그 저장에 함께).
+4. `home-link` 46~51(b1g의 "서버에만 남은 숨김 정리")은 기대 변경 없이 통과했어요.
+
+## 바뀐 기대(기존 검사)
+- 없음.
+
+## 검사 준비(`b2b-race.cjs`, 5h 뒤·6 앞)
+- 5i: `fresh()` → `afterMem(1, PARTIAL('other5i', 2, -1))`(기억 확인 직후 다른 기기가 기억을 비우고 #2 뒤 숨김을 뗌 — 그 전에 바꾸면 `homeStill`이 충돌로 먼저 막음) → `persistSoon()`.
+- 5j: `fresh()` → 슬롯 `p5j` 저장 → `PARTIAL('other5j', 2, -1)` → `M.confirm = 1` 뒤 `handle('load', id)`.
+- 5k: `fresh()` → 화면 #1만 표시 떼고 펼침(`adoptPage`) → `OTHER_SAVE` → `recheckHome('auto')`.
+- 5l: 5k와 같은 화면 → `PARTIAL('other5l', 999, 3)`(채팅 파일은 그대로, 기억만 #3까지) → `recheckHome('auto')` → 그 뒤 세이브.
+- 5i·5j 끝에서 `STRIP` 뒤 다시 확인(다음 검사를 위해).
+
+## 검사와 망가뜨리기 결과
+- 고치기 전 코드(`14ead7b`, 새 `b2b-race.cjs`·`mock.js` 복사): 5i·5j·5k·5l(첫 줄) FAIL — 5l은 채팅 저장 2회. 5l 둘째 줄(다음 세이브가 다시 숨김)은 예전 코드도 통과(지키는 줄).
+- 망가뜨리기:
+  - `serverCovered` 기본 출처 `'auto'` → 5i·5j FAIL
+  - `writeEntry` 마지막 확인이 출처 없이 → 5d FAIL
+  - `unhideOnServer`의 `i > floor` 빼기 → 5k FAIL
+  - `syncHide`의 `!release` 빼기 → 5l FAIL(저장 2회)
+  - `freeReleased` 기본값만 `'auto'` → 안 잡힘(모든 호출이 출처를 넘겨서 기본값이 안 쓰임, 정상)
+  - `recheckHome` 자기 읽기가 출처 없이 → 안 잡힘(★1)
+  - `persist` 기본 `'auto'` → 안 잡힘(★2)
+- Node 510 통과 / 0 실패 / 3 건너뜀.
+- 브라우저 59묶음 한꺼번에 모두 통과, 검사 모드 오류 0.
+
 # v0.7.0-b3b1a · b3b1 리뷰 반영 (재확인 출처 · 따라갈 때 풀 범위) (브랜치 `v0.7-b`)
 
 기준: `b21daed`(b3b1 리뷰 요청서, 코드 `68b6519`). b3b1 GPT 리뷰: P1 1, P2 2, P3 없음. 2차 의견과 사용자 동의대로 P1·P2-1만, P2-2는 b3b2. 파일: `index.js`, `manifest.json`(버전만), 검사(`b2b-race.cjs` 5 기대 바뀜 + 5d~5h), 문서.

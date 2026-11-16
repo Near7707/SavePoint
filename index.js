@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b3b1a';
+const VERSION = '0.7.0-b3b1b';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -240,7 +240,9 @@ function ensureState() {
 function hasMemory(mem) { return !!(mem && (mem.scenes.length || mem.records.length)); }
 // v0.7.0-b1d (review of b1c, P1-1): `guard` is the check of this write only (each write its own). Returns the copy last
 // answered with success (P2-1), or undefined without a chat.
-async function persist(fileMeta, guard = null) { if (hasChat()) return writeChatFile(fileMeta, guard); }
+// v0.7.0-b3b1b (review of b3b1a, P1): `by` — who the hide check of this write asks for when the file took hides away: 'auto' only from
+// a queued change (writeEntry, releaseFirst); every other write (background saves) asks as the user does (a stop stays a stop).
+async function persist(fileMeta, guard = null, by = 'user') { if (hasChat()) return writeChatFile(fileMeta, guard, by); }
 // v0.6.72: SavePoint writes the chat file itself, for the room open at the moment of the call. SillyTavern's
 // saveMetadata()/saveChatConditional() wait at least 0.1 s and then save whatever room is open by then: a
 // room switch in that moment sent the next room's name with no messages and metadata without `integrity`
@@ -311,7 +313,7 @@ const ST_SAVE_500 = 'An error has occurred, see the console logs for more inform
 // v0.7.0-b1d (review of b1c, P1-1): given to the write itself (`guard`), not kept for all rooms: a write of another room
 // ending meanwhile can no longer take this one's away.
 // v0.7.0-b1d (review of b1c, P2-1): returns the copy last answered with success (`sentSnap`).
-async function writeChatFile(fileMeta = null, guard = null) {
+async function writeChatFile(fileMeta = null, guard = null, by = 'user') {
     checkQueue('chat file write');
     const key = roomKey(), epoch = roomEpoch;
     // A copy is taken at one moment, so a newer page SillyTavern saves while it is on its way could land
@@ -360,7 +362,7 @@ async function writeChatFile(fileMeta = null, guard = null) {
                 if (moved()) { if (sent !== null) return sentSnap; throw fail(new RoomBlocked('채팅방이 바뀌어서 저장하지 않았어요.')); }
                 if (!hs.ok) { render(); const e = new RoomBlocked(hs.why === 'memRead' ? '기억 파일을 다시 읽지 못해서 채팅 파일을 저장하지 않았어요.' : `채팅 파일은 저장하지 않았어요. ${homeMessage() || '그사이 다른 곳에서 이 방의 기억 파일을 저장했어요.'}`); e.memMoved = hs.why; throw fail(e); }
             }
-            const c = await fileAllows(sentSnap);
+            const c = await fileAllows(sentSnap, by);
             if (moved()) { if (sent !== null) return sentSnap; throw fail(new RoomBlocked('채팅방이 바뀌어서 저장하지 않았어요.')); }
             // v0.7.0-b2b: the file took away SavePoint hides the page still had (shown now, fileAllows): nothing more is sent.
             if (c.ok && c.released?.length) { setSeen(c.r.snap); const e = new RoomBlocked(RELEASED_HELD); e.released = true; throw fail(e); }
@@ -451,7 +453,7 @@ async function readSettled(page = pageSnap) {
     const again = await readServerChat();
     return movedSince(key, epoch) ? { ok: false, why: 'moved' } : again;
 }
-async function fileAllows(sentSnap = null) {
+async function fileAllows(sentSnap = null, by = 'user') {
     // v0.6.103 (review P3): nothing of a read answered after the room changed reaches the room open now (`gate.seen`).
     const r = await readSettled();
     if (!r.ok) return { ok: false, why: r.why };
@@ -460,7 +462,7 @@ async function fileAllows(sentSnap = null) {
     if (!c.ok && c.why !== 'gone' && sentSnap && ownCopy(sentSnap, r.snap)) c = { ok: true };
     if (c.ok && foreignMemory(r, now, seen)) return { ok: false, why: 'mem' };
     const rel = c.ok && gateHere() ? releasedOf(r, now, seen) : [];
-    if (rel.length) freeReleased(rel);
+    if (rel.length) freeReleased(rel, by);
     // v0.6.104 (review P3): the caller makes this file the base (`gate.seen`; today only writeChatFile), after its own check that the
     // room is still the one whose file was read: the room can change between readSettled's check and this line.
     if (genBusy(c)) return { ok: false, why: 'busy' };
@@ -520,7 +522,9 @@ function fitReleased({ m, user }, all = chat()) {
     if (m.extra?.[VISIBLE_KEY] !== SERVER_SHOWN) { m.extra ||= {}; m.extra[VISIBLE_KEY] = SERVER_SHOWN; n = true; }
     return n;
 }
-function freeReleased(list) {
+// v0.7.0-b3b1b (review of b3b1a, P1): `by` comes from the caller that read the file; 'auto' only for a queued change's own reads
+// and writes. A load's look, a QUICK backup's check, a background save, opening the room and `다시 확인` ask as the user.
+function freeReleased(list, by = 'user') {
     const all = chat();
     let n = 0;
     for (const x of list) { if (fitReleased(x, all)) n++; freedNow.push(x); }
@@ -528,8 +532,8 @@ function freeReleased(list) {
     if (homeHere()) home.freed = true;
     ctx().swipe?.refresh?.(); refreshView();
     toastr.info(RELEASED_NOTE, 'SavePoint', { timeOut: 8000 });
-    // v0.7.0-b3b1a (review of b3b1, P1): asked by the save flow itself (`auto`), not by the user.
-    Promise.resolve().then(() => recheckHome('auto')).catch(() => {});
+    // v0.7.0-b3b1a (review of b3b1, P1): asked by the save flow itself (`auto`) only when its caller says so (b3b1b).
+    Promise.resolve().then(() => recheckHome(by)).catch(() => {});
     return n;
 }
 // At the end of a save turn (writeEntry), in the room it ran in: what freeReleased did is done again after anything taken back.
@@ -993,13 +997,13 @@ async function releaseFirst(queue, entry, pre) {
     for (let k = 0; k < 3 && await stIdle(); k++) { if (moved()) throw gone(); await memStill(); }
     if (moved()) throw gone();
     let now;
-    try { now = await serverCovered(); } catch { now = { ok: false, why: 'error' }; }
+    try { now = await serverCovered(pageSnap, undefined, { by: 'auto' }); } catch { now = { ok: false, why: 'error' }; }
     if (moved() || now.why === 'moved') throw gone();
     if (now.ok && now.released?.length) { undoAll('released'); throw new RoomBlocked(`이번 변경은 하지 않았어요. ${RELEASED_NOTE}`); }
     if (!now.ok) { undoAll(now.why); blockRoom(now.why, now.at); throw new RoomBlocked(`${gateMessage()} 이번 변경은 취소했어요.`); }
     pre = now;
     written = sendSnap(pre.meta);
-    try { const last = await persist(pre.meta); if (last) written = last; }
+    try { const last = await persist(pre.meta, null, 'auto'); if (last) written = last; }
     catch (e) {
         const err = await settleWrite(e, { written, rev, proof: null, pre, key: entry.key, epoch: entry.epoch, marks, tick });
         if (err === 'revert') { undoAll(e); throw new Error(`원문 숨김 풀기를 채팅 파일에 저장하지 못해서 이번 변경을 취소했어요. (${e?.message || e})`); }
@@ -1064,7 +1068,7 @@ async function writeEntry(queue, entry) {
     if (moved()) throw cancelMoved(queue, entry);
     freedNow = [];
     let pre;
-    try { pre = await serverCovered(); } catch { pre = { ok: false, why: 'error' }; }
+    try { pre = await serverCovered(pageSnap, undefined, { by: 'auto' }); } catch { pre = { ok: false, why: 'error' }; }
     if (moved()) throw cancelMoved(queue, entry);
     if (entry.cancelled) throw entry.cancelled;
     if (!pre.ok) { blockRoom(pre.why, pre.at); throw new RoomBlocked(`${gateMessage()} 이번 변경은 취소했어요.`); }
@@ -1216,7 +1220,7 @@ async function writeEntry(queue, entry) {
         }
         if (moved()) throw away();
         let now;
-        try { now = await serverCovered(); } catch { now = { ok: false, why: 'error' }; }
+        try { now = await serverCovered(pageSnap, undefined, { by: 'auto' }); } catch { now = { ok: false, why: 'error' }; }
         if (moved() || now.why === 'moved') throw away();
         // v0.7.0-b2b: the file took away SavePoint hides the page still shows (another device's reset or unhide): this change's chat
         // write is held back whole (its other hides may rest on a memory being reset). Those messages are shown (serverCovered).
@@ -1286,7 +1290,7 @@ async function writeEntry(queue, entry) {
         };
         // v0.7.0-b1d (review of b1c, P2-1): the copy last answered with success is what the read back is compared with (a copy
         // sent again differs from the first: an old hide went back, or SillyTavern saved the page meanwhile).
-        try { const last = await persist(pre.meta, guard); if (last) written = last; }
+        try { const last = await persist(pre.meta, guard, 'auto'); if (last) written = last; }
         catch (e) {
             // v0.7.0-b2a4 (review of b2a3, P2): no copy could be made before the first request, so the first check (which takes what is
             // sent and checked) never ran: what is read back is compared with the page after the last wait (SillyTavern may have saved
@@ -1707,7 +1711,7 @@ async function readServerChat() {
 // lacks now was deleted elsewhere ('gone'), and a SavePoint memory in the file that is neither the one
 // last confirmed nor this page's, and that this page did not write, was saved by another device ('mem').
 // Neither goes away by waiting.
-async function serverCovered(page = pageSnap, tries = [0, 500, 1500], { adopt = true } = {}) {
+async function serverCovered(page = pageSnap, tries = [0, 500, 1500], { adopt = true, by = 'user' } = {}) {
     const key = roomKey(), epoch = roomEpoch;
     const moved = () => roomKey() !== key || roomEpoch !== epoch;
     let last = { ok: false, why: 'error' }, busy = false;
@@ -1721,7 +1725,7 @@ async function serverCovered(page = pageSnap, tries = [0, 500, 1500], { adopt = 
         const c = covers(now, r.snap, MODULE, seen, gateHere() ? gate.cut : null);
         if (c.ok && foreignMemory(r, now, seen)) return { ok: false, why: 'mem' };
         // v0.7.0-b2b: hides the file took away since it was last seen are shown on the page now, before the file becomes the base.
-        if (c.ok && gateHere()) { const rel = releasedOf(r, now, seen); if (rel.length) { r.released = rel; freeReleased(rel); } }
+        if (c.ok && gateHere()) { const rel = releasedOf(r, now, seen); if (rel.length) { r.released = rel; freeReleased(rel, by); } }
         // v0.6.87: `adopt: false` — a look before a change takes its turn (a load's questions): a write of this room may
         // be on its way, so the file is not made the base (its turn checks again).
         if (c.ok) { if (adopt && gateHere()) setSeen(r.snap); return r; }
@@ -2365,7 +2369,7 @@ async function recheckHome(by = 'user') {
     if (h.linking || h.status === 'opening') { h.again = true; if (by !== 'auto') h.userDuring = true; return; }
     h.linking = true; h.again = false; h.userDuring = false;
     try {
-        const r = await serverCovered();
+        const r = await serverCovered(pageSnap, undefined, { by });
         if (!homeHere() || home !== h || !r.ok) { if (homeHere() && home === h) { blockRoom(r.why, r.at); render(); } return; }
         const wasOpen = homeOpen(), was = h.status, mark = homeMark(h);
         // v0.7.0-b3b1 (b3 design, H2): the memory the room was on (stopped or not), to tell a memory followed from one found again.
@@ -2400,6 +2404,7 @@ function homeMark(h) {
 // the server file still has (taken away on the page before, by the change that was running) gets a save of its own (4).
 // v0.7.0-b3b1 (b3 design): only hides the memory followed no longer covers are taken away here (the b2b recovery); no rewind is queued
 // and no new hide is set. Its recorded originals were checked on the server file when it was linked (H2: stopped there otherwise).
+// v0.7.0-b3b1b (review of b3b1a, P2): syncHide fits the page only; unhideOnServer alone decides the one chat save.
 function followHome() {
     if (!hasChat() || !homeOpen()) return;
     syncHide({ release: true });
@@ -2408,10 +2413,14 @@ function followHome() {
 }
 // v0.7.0-b1g (review of b1f, 4): a hide of SavePoint's the server file still has on a message the page shows: a chat save at the
 // room queue's turn (after a change running now), checked like every save outside a change (guardedSave).
+// v0.7.0-b3b1b (review of b3b1a, P2): only a hide the memory confirmed now does not cover (past its last recorded message, as
+// syncHide's release works it out) starts the save. A page that only shows messages the memory still covers sends nothing; when the save
+// runs for one past it, the whole page goes (those covered messages shown on the page too: hidden again at a turn that may hide).
 function unhideOnServer() {
     return guardedSave(pre => {
         const msgs = pre.messages || [];
-        const left = chat().some((m, i) => !m.is_system && !m.extra?.[HIDE_KEY] && !!msgs[i]?.is_system && !!msgs[i]?.extra?.[HIDE_KEY]);
+        const st = state(), floor = st && !st.review && hasMemory(st.mem) ? st.lastIndex : -1;
+        const left = chat().some((m, i) => i > floor && !m.is_system && !m.extra?.[HIDE_KEY] && !!msgs[i]?.is_system && !!msgs[i]?.extra?.[HIDE_KEY]);
         return left ? persist(pre.meta) : null;
     });
 }
@@ -2824,7 +2833,9 @@ function syncHide({ rehide = false, grow = false, release = false } = {}) {
         }
     });
     // v0.7.0-b1: inside a queued change its own write sends the marks (after its memory); outside one, a chat save.
-    if (changed) { ctx().swipe?.refresh?.(); if (!inApply) saveChatSoon(); }
+    // v0.7.0-b3b1b (review of b3b1a, P2): following a memory (release) fits the page only: whether the chat file is written is decided
+    // once, by unhideOnServer (a hide the memory followed no longer covers still on the server), so following saves at most once.
+    if (changed) { ctx().swipe?.refresh?.(); if (!inApply && !release) saveChatSoon(); }
     if (skipped && !inApply && homeHere()) home.hideSkipped = true;
     return changed || ranged;
 }

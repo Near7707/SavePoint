@@ -385,6 +385,58 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     x = await ev(() => ({ h2: __savePoint.home().h2 || null }));
     ok(!x.h2, `5h. 서버의 숨김을 정리하면 이어짐 (${JSON.stringify(x)})`);
 
+    // v0.7.0-b3b1b (review of b3b1a, P1): only a queued change's own reads and writes ask `auto`. Another device rewinds the memory (emptied)
+    // and takes SavePoint's hides past #2 away; #0–#2 stay hidden on the server, which that memory does not cover.
+    //   5i: a background save (persistSoon) finds it in its chat read: the user's rule — the room stops (H2), the hides stay, no chat save.
+    y = await fresh();
+    // (right after its memory check, as in 2: a memory changed before it is a conflict of its own)
+    c = await mark5();
+    await afterMem(1, PARTIAL('other5i', 2, -1));
+    await ev(() => __savePoint.persistSoon());
+    await wait(3500);
+    x = { ...(await probe(c)), ...(await look()) };
+    ok(x.h2?.why === 'hides' && x.file === -1 && x.server.join() === '0,1,2' && x.s === 0,
+        `5i. 백그라운드 저장이 찾은 해제 → 버튼 규칙, 멈춤, 서버 숨김 그대로, 채팅 저장 0 (before=${JSON.stringify(y)} after=${JSON.stringify(x)})`);
+    await STRIP();
+    await ev(() => __savePoint.recheckHome()); await wait(2500);
+    //   5j: a slot load's look before its turn (it reads the chat file only) finds it: the same.
+    y = await fresh();
+    await ev(async () => { M.popupInput = 'p5j'; await __savePoint.handle('save-new'); });
+    await wait(800);
+    await ev(`(${PARTIAL('other5j', 2, -1)})()`);
+    c = await mark5();
+    await ev(async () => { M.confirm = 1; try { await __savePoint.handle('load', __savePoint.listSaves().find(x => x.name === 'p5j').id); } catch { /* reported */ } });
+    await wait(3500);
+    x = { ...(await probe(c)), ...(await look()) };
+    ok(x.h2?.why === 'hides' && x.file === -1 && x.server.join() === '0,1,2' && x.s === 0,
+        `5j. 불러오기 사전 확인이 찾은 해제 → 버튼 규칙, 멈춤, 서버 숨김 그대로, 채팅 저장 0 (before=${JSON.stringify(y)} after=${JSON.stringify(x)})`);
+    await STRIP();
+    await ev(() => __savePoint.recheckHome()); await wait(2500);
+    // v0.7.0-b3b1b (review of b3b1a, P2): following a memory saves the chat file only for a hide it no longer covers, and once.
+    //   5k: #1 is shown on this page only (the memory covers it); another device saves the memory again: following it sends nothing.
+    y = await fresh();
+    await ev(() => { const m = M.chat[1]; m.is_system = false; delete m.extra.savepointHidden; __savePoint.adoptPage(); });
+    await ev(`(${OTHER_SAVE('other5k')})()`);
+    c = await mark5();
+    await ev(() => __savePoint.recheckHome('auto')); await wait(2500);
+    x = { ...(await probe(c)), ...(await look()) };
+    ok(!x.h2 && x.s === 0 && x.server.join() === y.server.join() && !x.page.includes(1),
+        `5k. 기억이 덮는 메시지만 화면에서 풀려 있으면 따라가도 채팅 저장 0 (before=${JSON.stringify(y)} after=${JSON.stringify(x)})`);
+    //   5l: the same page, and another device rewinds the memory to #3 (the chat file as it was): following it (auto) takes #4– away on
+    //   the page and saves once; the whole page goes, so #1 is shown on the server too (hidden again at a turn that may hide).
+    y = await fresh();
+    await ev(() => { const m = M.chat[1]; m.is_system = false; delete m.extra.savepointHidden; __savePoint.adoptPage(); });
+    await ev(`(${PARTIAL('other5l', 999, 3)})()`);
+    c = await mark5();
+    await ev(() => __savePoint.recheckHome('auto')); await wait(3000);
+    x = { ...(await probe(c)), ...(await look()) };
+    const want5l = y.server.filter(i => i <= 3 && i !== 1).join();
+    ok(y.server.some(i => i > 3) && !x.h2 && x.file === 3 && x.s === 1 && x.page.join() === want5l && x.server.join() === want5l,
+        `5l. 덮지 못하는 해제가 섞이면 채팅 저장 1회, 화면·서버 같음 (before=${JSON.stringify(y)} after=${JSON.stringify(x)})`);
+    await ev(() => __savePoint.handle('run').catch(() => {})); await wait(2500);
+    x = await look();
+    ok(x.page.join() === x.server.join() && x.page.includes(1), `5l. 다음 세이브가 함께 풀린 #1을 다시 숨김 (${JSON.stringify(x)})`);
+
     // v0.7.0-b2b1 (review of b2b). The marks of message i on the page and in the server chat file: [hidden, SavePoint's mark].
     const mk = i => ev(i => { const f = m => [!!m?.is_system, !!m?.extra?.savepointHidden]; return { p: f(M.chat[i]), s: f((M.serverFiles[M.chatId] || [])[i + 1]) }; }, i);
     // The user shows on the page (not saved yet) messages SavePoint hid: the next save hides them again (its held hides).
