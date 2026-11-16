@@ -307,10 +307,25 @@ test('v0.7.0-b3a2b row 5: the move needs the memory the room had when renamed; a
     const f2 = { ...files, [memName(id)]: { ...memFile(id), closes: ['A|1'] } };
     r = await decideRoom(at({ id, rev: 0, wid: 'w0' }), world(f2).read);
     assert.notEqual(r.verdict, 'rename');
-    // Already at home here, moved from the old name: the rest of the move, no record needed.
+    // Already at home here, moved from the old name: the rest of the move, with the record of its memory.
+    // v0.7.0-b3a2b2 (review of b3a2b1, P1): without the record → held (b4 picks it up).
     const f3 = { ...files, [memName(id)]: memBody({ id, state: recorded(P80, 19), rev: 1, wid: 'w1', from: { kind: 'new', addr: A, integrity: 'i-A' }, home: { addr: B, integrity: 'i-A', was: [A] } }) };
-    r = await decideRoom(at(), world(f3).read);
+    r = await decideRoom(at({ id, rev: 0, wid: 'w0' }), world(f3).read);
     assert.deepEqual([r.verdict, r.row, r.from, r.moved], ['rename', 5, A, true]);
+    r = await decideRoom(at(), world(f3).read);
+    assert.deepEqual([r.verdict, r.row, r.why], ['hold', 5, 'renameUnproven']);
+});
+
+test('v0.7.0-b3a2b2 row 5 (review of b3a2b1, P1): a record whose memory was dropped never links another memory "already moved" here', async () => {
+    // A → B kept memory X; B → C in the list dropped it (the record now reads A → C). The tag at A names Y, which went A → C.
+    const X = homeId(A, 'i-A'), Y = 'mem-y';
+    const files = { [tagName(A)]: tagBody({ addr: A, integrity: 'i-A', mem: Y }),
+        [memName(Y)]: memBody({ id: Y, state: recorded(P80, 19), rev: 2, wid: 'w2', from: { kind: 'new', addr: A, integrity: 'i-A' }, home: { addr: B, integrity: 'i-A', was: [A] } }) };
+    const at = mem => ({ ...room(), addr: B, renames: [{ from: A, to: B, id: 'A|1', ...(mem ? { mem } : {}) }] });
+    let r = await decideRoom(at(), world(files).read);
+    assert.deepEqual([r.verdict, r.row, r.why], ['hold', 5, 'renameUnproven']);
+    r = await decideRoom(at({ id: X, rev: 0, wid: 'w0' }), world(files).read);
+    assert.deepEqual([r.verdict, r.why], ['hold', 'renameUnproven']);
 });
 
 test('v0.7.0-b3a2b1 row 5 (review of b3a2b, P1-2): "already moved here" needs the memory kept for the rename, and no room seen leaving this name', async () => {

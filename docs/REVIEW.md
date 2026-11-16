@@ -1,3 +1,44 @@
+# v0.7.0-b3a2b2 · b3a2b1 리뷰 반영 (증거 없는 "이미 옮겨짐" 보류 · 옛 본체 이름표 보류 · 정리 범위) (브랜치 `v0.7-b`)
+
+기준: `f8c5788`(b3a2b1 리뷰 요청서, 코드 `ac97b8a`). b3a2b1 GPT 리뷰: P1 1, P2 1, P3 없음. 2차 의견(아래 표)과 사용자 동의대로. 파일: `home.js`, `index.js`, `manifest.json`(버전만), 검사(`room-gate.cjs` 7m 도우미 확장 + 7n, `home.test.mjs`), 문서.
+
+| 항목 | 처리 |
+|---|---|
+| P1: 증거(`mem`)가 지워진 기록이 5행 "이미 여기로 옮겨짐"을 통과 → A 이름표의 다른 기억 Y(과거 A, 지금 이 이름)를 연결 | 🔴 반영. 그 분기도 `r.mem`이 없으면 `renameUnproven` 보류. 업데이트 전에 시작해 멈춘 이동도 보류(기억 그대로, 복구는 b4 — GPT 2차 의견). |
+| P2 앞: 목록(`closes`) 없는 옛 본체 복구가 이름표에 `input.closes`(옮긴 뒤 생긴 기록 포함)를 씀 | 🟡 반영. 이미 옮겨진 본체에 목록이 없으면 6행과 같은 기준: `input.was.from`·`input.was.left`가 모두 비었을 때만 `[]`, 아니면 이름표 쓰기 전에 `closesUnknown` 보류. `input.closes` 대체는 없앰. |
+| P2 뒤: 떠난 이름(`left`)·`took` 정리가 직접 대응을 확인하지 않음 | 🟡 반영(GPT 2차 의견). 이 실행이 본체를 옮기고 본체·이름표까지 확인 → 시작 때 잡은 `input.was` 전체 정리. 이미 옮겨진 본체를 이어 마침 → 본체 `closes`에 있는 기록만 `settled`, 떠난 이름·`took`은 남김(그 때문에 남는 보류는 b4 보류 풀기 범위). |
+| 두 기록(이름 변경·떠난 이름)에 같은 변경 ID 남기기 | ⚪ b4로(저장 형식이 바뀜, 보류 풀기와 함께). |
+
+## 바뀐 것
+- `home.js decideRoom` 5행 "이미 여기" 분기: `if (!plainObj(r.mem) || r.mem.id !== t.data.mem) return hold(5, 'renameUnproven', …)`.
+- `index.js renameHome`:
+  - `moving = data.home.addr !== addr`. `!moving && !Array.isArray(data.closes) && (input.was.from.length || input.was.left.length)` → 아무것도 안 쓰고 `held`(`closesUnknown`).
+  - 이름표 목록: `Array.isArray(data.closes) ? data.closes : []`(옮긴 본체엔 늘 목록이 있음).
+  - 끝 정리(`sure && Array.isArray(data.closes)`): `moving`이면 `clearLeft(input.was)`, 아니면 `clearLeft({ ...input.was, from: 목록에 있는 것, took: [], left: [] })`.
+
+## ★ 특히 봐 줄 곳
+1. 이 실행이 옮긴 경우 `input.was` 전체 정리: 본체 `closes = input.closes`(같은 열기의 `renamesSeen()` 원본에서 뽑은 `from === A` 기록 ID)라 `was.from`과 같은 기록이에요. `was.took`·`was.left`도 같은 열기에서 잡은 것이에요. 이걸로 "직접 이동을 시작해 확인한 경우"로 충분한지.
+2. 목록 없는 옛 본체를 이어 마칠 때 떠난 기록이 없으면 이름표에 빈 목록(`tagBody`는 빈 목록을 안 적음 — 예전 이름표와 같은 모양). 이 경우 정리는 하지 않아요(본체에 목록이 없어서). 괜찮은지.
+3. 이어 마칠 때 `took`을 남기면, 그 방의 다음 이름 변경 기록이 `foreign`이 되어 보류될 수 있어요(README 알려진 한계에 적음).
+
+## 바뀐 기대(기존 검사)
+- `home.test` "v0.7.0-b3a2b row 5" 마지막: "이미 여기, 기록 없이도 나머지 옮기기" → 기록(같은 ID)이 있으면 옮기기, 없으면 `renameUnproven` 보류.
+
+## 검사 준비
+- `room-gate` 7m의 `movedHere(how)` 도우미를 넓힘: `how`에 `none`(기록에 `mem` 없음 = GPT 장면: 옛 이름 A 이름표가 가리키는 Y가 A를 거쳐 지금 이 이름에), `old`(본체 `closes` 없음 + B를 떠난 기록 Z1·Z2), `oldBare`(본체 `closes` 없음, 떠난 기록 없음), `sameAll`(본체 `closes`가 Z1·Z2 둘 다). 모든 경우에 가져간 표시 하나(`{ from: Q, to: B, took: B }`)를 넣고 남았는지(`took`), B 이름표의 `closes`(`tagCloses`)를 돌려줘요. 기존 7m 세 줄(`other`·`left`·`same`)은 그대로 통과.
+- 7n 4줄: `none` → 보류·쓰기 0·연결 안 함 / `old` → 판정 `rename`, `held`(`closesUnknown`)·쓰기 0·이름표 없음 / `oldBare` → 연결·이름표 생성(`closes` 없음) / `sameAll` → 연결, Z1·Z2 `settled`, 떠난 이름·`took` 남음.
+- `home.test` 새 1개: A → B 기록(`mem` 없음 또는 다른 ID X) + A 이름표 Y + Y 본체(`home: { addr: B, was: [A] }`) → 둘 다 `renameUnproven`.
+
+## 검사와 망가뜨리기 결과
+- 고치기 전 코드(`ac97b8a`, 새 `room-gate.cjs`·`mock.js` 복사): 7n 3줄 FAIL(`none`·`old`·`sameAll`). `oldBare`는 예전 코드도 통과(지키는 줄). `home.test`는 새 검사 1개 + 기대 바뀐 1개 FAIL.
+- 망가뜨리기 3개, 각각 잡힘:
+  - 5행 "이미 여기"를 `r.mem`이 있을 때만 비교(예전) → 7n `none` FAIL
+  - `renameHome`의 옛 본체 보류 줄 빼기 → 7n `old` FAIL
+  - 이어 마칠 때도 `clearLeft(input.was)` → 7n `sameAll` + 7m `same` 정리 줄 FAIL
+  - 이 실행이 옮긴 경우의 `clearLeft(input.was)` 전체 정리는 따로 망가뜨리지 않았어요(예전 결과와 같은 경우가 대부분이라 7l이 지킴).
+- Node 510 통과 / 0 실패 / 3 건너뜀.
+- 브라우저 58묶음 한꺼번에: 56 통과 + `keys`·`status`(알려진 타이밍 실패, `status`는 `autoFail` null 오류) → 따로 둘 다 첫 번째에 통과. 검사 모드 오류 0. `room-gate` 통과 73줄(SKIP 1), `home-link` 79줄.
+
 # v0.7.0-b3a2b1 · b3a2b 리뷰 반영 (멈춘 방 증거 · 이전 증거 떼기 · "이미 옮겨짐" 확인 · 정리 범위) (브랜치 `v0.7-b`)
 
 기준: `62fa3bc`(b3a2b 리뷰 요청서, 코드 `2a93e8c`). b3a2b GPT 리뷰: P1 3, P2 1, P3 없음. 2차 의견에서 P1-1을 P2로 내림. 파일: `home.js`, `index.js`, `manifest.json`(버전만), 검사(`room-gate.cjs` 7m, `home.test.mjs`), 문서.

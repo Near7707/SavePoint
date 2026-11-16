@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b3a2b1';
+const VERSION = '0.7.0-b3a2b2';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -2276,7 +2276,11 @@ async function renameHome(h, d, input, files) {
     // v0.7.0-b1i (review of b1h, P1): the renames seen away from this name are settled only over a memory seen on the server at
     // home here (read so, or written and read back: not UNREAD).
     let sure = data.home.addr === addr;
-    if (data.home.addr !== addr) {
+    const moving = data.home.addr !== addr;
+    // v0.7.0-b3a2b2 (review of b3a2b1, P2): a memory already moved here without its list (made before b3a2b) gets the tag an empty
+    // one only when no room was ever seen leaving this name here — the same rule as row 6; otherwise held before any write.
+    if (!moving && !Array.isArray(data.closes) && (input.was.from.length || input.was.left.length)) { setHome(h, 'held', 'closesUnknown'); return; }
+    if (moving) {
         const wid = newId();
         // v0.7.0-b3a2b: at its new home the memory keeps the renames seen away from the new name (`closes`, the same as its tag).
         const w = await writeMem(memIO(), h.line, { name: memName(d.mem), valid: validMem(d.mem), make: f => ({ ...nextMem(f, { ...f.state, roomKey: addr }, wid),
@@ -2296,7 +2300,7 @@ async function renameHome(h, d, input, files) {
     };
     const fromTag = checked(files.get(tagName(d.from)), validTag(d.from));
     const copy = fromTag?.kind === OK ? fromTag.data.copy ?? null : null;
-    const closes = Array.isArray(data.closes) ? data.closes : input.closes;
+    const closes = Array.isArray(data.closes) ? data.closes : [];
     let why = await step(tagName(addr), validTag(addr), t => !t ? tagBody({ addr, integrity, mem: d.mem, copy, prints: pickPrints(data.state.hashes), closes }) : sameLink(t, { id: d.mem, integrity, copy }) ? withCloses(t, closes) || true : null);
     if (!why && integrity) why = await step(clueName(integrity), validClue(integrity), c => c?.rooms.some(x => x.addr === addr && x.mem === d.mem) ? true : clueWith(c, integrity, addr, d.mem));
     if (!why) why = await step(tagName(d.from), validTag(d.from), t => !t ? true : t.state === 'renamed' ? true : t.mem === d.mem ? renamedTag(t, addr) : null);
@@ -2304,12 +2308,13 @@ async function renameHome(h, d, input, files) {
     if (why) { setHome(h, why === 'read' ? 'readFail' : why === 'tagChanged' ? 'held' : 'stopped', why); return; }
     attachHome(h, data);
     // v0.7.0-b3a2b1 (review of b3a2b, P2): only the renames the memory itself names (`closes`, the list its tag got) are settled.
-    // A memory without the list (made before b3a2b) settles nothing; the rooms kept as having left this name and the takeover
-    // marks go only when every rename seen away from it is named (and there was one to name).
+    // A memory without the list (made before b3a2b) settles nothing.
+    // v0.7.0-b3a2b2 (review of b3a2b1, P2): moved by this very run (body and tag confirmed): what was seen when it started
+    // (`input.was`) goes. A memory found already moved (picking up a move): only the renames its list names are settled; the rooms
+    // kept as having left this name and the takeover marks stay (nothing here pairs them with this move; b4 lifts what they hold).
     if (sure && Array.isArray(data.closes)) {
-        const from = input.was.from.filter(x => data.closes.includes(renameId(x)));
-        const all = from.length === input.was.from.length && (from.length || !input.was.left.length);
-        clearLeft({ ...input.was, from, took: all ? input.was.took : [], left: all ? input.was.left : [] });
+        if (moving) clearLeft(input.was);
+        else clearLeft({ ...input.was, from: input.was.from.filter(x => data.closes.includes(renameId(x))), took: [], left: [] });
     }
 }
 // `다시 확인`: the chat file is read again and the room decided again. Reads only for a line whose write got no answer

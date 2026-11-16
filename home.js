@@ -358,8 +358,10 @@ export async function decideRoom(input, read, { readMem = id => read(memName(id)
         // Already moved here (this rename, by this tab or another one): only the steps after the move are left.
         // v0.7.0-b3a2b1 (review of b3a2b, P1-2): not over another memory than the one kept for the rename (its id: the move itself
         // gives a new receipt), nor when the room of this name was seen leaving it (`left`).
+        // v0.7.0-b3a2b2 (review of b3a2b1, P1): a record without its memory (renamed in the list, its proof dropped, or before b3a2b)
+        // proves nothing either: held (the move left half done before b3a2b is picked up in b4).
         if (m.data.home.addr === addr && Array.isArray(m.data.home.was) && m.data.home.was.includes(r.from)) {
-            if (plainObj(r.mem) && r.mem.id !== t.data.mem) return hold(5, 'renameUnproven', { mem: t.data.mem, from: r.from });
+            if (!plainObj(r.mem) || r.mem.id !== t.data.mem) return hold(5, 'renameUnproven', { mem: t.data.mem, from: r.from });
             if (input.left) return hold(5, 'renamedAway', { mem: t.data.mem, to: input.left });
             return out('rename', 5, { from: r.from, mem: t.data.mem, moved: true });
         }

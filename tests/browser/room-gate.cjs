@@ -537,12 +537,22 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
         const B = __savePoint.home().key, A = JSON.stringify([M.charKey(), 'chatOld7m' + how]), integrity = M.meta.integrity, s = M.settings.savePoint;
         const Z = n => JSON.stringify([M.charKey(), 'chatZ7m' + how + n]), at = Date.now() - 1000;
         const y = 'mem-7m-y' + how, doc = { ...JSON.parse(M.files.get([...M.files.keys()].find(k => k.startsWith('savepoint-mem-')))) };
-        M.otherPut(M.H.memName(y), { ...doc, id: y, rev: 4, wid: 'other.7m', recent: [{ rev: 4, wid: 'other.7m' }], home: { addr: B, integrity, was: [A] }, closes: [`${B}|${at + 1}`] });
+        const body = { ...doc, id: y, rev: 4, wid: 'other.7m', recent: [{ rev: 4, wid: 'other.7m' }], home: { addr: B, integrity, was: [A] }, closes: [`${B}|${at + 1}`, ...(how === 'sameAll' ? [`${B}|${at + 2}`] : [])] };
+        // v0.7.0-b3a2b2: a body made before b3a2b (no `closes`).
+        if (how === 'old' || how === 'oldBare') delete body.closes;
+        M.otherPut(M.H.memName(y), body);
         M.otherPut(M.H.tagName(A), M.H.tagBody({ addr: A, integrity, mem: y }));
-        s.renames.push({ from: A, to: B, at, mem: { id: how === 'other' ? 'mem-7m-x' : y, rev: 1, wid: 'w.old' } });
+        // v0.7.0-b3a2b2: `none` = the record's memory was dropped (B → C in the list: GPT's case, the old name's tag naming another memory).
+        s.renames.push({ from: A, to: B, at, ...(how === 'none' ? {} : { mem: { id: how === 'other' ? 'mem-7m-x' : y, rev: 1, wid: 'w.old' } }) });
         // Renames away from this name made by a room that had taken it over (`foreign`: no hold), the first named by the memory.
-        s.renames.push({ from: B, to: Z(1), at: at + 1, foreign: true }, { from: B, to: Z(2), at: at + 2, foreign: true });
-        (s.leftNames ||= []).push({ from: B, to: Z(2), at: at + 2, foreign: true });
+        s.leftNames ||= [];
+        if (how !== 'oldBare') {
+            s.renames.push({ from: B, to: Z(1), at: at + 1, foreign: true }, { from: B, to: Z(2), at: at + 2, foreign: true });
+            s.leftNames.push({ from: B, to: Z(2), at: at + 2, foreign: true });
+        }
+        // A takeover mark of this name (`took`): kept when a move is only picked up (b3a2b2).
+        const Q = JSON.stringify([M.charKey(), 'chatQ7m' + how]);
+        s.renames.push({ from: Q, to: B, at: at - 5, took: B });
         if (how === 'left') s.leftNames.push({ from: B, to: Z(3), at: at + 3 });
         const n = M.fileLog.length, g = window.fetch, ups = [];
         // Only the room's own files count (an AUTO backup of the room left may be written then).
@@ -550,8 +560,9 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
         try { await M.openFile('chatM4' + how); await M.opened(); await new Promise(z => setTimeout(z, 300)); await M.opened(); } finally { window.fetch = g; }
         const f = s.renames.filter(x => x.from === B);
         const out = { d: __savePoint.home().d?.verdict, status: __savePoint.home().status, why: __savePoint.home().why, ups: ups.length, upn: ups, tagB: M.files.has(M.H.tagName(B)),
-            mem: __savePoint.home().id === y, s1: !!f.find(x => x.to === Z(1))?.settled, s2: !!f.find(x => x.to === Z(2))?.settled, kept: s.leftNames.some(x => x.from === B && x.to === Z(2)) };
-        s.renames = s.renames.filter(x => x.from !== A && x.from !== B); s.leftNames = s.leftNames.filter(x => x.from !== B);
+            mem: __savePoint.home().id === y, s1: !!f.find(x => x.to === Z(1))?.settled, s2: !!f.find(x => x.to === Z(2))?.settled, kept: s.leftNames.some(x => x.from === B && x.to === Z(2)),
+            took: s.renames.some(x => x.from === Q && x.took === B), tagCloses: M.files.has(M.H.tagName(B)) ? JSON.parse(M.files.get(M.H.tagName(B))).closes ?? null : null };
+        s.renames = s.renames.filter(x => x.from !== A && x.from !== B && x.from !== Q); s.leftNames = s.leftNames.filter(x => x.from !== B);
         return out;
     }, how);
     r = await movedHere('other');
@@ -563,6 +574,24 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     r = await movedHere('same');
     ok(r.d === 'rename' && r.status === 'linked' && r.mem && r.tagB, `7m. (b3a2b1) 같은 기억(그 뒤 저장해서 영수증만 다름)은 나머지 옮기기를 마침 (${JSON.stringify(r)})`);
     ok(r.s1 && !r.s2 && r.kept, `7m. (b3a2b1) 정리는 기억의 목록(closes)에 있는 기록만, 나머지 기록·떠난 이름은 그대로 (${JSON.stringify(r)})`);
+    // 7n. v0.7.0-b3a2b2 (review of b3a2b1). P1: a record whose memory was dropped (renamed again in the list) never links the memory the
+    //     old name's tag shows, even one at home here moved from that name → held, nothing written.
+    r = await movedHere('none');
+    ok(r.d === 'hold' && r.status === 'held' && r.why === 'renameUnproven' && r.ups === 0 && !r.tagB && !r.mem,
+        `7n. (b3a2b2) 증거가 지워진 기록은 "이미 옮겨진" 다른 기억도 연결하지 않고 보류, 쓰기 0 (${JSON.stringify(r)})`);
+    // P2: a body made before b3a2b (no `closes`) with renames seen away from this name → held before the tag (it would get those later
+    //     records); none seen → the tag gets an empty list.
+    r = await movedHere('old');
+    ok(r.d === 'rename' && r.status === 'held' && r.why === 'closesUnknown' && r.ups === 0 && !r.tagB,
+        `7n. (b3a2b2) 목록 없는 옛 본체에 떠난 기록이 있으면 이름표 쓰기 전에 보류, 쓰기 0 (${JSON.stringify(r)})`);
+    r = await movedHere('oldBare');
+    ok(r.d === 'rename' && r.status === 'linked' && r.mem && r.tagB && r.tagCloses === null,
+        `7n. (b3a2b2) 떠난 기록이 없으면 빈 목록(이름표엔 안 적힘)으로 이름표를 만들고 연결 (${JSON.stringify(r)})`);
+    // P2: picking up a move settles only the renames the memory names, even all of them: the rooms kept as having left and the takeover
+    //     marks stay.
+    r = await movedHere('sameAll');
+    ok(r.d === 'rename' && r.status === 'linked' && r.s1 && r.s2 && r.kept && r.took,
+        `7n. (b3a2b2) 옮기기를 이어 마칠 땐 목록의 기록만 정리하고 떠난 이름·가져간 표시는 남김 (${JSON.stringify(r)})`);
 
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
