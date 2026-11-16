@@ -1,3 +1,28 @@
+# v0.7.0-b3a2a · b3a1a 리뷰 P2-2 (브랜치 `v0.7-b`)
+
+기준: `87bb177`(b3a1c 리뷰 요청서, 코드 `13b08e1`). b3a1c 리뷰 결과 P1·P2·P3 없음 → b3a1 리뷰 반복 끝. 파일: `index.js`, `manifest.json`(버전만), 검사(`room-gate.cjs` 7k), 문서. b3a2를 둘로 나눔: b3a2a(이번, `linkLate` 상태의 본체 이동 차단) → b3a2b(`closes` 보관·5행 차단, GPT 기준 받음).
+
+| 항목 | 처리 |
+|---|---|
+| b3a1a 리뷰 P2-2: `linkLate`(응답 없는 단서·이름표가 있는 열기) 상태에서 재판정이 5행 `rename`을 고르면 `renameHome`이 `placeIO`를 거치지 않고 본체 주소부터 `writeMem`으로 바꿈 → 이름표는 `linkLate`에 막혀 이동이 반쯤 남음 | 🔴 반영. 본체 이동 직전에 막음. |
+
+## 바뀐 것
+- `index.js renameHome`: 본체를 읽은 뒤, `h.linkLate`이고 본체가 아직 이 주소가 아니면(`data.home.addr !== addr`) 아무것도 쓰지 않고 `held`(`linkLate`). 안내 `HOLD_TEXT.linkLate`("…이름 바뀐 방의 기억을 옮기지 않았어요. 방을 다시 열거나 새로고침해 주세요").
+- 그대로: 본체가 이미 이 주소인 `rename`(이름표·단서·옛 이름표 단계는 `placeIO`가 `linkLate`라 업로드 전에 거절 → `stopped`, 업로드 0), `link`(이미 있는 연결을 읽어 붙임), `relink`(b3a1a 유지 분기).
+- 버전 `0.7.0-b3a2a`.
+
+## ★ 특히 봐 줄 곳
+1. 보류하면 화면 기억(그 전 `linkPart`로 올려 둔 이 방의 기억)도 비워짐(`setHome`의 `held`). 이 열기의 판정이 다른 기억(옛 이름의 기억)을 가리키니 화면에 이 방 기억을 남기지 않는 쪽이 안전하다고 봤음. 기억은 파일에 그대로.
+2. 방을 다시 열면 새 `home`(`linkLate` 없음)이라 같은 `rename`이 본체를 옮김 — 다른 탭이 먼저 끝낸 경우·영수증 확인 같은 5행 차단은 b3a2b.
+
+## 검사 준비
+- 7k: 새 방 `chatA11` 첫 저장의 이름표 업로드 500(응답 없음, 안 들어감) → `linkPart` + `linkLate`. 그 뒤 옛 이름 `chatOld11`의 이름표(같은 고유값, 기억 `mem-7k`)와 기억 파일(`home.addr` = 옛 이름)을 다른 기기 쓰기로 넣고, 이름 변경 기록 `chatOld11 → chatA11`을 설정에 넣음 → `다시 확인`(판정 `rename`). 끝나면 기록·파일 지움.
+
+## 검사와 망가뜨리기 결과
+- 새 줄: 7k 준비(`linkPart`, 이름표 없음) · 판정 `rename`인데 `held`/`linkLate`, 업로드 0, 파일 쓰기 0, 채팅 저장 0, `mem-7k`의 `home.addr`는 옛 이름 그대로, 자동 기록 멈춤.
+- 고치기 전 코드(`13b08e1`): 1줄 FAIL — `mem-7k` 본체를 새 이름으로 업로드(`ups: ["savepoint-mem-mem-7k.json"]`)한 뒤 이름표에서 `stopped`(`write`), 본체 주소가 이미 바뀜. 고친 뒤 PASS. 바뀐 곳이 한 줄이라 따로 망가뜨리기는 고치기 전 코드 실행으로 갈음.
+- Node 506 / 0 / 3. 브라우저 전체(58묶음): 한꺼번에 58 모두 통과, 검사 모드 오류 0.
+
 # v0.7.0-b3a1c · b3a1b 코드 리뷰 반영 (브랜치 `v0.7-b`)
 
 기준: `4d4d8d9`(b3a1b 리뷰 요청서, 코드 `5dcf77d`). 파일: `home.js`, `index.js`·`manifest.json`(버전만), 검사(`room-gate.cjs` 7e), 문서. 리뷰 결과 P1 없음 · P2 1 · P3 없음 — 코드로 확인함.

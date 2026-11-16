@@ -357,6 +357,28 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
         return { s: (M.saveBodies || []).length - s, puts: M.fileLog.slice(n).filter(x => x[0] === 'put').map(x => x[1]), status: __savePoint.home().status, stop: __savePoint.home().line?.stop ?? null, last: __savePoint.state()?.lastIndex }; });
     ok(r.status === 'linked' && !r.stop && r.last === 9 && r.puts.length === 1 && r.puts[0].startsWith('savepoint-room-') && r.s === 0,
         `7j. (b3a1a) 방을 다시 열면 이름표만 써서 이어짐 (${JSON.stringify(r)})`);
+    // 7k. v0.7.0-b3a2a (review of b3a1a, P2-2): the tag write got no answer (`linkLate`), then a rename to this name is seen (another
+    //     name's tag with this integrity and its memory there): `다시 확인` decides a rename (row 5), but this opening never moves that
+    //     memory here — held, nothing uploaded, the other memory still at home under its old name.
+    r = await firstSave('chatA11', () => { M.failFile = 'savepoint-room-'; });
+    await ev(() => { M.failFile = null; });
+    ok(r.stop === 'linkPart' && r.last === 9 && !r.tag, `7k. (b3a2a) 준비: 이름표 응답 없음으로 멈춤 (${JSON.stringify({ stop: r.stop, tag: r.tag })})`);
+    r = await ev(async () => {
+        const key = __savePoint.home().key, old = JSON.stringify([M.charKey(), 'chatOld11']), integrity = M.meta.integrity, doc = M.memDoc();
+        M.otherPut(M.H.tagName(old), M.H.tagBody({ addr: old, integrity, mem: 'mem-7k' }));
+        M.otherPut(M.H.memName('mem-7k'), { ...doc, id: 'mem-7k', rev: 3, wid: 'other.7k', recent: [{ rev: 3, wid: 'other.7k' }], home: { addr: old, integrity } });
+        const s = M.settings.savePoint; (s.renames ||= []).push({ from: old, to: key, at: Date.now() });
+        const n = M.fileLog.length, c = (M.saveBodies || []).length, ups = [], f = window.fetch;
+        window.fetch = async (u, o = {}) => { if (String(u) === '/api/files/upload') ups.push(JSON.parse(o.body).name); return f(u, o); };
+        try { await __savePoint.handle('home-recheck'); await M.opened(); await new Promise(z => setTimeout(z, 300)); } finally { window.fetch = f; }
+        const out = { ups, c: (M.saveBodies || []).length - c, puts: M.fileLog.slice(n).filter(x => x[0] === 'put').length, status: __savePoint.home().status, why: __savePoint.home().why,
+            d: __savePoint.home().d?.verdict, home: JSON.parse(M.files.get(M.H.memName('mem-7k'))).home.addr === old, blocked: __savePoint.autoBlocked() };
+        s.renames = s.renames.filter(x => x.from !== old);
+        M.otherDel(M.H.tagName(old)); M.otherDel(M.H.memName('mem-7k'));
+        return out;
+    });
+    ok(r.d === 'rename' && r.status === 'held' && r.why === 'linkLate' && r.ups.length === 0 && r.puts === 0 && r.c === 0 && r.home && r.blocked === 'room',
+        `7k. (b3a2a) 응답 없는 이름표가 남은 열기에선 이름 변경으로 판정돼도 기억을 옮기지 않고 보류, 업로드 0 (${JSON.stringify(r)})`);
     await ev(([m, k]) => { Object.assign(M.settings.savePoint, { hideMode: m, keepRecent: k }); }, hideWas);
 
     // 8. an empty answer from the server (a new room or a failed read, no way to tell): no "continue?".

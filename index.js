@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b3a1c';
+const VERSION = '0.7.0-b3a2a';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -1943,6 +1943,7 @@ const HOLD_TEXT = {
     movedNoBody: '옮긴 기억 파일을 찾을 수 없어요', moveStarted: '기억을 옮기다 멈춘 흔적이 있는데 채팅 파일에 예전 기억이 없어요', sameIntegrity: '같은 고유값의 다른 방에 이미 기억이 있어요(가져온 사본일 수 있어요)',
     parentGone: '갈래 원래 방의 기억 파일이 없어요', branchUnproven: '갈래가 갈라진 곳까지 기억을 되돌릴 수 없어요', traces: '이 방에 SavePoint 흔적은 있는데 기억을 찾을 수 없어요',
     tagChanged: '기억 이름표가 그사이 바뀌었어요', otherOrigin: '같은 이름의 기억 파일이 다른 곳에서 만들어졌어요', unsure: '기억 파일을 쓴 뒤 다시 읽어 확인하지 못했어요', changing: '채팅 파일이 계속 바뀌고 있어요',
+    linkLate: '이 방의 이름표 저장에 응답이 오지 않아서, 이름 바뀐 방의 기억을 옮기지 않았어요. 방을 다시 열거나 새로고침해 주세요',
 };
 const MF_CONFLICT = CONFLICT, MF_OVERWRITTEN = OVERWRITTEN;
 function memIO() { return serverMemIO(fetch, serverHeaders); }
@@ -2242,6 +2243,10 @@ async function renameHome(h, d, input, files) {
     let data = checked(files.get(memName(d.mem)), validMem(d.mem));
     if (data?.kind !== OK) { setHome(h, 'readFail'); return; }
     data = data.data;
+    // v0.7.0-b3a2a (review of b3a1a, P2-2): this opening sent a hint or a tag that got no answer (`linkLate`, it may still land): the
+    // memory's home is never moved to this name by it (the tag after it could not be written, the move would be left half done).
+    // Held until the room is opened again; a memory already at home here goes on as before (its tag steps are reads, then refused).
+    if (h.linkLate && data.home.addr !== addr) { setHome(h, 'held', 'linkLate'); return; }
     lineFor(h, { rev: data.rev, wid: data.wid });
     if (h.line.pending) { setHome(h, 'pending'); return; }
     // v0.7.0-b1i (review of b1h, P1): the renames seen away from this name are settled only over a memory seen on the server at
