@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b3c1b';
+const VERSION = '0.7.0-b3c1c';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -1951,7 +1951,7 @@ function homeOpen() {
     if (!homeHere()) return false;
     // v0.7.0-b3b1 (b3 design, H2): linked, but the chat file and the memory disagree (h2Of): nothing is written until they agree.
     // v0.7.0-b3c1b (review of b3c1a, P1): a fit that saw the chat file's hides or 🔖 changed elsewhere stops the room until it is opened again.
-    if (home.status === 'linked') return !!home.line && !home.line.pending && !home.line.stop && !home.h2 && !home.fitReopen;
+    if (home.status === 'linked') return !!home.line && !home.line.pending && !home.line.stop && !home.h2 && !home.fitReopen && !home.fitCheck;
     return home.status === 'new' && !!home.id;
 }
 function homeMessage() {
@@ -1968,6 +1968,7 @@ function homeMessage() {
     if (home.status === 'held') return `이 방의 기억을 정하지 못해서 보류했어요: ${HOLD_TEXT[home.why] || home.why}. 그동안 아무것도 저장하지 않고 자동 기록도 멈춰요.`;
     if (home.status === 'linked' && home.fitReopen) return FIT_TEXT.reopen + (chat().length > home.fitReopen.n ? FIT_TEXT.copy : '');
     if (home.status === 'linked' && home.h2) return h2Text(home.h2);
+    if (home.status === 'linked' && home.fitCheck) return FIT_TEXT.check + (chat().length > home.fitCheck.n ? FIT_TEXT.copy : '');
     return '';
 }
 // v0.7.0-b3b1 (b3 design, H2): what the room's chat file (read by the link, server side) shows against the memory linked: a recorded
@@ -2198,6 +2199,9 @@ async function linkRounds(h, r0, owned) {
         if (h.status === 'linked' && h.line && !h.line.pending && !h.line.stop) {
             h.h2 = h2Of(h.st, again.messages || []);
             if (h.h2) { console.warn('[SavePoint] room stopped (H2)', h.h2); trustQueue(); refreshView(); }
+            // v0.7.0-b3c1c (review of b3c1b, P1): a fit that sent its chat write and did not finish checking it (fitCheck) goes on only
+            // when this read (`again`) is this room's file, the page covers it, and its hides and 🔖 are the page's.
+            else if (h.fitCheck) fitChecked(h, again);
         }
         return;
     }
@@ -2471,6 +2475,7 @@ const FIT_TEXT = {
     held: '숨김 풀기는 채팅 파일에 저장했지만, 그사이 다른 곳에서 채팅 파일의 숨김 상태나 🔖가 바뀌어서 더 저장하지 않았어요. 이 방은 다시 열 때까지 멈춰 있어요. 방을 다시 열어 주세요.',
     paused: '숨김 풀기는 채팅 파일에 저장했지만, 그사이 이 방의 상태가 바뀌어서(답변 생성 등) 더 저장하지 않았어요. 이 방은 아직 멈춰 있어요. 잠시 뒤 `다시 확인`을 눌러 주세요.',
     apart: '맞추는 동안 다른 곳에서 채팅 파일의 숨김 상태나 🔖가 바뀌어서 이어 가지 않았어요. 이 방은 다시 열 때까지 멈춰 있어요. 방을 다시 열어 주세요.',
+    check: '`원문과 기억 맞추기`가 채팅 파일에 숨김 풀기를 보낸 뒤 확인을 끝내지 못했어요. 그사이 다른 곳에서 바뀐 숨김이나 🔖를 덮지 않도록, 이 방은 확인될 때까지 저장과 자동 기록을 멈췄어요. `다시 확인`을 눌러 주세요.',
     reopen: '이 화면과 서버의 채팅 파일에서 숨김 상태나 🔖가 달라요(다른 곳에서 바뀌었어요). 덮어쓰지 않도록 이 방은 다시 열 때까지 저장과 자동 기록을 멈췄어요. 방을 다시 열어 주세요.',
     moved: '숨김 풀기는 채팅 파일에 저장했지만, 그사이 다른 곳에서 이 방의 기억 파일을 저장해서 더 저장하지 않았어요.',
     memRead: '숨김 풀기는 채팅 파일에 저장했지만, 기억 파일을 다시 읽지 못해서 더 저장하지 않았어요. 이 방은 아직 멈춰 있어요. 잠시 뒤 `다시 확인`을 눌러 주세요.',
@@ -2605,13 +2610,18 @@ async function fitTurn(t) {
                     apart = !keeps || !fitSame(gate.seen);
                     return 'stop';
                 }
-                return ok && keeps && changed.every(c => fitUntouched(c)) && fitSame(gate.seen, fit);
+                const go = ok && keeps && changed.every(c => fitUntouched(c)) && fitSame(gate.seen, fit);
+                // v0.7.0-b3c1c (review of b3c1b, P1): from the first request until the end check, the room waits for that check
+                // (fitCheck), however the job ends; reopening the room clears it.
+                if (go) h.fitCheck = { n: msgs.length };
+                return go;
             };
             // v0.7.0-b3c1b (review of b3c1a, P2): a copy sent again reads the memory file first (then the chat file), waited or not.
             guard.memFirst = true;
             let last;
             try { last = await persist(pre.meta, guard, 'user'); }
             catch (e) {
+                if (!e?.sents?.length && h.fitCheck) { delete h.fitCheck; refreshView(); }
                 // v0.7.0-b3c1b (review of b3c1a, P1): stopped for a hide or 🔖 changed elsewhere: the room stays stopped until it is opened again.
                 if (e?.fitHeld) { const n = gateHere() && gate.seen?.plain ? gate.seen.plain.length : msgs.length; const copy = chat().length > n ? FIT_TEXT.copy : ''; if (!apart) return say(FIT_TEXT.paused + copy); fitStop(h, n); return say(FIT_TEXT.held + copy); }
                 // v0.7.0-b3c1b (review of b3c1a, P2): the memory file changed (or could not be read) before a copy sent again: nothing more
@@ -2668,10 +2678,10 @@ function fitBack(t, changed) {
 }
 // v0.7.0-b3c1b (review of b3c1a, P1): the page against a chat file read (`r`: its snapshot and messages): null when a hide state or 🔖
 // differs, else the messages to take away on the page — a SavePoint hide the memory does not cover that the file shows already.
-function fitAgree(r) {
+function fitAgree(r, st = pageMem()) {
     const snap = r?.snap;
     if (!Array.isArray(snap?.sys) || !Array.isArray(snap?.hid) || !keepSame(r.messages)) return null;
-    const st = pageMem(), floor = st && !st.review && hasMemory(st.mem) ? st.lastIndex : -1;
+    const floor = st && !st.review && hasMemory(st.mem) ? st.lastIndex : -1;
     const list = chat(), stale = [];
     for (let i = 0; i < list.length && i < snap.sys.length; i++) {
         const m = list[i], sys = !!m?.is_system, hid = sys && !!m.extra?.[HIDE_KEY];
@@ -2680,6 +2690,28 @@ function fitAgree(r) {
         return null;
     }
     return stale;
+}
+// Takes away on the page the old SavePoint hides fitAgree found shown in the file already.
+function fitClear(stale) {
+    if (!stale.length) return;
+    const list = chat();
+    for (const m of stale) { const i = list.indexOf(m); if (i < 0) continue; setHidden(m, i, false); delete m.extra[HIDE_KEY]; delete m.extra[HELD_KEY]; dropLive(m); }
+    ctx().swipe?.refresh?.();
+}
+// v0.7.0-b3c1c (review of b3c1b, P1): the check a fit left unfinished, made by the link (`다시 확인`, one asked meanwhile) on its last read
+// of the chat file (`again`), once the room is linked with no stop of its own and no H2 (the originals already checked against the memory
+// linked, `h.st`). The file not this room's or not covered by the page: still waiting. Hides or 🔖 apart: stopped until reopened.
+// Agreeing: old SavePoint hides the memory linked does not cover, shown in the file, go on the page; the room goes on.
+function fitChecked(h, again) {
+    if (!homeHere() || home !== h || !again?.ok) return;
+    const fi = again.snap?.meta?.integrity, pm = pageSnap().meta;
+    if (!gateHere() || !fi || fi !== pm?.integrity || !fileBase(again, gate.seen).ok) { console.warn('[SavePoint] fit check: file not covered'); return; }
+    const stale = fitAgree(again, h.st);
+    if (!stale) { delete h.fitCheck; fitStop(h, Array.isArray(again.messages) ? again.messages.length : 0); return; }
+    fitClear(stale);
+    setSeen(again.snap);
+    delete h.fitCheck;
+    trustQueue(); refreshView();
 }
 // The room stays stopped until it is opened again (`n`: the messages of the chat file last read, for the notice to copy the rest).
 function fitStop(h, n) {
@@ -2709,13 +2741,9 @@ function fitEnd(t, look, text) {
         if (homeHere() && home === h) toastr.warning(FIT_TEXT.apart + (chat().length > n ? FIT_TEXT.copy : ''), 'SavePoint', { timeOut: 10000 });
         return;
     }
-    if (stale.length) {
-        const list = chat();
-        for (const m of stale) { const i = list.indexOf(m); if (i < 0) continue; setHidden(m, i, false); delete m.extra[HIDE_KEY]; delete m.extra[HELD_KEY]; dropLive(m); }
-        ctx().swipe?.refresh?.();
-    }
+    fitClear(stale);
     setSeen(look.r.snap);
-    h.h2 = null; h.tidyLater = true;
+    h.h2 = null; h.tidyLater = true; delete h.fitCheck;
     trustQueue();
     const ok = text === FIT_TEXT.done;
     setTimeout(() => { if (homeHere() && home === h) { roomOpened(); toastr[ok ? 'success' : 'info'](text, 'SavePoint', { timeOut: 8000 }); } }, 0);
@@ -2885,7 +2913,7 @@ function homeAlert() {
     if (!text) return '';
     // v0.7.0-b2c2b (E): a new room's first body not read back (FIRST_UNSURE) is checked again from here too.
     // v0.7.0-b3a1: and one whose memory is in its file with the link left unfinished (LINK_PART).
-    const again = homeHere() && !home.fitReopen && (['held', 'readFail', 'stopped'].includes(home.status) || home.line?.stop === FIRST_UNSURE || home.line?.stop === LINK_PART || home.h2) || home.status === 'new' && !home.id;
+    const again = homeHere() && !home.fitReopen && (['held', 'readFail', 'stopped'].includes(home.status) || home.line?.stop === FIRST_UNSURE || home.line?.stop === LINK_PART || home.h2 || home.fitCheck) || home.status === 'new' && !home.id;
     // v0.7.0-b3c1: a room stopped by hides its memory does not cover can take them away here (fitRoom).
     const fit = homeHere() && home.status === 'linked' && home.h2?.why === 'hides'
         ? btn('home-fit', '', '원문과 기억 맞추기', '기억이 기록하지 않은 메시지의 SavePoint 숨김만 풀고 채팅 파일을 저장해요(기억 파일은 안 바꿔요)') : '';

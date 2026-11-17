@@ -695,6 +695,103 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     ok(r.s === 1 && x.n === 10 && r.h2 && r.t.includes('기억 파일을 다시 읽지 못해서 더 저장하지 않았어요') && !r.t.includes('맞췄어요'),
         `29. 그 순간 기억 파일을 못 읽으면 다시 보내지 않음, 멈춤 (${JSON.stringify({ s: r.s, ...x, h2: r.h2, t: r.t.slice(0, 120) })})`);
 
+    // ───── v0.7.0-b3c1c (review of b3c1b) ─────
+    const chk = () => ev(() => { const h = __savePoint.home(); return { check: h.fitCheck || null, reopen: h.fitReopen || null }; });
+    const recheck = async () => { await ev(async () => { await __savePoint.handle('home-recheck'); }); await wait(800); };
+    const saveTry = async () => { await ev(() => __savePoint.handle('run').catch(() => {})); await wait(1500); };
+    // A fit whose first request lands, then `after` runs (another tab changes the files) and the copy sent again cannot be checked.
+    const fitBroken = async (id, after) => {
+        await stopped(id);
+        await onSave(id, NEW_MSG, after);
+        await fit(); await wait(800);
+        await ev(() => { window.__offSave(); M.memReadFail = false; });
+    };
+    const HIDE7 = id => `M.serverFiles.${id}[8].is_system = true;`;
+    const KEEP7 = id => `const m = M.serverFiles.${id}[8]; m.extra = { ...(m.extra || {}), savepointKeep: 1 };`;
+
+    // 30. P1: the memory file unreadable before the copy sent again, another tab hid #7 by hand meanwhile: the room waits for the check
+    //     (the window says so, with `다시 확인`); the memory readable again, `다시 확인` reads the chat file, sees #7 apart → stopped until
+    //     reopened; a save writes nothing and the hide stays. The same with a 🔖. With nothing apart: `다시 확인` lets the room go on.
+    await fitBroken('h2h1', `M.memReadFail = true; ${HIDE7('h2h1')}`);
+    r = await look(); x = await chk();
+    ok(!!x.check && r.blocked === 'room' && r.btn === 1, `30. 기억 읽기 실패로 끝나면 확인 대기, 다시 확인 버튼 (${JSON.stringify({ ...x, h2: r.h2, blocked: r.blocked, btn: r.btn, alert: r.alert.slice(0, 60) })})`);
+    c = await mark();
+    await recheck(); await saveTry();
+    r = await look(c); x = await chk();
+    ok(!!x.reopen && !x.check && r.s === 0 && r.server.split(',').includes('7'), `30. 다시 확인이 숨김 차이를 보면 다시 열 때까지 멈춤, 세이브 쓰기 0, 직접 숨김 그대로 (${JSON.stringify({ ...x, s: r.s, server: r.server })})`);
+    await fitBroken('h2h2', `M.memReadFail = true; ${KEEP7('h2h2')}`);
+    c = await mark();
+    await recheck(); await saveTry();
+    r = await look(c); x = { ...(await chk()), ...(await serverHas('h2h2')) };
+    ok(!!x.reopen && r.s === 0 && x.keep7, `30. 🔖가 다르면 같음, 🔖 그대로 (${JSON.stringify({ ...x, s: r.s })})`);
+    await fitBroken('h2h3', `M.memReadFail = true;`);
+    c = await mark();
+    await recheck();
+    r = await look(c); x = await chk();
+    ok(!x.check && !x.reopen && !r.h2 && r.blocked !== 'room' && r.s === 0, `30. 차이가 없으면 다시 확인으로 이어짐 (${JSON.stringify({ ...x, h2: r.h2, blocked: r.blocked, s: r.s })})`);
+    c = await mark();
+    await saveTry();
+    r = await look(c); x = await serverHas('h2h3');
+    ok(r.s >= 1 && x.last === 'new while fitting', `30. 그 뒤 세이브가 화면에만 있던 새 메시지까지 저장 (${JSON.stringify({ s: r.s, ...x })})`);
+
+    // 31. P1: the memory file saved elsewhere before the copy sent again (the room stops for the conflict) and #7 hidden by hand: `다시 확인`
+    //     links the new memory but the room stays stopped until reopened. 31b: the same with `다시 확인` pressed during the fit (run after it).
+    await ev(async () => { window.__H = await import('/ext/home.js'); });
+    const OTHER_MEM = `const H = window.__H, name = H.memName(__savePoint.home().id), d = JSON.parse(M.files.get(name)); M.otherPut(name, H.nextMem(d, d.state, 'other31'));`;
+    await fitBroken('h2h4', `${OTHER_MEM} ${HIDE7('h2h4')}`);
+    x = await chk();
+    ok(!!x.check, `31. 준비: 기억 충돌로 끝나도 확인 대기 (${JSON.stringify(x)})`);
+    c = await mark();
+    await recheck(); await saveTry();
+    r = await look(c); x = await chk();
+    ok(!!x.reopen && r.s === 0 && r.puts.length === 0 && r.server.split(',').includes('7') && r.status === 'linked',
+        `31. 다시 확인이 새 기억에 연결해도 숨김 차이면 다시 열 때까지 멈춤, 쓰기 0 (${JSON.stringify({ ...x, status: r.status, stop: r.stop, s: r.s, puts: r.puts, server: r.server })})`);
+    await fitBroken('h2h5', `${OTHER_MEM} ${HIDE7('h2h5')} __savePoint.handle('home-recheck');`);
+    await wait(800);
+    c = await mark();
+    await saveTry();
+    r = await look(c); x = await chk();
+    ok(!!x.reopen && r.s === 0 && r.server.split(',').includes('7'), `31b. 맞추기 도중 누른 다시 확인도 같은 검사 (${JSON.stringify({ ...x, stop: r.stop, s: r.s, server: r.server })})`);
+
+    // 32. P1: the end check's chat read fails after the write: the room waits; #7 hidden by hand meanwhile → `다시 확인` stops it until
+    //     reopened. With nothing apart: it goes on.
+    const endReadFails = (id, body) => ev(([id, body]) => {
+        const f = window.fetch; let after = false, k = 0;
+        window.fetch = async (u, o = {}) => {
+            const b = JSON.parse(o.body || '{}');
+            if (String(u) === '/api/chats/save' && b.file_name === id) { const res = await f(u, o); after = true; return res; }
+            if (after && String(u) === '/api/chats/get' && b.file_name === id && ++k === 2) { window.fetch = f; if (body) new Function(body)(); return new Response('down', { status: 500 }); }
+            return f(u, o);
+        };
+        window.__offSave = () => { window.fetch = f; };
+    }, [id, body]);
+    await stopped('h2h6');
+    await endReadFails('h2h6', HIDE7('h2h6'));
+    await fit(); await wait(400);
+    await ev(() => window.__offSave());
+    x = await chk(); r = await look();
+    ok(!!x.check && r.blocked === 'room', `32. 마지막 채팅 읽기 실패로 끝나면 확인 대기 (${JSON.stringify({ ...x, h2: r.h2, blocked: r.blocked })})`);
+    c = await mark();
+    await recheck(); await saveTry();
+    r = await look(c); x = await chk();
+    ok(!!x.reopen && r.s === 0 && r.server.split(',').includes('7'), `32. 다시 확인이 숨김 차이를 보면 다시 열 때까지 멈춤 (${JSON.stringify({ ...x, s: r.s, server: r.server })})`);
+    await stopped('h2h7');
+    await endReadFails('h2h7', null);
+    await fit(); await wait(400);
+    await ev(() => window.__offSave());
+    c = await mark();
+    await recheck();
+    r = await look(c); x = await chk();
+    ok(!x.check && !x.reopen && !r.h2 && r.blocked !== 'room' && r.s === 0, `32. 차이가 없으면 이어짐 (${JSON.stringify({ ...x, h2: r.h2, blocked: r.blocked, s: r.s })})`);
+
+    // 33. stopped before the first request (as 20): no wait for a check — the room is as before (stopped by H2 only).
+    await stopped('h2h8');
+    await onRead('h2h8', 2, `M.stScript.setChatSaving(true); setTimeout(() => { const m = M.serverFiles.h2h8[8]; m.is_system = true; M.stScript.setChatSaving(false); }, 300);`);
+    await fit(); await wait(400);
+    await ev(() => window.__offRead());
+    r = await look(); x = await chk();
+    ok(r.h2?.why === 'hides' && !x.check && !x.reopen && r.btn === 1, `33. 첫 요청 전에 멈추면 확인 대기 없음 (${JSON.stringify({ ...x, h2: r.h2, btn: r.btn })})`);
+
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();

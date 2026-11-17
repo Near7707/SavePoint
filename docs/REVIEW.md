@@ -1,3 +1,37 @@
+# v0.7.0-b3c1c · b3c1b 리뷰 반영 (맞추기가 보낸 뒤 중간에 끝나면 `다시 확인`이 숨김·🔖까지 확인) (브랜치 `v0.7-b`)
+
+기준: `85f14c4`(b3c1b 리뷰 요청서, 코드 `400c4f2`). b3c1b GPT 리뷰: P1 1, P2·P3 없음. 2차 의견 + 사용자 동의로 범위를 "첫 채팅 저장 뒤 검증이 끝나지 않은 모든 경로"로 넓힘. 파일: `index.js`, `manifest.json`(버전만), 검사 `h2-open.cjs` 30~33, 문서.
+
+| 리뷰 | 처리 |
+|---|---|
+| P1: 다시 보내기 전 기억 읽기 실패는 채팅을 읽기 전에 끝나서 `fitReopen`이 안 남음 → 읽기 복구 뒤 `다시 확인`이 재개 → 다음 저장이 다른 탭의 직접 숨김·🔖를 지움. (2차) 기억 충돌·마지막 채팅 읽기 실패도 포함, 같은 방을 열어 둔 동안 새 `rev`·`wid`에 연결돼도 유지, 맞추기 중 미뤄진 `다시 확인`도 같은 검사, 첫 요청 전 중단은 표시 없음 | 맞추기 `guard`가 첫 요청을 보내기로 하는 순간 `home.fitCheck = { n }`(`n` = 차례 읽기의 메시지 수). `catch`에서 보낸 게 없으면 지움, `fitEnd` 재개 때 지움, 다른 끝맺음은 그대로 남음. `homeOpen` 거짓, 창 `FIT_TEXT.check`(+ 복사 안내) + `다시 확인` 버튼 |
+| (2차) `다시 확인`은 연결 단계의 두 번째 채팅 읽기(`again`) 기준. 고유값·원문 확인 뒤 숨김·🔖가 같으면 풀기, 못 읽으면 대기, 차이면 다시 열 때까지 멈춤. 원문 어긋남·미확정 저장 차단은 그대로 | `linkRounds` 끝 H2 판정 자리: 멈춤 없는 `linked`이고 `h2Of`가 없을 때만 `fitChecked(h, again)`. 고유값이 화면과 같고 `fileBase(again, gate.seen)`가 통과해야 진행(아니면 대기 유지). `fitAgree(again, h.st)` 차이 → `fitStop`(`fitReopen`), 같으면 `fitClear` + `setSeen(again.snap)` + 표시 지움 → `recheckHome`의 `roomOpened`. 원문(`source`)·H2·보류·`pending`은 이 판정 전에 먼저 걸림. 미뤄진 `다시 확인`(`recheckAfter` → `freeHome`)도 같은 `linkRounds` |
+| (2차) 검사 18 예외는 새로 연결한 기억의 범위로 | `fitAgree(r, st = pageMem())`, `fitChecked`는 `h.st`(방금 연결한 본체). 직접 건 숨김·🔖는 예외 아님 |
+
+## 바뀐 것
+- 맞추기 구역: `FIT_TEXT.check`, `guard`의 표시, `catch` 처음, `fitAgree(r, st)`, 새 `fitClear`·`fitChecked`, `fitEnd`가 표시 지움.
+- `homeOpen`·`homeMessage`·`homeAlert`에 `fitCheck`, `linkRounds` H2 판정 뒤 `fitChecked`.
+
+## ★ 특히 봐 줄 곳
+1. **표시를 세우는 곳:** `guard` 첫 호출이 참을 돌려주는 순간(요청 직전). 그 뒤 `chatTarget`이 없어 안 보내면 `catch`가 지움. `settleWrite`의 `'revert'`·`writeResult` `'failed'`(들어가지 않음 확인)도 표시는 남겨요(그 방은 H2가 다시 걸려 있고, 다음 `다시 확인`이 같은 비교를 해도 화면·서버가 같아 안전하다고 봄).
+2. **`fitChecked`는 H2가 없을 때만:** 연결 직후 판정이 `hides`면(다른 곳에서 기억을 되돌림 등) H2가 먼저 걸리고 표시는 남아요. 그 방은 맞추기나 `다시 확인`으로 다시 와요. `recheckHome('auto')`가 H2를 지우는 b3b1 예외 갈래는 `linkRounds` 뒤라 그 경우 표시만 남아 다음 사용자 `다시 확인`을 기다려요.
+3. **고유값·`fileBase`가 안 맞으면 대기 유지:** 방을 다시 열라는 안내는 따로 없고, 창 문구(`check`)만 남아요.
+4. **맞추기를 다시 누르는 길:** 표시가 있어도 H2가 남아 있으면 맞추기는 돼요. 이미 맞음이든 저장 뒤든 `fitEnd`의 같은 비교를 지나야 표시가 지워져요.
+5. **망가뜨리기로 못 지킨 곳:** `fitChecked`의 `fitAgree`에 새 기억 대신 기억 없음(`floor = -1`)을 줘도 안 잡혀요(장면: 새 기억 범위 안에서 화면만 SavePoint 숨김 · 서버 보임 — 기억 범위 안이라 지금 검사에선 안 생김). `catch`의 "보낸 게 없을 때만" 조건은 30·31로 잡히지만, 반대로 "`guard`가 참인데 안 보냄"은 장면을 못 만듦.
+
+## 검사 준비(`h2-open.cjs` 30~33, 29 뒤 파일 끝)
+- 도우미: `chk()`(`fitCheck`·`fitReopen`), `recheck()`(`home-recheck` + 0.8초), `saveTry()`(`run` + 1.5초), `fitBroken(id, after)`(`stopped` → `onSave(id, NEW_MSG, after)` → 맞추기 → `memReadFail` 끔), `HIDE7(id)`·`KEEP7(id)`(서버 #7 직접 숨김·🔖), `OTHER_MEM`(다른 기기 기억 저장 `H.nextMem`), `endReadFails(id, body)`(저장 뒤 두 번째 채팅 읽기 = 끝 확인을 500, 그 직전 `body`).
+- 30 `h2h1`: `memReadFail` + #7 숨김 → 대기·버튼 → 다시 확인 → `fitReopen`·세이브 0·#7 그대로. `h2h2`: 🔖. `h2h3`: 차이 없음 → 이어짐 → 세이브가 새 메시지까지 저장.
+- 31 `h2h4`: `OTHER_MEM` + #7 숨김 → 대기 → 다시 확인(새 기억 연결) → `fitReopen`·쓰기 0. 31b `h2h5`: 같은 `after`에서 `handle('home-recheck')`(맞추기 중이라 미뤄짐) → 맞추기 끝에 실행 → `fitReopen`.
+- 32 `h2h6`: `endReadFails` + #7 숨김 → 대기 → 다시 확인 → `fitReopen`. `h2h7`: 차이 없음 → 이어짐.
+- 33 `h2h8`: 20과 같은 장면(첫 요청 전 멈춤) → 표시 없음, H2 `hides`, 다시 확인 버튼.
+
+## 검사와 망가뜨리기 결과
+- 고치기 전 코드(`400c4f2`, 새 검사 파일·`mock.js` 복사): 새 줄 8개 FAIL(30 첫째~셋째, 31 둘 다, 31b, 32 첫째·둘째). 고치기 전엔 `다시 확인` 뒤 세이브가 채팅 파일을 씀(`s: 1`). 통과: 30 넷째·다섯째, 32 셋째, 33(지키는 줄).
+- 망가뜨리기 5개 중 4개 잡힘: `fitChecked`가 차이를 무시 → 30·31·31b·32 · 표시 안 세움 → 8줄 · `catch`가 늘 표시 지움 → 30·31·31b · `linkRounds`가 `fitChecked`를 안 부름 → 30·31·31b·32(이어지지 않음까지). 안 잡힘: `fitAgree`에 새 기억 대신 기억 없음(★5).
+- Node 510 통과 / 0 실패 / 3 건너뜀.
+- 브라우저 59묶음 한꺼번에 58 통과 + `status`(알려진 `autoFail` null 오류 → 따로 첫 번째에 통과). 검사 모드 오류 0. `h2-open` 73줄 모두 통과.
+
 # v0.7.0-b3c1b · b3c1a 리뷰 반영 (맞추기가 숨김·🔖 차이를 보면 다시 열 때까지 멈춤, 다시 보내기 전 기억 확인) (브랜치 `v0.7-b`)
 
 기준: `81340f5`(b3c1a 리뷰 요청서, 코드 `f1c50a4`). b3c1a GPT 리뷰: P1 1, P2 1, P3 없음. `'stop'`을 다시 보낼 때만 쓰는 방식과 마지막 고유값 확인은 적절하다고 함. 2차 의견 + 사용자 동의로 P1·P2와 "마지막 읽기의 숨김·🔖 비교"까지 반영. 파일: `index.js`, `manifest.json`(버전만), 검사 `h2-open.cjs` 26~29, 문서.
