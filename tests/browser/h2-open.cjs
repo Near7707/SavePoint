@@ -284,6 +284,39 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
         `15. 답변 중 잡힌 저장 타이머는 방이 멈춘 뒤 다시 예약되지 않고 저장도 없음 (${JSON.stringify({ h2: r, timers: x, s: y15.s })})`);
 
 
+    // 16. (b3b2a, review of b3b2 P2) an old-format memory (its tidy-up queued as the room opens) and a late save from elsewhere landing
+    //     after the opening's last H2 read, before the tidy-up's turn reads the chat file: a hide of SavePoint's the memory does not
+    //     cover (#9). That turn is left out — no chat save, no memory file write — and the room is not stopped by it (`다시 확인` and the
+    //     opening decide that). A save pressed then says the chat and the memory differ; `다시 확인` stops the room (H2).
+    await recorded('h2l');
+    await ev(() => M.add(2));
+    await wait(300);
+    await ev(() => { const d = M.memDoc('h2l'); d.state.mem.evidenceVersion = 0; M.files.set(M.H.memName(d.id), JSON.stringify(d)); });
+    c = await mark();
+    x = await ev(async () => {
+        const f = window.fetch, out = { late: false };
+        window.fetch = async (u, o = {}) => {
+            if (!out.late && String(u) === '/api/chats/get' && JSON.parse(o.body || '{}').file_name === 'h2l' && __savePoint.home().status === 'linked' && !__savePoint.home().h2) {
+                const m = M.serverFiles.h2l[10]; m.is_system = true; m.extra = { ...(m.extra || {}), savepointHidden: 1 }; out.late = true;
+            }
+            return f(u, o);
+        };
+        try { await M.openFile('h2l'); await M.opened(); await new Promise(z => setTimeout(z, 2500)); } finally { window.fetch = f; }
+        return { ...out, ev: M.mem('h2l')?.mem?.evidenceVersion ?? null };
+    });
+    r = await look(c);
+    ok(x.late && r.s === 0 && r.puts.length === 0 && x.ev === 0 && !r.h2 && r.server.split(',').includes('9'),
+        `16. 열기 확인 뒤·정리 차례 전에 늦은 숨김이 오면 그 정리 차례는 보류: 채팅 저장 0, 기억 파일 쓰기 0, 방은 멈추지 않음 (${JSON.stringify({ ...x, s: r.s, puts: r.puts, h2: r.h2, server: r.server })})`);
+    c = await mark();
+    await ev(() => __savePoint.handle('run').catch(() => {}));
+    await wait(1500);
+    r = await look(c);
+    ok(r.s === 0 && r.puts.length === 0 && r.t.includes('채팅과 기억이 맞지 않아요') && r.t.includes('다시 확인') && !r.t.includes('기억 정리를 저장하지 못해서'), `16. 그때 누른 세이브 → "채팅과 기억이 맞지 않아요" 안내, 쓰기 0 (${JSON.stringify({ s: r.s, puts: r.puts, t: r.t })})`);
+    await ev(async () => { await __savePoint.handle('home-recheck'); await M.opened(); });
+    await wait(800);
+    r = await look();
+    ok(r.h2?.why === 'hides' && r.h2.at === 9 && r.blocked === 'room', `16. 다시 확인하면 정식 판정으로 멈춤 (${JSON.stringify(r.h2)})`);
+
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();

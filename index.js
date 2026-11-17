@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b3b2';
+const VERSION = '0.7.0-b3b2a';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -197,8 +197,14 @@ let tidyAsked = null;
 // v0.7.0-a1: the tidy-up as one queued change, waited for (a save needs it written before it starts).
 // v0.7.0-b3b2 (review of the b3b2 plan, P2): the tidy-up changes the memory's form only, never the hide flags (`hides: false`): a
 // room opened on an old-format memory (state() queues this) writes no chat file for it.
+// v0.7.0-b3b2a (review of b3b2, P2): a late save from elsewhere can land between the opening's last H2 read and this turn's read; a hide
+// of SavePoint's the memory does not cover would then be released through the common write (releasesOf) — a chat write. So the turn
+// checks the chat file it just read (`pre`) against the page's memory and is left out when they differ: nothing written (chat or memory
+// file), the room not stopped (`다시 확인` and the opening decide that; the memory file may have changed too).
+const TIDY_H2_TEXT = '채팅과 기억이 맞지 않아요. `다시 확인` 후 다시 시도해 주세요.';
 function tidyNow() {
-    return transact(() => { const st = pageMem(); return st && st.v === 1 && tidyMem(st, true) ? undefined : false; }, { undoable: false, autosave: false, hides: false });
+    return transact(() => { const st = pageMem(); return st && st.v === 1 && tidyMem(st, true) ? undefined : false; },
+        { undoable: false, autosave: false, hides: false, still: pre => !h2Of(pageMem(), pre?.messages) || TIDY_H2_TEXT });
 }
 function tidyQueued() {
     const id = `${roomKey()}|${roomEpoch}`;
@@ -216,13 +222,14 @@ async function pageState(what) {
     let st = state();
     if (!st || st === own()) return st;
     let why = '';
-    try { await tidyNow(); } catch (e) { why = ` · ${errorText(e)}`; }
+    let h2 = false;
+    try { await tidyNow(); } catch (e) { h2 = e?.message === TIDY_H2_TEXT; why = ` · ${errorText(e)}`; }
     if (roomKey() !== key || roomEpoch !== epoch) return null;
     // v0.7.0-a3 (review P3): a tidy-up shown but its write unconfirmed blocks SavePoint's writes (the turn may end
     // without an error): no request whose result could not be saved.
     if (!gateOpen()) { toastr.warning(gateMessage(), 'SavePoint', { timeOut: 10000 }); return null; }
     st = state();
-    if (st && st !== own()) { toastr.warning(`기억 정리를 저장하지 못해서 ${what} 시작하지 않았어요${why}`, 'SavePoint', { timeOut: 10000 }); return null; }
+    if (st && st !== own()) { toastr.warning(h2 ? TIDY_H2_TEXT : `기억 정리를 저장하지 못해서 ${what} 시작하지 않았어요${why}`, 'SavePoint', { timeOut: 10000 }); return null; }
     return st;
 }
 const storyTimesChecked = new WeakSet();
@@ -3610,14 +3617,14 @@ async function summarize({ close = false, auto = false } = {}) {
     // works on the page's memory itself (its writes change `st`), so the tidy-up is written first; if it cannot be,
     // nothing is asked (a save made on the copy would say "saved" while the page kept the old memory).
     if (st !== pageMem()) {
-        let why = '';
-        try { await tidyNow(); } catch (e) { why = ` · ${errorText(e)}`; }
+        let why = '', h2 = false;
+        try { await tidyNow(); } catch (e) { h2 = e?.message === TIDY_H2_TEXT; why = ` · ${errorText(e)}`; }
         if (!here()) return;
         if (ui.run) { toastr.info('이미 기록 중이에요.'); return; }
         st = state();
         if (!st) return;
         if (st !== pageMem()) {
-            const text = `기억 정리를 저장하지 못해서 ${auto ? '체크포인트' : '세이브'}를 시작하지 않았어요${why}`;
+            const text = h2 && !auto ? TIDY_H2_TEXT : `기억 정리를 저장하지 못해서 ${auto ? '체크포인트' : '세이브'}를 시작하지 않았어요${why}`;
             if (auto) console.warn('[SavePoint]', text); else toastr.warning(text, 'SavePoint', { timeOut: 10000 });
             return;
         }
