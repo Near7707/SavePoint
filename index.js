@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b3b2b';
+const VERSION = '0.7.0-b3c1';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -174,7 +174,9 @@ function state() {
     const view = clone(st);
     if (!tidyMem(view, false)) { basicTidied.add(st.mem); if (story) storyTimesChecked.add(st.mem); return st; }
     tidyViews.set(st, { src: st.mem, rev: st.rev, view });
-    tidyQueued();
+    // v0.7.0-b3c1: a room just put right by `원문과 기억 맞추기` reads its old memory through the tidied copy; the tidy-up is not queued
+    // (the fit writes no memory file) and is made by the next save (pageState, summarize) or any change at its turn (inApply above).
+    if (!(homeHere() && home.tidyLater)) tidyQueued();
     return view;
 }
 // Upgrades an old memory in `st` in place; true when something changed. `mark`: remember this memory object as
@@ -1977,7 +1979,7 @@ function h2Of(st, msgs) {
 function h2Text(x) {
     return x.why === 'source'
         ? `기록한 원문 #${x.at}이(가) 이 방의 기억과 달라졌어요(다른 곳에서 고쳤거나 지웠을 수 있어요). 기억을 잘못 되감지 않도록 이 방은 저장과 자동 기록을 멈췄어요. 원문을 되돌렸다면 \`다시 확인\`을 눌러 주세요.`
-        : `기억이 기록하지 않은 메시지 #${x.at}이(가) SavePoint 숨김으로 남아 있어요(다른 곳에서 기억을 되돌렸거나 숨김이 복사됐을 수 있어요). 이 방은 저장과 자동 기록을 멈췄어요. 정리한 뒤 \`다시 확인\`을 눌러 주세요.`;
+        : `기억이 기록하지 않은 메시지 #${x.at}이(가) SavePoint 숨김으로 남아 있어요(다른 곳에서 기억을 되돌렸거나 숨김이 복사됐을 수 있어요). 이 방은 저장과 자동 기록을 멈췄어요. \`원문과 기억 맞추기\`로 그 숨김을 풀거나, 다른 곳에서 정리한 뒤 \`다시 확인\`을 눌러 주세요.`;
 }
 const FIRST_UNSURE_TEXT = '서버가 저장을 수락했지만, 기억 파일을 다시 읽어 확인하지 못했어요. 다시 확인해 주세요. 확인될 때까지 이 방은 새로 저장하지 않아요.';
 const LINK_PART_TEXT = '기억은 기억 파일에 저장했지만, 이 방과 기억 파일을 잇는 표시(이름표)를 저장하지 못했어요. `다시 확인`을 눌러 이어 주세요. 이어질 때까지 이 방은 새로 저장하지 않아요.';
@@ -2442,6 +2444,186 @@ function unhideOnServer() {
         return left ? persist(pre.meta) : null;
     });
 }
+// ───────── `원문과 기억 맞추기` (v0.7.0-b3c1) ─────────
+//
+// A room stopped (H2) because SavePoint hides the memory does not cover are left in the chat file: those hides only are taken away
+// and the chat file is written once; the memory file is never written. The room stays stopped until both files are read again and
+// agree. Only this one job passes the H2 stop, bound to the room, its opening and the memory it is on (id and receipt), checked at
+// its turn of the room queue and right before the request. The hides to take away are the ones in the server copy read at that turn;
+// any other difference of hide state between the page and that copy (a hide set or taken away by hand elsewhere) holds it back with
+// nothing sent. A rejected write takes back only what this job changed and nothing touched since; a write that may have landed keeps
+// the page as it is and the room unconfirmed (b2 rule). Resuming queues no old-memory tidy-up (the next save makes it).
+// v0.7.0-b3c2 will add a changed original (rewind or review, after the user agrees).
+const FIT_TEXT = {
+    busy: '답변을 만드는 중이라 맞추지 않았어요. 답변이 끝난 뒤 다시 해 주세요.',
+    changed: '맞추는 사이 이 방의 기억이나 상태가 바뀌어서 아무것도 저장하지 않았어요. `다시 확인`을 눌러 주세요.',
+    read: '채팅 파일이나 기억 파일을 읽지 못해서 아무것도 저장하지 않았어요. 잠시 뒤 다시 해 주세요.',
+    diff: '이 화면과 서버의 채팅 파일에서 숨김 상태가 달라서(다른 곳에서 직접 숨겼거나 풀었을 수 있어요) 아무것도 저장하지 않았어요. 방을 다시 연 뒤 다시 해 주세요.',
+    copy: ' 다시 열기 전에 이 화면에만 있는 최근 메시지를 복사해 주세요.',
+    source: '기록한 원문이 바뀐 방이라 숨김만 풀어서는 맞출 수 없어요. 원문을 되돌렸다면 `다시 확인`을 눌러 주세요.',
+    done: '채팅 파일과 기억을 맞췄어요. 이 방은 다시 저장하고 자동 기록도 해요. 새 숨김은 다음 세이브·체크포인트·👻 때 걸려요.',
+    already: '채팅 파일과 기억이 이미 맞아서 아무것도 저장하지 않고 이어 갔어요.',
+};
+let fitJob = null;
+// The job's pass: this room, this opening, linked to this memory (id, receipt), still stopped, nothing deciding or writing it.
+function fitOk(t) {
+    const h = t.h;
+    return homeHere() && home === h && roomKey() === t.key && roomEpoch === t.epoch && h.status === 'linked' && h.id === t.id
+        && !!h.line && !h.line.pending && !h.line.stop && h.line.seen?.rev === t.rev && h.line.seen?.wid === t.wid && !!h.h2;
+}
+// Both files read again (read only: no tag, no tidy-up, no hide): the memory file is still the one linked, and what the chat file
+// on the server shows against it (h2Of).
+async function fitLook(t) {
+    const hs = await homeStill();
+    if (!fitOk(t)) return { ok: false, why: 'changed' };
+    if (!hs.ok) return { ok: false, why: hs.why === 'memRead' ? 'read' : 'changed' };
+    const r = await readServerChat();
+    if (!fitOk(t)) return { ok: false, why: 'changed' };
+    if (!r.ok) return { ok: false, why: 'read' };
+    return { ok: true, r, h2: h2Of(pageMem(), r.messages || []) };
+}
+// The page's hide state against a chat file copy (`seen`: snapshot sys/hid): the same everywhere both have the message, except the
+// messages `fit` takes away (hidden by SavePoint in the copy, shown on the page).
+function fitSame(seen, fit = new Set()) {
+    if (!Array.isArray(seen?.sys) || !Array.isArray(seen?.hid)) return false;
+    const list = chat();
+    for (let i = 0; i < list.length && i < seen.sys.length; i++) {
+        const m = list[i], sys = !!m?.is_system, hid = sys && !!m.extra?.[HIDE_KEY];
+        if (fit.has(m)) { if (sys || !seen.sys[i] || !seen.hid[i]) return false; continue; }
+        if (sys !== !!seen.sys[i] || hid !== !!seen.hid[i]) return false;
+    }
+    return true;
+}
+function fitRoom() {
+    if (!homeHere() || !home.h2) return;
+    if (fitJob) { toastr.info('이미 맞추는 중이에요.', 'SavePoint'); return fitJob; }
+    const h = home;
+    if (h.h2.why !== 'hides') { toastr.warning(FIT_TEXT.source, 'SavePoint', { timeOut: 10000 }); return; }
+    const t = { h, key: roomKey(), epoch: roomEpoch, id: h.id, rev: h.line?.seen?.rev, wid: h.line?.seen?.wid };
+    if (!fitOk(t)) { toastr.warning(FIT_TEXT.changed, 'SavePoint', { timeOut: 10000 }); return; }
+    const job = fitRun(t).catch(e => { if (homeHere() && home === h) reportError(e); }).finally(() => { if (fitJob === job) fitJob = null; render(); });
+    fitJob = job;
+    return job;
+}
+async function fitRun(t) {
+    const h = t.h, say = (text, warn = true) => { if (homeHere() && home === h) toastr[warn ? 'warning' : 'success'](text, 'SavePoint', { timeOut: 10000 }); };
+    const blocked = () => mainBusy() ? FIT_TEXT.busy : gate.unsure || gate.pending || !chatOpen() ? `${gateMessage()} 그래서 맞추지 않았어요.` : null;
+    let why = blocked();
+    if (why) return say(why);
+    // Start: the two files as they are now. Already agreeing: nothing is written.
+    const first = await fitLook(t);
+    if (!first.ok) return say(FIT_TEXT[first.why]);
+    if (!first.h2) return fitEnd(t, first, FIT_TEXT.already);
+    if (first.h2.why !== 'hides') { h.h2 = first.h2; refreshView(); return say(FIT_TEXT.source); }
+    // The turn, in the room's queue (nothing else of this room writes in between).
+    const queue = saveQueue(t.key, t.epoch);
+    const turn = queue.chain.then(() => fitTurn(t));
+    queue.chain = turn.catch(() => {});
+    return turn;
+}
+async function fitTurn(t) {
+    const h = t.h, say = text => { if (homeHere() && home === h) toastr.warning(text, 'SavePoint', { timeOut: 10000 }); };
+    if (!fitOk(t)) return say(FIT_TEXT.changed);
+    if (mainBusy()) return say(FIT_TEXT.busy);
+    if (gate.unsure || gate.pending || !chatOpen()) return say(`${gateMessage()} 그래서 맞추지 않았어요.`);
+    // From here until the end check no other decision or write of the memory runs (a `다시 확인` asked meanwhile runs after it).
+    if (!takeHome(h)) return say(FIT_TEXT.changed);
+    let changed = [];
+    try {
+        await stIdle();
+        if (!fitOk(t)) return say(FIT_TEXT.changed);
+        const hs = await homeStill();
+        if (!fitOk(t)) return say(FIT_TEXT.changed);
+        if (!hs.ok) return say(hs.why === 'memRead' ? FIT_TEXT.read : FIT_TEXT.changed);
+        if (await stIdle()) return say(FIT_TEXT.changed);
+        // The chat file read right before the write: the page must cover it (content), and its memory must be this room's.
+        let pre;
+        try { pre = await serverCovered(pageSnap, undefined, { by: 'user' }); } catch { pre = { ok: false, why: 'error' }; }
+        if (!fitOk(t)) return say(FIT_TEXT.changed);
+        if (!pre.ok) { if (pre.why === 'busy') return say(FIT_TEXT.busy); blockRoom(pre.why, pre.at); return say(`${gateMessage()} 그래서 맞추지 않았어요.`); }
+        if (pre.released?.length) return say(FIT_TEXT.changed);
+        const msgs = pre.messages || [], list = chat();
+        const diff = () => say(FIT_TEXT.diff + (list.length > msgs.length ? FIT_TEXT.copy : ''));
+        // Any hide state on the page not as the server copy has it: held back, nothing changed or sent.
+        if (!fitSame(pre.snap)) return diff();
+        const now = h2Of(pageMem(), msgs);
+        if (now?.why === 'source') { h.h2 = now; refreshView(); return say(FIT_TEXT.source); }
+        const st = pageMem(), floor = st && !st.review && hasMemory(st.mem) ? st.lastIndex : -1;
+        const fit = new Set();
+        for (let i = floor + 1; i < msgs.length && i < list.length; i++) if (msgs[i]?.is_system && msgs[i].extra?.[HIDE_KEY]) fit.add(list[i]);
+        if (fit.size) {
+            // Taken away on the page as the server copy has them; what each had is kept to take back a refused write.
+            list.forEach((m, i) => {
+                if (!fit.has(m)) return;
+                const x = m.extra || {};
+                changed.push({ m, hide: x[HIDE_KEY], held: x[HELD_KEY], live: x[LIVE_KEY], tok: liveTok.get(m) });
+                setHidden(m, i, false); delete m.extra[HIDE_KEY]; delete m.extra[HELD_KEY]; dropLive(m);
+            });
+            ctx().swipe?.refresh?.(); refreshInjection(); render();
+            const written = sendSnap(pre.meta), rev = pageMem()?.rev ?? null, tick = delTick;
+            // Right before the request: the pass still holds and the page's hide state is still the copy last read (gate.seen: the
+            // read above, or the one writeChatFile makes after waiting for SillyTavern) but for the hides taken away.
+            const guard = ({ sent }) => sent || fitOk(t) && !mainBusy() && !gate.unsure && !gate.pending && changed.every(c => fitUntouched(c)) && fitSame(gate.seen, fit);
+            let last;
+            try { last = await persist(pre.meta, guard, 'user'); }
+            catch (e) {
+                if (e?.nothingSent || e?.noTarget || (e?.released || e?.memMoved) && !e.sents?.length) { fitBack(t, changed); return say(e?.nothingSent ? FIT_TEXT.changed : errorText(e)); }
+                const err = await settleWrite(e, { written, rev, proof: null, pre, key: t.key, epoch: t.epoch, tick });
+                if (err === 'revert') { fitBack(t, changed); return say(`서버가 채팅 파일 저장을 받아들이지 않아서 숨김 풀기를 되돌렸어요. (${errorText(e)})`); }
+                if (err) return say(errorText(err));
+            }
+            if (last) {
+                const post = await readServerChat();
+                if (roomKey() !== t.key || roomEpoch !== t.epoch) return;
+                const result = post?.ok ? writeResult(last, pre.snap, post.snap, MODULE) : 'unsure';
+                if (result === 'failed') { if (gateHere()) setSeen(post.snap); fitBack(t, changed); return say('실리태번은 저장을 마쳤다고 했지만 채팅 파일은 그대로라서 숨김 풀기를 되돌렸어요.'); }
+                if (result !== 'ok') {
+                    markUnsure({ rev, prevRev: pre.rev, written: last, before: pre.snap, proof: null, prevProof: pre.proof, answered: true, tick });
+                    return say('숨김 풀기는 보냈지만 채팅 파일에 들어갔는지 확인하지 못했어요. 확인될 때까지 SavePoint는 새로 저장하지 않아요.');
+                }
+                if (gateHere()) { const c = fileBase(post, gate.seen); if (c.ok) setSeen(post.snap); }
+            }
+        }
+        // End: both files read again; the room goes on only when they agree.
+        const end = await fitLook(t);
+        if (!end.ok) return say(FIT_TEXT[end.why]);
+        if (end.h2) { h.h2 = end.h2; refreshView(); return say(h2Text(end.h2)); }
+        return fitEnd(t, end, FIT_TEXT.done);
+    } finally { freeHome(h); }
+}
+// What this job changed on a message is still there (nothing touched it since).
+function fitUntouched(c) {
+    const m = c.m;
+    return !m.is_system && !m.extra?.[HIDE_KEY] && !m.extra?.[HELD_KEY] && !m.extra?.[LIVE_KEY];
+}
+// A write shown not to be in the file: what this job took away goes back, in the same room, where nothing touched it since.
+function fitBack(t, changed) {
+    if (roomKey() !== t.key || roomEpoch !== t.epoch) return;
+    const list = chat();
+    let any = false;
+    for (const c of changed) {
+        const i = list.indexOf(c.m);
+        if (i < 0 || !fitUntouched(c)) continue;
+        c.m.extra ||= {};
+        if (c.hide !== undefined) c.m.extra[HIDE_KEY] = c.hide;
+        if (c.held !== undefined) c.m.extra[HELD_KEY] = c.held;
+        if (c.live !== undefined) c.m.extra[LIVE_KEY] = c.live;
+        if (c.tok !== undefined) liveTok.set(c.m, c.tok);
+        setHidden(c.m, i, true); any = true;
+    }
+    if (any) { ctx().swipe?.refresh?.(); refreshInjection(); render(); }
+}
+// The two files agree: the stop goes, and the room opens as it does when opened (the page fitted, no new hide, no save). An old
+// memory is read through its tidied copy; its tidy-up is left to the next save (tidyLater).
+function fitEnd(t, look, text) {
+    const h = t.h;
+    if (!fitOk(t)) return;
+    if (gateHere()) { const c = fileBase(look.r, gate.seen); if (c.ok) setSeen(look.r.snap); }
+    h.h2 = null; h.tidyLater = true;
+    trustQueue();
+    const ok = text === FIT_TEXT.done;
+    setTimeout(() => { if (homeHere() && home === h) { roomOpened(); toastr[ok ? 'success' : 'info'](text, 'SavePoint', { timeOut: 8000 }); } }, 0);
+}
 // v0.7.0-b1c (review of b1b, P1-1): a change of this room's memory, from the change on the page until its memory write is
 // settled, and a decision of the memory (linkHome, recheckHome) never run at the same time. takeHome: false while a
 // decision runs (nothing may be applied then); otherwise the room is marked writing.
@@ -2608,7 +2790,10 @@ function homeAlert() {
     // v0.7.0-b2c2b (E): a new room's first body not read back (FIRST_UNSURE) is checked again from here too.
     // v0.7.0-b3a1: and one whose memory is in its file with the link left unfinished (LINK_PART).
     const again = homeHere() && (['held', 'readFail', 'stopped'].includes(home.status) || home.line?.stop === FIRST_UNSURE || home.line?.stop === LINK_PART || home.h2) || home.status === 'new' && !home.id;
-    return `<div class="sp-alert sp-home-alert">${esc(text)}${again ? `<div class="sp-row">${btn('home-recheck', '', '다시 확인', '채팅 파일과 기억 파일을 다시 읽어 이 방의 기억을 다시 찾아요')}</div>` : ''}</div>`;
+    // v0.7.0-b3c1: a room stopped by hides its memory does not cover can take them away here (fitRoom).
+    const fit = homeHere() && home.status === 'linked' && home.h2?.why === 'hides'
+        ? btn('home-fit', '', '원문과 기억 맞추기', '기억이 기록하지 않은 메시지의 SavePoint 숨김만 풀고 채팅 파일을 저장해요(기억 파일은 안 바꿔요)') : '';
+    return `<div class="sp-alert sp-home-alert">${esc(text)}${again ? `<div class="sp-row">${fit}${btn('home-recheck', '', '다시 확인', '채팅 파일과 기억 파일을 다시 읽어 이 방의 기억을 다시 찾아요')}</div>` : ''}</div>`;
 }
 
 // ───────── source fingerprints ─────────
@@ -6328,6 +6513,7 @@ async function handle(act, id) {
         case 'test-connection': return testConnection();
         case 'review-accept': return acceptCurrentSource();
         case 'home-recheck': return recheckHome();
+        case 'home-fit': return fitRoom();
         case 'edit-cancel': ui.edit = null; backToChecks(); return render(true);
         case 'edit-save': return saveEdit();
         case 'edit-scene': return startEdit('scene', id);
@@ -6990,4 +7176,4 @@ jQuery(() => {
 
 // Exposed for regression checks only.
 // v0.7.0-a: `adoptPage` — tests only: a memory a test wrote on the page itself (setup, not SavePoint's change) is taken as the queue's.
-globalThis.__savePoint = { adoptPage: () => trustQueue(), home: () => home, sameRoom, linkHome, recheckHome, lootShown, persistSoon, transact, commitEdit, toggleKeep, paintKeep, repairKeep, state, settings, summarize, listSaves, vault, migrateLocal, autoCollect, autoBlocked, autoCount, scheduleAuto, undo, loadSave, reconcile, syncHide, refreshInjection, handle, ui, render, estTokens, recordLine, reportText, addLoot, queueHtml, installLootBar, openLootDialog, fillSettings };
+globalThis.__savePoint = { adoptPage: () => trustQueue(), home: () => home, sameRoom, linkHome, recheckHome, lootShown, persistSoon, transact, commitEdit, toggleKeep, paintKeep, repairKeep, state, settings, summarize, listSaves, vault, migrateLocal, autoCollect, autoBlocked, autoCount, scheduleAuto, undo, loadSave, reconcile, syncHide, refreshInjection, handle, ui, render, estTokens, recordLine, reportText, addLoot, queueHtml, installLootBar, openLootDialog, fillSettings, fitRoom };

@@ -1,3 +1,44 @@
+# v0.7.0-b3c1 · `원문과 기억 맞추기` — 숨김만 어긋난 방 (브랜치 `v0.7-b`)
+
+기준: `a845f56`(b3b2b 리뷰 요청서, 코드 `aad577d`). b3b2b GPT 리뷰: P1·P2·P3 없음 → **b3b 끝.** b3c 설계는 GPT 1·2차 의견 + 사용자 동의. b3c를 b3c1(숨김)·b3c2(원문)로 나눔. 파일: `index.js`, `manifest.json`(버전만), Node 검사 상자 두 곳(`provenance.test`·`record-names.test`에 `homeHere`·`home` 기본값), `tests/browser/h2-open.cjs`, 문서.
+
+| 설계 의견 | 처리 |
+|---|---|
+| H2 예외는 맞추기 항목에만, 방·열기 번호·기억 ID·영수증을 묶고 차례와 쓰기 직전에 다시 확인, 답변 중·미확정이면 보류 | `fitOk(t)`(방·`roomEpoch`·`home` 객체·`linked`·`id`·`line.seen.rev/wid`·멈춤 없음·**아직 `h2`**). `fitRun` 시작, `fitTurn` 차례 시작·각 기다림 뒤, 첫 요청 직전 `guard`. `mainBusy`·`gate.unsure`·`gate.pending`·`!chatOpen()`이면 안 함. 방의 `h2`는 끝 확인까지 그대로라 다른 저장·타이머는 계속 막힘 |
+| 시작·끝 검증은 두 파일 읽기만(다시 확인은 이름표를 쓸 수 있고, 열기 처리는 구형 정리를 예약) | `fitLook`: `homeStill()`(기억 파일 읽기만) + `readServerChat()` + `h2Of(pageMem(), …)`. `linkHome`·`recheckHome`을 안 거침. 이미 맞으면 쓰기 0으로 `fitEnd` |
+| 풀 대상은 직전에 읽은 서버 사본에서, 그 밖에 화면·서버 숨김이 다르면 보내기 전에 보류 | 차례의 `serverCovered(…, { by: 'user' })` 사본 `pre`에서 `i > floor`(`lastIndex`, 빈 기억·검토는 -1)이고 `is_system && savepointHidden`인 자리. 적용 전 `fitSame(pre.snap)`(모든 자리의 `is_system`·SavePoint 숨김이 같음), 요청 직전 `guard`가 `fitSame(gate.seen, fit)`(대상만 "사본은 숨김·화면은 펼침") + 대상 표시가 그대로인지 |
+| 실패는 서버 반영 여부대로: 거절·반영 안 됨 → 이번 작업이 바꿨고 손대지 않은 표시만 되돌림, 불명 → 펼친 채 미확정 | `fitBack`(같은 방, 그 메시지가 아직 펼침·표시 없음일 때만 `savepointHidden`·`HELD`·`LIVE` 값과 숨김을 되돌림). 요청 전 보류(`nothingSent` 등)·`settleWrite`가 `'revert'`·`writeResult === 'failed'` → 되돌림. 그 밖은 `settleWrite`/`markUnsure` 그대로(펼친 채) |
+| (2차) 5번: 구형 기억 정리는 다음 세이브로 — H2를 푼 직후 `state()` 읽기만으로도 예약됨 | `fitEnd`가 `home.tidyLater = true`. `state()`는 그 방에서 정리된 읽기용 사본만 돌려주고 `tidyQueued()`를 안 부름. 세이브(`summarize`)·`pageState`의 `tidyNow`, 다른 변경의 차례(`inApply`)는 그대로 정리. 새 `home`(다시 열기)에서는 다시 예약 |
+| (2차) 6번: 숨김이 다르면 보류 + 다시 열기, 화면에만 있는 최근 메시지면 복사 안내 | `FIT_TEXT.diff` + `chat().length > pre.messages.length`면 `FIT_TEXT.copy` |
+
+## 바뀐 것
+- `index.js` 새 구역 "`원문과 기억 맞추기` (v0.7.0-b3c1)": `FIT_TEXT`, `fitOk`, `fitLook`, `fitSame`, `fitRoom`(버튼, 한 번에 하나, `hides`만 — `source`는 안내), `fitRun`(시작 확인 → 방 대기열 차례), `fitTurn`(`takeHome`으로 그 동안 판정·쓰기 막음 → `stIdle` → `homeStill` → `serverCovered` 사용자 규칙 → 비교 → 화면에서 대상만 펼침(`setHidden`·표시 떼기·`dropLive`) → `persist(pre.meta, guard, 'user')` → 다시 읽어 `writeResult` → 끝 확인), `fitUntouched`, `fitBack`, `fitEnd`(`h2 = null`, `tidyLater`, `trustQueue`, 다음 틱에 `roomOpened()` + 안내). `finally`에서 `freeHome`(그 사이 들어온 `다시 확인`은 그 뒤 실행).
+- `homeAlert`: `h2.why === 'hides'`면 `원문과 기억 맞추기` 버튼(`home-fit`)을 `다시 확인` 앞에. `h2Text`(hides) 문구에 버튼 안내.
+- `state()`: `home.tidyLater`면 `tidyQueued()` 안 함.
+- `__savePoint.fitRoom`.
+
+## ★ 특히 봐 줄 곳
+1. **기억 파일은 읽기만 해요.** 차례의 `homeStill` 뒤 채팅 읽기·쓰기 사이에 다른 기기가 기억을 저장하면(이 틈은 `guardedSave`와 같음) 채팅은 쓰고, 끝 확인의 `homeStill`이 충돌(`MF_CONFLICT`)을 보고 방은 이어지지 않아요. 그 사이 쓴 채팅은 "옛 기억이 못 덮던 숨김을 푼 것"이라 원문이 사라지지는 않아요.
+2. **영수증 비교는 겹 장치예요.** `fitOk`에서 `rev`·`wid` 비교를 빼도 21이 통과해요. 기억이 바뀌면 그 전에 `homeStill`이 `line.stop = MF_CONFLICT`를 걸어 `fitOk`가 거짓이 되기 때문이에요.
+3. **화면이 서버와 숨김이 조금이라도 다르면 무조건 보류**예요(⚪ 6번). 열어 둔 채 멈춘 방에서 이 화면만 정리한 표시가 있으면 맞추기가 안 되고, 다시 열어야 해요.
+4. 끝 확인이 맞으면 `roomOpened()`가 열기 때와 같은 일을 해요(`reconcile`, `syncHide({ release: true })`, 브리핑). 새 숨김·저장 예약은 없어요. 다시 숨기는 건 다음 세이브·체크포인트·👻 때예요.
+5. 응답이 끊긴 경우(`lost`)는 `gate.pending`까지 걸려서, 그 방은 다시 열 때까지 아무것도 안 써요(기존 규칙). 맞추기도 마찬가지예요.
+
+## 검사 준비(`h2-open.cjs` 17~22, 16b 뒤 파일 끝)
+- 도우미: `fit()`(`handle('home-fit')` 기다림 + 0.6초), `fitBtn()`(창의 `home-fit` 버튼 수), `stopped(id)`(기록 #7 → `M.add(2)` → 서버 #9에 SavePoint 숨김 → 다시 열기 → `hides` 멈춤), `onRead(id, n, body)`(그 방의 n번째 `/api/chats/get` 직전에 `body`. 1 = 시작 확인, 2 = 차례의 읽기).
+- 17: `h2fo`(구형 기억 `evidenceVersion = 0` + #9). `M.metaDelay = 600`으로 쓰기 중에 `persistSoon()` → `timers()` 0. 그 뒤 세이브(`run`)에서 정리·기록·새 숨김.
+- 18: 시작 전에 서버 #9 숨김을 뗌 → 쓰기 0, "이미 맞아서".
+- 19: `onRead(…, 2)`로 서버 #7에 표시 없는 숨김. 그다음 화면에만 메시지 하나 더(`M.chat.push`) → 복사 안내.
+- 20: `onRead(…, 2)`에서 `M.stScript.setChatSaving(true)` → 0.3초 뒤 서버 #7 직접 숨김 + 저장 끝 → `writeChatFile`이 기다린 뒤 다시 읽음 → `guard`가 막음.
+- 21: `onRead(…, 1)`에서 기억 파일을 다른 영수증으로(`H.nextMem`).
+- 22: `M.failOnce`(실리태번 500, 안 씀) → 되돌림. 그다음 `fetch`를 감싸 `/api/chats/save` 502(안 씀) → 미확정.
+
+## 검사와 망가뜨리기 결과
+- 고치기 전 코드(`aad577d`, 새 검사 파일·`mock.js` 복사): 17~22 새 줄 10개 FAIL(21만 통과 — 예전엔 아무것도 안 하므로).
+- 망가뜨리기 5개 중 4개 잡힘: `guard`의 `fitSame(gate.seen, fit)` 빼기 → 20 · 적용 전 `fitSame(pre.snap)` 빼기 → 19 두 줄 · `state()`의 `tidyLater` 빼기 → 17 두 줄 · `fitBack` 아무것도 안 함 → 20·22. 안 잡힘: `fitOk`의 영수증 비교 빼기(★2, 겹 장치).
+- Node 510 통과 / 0 실패 / 3 건너뜀.
+- 브라우저 59묶음 한꺼번에 58 통과 + `status`만 알려진 `autoFail` null 오류 → 따로 1번째 같은 오류, 2번째 통과. 검사 모드 오류 0. `h2-open` 41줄 통과.
+
 # v0.7.0-b3b2b · b3b2a 리뷰 반영 (정리 차례의 첫 채팅 읽기는 사용자 규칙) (브랜치 `v0.7-b`)
 
 기준: `e73ef9c`(b3b2a 리뷰 요청서, 코드 `f60cc02`). b3b2a GPT 리뷰: P1·P3 없음, P2 1. `source`까지 보류하는 것·구형 형식의 `lastIndex`·`hashes`·재예약 루프 없음은 확인받음. 파일: `index.js`, `manifest.json`(버전만), 검사(`h2-open.cjs` 16b), 문서.
