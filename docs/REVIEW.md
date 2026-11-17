@@ -1,3 +1,30 @@
+# v0.7.0-b3b2b · b3b2a 리뷰 반영 (정리 차례의 첫 채팅 읽기는 사용자 규칙) (브랜치 `v0.7-b`)
+
+기준: `e73ef9c`(b3b2a 리뷰 요청서, 코드 `f60cc02`). b3b2a GPT 리뷰: P1·P3 없음, P2 1. `source`까지 보류하는 것·구형 형식의 `lastIndex`·`hashes`·재예약 루프 없음은 확인받음. 파일: `index.js`, `manifest.json`(버전만), 검사(`h2-open.cjs` 16b), 문서.
+
+| 항목 | 처리 |
+|---|---|
+| P2: 정리 차례의 채팅 읽기(`writeEntry`의 변경 전 `serverCovered`)는 `still(pre)`보다 먼저 돌고 출처가 `'auto'`. 다른 탭의 숨김 해제를 보면 `freeReleased(…, 'auto')` → `recheckHome('auto')` → 그사이 기억도 리셋됐으면 자동 복구 예외가 H2를 풀고 `followHome()`이 남은 숨김을 풀어 채팅에 씀 | 🟡 반영. `transact`에 `by`(기본 `'auto'`, 다른 차례는 그대로), `tidyNow`만 `by: 'user'`. 그 읽기에서 해제를 보면 화면만 맞추고(`freeReleased`) 버튼 재확인과 같은 규칙 → 남은 숨김이면 멈춤. 이 차례는 `released`로 끝나 아무것도 안 씀. `still(pre)` 그대로. |
+
+## 바뀐 것
+- `transact(…, { by = 'auto' })` → `entry.by` → `writeEntry`의 `serverCovered(pageSnap, undefined, { by: entry.by })`. 그 뒤 마지막 확인·`releaseFirst`·채팅 저장의 `'auto'`는 그대로(정리 차례는 `still`이 어긋남을 막아 거기까지 안 감).
+- `tidyNow`: `by: 'user'`.
+
+## ★ 특히 봐 줄 곳
+1. `tidyNow`는 세이브(`summarize`)·`pageState` 앞에서도 불려요. 그때도 첫 읽기가 `'user'`라, 구형 기억을 처음 정리하는 세이브 직전에 다른 곳의 리셋이 오면 따라가지 않고 멈춰요(안전한 쪽, 그 한 번뿐).
+2. `by`는 첫 읽기에만 써요. 정리 차례는 `still`이 통과해야 적용되고, 적용 뒤 읽기(`releaseFirst` 등)는 `hides: false`라 풀 숨김이 생기는 길이 `still` 이후의 늦은 도착뿐 — 그건 b3b2a 이전부터 있던 일반 저장의 틈과 같다고 봤어요.
+
+## 검사 준비(`h2-open.cjs` 16b, 16 뒤 파일 끝)
+- `recorded('h2m')`(기록 #7, 숨김 #0~#5) → 기억 파일 `mem.evidenceVersion = 0` → `window.__H = await import('/ext/home.js')`(fetch 안에서 기다리지 않게 미리).
+- `fetch`를 감싸 16과 같은 순간(정리 차례의 첫 `/api/chats/get`, `linked && !h2`)에: 서버 #3~#5 숨김 풀기 + 기억 파일을 빈 기억(`lastIndex -1`)으로 `nextMem`(다른 영수증 `other16b`).
+- 확인: 채팅 저장 0, 업로드 0, 서버 숨김 `0,1,2` 그대로, `h2 = hides`, `autoBlocked() === 'room'` → `다시 확인` → 그대로 멈춤·쓰기 0.
+
+## 검사와 망가뜨리기 결과
+- 고치기 전 코드(`f60cc02`, 새 검사 파일·`mock.js` 복사): 16b 두 줄 FAIL(채팅 저장 1·기억 업로드 1·서버 숨김 모두 풀림·멈추지 않음).
+- 망가뜨리기: `tidyNow`의 `by: 'user'` 빼기·`writeEntry`를 `'auto'` 고정은 고치기 전 코드와 같은 동작이라 그 실행으로 갈음.
+- Node 510 통과 / 0 실패 / 3 건너뜀.
+- 브라우저 59묶음 한꺼번에 59 모두 통과, 검사 모드 오류 0. `h2-open` 31줄 통과.
+
 # v0.7.0-b3b2a · b3b2 리뷰 반영 (구형 기억 정리 차례의 늦은 숨김) (브랜치 `v0.7-b`)
 
 기준: `ad3d6c3`(b3b2 리뷰 요청서, 코드 `7a7afd5`). b3b2 GPT 리뷰: P1 없음, P2 1, P3 없음. 2차 의견과 사용자 동의대로 반영. 파일: `index.js`, `manifest.json`(버전만), 검사(`h2-open.cjs` 16), 문서.

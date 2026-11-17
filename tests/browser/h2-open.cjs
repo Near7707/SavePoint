@@ -317,6 +317,37 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     r = await look();
     ok(r.h2?.why === 'hides' && r.h2.at === 9 && r.blocked === 'room', `16. 다시 확인하면 정식 판정으로 멈춤 (${JSON.stringify(r.h2)})`);
 
+    // 16b. (b3b2b, review of b3b2a P2; pair of 16) the same opening, but the late save is another tab's reset that empties the memory and
+    //      takes away only some hides (#3–#5 shown, #0–#2 left hidden). The tidy-up's first chat read finds that release: it is not
+    //      followed on its own (the user's rule), so nothing is written (chat or memory file) and the hides left stop the room (H2).
+    await recorded('h2m');
+    await ev(() => { const d = M.memDoc('h2m'); d.state.mem.evidenceVersion = 0; M.files.set(M.H.memName(d.id), JSON.stringify(d)); });
+    await ev(async () => { window.__H = await import('/ext/home.js'); });
+    c = await mark();
+    x = await ev(async () => {
+        const f = window.fetch, out = { late: false }, H = window.__H;
+        window.fetch = async (u, o = {}) => {
+            if (!out.late && String(u) === '/api/chats/get' && JSON.parse(o.body || '{}').file_name === 'h2m' && __savePoint.home().status === 'linked' && !__savePoint.home().h2) {
+                out.late = true;
+                for (const [i, m] of M.serverFiles.h2m.slice(1).entries()) if (i > 2 && m.extra?.savepointHidden) { m.is_system = false; delete m.extra.savepointHidden; }
+                const name = H.memName(__savePoint.home().id), d = JSON.parse(M.files.get(name)), st = JSON.parse(JSON.stringify(d.state));
+                st.mem = { scenes: [], records: [], entities: [] }; st.lastIndex = -1; st.hashes = []; st.undo = null; st.undoInfo = null;
+                M.otherPut(name, H.nextMem(d, st, 'other16b'));
+            }
+            return f(u, o);
+        };
+        try { await M.openFile('h2m'); await M.opened(); await new Promise(z => setTimeout(z, 3000)); } finally { window.fetch = f; }
+        return out;
+    });
+    r = await look(c);
+    ok(x.late && r.s === 0 && r.puts.length === 0 && r.server === '0,1,2' && r.h2?.why === 'hides' && r.blocked === 'room',
+        `16b. 열기 직후 다른 탭이 기억을 비우고 숨김 일부만 풀면: 따라가지 않고 채팅 저장 0, 기억 파일 쓰기 0, 남은 숨김으로 멈춤 (${JSON.stringify({ ...x, s: r.s, puts: r.puts, h2: r.h2, server: r.server, page: r.page, file: r.file })})`);
+    c = await mark();
+    await ev(async () => { await __savePoint.handle('home-recheck'); await M.opened(); });
+    await wait(1000);
+    r = await look(c);
+    ok(r.h2?.why === 'hides' && r.blocked === 'room' && r.s === 0 && r.puts.length === 0 && r.server === '0,1,2', `16b. 다시 확인해도 멈춤 그대로, 쓰기 0 (${JSON.stringify({ h2: r.h2, s: r.s, puts: r.puts, server: r.server })})`);
+
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();

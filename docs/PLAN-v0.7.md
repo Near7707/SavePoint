@@ -197,6 +197,7 @@
 - **v0.7.0-b3b1b (2026-11-17, b3b1a 리뷰 + 2차 의견, 사용자 동의)** P1 재확인 출처를 읽기를 시작한 곳에서 넘김: `freeReleased(list, by)` 기본 `'user'`, `serverCovered(…, { by })`·`persist → writeChatFile → fileAllows`에 `by`. `'auto'`는 `writeEntry`·`releaseFirst`의 읽기·쓰기와 자동 재확인 자신의 읽기만(백그라운드 저장·QUICK·불러오기 사전 확인·방 열기·버튼은 `'user'`). P2 따라가기의 채팅 저장을 한 곳으로: `syncHide({ release: true })`는 화면만(저장 예약 없음), `unhideOnServer`가 확인된 기억이 못 덮는(`i > lastIndex`) SavePoint 숨김이 서버에 남고 화면에선 풀렸을 때만 한 번 저장(섞이면 범위 안 해제도 함께, 다음 하이드 차례에 다시 숨김).
 - **v0.7.0-b3b2 (2026-11-17, GPT 설계 의견 + 사용자 동의)** 열기 채팅 저장 0회: `roomOpened`가 `syncHide({ release: true })`(화면만, 새 숨김·저장 예약·수동 범위 예약 없음, `다시 확인`의 재연결도 같은 함수). 구형 기억 정리 `tidyNow`에 `hides: false`(형식만, 기억 업로드는 그대로). 멈춘 방 저장 타이머: `persistSoon`·`saveChatSoon` 입구와 콜백(`mainBusy` 전)에서 `h2Here()`. 답변 생성 쪽 하이드 계산·`reconcile()`·원문 변경 예외는 그대로(첫 답변의 원문 처리는 c).
 - **v0.7.0-b3b2a (2026-11-17, b3b2 리뷰 P2 + 2차 의견, 사용자 동의)** 구형 기억 정리(`tidyNow`)에 `still(pre)`: 방금 읽은 서버 채팅과 화면 기억을 `h2Of`로 비교해 어긋나면 그 차례만 보류(채팅·기억 파일 쓰기 0, 방은 안 멈춤, 정식 판정은 `다시 확인`·방 열기). 자동 정리는 기존 로그, 사용자가 누른 세이브(`summarize`)·`pageState`는 `TIDY_H2_TEXT`. 그 뒤 자동 체크포인트가 기존 해제 경로를 타는 건 ⚪(README 한계). 검사 `h2-open` 16.
+- **v0.7.0-b3b2b (2026-11-17, b3b2a 리뷰 P2, 사용자 동의)** `transact`에 `by`(기본 `'auto'`, `writeEntry` 변경 전 확인의 `serverCovered` 출처). `tidyNow`만 `by: 'user'`: 정리 차례의 첫 채팅 읽기가 다른 곳의 해제를 보면 따라가지 않고 멈춤(H2). `still(pre)` 그대로. 검사 `h2-open` 16b.
 - **b3 다음 조각:** b3c → b3d.
 - **v0.7.0 (저장 쪽 + 일반 전송 막기 확인창)** 합격 기준:
   1. 채팅 저장 0회: 이전·재시도·연결 복구·이름 변경·분기 이어받기·방 열기(모든 불일치 포함)·기억만 바꾸는 작업 전부·수동 하이드 모드 기록

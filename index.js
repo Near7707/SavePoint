@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b3b2a';
+const VERSION = '0.7.0-b3b2b';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -204,7 +204,7 @@ let tidyAsked = null;
 const TIDY_H2_TEXT = '채팅과 기억이 맞지 않아요. `다시 확인` 후 다시 시도해 주세요.';
 function tidyNow() {
     return transact(() => { const st = pageMem(); return st && st.v === 1 && tidyMem(st, true) ? undefined : false; },
-        { undoable: false, autosave: false, hides: false, still: pre => !h2Of(pageMem(), pre?.messages) || TIDY_H2_TEXT });
+        { undoable: false, autosave: false, hides: false, by: 'user', still: pre => !h2Of(pageMem(), pre?.messages) || TIDY_H2_TEXT });
 }
 function tidyQueued() {
     const id = `${roomKey()}|${roomEpoch}`;
@@ -688,12 +688,12 @@ async function settleWrite(e, { written, rev, proof, pre, key, epoch, marks = nu
 // `still(pre)` is asked at its turn, after the file check and right before it is applied. Anything but
 // true stops it with nothing changed (Stale; a string is the reason shown). The change itself works from
 // the room's state at its turn (state()), never from objects taken before the wait.
-async function transact(change, { undoable = false, undoKind = '', autosave: doAutosave = true, rehide = false, replay = false, snapshot = false, verify = false, still = null, stale = '', hides = true, grow = false } = {}) {
+async function transact(change, { undoable = false, undoKind = '', autosave: doAutosave = true, rehide = false, replay = false, snapshot = false, verify = false, still = null, stale = '', hides = true, grow = false, by = 'auto' } = {}) {
     const key = roomKey(), epoch = roomEpoch;
     const ready = gateOpen() || await roomReady();
     if (roomKey() !== key || roomEpoch !== epoch) throw new RoomBlocked('채팅방이 바뀌어서 이번 변경은 하지 않았어요.');
     if (!ready) throw new RoomBlocked(gateMessage());
-    const entry = { change, undoable, undoKind, autosave: doAutosave, rehide, replay, snapshot, verify, still, stale, hides, grow, key, epoch };
+    const entry = { change, undoable, undoKind, autosave: doAutosave, rehide, replay, snapshot, verify, still, stale, hides, grow, by, key, epoch };
     const queue = saveQueue(key, epoch);
     queue.pending.push(entry);
     const done = queue.chain.then(() => writeEntry(queue, entry)).finally(() => { const i = queue.pending.indexOf(entry); if (i >= 0) queue.pending.splice(i, 1); });
@@ -1077,7 +1077,9 @@ async function writeEntry(queue, entry) {
     if (moved()) throw cancelMoved(queue, entry);
     freedNow = [];
     let pre;
-    try { pre = await serverCovered(pageSnap, undefined, { by: 'auto' }); } catch { pre = { ok: false, why: 'error' }; }
+    // v0.7.0-b3b2b (review of b3b2a, P2): `entry.by` — a turn that must not follow a reset elsewhere on its own (the old-memory tidy-up
+    // an opening queues) reads with the user's rule: a release seen here stops the room (H2) instead of being followed and written.
+    try { pre = await serverCovered(pageSnap, undefined, { by: entry.by }); } catch { pre = { ok: false, why: 'error' }; }
     if (moved()) throw cancelMoved(queue, entry);
     if (entry.cancelled) throw entry.cancelled;
     if (!pre.ok) { blockRoom(pre.why, pre.at); throw new RoomBlocked(`${gateMessage()} 이번 변경은 취소했어요.`); }
