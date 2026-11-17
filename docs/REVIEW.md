@@ -1,3 +1,40 @@
+# v0.7.0-b3c2 · 원문이 바뀐 방의 `원문과 기억 맞추기` (되감기·검토 확인창, 동의 만료) (브랜치 `v0.7-b`)
+
+기준: `0ddaa9c`(b3c1d 리뷰 요청서, 코드 `1d05686`, 리뷰 깨끗 → b3c1 끝). 설계는 GPT 1·2·3차 의견 + 사용자 동의. 파일: `index.js`, `memfile.js`, `manifest.json`(버전만), 검사 `h2-open.cjs` 37~46·`memfile.test.mjs` 1개, 문서.
+
+| 설계 의견 | 처리 |
+|---|---|
+| 두 단계(채팅 → 기억)로, 같은 방 대기열의 한 작업이 두 단계와 마지막 확인까지. 단계 사이 H2·`takeHome` 잠금 유지, 방을 여는 `fitEnd`는 마지막에만, 재개 때 보류된 하이드 계산 안 돌림 | `fitTurn(t, src)`가 1단계(b3c1 숨김 풀기 그대로) 뒤 같은 `try` 안에서 `fitMem`(2단계 + 끝 확인)을 부름. 잠금은 `finally freeHome`까지. 성공 때 `h.hideSkipped = false` 뒤 `fitEnd` |
+| 동의 묶음: 방·열기 회차, 기억 ID·rev·wid, 첫 불일치, 되감기/검토, 결과 끝 위치 + 기록 범위 원문 지문 + 풀 숨김 대상. 뒤쪽엔 새 메시지만 허용. 서버에서 지워진 위치도 지문에, 화면에 남은 삭제 메시지는 기존 채팅 검사 | `t`(방·회차·ID·영수증, `fitOk`) + `src`(`k`·`kind`·`end`·`floor`·`targets`·`n`·`prints`). `n` = 기록 범위와 마지막 풀 숨김까지, 없는 메시지는 `'x'`. 확인창 직후(`fitPageSame`), 차례 읽기(`fitAgreed` + `fitPageSame`), 첫 요청 `guard`, 2단계 읽기, 업로드 직전에 다시 봄. 화면에 남은 삭제는 `serverCovered`의 `gone`(40d) |
+| 2단계는 1단계 검증 뒤에만. 고유값·원문·숨김·🔖, 줄인 기억이 못 덮는 SavePoint 숨김이 서버에 없을 것. 숨김이 처음부터 없거나 이미 풀렸어도 읽기로 확인 뒤 기억만. 공통 `writeEntry`는 `releasesOf`로 채팅을 다시 쓸 수 있으니 쓰지 말 것. 새로 풀 숨김·다른 탭 변경이면 풀린 건 두고 기억 보류 | `fitMem`: 1단계가 보냈으면 채팅 다시 읽기(아니면 차례 읽기 그대로) → 고유값·`fileBase` → `fitSame`·`keepSame`(다르면 보냈을 땐 `fitStop`, 아니면 `diff`) → 원문 지문 + `h2Of(plan.view, msgs)` 없음 → 기억 파일만 |
+| 2단계는 맞추기 안에서 `writeMem` 재사용. 결과별: 거절·충돌 = 풀린 숨김 두고 멈춤, PENDING = 기존 차단, UNREAD = 확인 대기(채팅 0회여도), MEM_OK = 이번 rev·wid + 최종 채팅 확인 뒤 H2 풀기, 미뤄 둔 `다시 확인`은 그 뒤 | `writeMem(…, { ready })`. `HELD`·`REFUSED`·`READ_ERROR` = 보류(이번 시도가 세운 대기만 지움), `CONFLICT` = 줄 멈춤, PENDING·OVERWRITTEN = 기존 멈춤 안내, UNREAD = 화면 기억 바꾸고 `fitCheck.mem`, MEM_OK = 화면 기억·`t.rev/wid` 바꾸고 `fitLook` → `fitEnd`. `freeHome`이 그 뒤 미뤄 둔 `다시 확인` 실행 |
+| 영수증은 실제 저장할 기억 객체에(H2의 구형 `state()`는 표시용 사본) | 계획은 `pageMem()`(저장된 그대로)의 사본에서, `rev`·`by`·`wid`를 그 사본에 찍어 올리고, 성공하면 그 객체를 화면 기억으로(`putBoxMem`) |
+| 업로드 직전엔 이 화면 조건만(추가 요청 없이), 원문 지문 포함. 다른 탭 변경은 마지막 읽기에서. 범위 밖 SavePoint 숨김을 다시 걸면 성공 없이 멈추고 다시 열어도 H2 | `ready`: `fitOk`·답변 중 아님·미확정 아님·`fitPageSame`·`fitSame(mid.snap)`·`keepSame`. 거짓이면 업로드 0(`HELD`). 끝 확인의 `h2Of`·`fitAgree`가 다른 탭 변경을 잡음(42a·42b) |
+| 검토 전환은 저장된 review와 최종 채팅까지 확인 뒤 H2 풀기, 그 뒤 기존 review 제한, 구형 정리는 다음 세이브 | 같은 `fitEnd`. 검토 계획은 `floor = -1`(모든 SavePoint 숨김 먼저 풂, `reconcileQueued`의 `unhideAll(false)`와 같음) |
+
+## 바뀐 것
+- `memfile.js writeMem`: 선택 항목 `ready`(읽고 본체를 만든 뒤, 업로드 직전, 요청 없이). 거짓이면 `{ status: HELD }`, 줄은 그대로. 다른 호출은 안 넘겨요.
+- `index.js` 맞추기 구역: `FIT_TEXT` 새 문구, `fitRoom`이 `t.why`(멈춘 이유), `fitRun`이 `source`면 `fitPlan` → `confirmBox(fitAskText)` → 확인창 뒤 다시 확인, `fitTurn(t, src)`(계획 다시 계산·`guard`에 원문 지문·1단계 뒤 `fitMem`), 새 `fitPlan`·`fitPrints`·`fitAgreed`·`fitPageSame`·`fitAskText`·`fitMem`. `fitEnd` 성공 문구 셋.
+- `homeAlert`: `source`에도 맞추기 버튼(설명 다름, `fitReopen`이면 없음). `homeMessage`: `fitCheck.mem`이면 `checkMem` 문구(H2 `source`보다 먼저). `h2Text`(source)에 버튼 안내.
+
+## ★ 특히 봐 줄 곳
+1. **업로드 직전 확인의 범위:** `ready`는 이 화면이 아는 것(권한·답변 중·미확정·원문 지문·화면 숨김/🔖가 2단계 읽기와 같음)만 봐요. 기억 파일을 읽는 사이 다른 탭이 채팅 파일을 바꾼 건 기억을 쓴 뒤 마지막 읽기에서 잡혀요(성공 없이 멈춤, 다시 열 때까지). GPT 3차 의견대로예요.
+2. **UNREAD 때 화면 기억:** 서버가 받은 뒤 다시 읽기만 실패하면 화면 기억을 새 것으로 바꾸고 `fitCheck.mem`으로 기다려요(일반 저장의 `unread`와 같은 판단). H2는 지우지 않고 안내 문구만 `checkMem`으로 바꿨어요(H2를 지우면 저장 타이머·되감기 예약 막는 장치가 풀려서). `다시 확인`은 연결 단계에서 서버 기억으로 `h2Of` → 없으면 `fitChecked`.
+3. **PENDING 때 화면 기억은 그대로(옛 기억):** 응답 없는 줄이 다시 열 때까지 멈추니 화면 기억은 바꾸지 않았어요.
+4. **겹 장치(망가뜨리기로 안 잡힘):** 차례의 `fitAgreed`는 화면 원문 지문(`fitPageSame`)·채팅 비교(`covers`)·숨김 비교(`fitSame`)가 먼저 같은 차이를 막아요. 확인창 직후 `fitPageSame`은 차례 확인이 다시 막아요. 성공 때 `hideSkipped` 지우기는, 차례 밖 `syncHide()`가 새 숨김을 안 거는 지금 규칙(b2) 때문에 장면을 못 만들었어요.
+5. **되감기의 형식 정리:** `rollbackFrom`의 `applyDiff`가 예전 형식 기억을 그 자리에서 정리해요(기존 되감기와 같음). 그래서 "구형 정리는 다음 세이브"는 되감기가 없는 검토 전환에서만 그대로예요(39).
+6. **1단계 보낸 뒤 2단계 전 차이:** 숨김·🔖 차이면 b3c1처럼 `fitStop`(다시 열 때까지), 원문 지문·새 숨김이면 H2 그대로 + 확인 대기 남김(다시 누르면 새 동의).
+
+## 검사 준비(`h2-open.cjs` 37~46, 36 뒤 파일 끝)
+- 도우미: `srcRoom(id, prep, edit)`(#7까지 기록 → `prep`으로 기억 파일 고침 → 다른 기기가 #3 원문 변경 → 다시 열기 = `source` 3, 숨김 #0~#5), `srcRoom2(id, prep)`(두 번 기록 → #9 변경 → #7까지 되감기, 풀 숨김 없음), `popup()`(마지막 확인창 문구, 취소는 `M.confirm = 0`, 확인창 중 동작은 `M.onPopup`), `info()`(화면·줄·저장본 영수증, `state()` 사본 영수증, 검토, 형식, `fitCheck`·`fitReopen`), `order()`(채팅 저장·기억 업로드 순서), `onMemRead(body, when)`(맞추기 채팅 저장 뒤 또는 n번째 채팅 읽기 뒤 첫 기억 파일 읽기 응답 때 `body`를 기다려 실행 = `writeMem`의 업로드 전 읽기), `onMemPut(body)`(기억 업로드 응답 직후 = 끝 확인 전), `memPuts(r)`.
+- 37 `h2k1` 버튼 → 취소(쓰기 0) → 동의(채팅 → 기억, #-1까지 되감기, 숨김 0) → 세이브 평소대로. 38 `h2k2` 예전 형식 + 숨김 없음 → 기억만, 영수증 넷 같음. 39 `h2k3` `floor = 7` + 예전 형식 → 검토. 40a~d 동의 만료. 41a~c 업로드 직전 보류(41c는 이 묶음에 있는 방 `h2k1`로 옮김). 42a·b 기억 저장 뒤 다른 탭. 43a~d 기억 쓰기 결과. 44 2단계 중 `syncHide()`·`persistSoon()`. 45 답변 중. 46 `f.splice(7)`.
+
+## 검사와 망가뜨리기 결과
+- 고치기 전 코드(`1d05686`, 새 검사 파일·`mock.js` 복사): 37~46 대부분 FAIL(27줄). 통과는 지키는 줄(40d 삭제 막힘, 41c 방 이동).
+- 망가뜨리기 6개 중 3개 잡힘: `writeMem`의 `ready` 빼기 → 41a·41b·41c·43c · `ready`가 확인 대기 안 세움 → 43c · `homeMessage`의 `checkMem` 순서 빼기 → 43c. 안 잡힘(★4): `fitAgreed` 늘 참 · 확인창 직후 `fitPageSame` 빼기 · 성공 때 `hideSkipped` 지우기 빼기.
+- Node 511 통과 / 0 실패 / 3 건너뜀(새 `memfile.test` 1개).
+- 브라우저 59묶음 한꺼번에 모두 통과, 검사 모드 오류 0(`h2-open` 114줄). 41c의 옮길 방 이름만 고친 최종 `h2-open`도 따로 114줄 모두 통과.
+
 # v0.7.0-b3c1d · b3c1c 리뷰 반영 (앞 맞추기의 확인 대기 유지, `다시 확인` 재개도 정리는 다음 세이브) (브랜치 `v0.7-b`)
 
 기준: `92a217a`(b3c1c 리뷰 요청서, 코드 `78ebd71`). b3c1c GPT 리뷰: P1 1, P2 1, P3(검사 제안 1). 사용자 동의로 셋 다 반영. 파일: `index.js`, `manifest.json`(버전만), 검사 `h2-open.cjs` 34~36, 문서.

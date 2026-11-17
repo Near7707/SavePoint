@@ -252,3 +252,20 @@ test('serverMemIO: a thrown or timed-out request is no answer; reads keep the fo
     const gone = serverMemIO(async () => ({ status: 503, text: async () => '' }));
     assert.equal((await gone.read(NAME, valid)).kind, ERROR);
 });
+
+test('v0.7.0-b3c2: `ready` false after the read → nothing uploaded, line as it was; true → the usual write', async () => {
+    const w = world({ [NAME]: first() });
+    const line = memLine(seenOf({ kind: OK, data: w.data(NAME) }));
+    const before = JSON.stringify(line);
+    let asked = 0;
+    const r = await writeMem(w.io, line, { name: NAME, valid, make: next('held'), ready: () => { asked++; return false; } });
+    assert.equal(r.status, 'held');
+    assert.equal(asked, 1);
+    assert.equal(w.uploads, 0);
+    assert.equal(w.reads, 1, 'only the read before');
+    assert.equal(JSON.stringify(line), before);
+    assert.equal(w.data(NAME).state.mem.note, 'first');
+    const ok = await writeMem(w.io, line, { name: NAME, valid, make: next('sent'), ready: () => true });
+    assert.equal(ok.status, MEM_OK);
+    assert.equal(w.data(NAME).state.mem.note, 'sent');
+});

@@ -76,7 +76,10 @@ export function serverMemIO(fetchFn, headers = () => ({}), { timeout = 30000 } =
 // Writes `make(file)` (the body to write, given the file read now: its data, or null when there is none) over the
 // room's memory file. `valid`: the shape check for this file (home.js validMem(id)).
 // Returns { status, body? }. Only 'ok' and 'unread' wrote; 'pending' and 'overwritten' may have; the rest did not.
-export async function writeMem(io, line, { name, valid, make }) {
+// v0.7.0-b3c2: `ready` (optional): asked after the file is read and the body made, right before the upload, with no request of its
+// own; false → nothing is sent ({ status: HELD }), the line left as it is. No other caller passes it.
+export const HELD = 'held';
+export async function writeMem(io, line, { name, valid, make, ready = null }) {
     if (line.pending) return { status: PENDING };
     if (line.stop) return { status: line.stop };
     if (line.busy) throw new Error('memory writes of one room run one at a time (the room queue)');
@@ -90,6 +93,7 @@ export async function writeMem(io, line, { name, valid, make }) {
         delete line.unread;
         const body = make(pre.kind === OK ? pre.data : null);
         if (!body || !valid(body)) throw new Error('memory body does not pass its own check');
+        if (ready && !ready()) return { status: HELD };
         let up;
         try { up = await io.upload(name, JSON.stringify(body)); } catch { up = { kind: PENDING }; }
         if (up?.kind === REFUSED) return { status: REFUSED };

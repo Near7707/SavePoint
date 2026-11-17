@@ -861,6 +861,272 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     r = await look(c); x = await chk();
     ok(!!x.reopen && !x.check && r.page.split(',').includes('2') && r.s === 0, `36. 기억 범위 안 숨김이 서버에서만 풀렸으면 다시 열 때까지 멈춤, 화면 #2 숨김 그대로 (${JSON.stringify({ ...x, page: r.page, server: r.server, s: r.s })})`);
 
+    // ───── v0.7.0-b3c2: `원문과 기억 맞추기` for a changed original (rewind or review, once the user agrees) ─────
+    // A room recorded to #7 (hides #0–#5), then another device changes #3 (or `edit`): stopped (source). `prep` runs on its memory file first.
+    const srcRoom = async (id, prep = null, edit = `f[4].mes = 'changed elsewhere'; f[4].swipes = ['changed elsewhere'];`) => {
+        await recorded(id);
+        if (prep) await ev(([id, prep]) => { const d = M.memDoc(id); new Function('d', prep)(d); M.files.set(M.H.memName(d.id), JSON.stringify(d)); }, [id, prep]);
+        await reopen(id, edit);
+        await wait(1200);
+    };
+    // Recorded twice (to #7, then #9: hides #0–#7), then another device changes #9: rolled back to #7, no hide to take away.
+    const srcRoom2 = async (id, prep = null) => {
+        await recorded(id);
+        await ev(() => M.add(2));
+        await saveTry();
+        if (prep) await ev(([id, prep]) => { const d = M.memDoc(id); new Function('d', prep)(d); M.files.set(M.H.memName(d.id), JSON.stringify(d)); }, [id, prep]);
+        await reopen(id, `f[10].mes = 'changed elsewhere'; f[10].swipes = ['changed elsewhere'];`);
+        await wait(1200);
+    };
+    const popup = () => ev(() => (M.popups || []).slice(-1)[0] || '');
+    const info = () => ev(() => {
+        const h = __savePoint.home(), d = M.memDoc();
+        return { review: h.st?.review || null, wid: h.st?.wid ?? null, seen: h.line?.seen?.wid ?? null, check: h.fitCheck || null, reopen: h.fitReopen || null,
+            dwid: d?.wid ?? null, vwid: __savePoint.state()?.wid ?? null, swid: d?.state?.wid ?? null, drev: d?.rev ?? null, dreview: d?.state?.review || null, dev: d?.state?.mem?.evidenceVersion ?? null };
+    });
+    // The chat saves and memory file uploads from now, in order.
+    const order = () => ev(() => {
+        const f = window.fetch; window.__order = [];
+        window.fetch = async (u, o = {}) => {
+            const s = String(u);
+            if (s === '/api/chats/save') window.__order.push('chat');
+            else if (s === '/api/files/upload') { try { const n = JSON.parse(o.body).name; window.__order.push(n.startsWith('savepoint-mem-') ? 'mem' : n.split('-').slice(0, 2).join('-')); } catch { /* none */ } }
+            return f(u, o);
+        };
+        window.__offOrder = () => { window.fetch = f; return window.__order; };
+    });
+    // `body` runs (awaited) right as the first read of a memory file is answered after the arming point: the fit's chat save answered
+    // ('save') or the n-th chat file read from now answered (a number) — that read is writeMem's, right before its upload.
+    const onMemRead = (body, when = 'save') => ev(([body, when]) => {
+        const f = window.fetch; let gets = 0; window.__memArm = false;
+        window.fetch = async (u, o = {}) => {
+            const s = String(u);
+            if (window.__memArm && s.startsWith('/user/files/savepoint-mem-')) { window.__memArm = false; window.fetch = f; const res = await f(u, o); await new Function(body)(); return res; }
+            if (when === 'save' && s === '/api/chats/save') { const res = await f(u, o); window.__memArm = true; return res; }
+            if (typeof when === 'number' && s === '/api/chats/get') { const res = await f(u, o); if (++gets === when) window.__memArm = true; return res; }
+            return f(u, o);
+        };
+        window.__offMem = () => { window.fetch = f; };
+    }, [body, when]);
+    // `body` runs right after a memory file upload is answered (another tab, before the fit's end check).
+    const onMemPut = body => ev(body => {
+        const f = window.fetch;
+        window.fetch = async (u, o = {}) => {
+            if (String(u) === '/api/files/upload') { let n = ''; try { n = JSON.parse(o.body).name; } catch { /* none */ } if (n.startsWith('savepoint-mem-')) { window.fetch = f; const res = await f(u, o); new Function(body)(); return res; } }
+            return f(u, o);
+        };
+        window.__offPut = () => { window.fetch = f; };
+    }, body);
+    const memPuts = r => r.puts.filter(n => n.startsWith('savepoint-mem-')).length;
+
+    // 37. A rewind with hides: the window offers the fit; cancelled → nothing written; agreed → the hides go to the chat file first, then the
+    //     memory file (rolled back from #3: one checkpoint → nothing left), both read again → the room goes on. The next save as usual.
+    await srcRoom('h2k1');
+    r = await look(); x = await fitBtn();
+    ok(r.h2?.why === 'source' && r.h2.at === 3 && r.server === '0,1,2,3,4,5' && x === 1 && r.alert.includes('원문과 기억 맞추기'), `37. 준비: #3 원문이 바뀌어 멈춘 방, 맞추기 버튼 (${JSON.stringify({ h2: r.h2, server: r.server, btn: x })})`);
+    c = await mark();
+    await ev(() => { M.confirm = 0; });
+    await fit();
+    await ev(() => { M.confirm = 1; });
+    r = await look(c); x = await popup();
+    ok(x.includes('#3') && x.includes('되감') && x.includes('숨김 6개') && r.h2?.why === 'source' && r.s === 0 && r.puts.length === 0 && r.file === 7 && r.server === '0,1,2,3,4,5',
+        `37. 확인창에서 취소 → 쓰기 0, 멈춤 그대로 (${JSON.stringify({ popup: x.slice(0, 90), h2: r.h2, s: r.s, puts: r.puts })})`);
+    c = await mark();
+    await order();
+    await fit(); await wait(600);
+    const o37 = await ev(() => window.__offOrder());
+    r = await look(c); x = await info();
+    ok(o37.join() === 'chat,mem' && r.s === 1 && !r.h2 && r.blocked !== 'room' && r.file === -1 && r.server === '' && r.page === '' && r.t.includes('되감고') && !x.check && x.wid === x.dwid && x.seen === x.dwid,
+        `37. 동의 → 채팅(숨김 풀기) → 기억(되감기) 순서, 두 파일 확인 뒤 이어짐 (${JSON.stringify({ order: o37, s: r.s, h2: r.h2, blocked: r.blocked, file: r.file, server: r.server, page: r.page, t: r.t.slice(0, 60), ...x })})`);
+    await ev(() => M.add(2));
+    await saveTry();
+    r = await look();
+    ok(r.file === 9 && r.server.length > 0, `37. 그 뒤 세이브는 평소대로 기록·숨김 (${JSON.stringify({ file: r.file, server: r.server })})`);
+
+    // 38. An old-format memory, nothing to take away (rolled back to #7): no chat write, the memory file only; the new receipt is on the
+    //     saved body (file = page = line = the copy state() reads). A rollback upgrades the memory's form itself (rollbackFrom, as before).
+    await srcRoom2('h2k2', `d.state.mem.evidenceVersion = 0;`);
+    r = await look(); x = await info();
+    ok(r.h2?.why === 'source' && r.h2.at === 9 && r.file === 9 && x.dev === 0, `38. 준비: 예전 형식 기억, 두 번 기록한 방의 #9가 바뀜 (${JSON.stringify({ h2: r.h2, file: r.file, server: r.server, dev: x.dev })})`);
+    c = await mark();
+    await order();
+    await fit(); await wait(600);
+    const o38 = await ev(() => window.__offOrder());
+    r = await look(c); x = { ...(await info()), popup: await popup() };
+    ok(o38.join() === 'mem' && r.s === 0 && !r.h2 && r.file === 7 && x.popup.includes('#7까지') && !x.popup.includes('숨김 ') && x.wid === x.dwid && x.seen === x.dwid && x.vwid === x.dwid,
+        `38. 숨김 없음 → 채팅 쓰기 0, 기억만, 새 영수증이 저장본·화면·줄·읽기 사본에 같음 (${JSON.stringify({ order: o38, s: r.s, h2: r.h2, file: r.file, ...x, popup: x.popup.slice(0, 70) })})`);
+    await saveTry();
+    x = await info(); r = await look();
+    ok(x.dev === 1 && r.file === 9, `38. 다음 세이브는 평소대로 다시 기록 (${JSON.stringify({ dev: x.dev, file: r.file })})`);
+
+    // 39. Review: the changed message is below what can be rolled back (floor): the memory is kept and put under review; every SavePoint hide
+    //     goes first. The room goes on under review (no auto record, no new hide). An old-format memory: saved as it is with the new receipt
+    //     (not tidied then: the next save does it).
+    await srcRoom('h2k3', `d.state.floor = 7; d.state.mem.evidenceVersion = 0;`);
+    c = await mark();
+    await fit(); await wait(600);
+    r = await look(c); x = { ...(await info()), popup: await popup() };
+    ok(x.popup.includes('검토') && r.s === 1 && memPuts(r) === 1 && !r.h2 && r.file === 7 && x.dreview?.at === 3 && x.review?.at === 3 && r.server === '' && r.page === '' && r.blocked === 'hold' && r.t.includes('검토 상태') && x.dev === 0 && x.wid === x.dwid && x.vwid === x.dwid,
+        `39. 되감을 수 없으면 검토로: 숨김 모두 풀고 검토 상태 저장, 이어짐(검토 제한) (${JSON.stringify({ s: r.s, puts: r.puts, h2: r.h2, file: r.file, server: r.server, blocked: r.blocked, review: x.dreview, dev: x.dev, wid: x.wid, dwid: x.dwid, vwid: x.vwid, t: r.t.slice(0, 60), popup: x.popup.slice(0, 60) })})`);
+    c = await mark();
+    await saveTry();
+    r = await look(c);
+    ok(r.server === '' && r.page === '' && r.file === 7, `39. 검토 중 세이브는 새로 숨기지 않음 (${JSON.stringify({ s: r.s, server: r.server, file: r.file })})`);
+
+    // 40. The agreement runs out. (a) #3 edited again on this page while the window is open; (b) edited again (page and file) before the
+    //     turn reads the chat file; (c) the memory file saved elsewhere while the window is open; (d) a recorded message deleted elsewhere
+    //     while the window is open (this page still shows it). Nothing is written in each.
+    await srcRoom('h2k4');
+    c = await mark();
+    await ev(() => { M.onPopup = async () => { const m = M.chat[3]; m.mes = 'edited again here'; m.swipes = [m.mes]; M.stSave(); }; });
+    await fit();
+    await ev(() => { M.onPopup = null; });
+    r = await look(c);
+    ok(r.h2?.why === 'source' && r.s === 0 && r.puts.length === 0 && r.file === 7 && r.server === '0,1,2,3,4,5' && r.t.includes('확인한 뒤'), `40a. 확인창이 열린 동안 같은 #3을 다시 고침 → 쓰기 0 (${JSON.stringify({ h2: r.h2, s: r.s, puts: r.puts, t: r.t.slice(0, 50) })})`);
+    c = await mark();
+    await onRead('h2k4', 2, `const m = M.chat[3]; m.mes = 'edited a third time'; m.swipes = [m.mes]; M.stSave();`);
+    await fit();
+    await ev(() => window.__offRead());
+    r = await look(c);
+    ok(r.h2?.why === 'source' && r.s === 0 && r.puts.length === 0 && r.file === 7 && r.server === '0,1,2,3,4,5' && r.t.includes('확인한 뒤'), `40b. 차례 읽기 전에 다시 고침(화면·파일) → 쓰기 0 (${JSON.stringify({ h2: r.h2, s: r.s, puts: r.puts, t: r.t.slice(0, 50) })})`);
+    await srcRoom('h2k5');
+    c = await mark();
+    await ev(() => { M.onPopup = async () => { const H = window.__H, name = H.memName(__savePoint.home().id), d = JSON.parse(M.files.get(name)); M.otherPut(name, H.nextMem(d, d.state, 'other40c')); }; });
+    await fit();
+    await ev(() => { M.onPopup = null; });
+    r = await look(c);
+    ok(r.stop === 'conflict' && r.s === 0 && r.puts.length === 0 && r.server === '0,1,2,3,4,5', `40c. 확인창이 열린 동안 다른 곳에서 기억 저장 → 쓰기 0, 충돌로 멈춤 (${JSON.stringify({ stop: r.stop, s: r.s, puts: r.puts })})`);
+    await srcRoom('h2k6');
+    c = await mark();
+    await ev(() => { M.onPopup = async () => { M.serverFiles.h2k6.splice(8); }; });
+    await fit();
+    await ev(() => { M.onPopup = null; });
+    r = await look(c);
+    ok(r.s === 0 && r.puts.length === 0 && r.blocked === 'room' && r.file === 7, `40d. 확인창이 열린 동안 다른 곳에서 #7 삭제(화면엔 남음) → 쓰기 0, 막힘 (${JSON.stringify({ h2: r.h2, s: r.s, puts: r.puts, blocked: r.blocked, t: r.t.slice(0, 60) })})`);
+
+    // 41. Right before the memory upload (after its read, no request of its own): (a) #3 edited again on this page, (b) #7 hidden by hand on
+    //     this page, (c) the room left. No upload; the hides already taken away stay so.
+    await srcRoom('h2k7');
+    c = await mark();
+    await onMemRead(`const m = M.chat[3]; m.mes = 'edited while saving'; m.swipes = [m.mes];`);
+    await fit(); await wait(400);
+    await ev(() => window.__offMem());
+    r = await look(c); x = await info();
+    ok(r.s === 1 && memPuts(r) === 0 && r.h2?.why === 'source' && r.file === 7 && r.server === '' && !!x.check && !x.check.mem && r.t.includes('숨김 풀기는 채팅 파일에 저장했지만'),
+        `41a. 기억 파일을 읽는 동안 #3을 다시 고침 → 업로드 0, 풀린 숨김 그대로, 확인 대기 (${JSON.stringify({ s: r.s, puts: r.puts, h2: r.h2, server: r.server, check: x.check, t: r.t.slice(0, 50) })})`);
+    await srcRoom('h2k8');
+    c = await mark();
+    await onMemRead(`M.chat[7].is_system = true;`);
+    await fit(); await wait(400);
+    await ev(() => window.__offMem());
+    r = await look(c);
+    ok(r.s === 1 && memPuts(r) === 0 && r.h2?.why === 'source' && r.file === 7, `41b. 기억 파일을 읽는 동안 이 화면에서 #7 숨김 → 업로드 0 (${JSON.stringify({ s: r.s, puts: r.puts, h2: r.h2, file: r.file })})`);
+    await ev(() => { M.chat[7].is_system = false; });
+    await srcRoom2('h2k9');
+    c = await mark();
+    await onMemRead(`return M.openFile('h2k1');`, 2);
+    await fit(); await wait(600);
+    await ev(() => window.__offMem());
+    await ev(() => M.opened());
+    r = await look(c); x = await ev(() => M.mem('h2k9')?.lastIndex ?? null);
+    ok(memPuts(r) === 0 && r.s === 0 && x === 9, `41c. 기억 파일을 읽는 동안 방을 옮김 → 업로드 0, 그 방 기억 그대로 (${JSON.stringify({ puts: r.puts, s: r.s, last: x })})`);
+
+    // 42. After the memory is written, before the end check, another tab (a) sets a 🔖 on #6, (b) puts a SavePoint hide on #4 again (past the
+    //     memory now). No success: (a) stopped until reopened — opened again it goes on, the 🔖 kept; (b) stopped by H2, still so when reopened.
+    await srcRoom('h2l1');
+    c = await mark();
+    await onMemPut(`const m = M.serverFiles.h2l1[7]; m.extra = { ...(m.extra || {}), savepointKeep: 1 };`);
+    await fit(); await wait(400);
+    r = await look(c); x = await info();
+    ok(memPuts(r) === 1 && r.s === 1 && !!x.reopen && !r.t.includes('되감고') && r.blocked === 'room', `42a. 기억 저장 뒤 다른 탭 🔖 → 성공 없이 다시 열 때까지 멈춤 (${JSON.stringify({ puts: r.puts, s: r.s, reopen: x.reopen, h2: r.h2, t: r.t.slice(0, 60) })})`);
+    c = await mark();
+    await saveTry();
+    r = await look(c);
+    ok(r.s === 0 && memPuts(r) === 0, `42a. 그동안 세이브 쓰기 0 (${JSON.stringify({ s: r.s, puts: r.puts })})`);
+    await reopenSame('h2l1');
+    r = await look(); x = await ev(() => !!M.serverFiles.h2l1[7].extra?.savepointKeep);
+    ok(!r.h2 && r.blocked !== 'room' && r.file === -1 && x, `42a. 다시 열면 이어짐, 🔖 그대로 (${JSON.stringify({ h2: r.h2, blocked: r.blocked, file: r.file, keep: x })})`);
+    await srcRoom('h2l2');
+    c = await mark();
+    await onMemPut(`const m = M.serverFiles.h2l2[5]; m.is_system = true; m.extra = { ...(m.extra || {}), savepointHidden: 1 };`);
+    await fit(); await wait(400);
+    r = await look(c);
+    ok(memPuts(r) === 1 && r.h2?.why === 'hides' && r.h2.at === 4 && r.file === -1 && !r.t.includes('되감고'), `42b. 기억 저장 뒤 다른 탭이 #4에 SavePoint 숨김 → 성공 없이 멈춤 (${JSON.stringify({ puts: r.puts, h2: r.h2, file: r.file, t: r.t.slice(0, 60) })})`);
+    await reopenSame('h2l2');
+    r = await look();
+    ok(r.h2?.why === 'hides' && r.h2.at === 4 && r.blocked === 'room', `42b. 다시 열어도 그 숨김이 남아 있으면 멈춤 (${JSON.stringify({ h2: r.h2, blocked: r.blocked })})`);
+
+    // 43. The memory write's outcome. (a) refused after the hides went: they stay taken away, the memory and the stop as they were, a check
+    //     waits; the fit again writes no chat file, only the memory. (b) no answer: the room waits for it (pending). (c) written, not read
+    //     back, with no chat write: a check waits; `다시 확인` finishes it. (d) another device's memory before the read: conflict, nothing sent.
+    await srcRoom('h2l3');
+    c = await mark();
+    await ev(() => { M.memFailOnce = 'refused'; });
+    await fit(); await wait(400);
+    r = await look(c); x = await info();
+    ok(r.s === 1 && memPuts(r) === 0 && r.server === '' && r.file === 7 && r.h2?.why === 'source' && !!x.check && !x.check.mem && r.t.includes('거절'),
+        `43a. 기억 저장 거절 → 풀린 숨김 그대로, 기억·멈춤 그대로, 확인 대기 (${JSON.stringify({ s: r.s, puts: r.puts, server: r.server, file: r.file, h2: r.h2, check: x.check, t: r.t.slice(0, 60) })})`);
+    c = await mark();
+    await fit(); await wait(600);
+    r = await look(c); x = { ...(await info()), popup: await popup() };
+    ok(r.s === 0 && memPuts(r) === 1 && !r.h2 && r.file === -1 && !x.check && !x.popup.includes('숨김 '), `43a. 다시 맞추기 → 채팅 쓰기 0, 기억만 → 이어짐 (${JSON.stringify({ s: r.s, puts: r.puts, h2: r.h2, file: r.file, check: x.check })})`);
+    await srcRoom2('h2l4');
+    c = await mark();
+    await ev(() => { M.memFailOnce = 'lost'; });
+    await fit(); await wait(400);
+    r = await look(c);
+    ok(r.stop === 'pending' && r.s === 0 && r.file === 9 && r.blocked === 'room' && r.alert.includes('응답'), `43b. 응답 없음 → 기존 응답 대기 멈춤 (${JSON.stringify({ stop: r.stop, s: r.s, file: r.file, alert: r.alert.slice(0, 40) })})`);
+    await srcRoom2('h2l5');
+    c = await mark();
+    await ev(() => { M.memReadFailAfterWrite = true; });
+    await fit(); await wait(400);
+    r = await look(c); x = await info();
+    await ev(() => { M.memReadFail = false; });
+    ok(r.s === 0 && memPuts(r) === 1 && !!x.check?.mem && r.blocked === 'room' && r.alert.includes('맞춘 기억을 저장했지만'), `43c. 채팅 쓰기 0 + 기억 읽기 실패 → 확인 대기 (${JSON.stringify({ s: r.s, puts: r.puts, check: x.check, alert: r.alert.slice(0, 50) })})`);
+    c = await mark();
+    await recheck(); await wait(400);
+    r = await look(c); x = await info();
+    ok(!r.h2 && !x.check && r.blocked !== 'room' && r.file === 7 && r.s === 0 && memPuts(r) === 0, `43c. 다시 확인 → 이어짐, 쓰기 0 (${JSON.stringify({ h2: r.h2, check: x.check, blocked: r.blocked, file: r.file, s: r.s, puts: r.puts })})`);
+    await saveTry();
+    r = await look();
+    ok(r.file === 9, `43c. 그 뒤 세이브는 평소대로 (${r.file})`);
+    await srcRoom2('h2l6');
+    c = await mark();
+    await onRead('h2l6', 2, `const H = window.__H, name = H.memName(__savePoint.home().id), d = JSON.parse(M.files.get(name)); M.otherPut(name, H.nextMem(d, d.state, 'other43d'));`);
+    await fit(); await wait(400);
+    await ev(() => window.__offRead());
+    r = await look(c); x = await info();
+    ok(r.stop === 'conflict' && memPuts(r) === 0 && r.s === 0 && !x.check, `43d. 기억 파일을 읽을 때 다른 기기 기억 → 충돌로 멈춤, 보낸 것 0, 확인 대기 없음 (${JSON.stringify({ stop: r.stop, puts: r.puts, s: r.s, check: x.check })})`);
+
+    // 44. A hide pass and a save asked for while the memory step waits: nothing is hidden again and nothing more is saved, then or on going on.
+    await srcRoom('h2l7');
+    c = await mark();
+    await onMemRead(`__savePoint.syncHide(); __savePoint.persistSoon();`);
+    await fit(); await wait(1500);
+    await ev(() => window.__offMem());
+    r = await look(c);
+    ok(!r.h2 && r.file === -1 && r.s === 1 && r.page === '' && r.server === '', `44. 기억 단계 중 하이드 계산·저장 예약 → 다시 숨기지 않고 추가 저장 없음 (${JSON.stringify({ h2: r.h2, file: r.file, s: r.s, page: r.page, server: r.server })})`);
+
+    // 45. A reply being made: nothing is asked or written.
+    await srcRoom2('h2l8');
+    c = await mark();
+    await ev(async () => { await eventSource.emit(event_types.GENERATION_STARTED, 'normal', {}, false); });
+    const p45 = (await ev(() => (M.popups || []).length));
+    await fit();
+    x = await ev(() => (M.popups || []).length);
+    await ev(async () => { await eventSource.emit(event_types.GENERATION_ENDED); });
+    r = await look(c);
+    ok(r.h2?.why === 'source' && r.s === 0 && r.puts.length === 0 && x === p45 && r.t.includes('답변을 만드는 중'), `45. 답변 중 → 묻지 않고 쓰기 0 (${JSON.stringify({ h2: r.h2, s: r.s, puts: r.puts, asked: x - p45, t: r.t.slice(0, 40) })})`);
+
+    // 46. Recorded messages deleted elsewhere (#6, #7): the same fit (rolled back from #6).
+    await srcRoom('h2l9', null, `f.splice(7);`);
+    r = await look();
+    ok(r.h2?.why === 'source' && r.h2.at === 6, `46. 준비: #6·#7이 지워져 멈춤 (${JSON.stringify(r.h2)})`);
+    c = await mark();
+    await fit(); await wait(600);
+    r = await look(c);
+    ok(!r.h2 && r.file === -1 && r.server === '' && r.s === 1 && memPuts(r) === 1, `46. 지워진 메시지도 같은 맞추기 → 이어짐 (${JSON.stringify({ h2: r.h2, file: r.file, server: r.server, s: r.s, puts: r.puts })})`);
+
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();
