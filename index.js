@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b3c1';
+const VERSION = '0.7.0-b3c1a';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -401,7 +401,11 @@ async function writeChatFile(fileMeta = null, guard = null, by = 'user') {
         // be one a copy can be made of: otherwise nothing is set on the page and no request is made (`noTarget`). No wait from here
         // to chatTarget below, so a room ready here is ready there.
         if (guard && sent === null && !chatReady()) { const e = new RoomBlocked('채팅방이 아직 다 열리지 않아서(메시지나 채팅 파일 고유값이 없음) 저장하지 않았어요.'); e.noTarget = true; throw fail(e); }
-        if (guard && guard({ sent: sent !== null }) === false && sent === null) { const e = new RoomBlocked('nothing to send'); e.nothingSent = true; throw fail(e); }
+        // v0.7.0-b3c1a (review of b3c1, P1): a guard may stop a copy sent again ('stop'): what was sent stays, nothing more goes
+        // (`fitHeld`). `file`: the chat file this round read (null when nothing was waited for: the caller's own read is the base).
+        const g = guard ? guard({ sent: sent !== null, file: adopted }) : true;
+        if (g === false && sent === null) { const e = new RoomBlocked('nothing to send'); e.nothingSent = true; throw fail(e); }
+        if (g === 'stop' && sent !== null) { const e = new RoomBlocked(FIT_TEXT.held); e.fitHeld = true; throw fail(e); }
         const t = chatTarget(fileMeta), tSnap = t ? t.snap : null;
         if (sent !== null && (!t || t.body === sent)) return sentSnap;
         if (!t) throw fail(new RoomBlocked('채팅방이 아직 다 열리지 않아서(메시지나 채팅 파일 고유값이 없음) 저장하지 않았어요.'));
@@ -2458,7 +2462,9 @@ const FIT_TEXT = {
     busy: '답변을 만드는 중이라 맞추지 않았어요. 답변이 끝난 뒤 다시 해 주세요.',
     changed: '맞추는 사이 이 방의 기억이나 상태가 바뀌어서 아무것도 저장하지 않았어요. `다시 확인`을 눌러 주세요.',
     read: '채팅 파일이나 기억 파일을 읽지 못해서 아무것도 저장하지 않았어요. 잠시 뒤 다시 해 주세요.',
-    diff: '이 화면과 서버의 채팅 파일에서 숨김 상태가 달라서(다른 곳에서 직접 숨겼거나 풀었을 수 있어요) 아무것도 저장하지 않았어요. 방을 다시 연 뒤 다시 해 주세요.',
+    diff: '이 화면과 서버의 채팅 파일에서 숨김 상태나 🔖가 달라서(다른 곳에서 직접 바꿨을 수 있어요) 아무것도 저장하지 않았어요. 방을 다시 연 뒤 다시 해 주세요.',
+    held: '숨김 풀기는 채팅 파일에 저장했지만, 그사이 다른 곳에서 채팅 파일의 숨김 상태나 🔖가 바뀌어서 더 저장하지 않았어요. 이 방은 아직 멈춰 있어요. 방을 다시 연 뒤 `다시 확인`을 눌러 주세요.',
+    unfit: '맞춘 뒤 다시 읽은 채팅 파일이 이 화면과 맞지 않아서(다른 곳에서 바뀌었거나 다른 파일일 수 있어요) 이어 가지 않았어요. 방을 다시 연 뒤 `다시 확인`을 눌러 주세요.',
     copy: ' 다시 열기 전에 이 화면에만 있는 최근 메시지를 복사해 주세요.',
     source: '기록한 원문이 바뀐 방이라 숨김만 풀어서는 맞출 수 없어요. 원문을 되돌렸다면 `다시 확인`을 눌러 주세요.',
     done: '채팅 파일과 기억을 맞췄어요. 이 방은 다시 저장하고 자동 기록도 해요. 새 숨김은 다음 세이브·체크포인트·👻 때 걸려요.',
@@ -2491,6 +2497,19 @@ function fitSame(seen, fit = new Set()) {
         const m = list[i], sys = !!m?.is_system, hid = sys && !!m.extra?.[HIDE_KEY];
         if (fit.has(m)) { if (sys || !seen.sys[i] || !seen.hid[i]) return false; continue; }
         if (sys !== !!seen.sys[i] || hid !== !!seen.hid[i]) return false;
+    }
+    return true;
+}
+// v0.7.0-b3c1a (review of b3c1, P2-1): the 🔖 of every message both have (the message and each swipe) as the chat file has them. Only
+// 🔖: the marks the page tidies alone when a room opens (HELD, VISIBLE, LIVE) are not compared.
+function keepSame(msgs) {
+    if (!Array.isArray(msgs)) return false;
+    const list = chat(), on = x => !!(x && typeof x === 'object' && x.extra && typeof x.extra === 'object' && x.extra[KEEP_KEY]);
+    const swipes = m => Array.isArray(m?.swipe_info) ? m.swipe_info.map(on) : [];
+    for (let i = 0; i < list.length && i < msgs.length; i++) {
+        if (on(list[i]) !== on(msgs[i])) return false;
+        const a = swipes(list[i]), b = swipes(msgs[i]);
+        if (a.length !== b.length || a.some((v, j) => v !== b[j])) return false;
     }
     return true;
 }
@@ -2545,7 +2564,7 @@ async function fitTurn(t) {
         const msgs = pre.messages || [], list = chat();
         const diff = () => say(FIT_TEXT.diff + (list.length > msgs.length ? FIT_TEXT.copy : ''));
         // Any hide state on the page not as the server copy has it: held back, nothing changed or sent.
-        if (!fitSame(pre.snap)) return diff();
+        if (!fitSame(pre.snap) || !keepSame(msgs)) return diff();
         const now = h2Of(pageMem(), msgs);
         if (now?.why === 'source') { h.h2 = now; refreshView(); return say(FIT_TEXT.source); }
         const st = pageMem(), floor = st && !st.review && hasMemory(st.mem) ? st.lastIndex : -1;
@@ -2563,10 +2582,18 @@ async function fitTurn(t) {
             const written = sendSnap(pre.meta), rev = pageMem()?.rev ?? null, tick = delTick;
             // Right before the request: the pass still holds and the page's hide state is still the copy last read (gate.seen: the
             // read above, or the one writeChatFile makes after waiting for SillyTavern) but for the hides taken away.
-            const guard = ({ sent }) => sent || fitOk(t) && !mainBusy() && !gate.unsure && !gate.pending && changed.every(c => fitUntouched(c)) && fitSame(gate.seen, fit);
+            // v0.7.0-b3c1a (review of b3c1, P1): a copy sent again (SillyTavern saved a newer page meanwhile) goes only while the pass
+            // holds and the page's hide state and 🔖 are the chat file's just read, the hides taken away included: otherwise it stops
+            // ('stop'), and what the first request took away stays taken away. P2-1: 🔖 too, at the first request and every resend.
+            const guard = ({ sent, file }) => {
+                const ok = fitOk(t) && !mainBusy() && !gate.unsure && !gate.pending && keepSame(file ? file.messages : msgs);
+                if (sent) return ok && fitSame(gate.seen) ? true : 'stop';
+                return ok && changed.every(c => fitUntouched(c)) && fitSame(gate.seen, fit);
+            };
             let last;
             try { last = await persist(pre.meta, guard, 'user'); }
             catch (e) {
+                if (e?.fitHeld) { const n = gateHere() && gate.seen?.plain ? gate.seen.plain.length : msgs.length; return say(FIT_TEXT.held + (chat().length > n ? FIT_TEXT.copy : '')); }
                 if (e?.nothingSent || e?.noTarget || (e?.released || e?.memMoved) && !e.sents?.length) { fitBack(t, changed); return say(e?.nothingSent ? FIT_TEXT.changed : errorText(e)); }
                 const err = await settleWrite(e, { written, rev, proof: null, pre, key: t.key, epoch: t.epoch, tick });
                 if (err === 'revert') { fitBack(t, changed); return say(`서버가 채팅 파일 저장을 받아들이지 않아서 숨김 풀기를 되돌렸어요. (${errorText(e)})`); }
@@ -2615,10 +2642,17 @@ function fitBack(t, changed) {
 }
 // The two files agree: the stop goes, and the room opens as it does when opened (the page fitted, no new hide, no save). An old
 // memory is read through its tidied copy; its tidy-up is left to the next save (tidyLater).
+// v0.7.0-b3c1a (review of b3c1, P2-2): only when the chat file read last is this room's (its integrity) and the page covers it against
+// the file last seen (fileBase); also when nothing was written. Otherwise the room stays stopped.
 function fitEnd(t, look, text) {
     const h = t.h;
     if (!fitOk(t)) return;
-    if (gateHere()) { const c = fileBase(look.r, gate.seen); if (c.ok) setSeen(look.r.snap); }
+    const pm = pageSnap().meta, fi = look.r.snap?.meta?.integrity;
+    if (!gateHere() || !fi || fi !== pm?.integrity || !fileBase(look.r, gate.seen).ok) {
+        if (homeHere() && home === h) toastr.warning(FIT_TEXT.unfit, 'SavePoint', { timeOut: 10000 });
+        return;
+    }
+    setSeen(look.r.snap);
     h.h2 = null; h.tidyLater = true;
     trustQueue();
     const ok = text === FIT_TEXT.done;

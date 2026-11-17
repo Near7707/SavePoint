@@ -425,7 +425,7 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     await fit();
     await ev(() => window.__offRead());
     r = await look(c);
-    ok(r.h2?.why === 'hides' && r.s === 0 && r.puts.length === 0 && r.server.split(',').includes('7') && r.server.split(',').includes('9') && r.page.split(',').includes('9') && r.t.includes('숨김 상태가 달라서') && !r.t.includes('복사'),
+    ok(r.h2?.why === 'hides' && r.s === 0 && r.puts.length === 0 && r.server.split(',').includes('7') && r.server.split(',').includes('9') && r.page.split(',').includes('9') && r.t.includes('숨김 상태') && !r.t.includes('복사'),
         `19. 다른 탭이 대상 밖 메시지를 직접 숨기면 보류, 쓰기 0, 직접 숨김·#9 그대로 (${JSON.stringify({ h2: r.h2, s: r.s, puts: r.puts, server: r.server, page: r.page, t: r.t.slice(0, 60) })})`);
     c = await mark();
     await ev(() => { const m = JSON.parse(JSON.stringify(M.chat[M.chat.length - 1])); m.mes = 'only on this page'; m.swipes = [m.mes]; M.chat.push(m); });
@@ -472,6 +472,113 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     r = await look(c);
     ok(r.h2?.why === 'hides' && r.s === 1 && r.puts.length === 0 && !r.page.split(',').includes('9') && ['unsure', 'room'].includes(r.blocked) && r.t.includes('확인하지 못했어요'),
         `22. 응답 끊김 → 화면은 펼친 채, 미확정으로 막힘, 방은 멈춤 (${JSON.stringify({ h2: r.h2, s: r.s, puts: r.puts, server: r.server, page: r.page, blocked: r.blocked, t: r.t.slice(0, 80) })})`);
+
+    // ───── v0.7.0-b3c1a (review of b3c1) ─────
+    // The fit's chat save, wrapped: `before` runs right before the first request of room `id` leaves, `after` right after it is answered.
+    const onSave = (id, before, after) => ev(([id, before, after]) => {
+        const f = window.fetch;
+        window.fetch = async (u, o = {}) => {
+            if (String(u) === '/api/chats/save' && JSON.parse(o.body || '{}').file_name === id) {
+                window.fetch = f;
+                if (before) new Function(before)();
+                const res = await f(u, o);
+                if (after) new Function(after)();
+                return res;
+            }
+            return f(u, o);
+        };
+        window.__offSave = () => { window.fetch = f; };
+    }, [id, before, after]);
+    const NEW_MSG = `const m = JSON.parse(JSON.stringify(M.chat[M.chat.length - 1])); m.mes = 'new while fitting'; m.swipes = [m.mes]; M.chat.push(m); M.stSave();`;
+    const serverHas = id => ev(id => ({ n: M.serverFiles[id].length - 1, last: M.serverFiles[id][M.serverFiles[id].length - 1].mes, keep7: !!M.serverFiles[id][8].extra?.savepointKeep, swipe7: !!M.serverFiles[id][8].swipe_info?.[0]?.extra?.savepointKeep }), id);
+
+    // 23. P1, a pair. SillyTavern saves a newer page (a new message) just before the fit's request lands over it: the copy is sent again
+    //     (two chat saves) and the new message is in the file. The same, but another tab then hides #7 by hand: no copy sent again (one
+    //     save), the user's hide stays, #9's release stays, the room stays stopped, the notice asks to copy the message only on this page.
+    await stopped('h2fp');
+    c = await mark();
+    await onSave('h2fp', NEW_MSG, null);
+    await fit(); await wait(800);
+    await ev(() => window.__offSave());
+    r = await look(c); x = await serverHas('h2fp');
+    ok(!r.h2 && r.s === 2 && x.n === 11 && x.last === 'new while fitting' && !r.server.split(',').includes('9') && r.t.includes('맞췄어요'),
+        `23. 숨김이 같으면 다시 보내서 새 메시지 보존, 방 이어짐 (${JSON.stringify({ h2: r.h2, s: r.s, ...x, server: r.server, t: r.t.slice(0, 60) })})`);
+    await stopped('h2fq');
+    c = await mark();
+    await onSave('h2fq', NEW_MSG, `M.serverFiles.h2fq[8].is_system = true;`);
+    await fit(); await wait(800);
+    await ev(() => window.__offSave());
+    r = await look(c); x = await serverHas('h2fq');
+    ok(r.h2?.why === 'hides' && r.s === 1 && x.n === 10 && r.server.split(',').includes('7') && !r.server.split(',').includes('9') && !r.page.split(',').includes('9')
+        && r.t.includes('더 저장하지 않았어요') && r.t.includes('복사') && !r.t.includes('맞췄어요'),
+        `23. 다른 탭이 직접 숨기면 다시 보내지 않음, 직접 숨김·#9 해제 그대로, 방은 멈춤, 복사 안내 (${JSON.stringify({ h2: r.h2, s: r.s, ...x, server: r.server, page: r.page, t: r.t.slice(0, 120) })})`);
+
+    // 24. P2-1: 🔖 another tab put on #7 (the message, or one of its swipes) before the fit's read: held back, nothing written, the 🔖
+    //     stays. After the first request (the copy sent again): no more sent, the 🔖 stays. Marks the page tidied alone (VISIBLE) do not
+    //     hold it back.
+    await stopped('h2fk');
+    c = await mark();
+    await onRead('h2fk', 2, `const m = M.serverFiles.h2fk[8]; m.extra = { ...(m.extra || {}), savepointKeep: 1 };`);
+    await fit();
+    await ev(() => window.__offRead());
+    r = await look(c); x = await serverHas('h2fk');
+    ok(r.h2?.why === 'hides' && r.s === 0 && x.keep7 && r.server.split(',').includes('9') && r.t.includes('🔖'),
+        `24. 다른 탭이 넣은 🔖가 화면과 다르면 보류, 쓰기 0, 🔖 그대로 (${JSON.stringify({ h2: r.h2, s: r.s, ...x, t: r.t.slice(0, 60) })})`);
+    await stopped('h2fw');
+    c = await mark();
+    await onRead('h2fw', 2, `const m = M.serverFiles.h2fw[8]; m.swipe_info = [{ extra: { savepointKeep: 1 } }];`);
+    await fit();
+    await ev(() => window.__offRead());
+    r = await look(c); x = await serverHas('h2fw');
+    ok(r.h2?.why === 'hides' && r.s === 0 && x.swipe7, `24. 스와이프의 🔖도 쓰기 0 (지금은 기존 채팅 비교가 먼저 막음) (${JSON.stringify({ h2: r.h2, s: r.s, ...x })})`);
+    await stopped('h2fr');
+    c = await mark();
+    await onSave('h2fr', NEW_MSG, `const m = M.serverFiles.h2fr[8]; m.extra = { ...(m.extra || {}), savepointKeep: 1 };`);
+    await fit(); await wait(800);
+    await ev(() => window.__offSave());
+    r = await look(c); x = await serverHas('h2fr');
+    ok(r.h2?.why === 'hides' && r.s === 1 && x.keep7 && r.t.includes('더 저장하지 않았어요'), `24. 첫 저장 뒤 🔖가 생기면 다시 보내지 않음, 🔖 그대로 (${JSON.stringify({ h2: r.h2, s: r.s, ...x, t: r.t.slice(0, 60) })})`);
+    await stopped('h2fv');
+    c = await mark();
+    await ev(() => { M.chat[7].extra = { ...(M.chat[7].extra || {}), savepointVisible: 1 }; });
+    await fit();
+    r = await look(c);
+    ok(!r.h2 && r.s === 1 && r.t.includes('맞췄어요'), `24. 화면에서만 정리한 표시는 막지 않음 (${JSON.stringify({ h2: r.h2, s: r.s, t: r.t.slice(0, 60) })})`);
+
+    // 25. P2-2: the chat file read last does not agree with the page (a message the memory does not cover edited elsewhere, or another
+    //     file's integrity): the room stays stopped — when nothing was to be written (already right) and after the write.
+    await stopped('h2fx');
+    c = await mark();
+    await onRead('h2fx', 1, `const f = M.serverFiles.h2fx; f[10].is_system = false; delete f[10].extra.savepointHidden; f[9].mes = 'edited elsewhere'; f[9].swipes = [f[9].mes];`);
+    await fit();
+    await ev(() => window.__offRead());
+    r = await look(c);
+    ok(r.h2?.why === 'hides' && r.s === 0 && r.blocked === 'room' && r.t.includes('맞지 않아서') && !r.t.includes('이미 맞아서'),
+        `25. 이미 맞음 경로: 기록 밖 메시지가 서버에서 바뀌었으면 이어 가지 않음 (${JSON.stringify({ h2: r.h2, s: r.s, blocked: r.blocked, t: r.t.slice(0, 60) })})`);
+    await stopped('h2fy');
+    c = await mark();
+    await onRead('h2fy', 1, `const f = M.serverFiles.h2fy; f[10].is_system = false; delete f[10].extra.savepointHidden; f[0].chat_metadata.integrity = 'int-elsewhere';`);
+    await fit();
+    await ev(() => window.__offRead());
+    r = await look(c);
+    ok(r.h2?.why === 'hides' && r.s === 0 && r.t.includes('맞지 않아서'), `25. 고유값이 바뀌었으면 이어 가지 않음 (${JSON.stringify({ h2: r.h2, s: r.s, t: r.t.slice(0, 60) })})`);
+    await stopped('h2fz');
+    c = await mark();
+    await ev(() => {
+        const f = window.fetch; let after = false, k = 0;
+        window.fetch = async (u, o = {}) => {
+            const b = JSON.parse(o.body || '{}');
+            if (String(u) === '/api/chats/save' && b.file_name === 'h2fz') { const res = await f(u, o); after = true; return res; }
+            if (after && String(u) === '/api/chats/get' && b.file_name === 'h2fz' && ++k === 2) { window.fetch = f; const s = M.serverFiles.h2fz; s[9].mes = 'edited elsewhere'; s[9].swipes = [s[9].mes]; }
+            return f(u, o);
+        };
+        window.__offSave = () => { window.fetch = f; };
+    });
+    await fit(); await wait(400);
+    await ev(() => window.__offSave());
+    r = await look(c);
+    ok(r.h2?.why === 'hides' && r.s === 1 && !r.server.split(',').includes('9') && r.t.includes('맞지 않아서') && !r.t.includes('맞췄어요'),
+        `25. 저장 뒤 마지막 비교가 실패하면 이어 가지 않음 (${JSON.stringify({ h2: r.h2, s: r.s, server: r.server, t: r.t.slice(0, 60) })})`);
 
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
