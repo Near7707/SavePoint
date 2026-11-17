@@ -580,6 +580,121 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     ok(r.h2?.why === 'hides' && r.s === 1 && !r.server.split(',').includes('9') && r.t.includes('맞지 않아서') && !r.t.includes('맞췄어요'),
         `25. 저장 뒤 마지막 비교가 실패하면 이어 가지 않음 (${JSON.stringify({ h2: r.h2, s: r.s, server: r.server, t: r.t.slice(0, 60) })})`);
 
+    // ───── v0.7.0-b3c1b (review of b3c1a) ─────
+    const reopenSame = async id => { await ev(id => M.openFile(id), id); await ev(() => M.opened()); await wait(1200); };
+    const flag = () => ev(() => __savePoint.home().fitReopen || null);
+    // After the stop: `다시 확인`, the fit and a save write nothing and the room stays stopped.
+    const tryAll = async () => {
+        await ev(async () => { await __savePoint.handle('home-recheck'); });
+        await wait(600);
+        await fit();
+        await ev(() => __savePoint.handle('run').catch(() => {}));
+        await wait(1500);
+    };
+
+    // 26. P1: the copy sent again stopped for a hide another tab set by hand (as 23): the room stays stopped until it is opened again —
+    //     the window says so (no buttons, the notice to copy), `다시 확인`, the fit and a save write nothing and the user's hide stays.
+    //     Opened again: the room goes on and the hide is still kept.
+    await stopped('h2g1');
+    c = await mark();
+    await onSave('h2g1', NEW_MSG, `M.serverFiles.h2g1[8].is_system = true;`);
+    await fit(); await wait(800);
+    await ev(() => window.__offSave());
+    r = await look(c); x = { flag: await flag(), fitBtn: await fitBtn() };
+    ok(r.h2?.why === 'hides' && r.s === 1 && x.flag?.n === 10 && x.fitBtn === 0 && r.btn === 0 && r.alert.includes('다시 열') && r.alert.includes('복사'),
+        `26. 다시 보내기를 멈추면 다시 열 때까지 멈춤 표시, 창 안내(버튼 없음·복사) (${JSON.stringify({ h2: r.h2, s: r.s, ...x, btn: r.btn, alert: r.alert.slice(0, 120) })})`);
+    c = await mark();
+    await tryAll();
+    r = await look(c);
+    ok(r.h2 && r.s === 0 && r.puts.length === 0 && r.server.split(',').includes('7') && !!(await flag()),
+        `26. 다시 확인·맞추기·세이브 모두 쓰기 0, 직접 숨김 그대로 (${JSON.stringify({ h2: r.h2, s: r.s, puts: r.puts, server: r.server, t: r.t.slice(0, 80) })})`);
+    await reopenSame('h2g1');
+    r = await look(); x = { flag: await flag() };
+    ok(!r.h2 && !x.flag && r.blocked !== 'room' && r.server.split(',').includes('7') && r.page.split(',').includes('7'),
+        `26. 다시 열면 풀림, 직접 숨김은 화면·서버 그대로 (${JSON.stringify({ h2: r.h2, ...x, blocked: r.blocked, server: r.server, page: r.page })})`);
+
+    // 26b. the same for a 🔖 another tab put on #7 after the first request (as 24 h2fr): the fit tried again writes nothing, the 🔖 stays.
+    await stopped('h2g2');
+    c = await mark();
+    await onSave('h2g2', NEW_MSG, `const m = M.serverFiles.h2g2[8]; m.extra = { ...(m.extra || {}), savepointKeep: 1 };`);
+    await fit(); await wait(800);
+    await ev(() => window.__offSave());
+    c = await mark();
+    await tryAll();
+    r = await look(c); x = await serverHas('h2g2');
+    ok(r.h2 && r.s === 0 && x.keep7 && !!(await flag()), `26b. 🔖로 멈춘 뒤 다시 확인·맞추기·세이브 쓰기 0, 🔖 그대로 (${JSON.stringify({ h2: r.h2, s: r.s, ...x, t: r.t.slice(0, 80) })})`);
+
+    // 27. P1 (the final read): another tab took #9's hide away (already right) but hid #7 by hand: the room does not go on and stays
+    //     stopped until opened again; a save writes nothing.
+    await stopped('h2g3');
+    c = await mark();
+    await onRead('h2g3', 1, `const f = M.serverFiles.h2g3; f[10].is_system = false; delete f[10].extra.savepointHidden; f[8].is_system = true;`);
+    await fit();
+    await ev(() => window.__offRead());
+    r = await look(c); x = { flag: await flag() };
+    ok(r.h2 && r.s === 0 && !!x.flag && r.t.includes('이어 가지 않았어요') && !r.t.includes('이미 맞아서'),
+        `27. 이미 맞음 경로: 숨김 상태가 다르면 이어 가지 않음, 다시 열 때까지 멈춤 (${JSON.stringify({ h2: r.h2, s: r.s, ...x, t: r.t.slice(0, 80) })})`);
+    c = await mark();
+    await tryAll();
+    r = await look(c);
+    ok(r.s === 0 && r.server.split(',').includes('7'), `27. 그 뒤 세이브도 쓰기 0, 직접 숨김 그대로 (${JSON.stringify({ s: r.s, server: r.server })})`);
+    // 27b. after the write: the end read finds #7 hidden by hand.
+    await stopped('h2g4');
+    c = await mark();
+    await ev(() => {
+        const f = window.fetch; let after = false, k = 0;
+        window.fetch = async (u, o = {}) => {
+            const b = JSON.parse(o.body || '{}');
+            if (String(u) === '/api/chats/save' && b.file_name === 'h2g4') { const res = await f(u, o); after = true; return res; }
+            if (after && String(u) === '/api/chats/get' && b.file_name === 'h2g4' && ++k === 2) { window.fetch = f; M.serverFiles.h2g4[8].is_system = true; }
+            return f(u, o);
+        };
+        window.__offSave = () => { window.fetch = f; };
+    });
+    await fit(); await wait(400);
+    await ev(() => window.__offSave());
+    r = await look(c); x = { flag: await flag() };
+    ok(r.h2 && r.s === 1 && !!x.flag && r.t.includes('이어 가지 않았어요') && !r.t.includes('맞췄어요'),
+        `27b. 저장 뒤 마지막 읽기에서 숨김 상태가 다르면 다시 열 때까지 멈춤 (${JSON.stringify({ h2: r.h2, s: r.s, ...x, t: r.t.slice(0, 80) })})`);
+    // 27c. the final read (already right) finds a 🔖 another tab put on #7.
+    await stopped('h2g5');
+    c = await mark();
+    await onRead('h2g5', 1, `const f = M.serverFiles.h2g5; f[10].is_system = false; delete f[10].extra.savepointHidden; f[8].extra = { ...(f[8].extra || {}), savepointKeep: 1 };`);
+    await fit();
+    await ev(() => window.__offRead());
+    r = await look(c); x = await serverHas('h2g5');
+    ok(r.h2 && r.s === 0 && x.keep7 && !!(await flag()), `27c. 마지막 읽기에서 🔖가 다르면 다시 열 때까지 멈춤 (${JSON.stringify({ h2: r.h2, s: r.s, ...x, t: r.t.slice(0, 80) })})`);
+
+    // 28. (18 kept) the hide taken away elsewhere, only the page still has SavePoint's old hide on #9: not a difference — taken away on
+    //     the page, the room goes on, nothing written, no stop until reopened.
+    await stopped('h2g6');
+    c = await mark();
+    await ev(() => { const m = M.serverFiles.h2g6[10]; m.is_system = false; delete m.extra.savepointHidden; });
+    await fit();
+    r = await look(c); x = { flag: await flag(), hid9: await ev(() => !!M.chat[9].extra?.savepointHidden) };
+    ok(!r.h2 && !x.flag && !x.hid9 && r.s === 0 && !r.page.split(',').includes('9') && r.alert === '' && r.t.includes('이미 맞아서'),
+        `28. 화면에만 남은 예전 SavePoint 숨김은 걷어 내고 이어짐 (${JSON.stringify({ h2: r.h2, ...x, s: r.s, page: r.page, alert: r.alert.slice(0, 40) })})`);
+
+    // 29. P2: the memory file saved elsewhere right after the first request is answered (no SillyTavern wait): no copy sent again, what was
+    //     sent stays, the room stopped for the memory conflict, no success notice. Then the memory file unreadable at that point: the same.
+    await stopped('h2g7');
+    await ev(async () => { window.__H = await import('/ext/home.js'); });
+    c = await mark();
+    await onSave('h2g7', NEW_MSG, `const H = window.__H, name = H.memName(__savePoint.home().id), d = JSON.parse(M.files.get(name)); M.otherPut(name, H.nextMem(d, d.state, 'other29'));`);
+    await fit(); await wait(800);
+    await ev(() => window.__offSave());
+    r = await look(c); x = await serverHas('h2g7');
+    ok(r.s === 1 && x.n === 10 && !r.server.split(',').includes('9') && r.stop && r.blocked === 'room' && r.t.includes('기억 파일을 저장해서 더 저장하지 않았어요') && r.t.includes('복사') && !r.t.includes('맞췄어요'),
+        `29. 첫 저장 뒤 다른 곳 기억 저장 → 다시 보내지 않음, 기억 충돌로 멈춤 (${JSON.stringify({ s: r.s, ...x, stop: r.stop, blocked: r.blocked, t: r.t.slice(0, 120) })})`);
+    await stopped('h2g8');
+    c = await mark();
+    await onSave('h2g8', NEW_MSG, `M.memReadFail = true;`);
+    await fit(); await wait(800);
+    await ev(() => { window.__offSave(); M.memReadFail = false; });
+    r = await look(c); x = await serverHas('h2g8');
+    ok(r.s === 1 && x.n === 10 && r.h2 && r.t.includes('기억 파일을 다시 읽지 못해서 더 저장하지 않았어요') && !r.t.includes('맞췄어요'),
+        `29. 그 순간 기억 파일을 못 읽으면 다시 보내지 않음, 멈춤 (${JSON.stringify({ s: r.s, ...x, h2: r.h2, t: r.t.slice(0, 120) })})`);
+
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();

@@ -1,3 +1,39 @@
+# v0.7.0-b3c1b · b3c1a 리뷰 반영 (맞추기가 숨김·🔖 차이를 보면 다시 열 때까지 멈춤, 다시 보내기 전 기억 확인) (브랜치 `v0.7-b`)
+
+기준: `81340f5`(b3c1a 리뷰 요청서, 코드 `f1c50a4`). b3c1a GPT 리뷰: P1 1, P2 1, P3 없음. `'stop'`을 다시 보낼 때만 쓰는 방식과 마지막 고유값 확인은 적절하다고 함. 2차 의견 + 사용자 동의로 P1·P2와 "마지막 읽기의 숨김·🔖 비교"까지 반영. 파일: `index.js`, `manifest.json`(버전만), 검사 `h2-open.cjs` 26~29, 문서.
+
+| 리뷰 | 처리 |
+|---|---|
+| P1: 다시 보내기를 숨김·🔖 차이로 멈춰도 `다시 확인`이나 맞추기를 한 번 더 누르면 H2가 풀림(서버엔 못 덮는 SavePoint 숨김이 이제 없으니). 다른 탭이 건 숨김·🔖는 화면에 없어서 다음 일반 저장이 덮음. 다시 열 때까지 두 버튼 모두 재개하지 않게, 화면에만 있는 메시지는 복사 안내 | `home.fitReopen = { n }`(`fitStop`, `n` = 마지막 읽은 파일의 메시지 수). 다시 보낼 때 `guard`가 숨김·🔖 차이로 `'stop'`이면(`apart`) 세움. `homeOpen` 거짓, `recheckHome` 처음에 돌아감(판정·이름표 쓰기 없음), `handle('home-recheck')`·`fitRoom`은 안내만, `fitOk` 거짓. 창은 버튼 없이 `FIT_TEXT.reopen` + 화면이 더 길면 복사 안내. 방을 다시 열면 새 `home`이라 사라짐. 답변 중·미확정 등으로만 멈춘 다시 보내기는 세우지 않음(`FIT_TEXT.paused`) |
+| (2차) 마지막 읽기에서 숨김·🔖 차이를 봤는데도 재개하면 결과가 P1과 같음 → 같은 표시. 단 검사 18(다른 탭이 이미 풀어 줌, 화면에만 예전 SavePoint 숨김)은 이어져야 함 | `fitAgree(r)`: 화면과 마지막 읽은 파일의 `sys`·`hid`와 `keepSame`. 화면만 SavePoint 숨김 · 파일은 보임 · 기억 범위 밖(`i > floor`)이면 차이 아님 → 그 메시지를 화면에서 걷어 냄(숨김·`HIDE`·`HELD`·`LIVE`). 그 밖의 차이는 `fitStop` + `FIT_TEXT.apart`. `fitEnd`에서 고유값·`fileBase` 확인 뒤(일반 `unfit`은 예전대로) |
+| P2: 실리태번 저장을 기다리지 않은 다시 보내기는 서버 기억을 안 읽음(`homeStill`은 `waited`일 때만) → 첫 응답 뒤 다른 탭 기억 저장이 있어도 두 번째 요청이 나감. 기억 → 채팅 → 전송 순서로 | 맞추기 `guard.memFirst = true` → `writeChatFile`이 `waited || guard?.memFirst && sent !== null`일 때 `homeStill()`. 다른 저장은 그대로. (2차) 기억이 바뀌었거나 못 읽으면 더 안 보냄, 보낸 것은 되돌리지 않음, 기존 기억 충돌 멈춤(`MF_CONFLICT`) 유지, 성공 안내 없음: `FIT_TEXT.moved` + `homeMessage()` / `FIT_TEXT.memRead`, 화면이 더 길면 복사 안내 |
+
+## 바뀐 것
+- `writeChatFile`: 기억 확인 조건에 `guard?.memFirst && sent !== null`.
+- 맞추기 구역: `FIT_TEXT`에 `paused`·`apart`·`reopen`·`moved`·`memRead`, `held` 문구("다시 열 때까지"), `fitOk`에 `!h.fitReopen`, `fitRoom` 처음, `guard`의 `apart`, `catch`의 `fitHeld`·`memMoved` 분기, 새 `fitAgree`·`fitStop`, `fitEnd`의 마지막 비교.
+- `homeOpen`·`homeMessage`·`homeAlert`·`recheckHome`·`handle('home-recheck')`에 `fitReopen`.
+
+## ★ 특히 봐 줄 곳
+1. **`fitReopen`이 막는 범위:** `homeOpen` 거짓(일반 저장·자동 기록·타이머는 H2가 남아 있어서도 막힘) + `recheckHome` 처음에 돌아감. 그래서 이 방은 다른 곳에서 기억을 저장해도 이 화면은 다시 열 때까지 따라가지 않아요(`recheckHome('auto')`까지 막음). 이 정도로 넓게 막아도 되는지.
+2. **`fitAgree`의 예외:** 기억 범위 밖, 화면 SavePoint 숨김, 파일은 보임만. 범위 안에서 같은 차이(다른 곳에서 덮인 숨김을 풂)는 차이로 보고 멈춰요. 맞는지.
+3. **`apart` 판단:** 다시 보낼 때 `keepSame`이나 `fitSame(gate.seen)`이 거짓이면 다른 조건(영수증·답변 중)과 상관없이 `fitReopen`. 둘 다 참이고 다른 조건만 거짓이면 `paused`(방은 H2, `다시 확인`으로 이어짐).
+4. **`memMoved` 뒤 문구:** `homeStill`이 `memFile`이면 `line.stop = MF_CONFLICT`라 `homeMessage()`가 기억 충돌 안내를 붙여요. `memRead`면 줄은 그대로라 `다시 확인`으로 이어질 수 있어요(그때 화면과 서버 차이는 이 화면의 새 메시지뿐).
+5. **망가뜨리기로 못 지킨 곳:** `recheckHome`의 처음 돌아감 빼기 → 안 잡힘(겹 장치: `homeOpen`이 `fitReopen`으로 거짓이라 판정이 H2를 지워도 열리지 않음, `roomOpened`도 안 돎).
+
+## 검사 준비(`h2-open.cjs` 26~29, 25 뒤 파일 끝)
+- 도우미: `reopenSame(id)`(같은 방 다시 열기), `flag()`(`home().fitReopen`), `tryAll()`(`home-recheck` → 맞추기 → `run`).
+- 26 `h2g1`: 23 `h2fq`처럼 다시 보내기 멈춤 → 표시 `n === 10`·맞추기 버튼 0·다시 확인 버튼 0·창 문구 "다시 열"·"복사" → `tryAll` 쓰기 0·서버 #7 숨김 그대로 → 다시 열면 표시·H2 없음, #7 숨김 화면·서버 그대로.
+- 26b `h2g2`: 24 `h2fr`처럼 🔖로 멈춤 → `tryAll` 쓰기 0, 🔖 남음.
+- 27 `h2g3`: `onRead(…, 1)`로 서버 #9 숨김 떼고 #7 직접 숨김 → 이미 맞음 경로가 이어 가지 않음·표시 → `tryAll` 쓰기 0. 27b `h2g4`: 저장 응답 뒤 두 번째 읽기 직전 서버 #7 직접 숨김 → 저장 1·표시. 27c `h2g5`: 시작 확인에서 #9 숨김 떼고 #7 🔖 → 쓰기 0·표시.
+- 28 `h2g6`: 18과 같은 장면 + 화면 #9의 `savepointHidden`이 걷혔는지, 표시 없음, 창 안내 없음.
+- 29 `h2g7`: `onSave(…, NEW_MSG, 다른 기기 기억 저장 H.nextMem)` → 채팅 저장 1(다시 안 보냄)·서버 10개·#9 풀림·기억 충돌로 멈춤·"기억 파일을 저장해서 더 저장하지 않았어요"·복사 안내. `h2g8`: `after`에 `M.memReadFail = true` → 저장 1·"기억 파일을 다시 읽지 못해서".
+
+## 검사와 망가뜨리기 결과
+- 고치기 전 코드(`f1c50a4`, 새 검사 파일·`mock.js` 복사): 새 줄 9개 FAIL(26 첫째·둘째, 26b, 27 둘 다, 27b, 27c, 29 둘 다). 통과: 26 셋째(다시 열면 풀림, 지키는 줄), 28(18과 같은 장면, 지키는 줄).
+- 망가뜨리기 5개 중 4개 잡힘: `fitStop`이 표시 안 세움 → 26·26b·27·27b·27c · `fitEnd`에서 `fitAgree` 실패를 무시 → 27·27b·27c · `fitAgree` 예외 빼기 → 18·28 · `memFirst` 조건 빼기 → 29 둘 다. 안 잡힘: `recheckHome` 처음 돌아감 빼기(★5).
+- Node 510 통과 / 0 실패 / 3 건너뜀.
+- 브라우저 59묶음 한꺼번에 58 통과 + `status`(알려진 `autoFail` null 오류 → 따로 첫 번째에 통과). 검사 모드 오류 0. `h2-open` 61줄 모두 통과.
+
 # v0.7.0-b3c1a · b3c1 리뷰 반영 (맞추기의 다시 보내기·🔖·재개 조건) (브랜치 `v0.7-b`)
 
 기준: `f3b36c9`(b3c1 리뷰 요청서, 코드 `c48377a`). b3c1 GPT 리뷰: P1 1, P2 2, P3 없음. 숨김 상태가 다를 때 보류·`fitOk`의 영수증 비교·`tidyLater`는 그대로 두기로(GPT). 2차 의견 + 사용자 동의로 셋 다 반영. 파일: `index.js`, `manifest.json`(버전만), 검사(`h2-open.cjs` 19 문구, 23~25), 문서.
