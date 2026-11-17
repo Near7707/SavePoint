@@ -1,3 +1,51 @@
+# v0.7.0-b3b2 · 방 열기 채팅 저장 0회 · 멈춘 방 저장 타이머 (브랜치 `v0.7-b`)
+
+기준: `5c9fc63`(b3b1b 리뷰 요청서, 코드 `2aff007`, 리뷰 깨끗). 설계는 b3 설계의 b3b 줄 + "b3b2에 넘길 것" + GPT 설계 의견(P1 없음, P2 1)과 사용자 동의. 한 조각. 파일: `index.js`, `manifest.json`(버전만), 검사(`h2-open.cjs` 12~15, `room-gate.cjs` 7e, `b2b-race.cjs` 11f, `home-link.cjs` 29), 문서.
+
+| 항목 | 처리 |
+|---|---|
+| 방 열기(`roomOpened`)의 일반 `syncHide()`가 새 숨김을 걸고 채팅 저장을 예약(b3a1a 리뷰 P2-2, `room-gate` 7e `NOTE` 1회) | 🔴 반영. GPT 의견대로 `syncHide({ release: true })`를 그대로 씀: 새 숨김·저장 예약·수동 범위 예약 없음, 풀어야 할 표시(🔖가 붙은 SavePoint 숨김, 사용자가 연 원문의 표시, `HELD`)는 화면에서만 정리하고 다음 저장에 실림. 사용자 숨김(표시 없음)은 그대로. `recheckHome`의 재연결·충돌 복구도 같은 `roomOpened`라 함께. |
+| GPT P2: 구형 기억을 열면 `state()`가 `tidyQueued()`를 예약하고, 그 `tidyNow`는 기본값으로 하이드 계산까지 돌아 채팅을 쓸 수 있음 | 🔴 반영. `tidyNow`에 `hides: false`(형식 정리만). 기억 본체의 형식 정리 업로드는 예전처럼 허용. `pageState`·체크포인트 앞의 `tidyNow`도 같은 함수라 함께(수동 범위 정리는 다음 대기열 변경 차례에). |
+| b3b1 리뷰 P2-2: 멈춘 방(H2)에서도 `persistSoon`·`saveChatSoon` 타이머가 생기고 답변 중이면 1.5초마다 다시 예약 | 🔴 반영. 두 함수의 입구(기존 타이머는 지운 뒤)와 콜백에서 `mainBusy()`를 보기 전에 `h2Here()`. H2만(GPT: 보류·충돌은 복구 뒤 밀린 저장을 잇는 길이 따로 있음). |
+| 답변 생성 시작의 하이드 계산 | ⚪ 그대로(GPT 1). 원문이 정상인 방에선 `GENERATION_STARTED`가 하이드를 계산하지 않고 `MESSAGE_SENT` 뒤 타이머가 계산 → 방을 연 직후 첫 답변에는 원문과 브리핑이 함께 들어갈 수 있음. README 알려진 한계(v0.7.0-b3b2), 보장은 c(일반 전송 보호). |
+| "이 화면이 아는 원문 변경이면 멈추지 않기" 예외, 열기의 `reconcile()` | ⚪ 그대로(GPT 동의). 앞은 README 한계 v0.7.0-b3b1 + b3c 맞추기, 뒤는 열 때 원문이 다르면 H2가 먼저 멈춤. |
+
+## 바뀐 것
+- `roomOpened`: `syncHide()` → `syncHide({ release: true })`.
+- `tidyNow`: `transact(…, { undoable: false, autosave: false, hides: false })`.
+- `persistSoon`: `clearTimeout` 뒤 `if (h2Here()) return;`, 콜백 첫 줄에 `|| h2Here()`. `saveChatSoon`도 같음.
+
+## ★ 특히 봐 줄 곳
+1. 열기에서 화면만 정리한 표시(🔖 정리·`savepointVisible`·`HELD` 떼기)는 서버에 바로 안 가요. 다음 정상 저장이 실을 때까지 화면과 서버가 표시만 달라요. 다음 저장 전 `serverCovered`가 이 차이를 "서버에 화면에 없는 내용"으로 보지 않는지(표시는 비교에서 빠지는 걸로 보고 있어요, 검사 12·13·11f·29가 그 뒤 세이브까지 통과).
+2. `tidyNow`의 `hides: false` 망가뜨리기는 안 잡혔어요. 열기에서는 `roomOpened`의 화면 정리가 정리 작업 차례보다 먼저 돌아서(정리 작업은 `homeSettled`·대기열을 거침) 그 차례에는 바뀔 표시가 남지 않아요(겹 장치). 정리 작업이 먼저 도는 순서가 실제로 있는지.
+3. `saveChatSoon` 콜백의 `h2Here()` 빼기도 안 잡혔어요. 답변 중에 `saveChatSoon` 타이머가 잡힌 뒤 방이 멈추는 장면을 못 만들었어요(입구 확인은 14가 지킴, `persistSoon` 콜백은 15가 지킴).
+4. 15는 멈춤을 손으로 걸어요(`home().h2 = …`). 답변 중 `다시 확인`은 채팅 파일 확인이 `busy`로 미뤄서 답변 안에서 방을 멈출 수 없어서예요. 실제로 답변 중에 H2가 생기는 길이 있는지(없으면 이 콜백 확인은 겹 장치).
+5. 기대가 바뀐 기존 검사 두 곳(아래)이 설계 의도와 맞는지.
+
+## 바뀐 기대(기존 검사)
+- `b2b-race` 11f(b2b4): "방을 열며 다시 숨김 → 다른 탭 값 지움" → "열 때는 그대로(펼침·다른 탭 값), 채팅 저장 0" + "다음 세이브가 다시 숨김 → 화면·서버에서 값 지움"(GPT 3, 원래 회귀 목적 유지).
+- `home-link` 29(b1c P2-3): "새 방 → 다시 확인으로 연결 → 바로 숨김" → "숨김은 아직 없음, 채팅 저장 0" + "그 뒤 세이브에서 숨김". 30은 29 뒤의 세이브로 숨김이 생겨 기대 변경 없이 통과.
+- `room-gate` 7e: `NOTE` 줄 → 검사(1.5초 동안 채팅 저장 0, 화면 새 숨김 없음, 이름표 말고 업로드 0).
+
+## 검사 준비(`h2-open.cjs`, 6 뒤)
+- 저장 타이머 세기: `window.setTimeout`을 감싸 이름이 `save`인 콜백(`persistSoon`·`saveChatSoon`)만 `{ ms, h2 }`로 기록.
+- 14: 6의 멈춘 방(`h2p`)에서 `persistSoon()` → 타이머 0. 화면 #1에 SavePoint 표시만 남기고 펼친 뒤 `syncHide()`(→ `saveChatSoon`) → 타이머 0·저장 0.
+- 12: `recorded('h2q', 'off')`(숨김 없이 기록, 설정은 auto로) → 그대로 다시 열기 → 1.5초 뒤 저장 0·기억 쓰기 0·숨김 없음 → `M.add(2)` + 세이브 → 화면·서버 숨김.
+- 13: `recorded('h2o')` → 기억 파일 `mem.evidenceVersion = 0` → 서버 #6에 `savepointHeld` → 다시 열기 → 기억 업로드만(형식 정리 `evidenceVersion` 1), 채팅 저장 0, 화면 `HELD`만 떼어짐(서버엔 남음).
+- 15: `recorded('h2w')` → `GENERATION_STARTED` → `persistSoon()` → 0.8초(답변 중이라 1.5초 재예약) → `home().h2` 손으로 → 4초 → 멈춘 뒤 잡힌 타이머 0·저장 0 → `GENERATION_ENDED`·`h2` 지움.
+
+## 검사와 망가뜨리기 결과
+- 고치기 전 코드(`2aff007`, 새 검사 파일·`mock.js` 복사): `h2-open` 12·13·14(두 줄)·15 FAIL, `room-gate` 7e(b3b2) FAIL(저장 1회·새 숨김 10), `b2b-race` 11f(b3b2 첫 줄) FAIL(저장 1회), `home-link` 29 첫 줄 FAIL.
+- 망가뜨리기:
+  - `persistSoon` 입구 확인 빼기 → 14 첫 줄 FAIL
+  - `persistSoon` 콜백 확인 빼기 → 15 FAIL
+  - `saveChatSoon` 입구 확인 빼기 → 14 둘째 줄 FAIL
+  - `tidyNow`의 `hides: false` 빼기 → 안 잡힘(★2)
+  - `saveChatSoon` 콜백 확인 빼기 → 안 잡힘(★3)
+  - `roomOpened`를 예전 `syncHide()`로 → 고치기 전 코드 실행으로 갈음(12·13·7e·11f·29)
+- Node 510 통과 / 0 실패 / 3 건너뜀.
+- 브라우저: 고친 검사까지 넣어 59묶음 한꺼번에 58 통과 + `status`만 알려진 `autoFail` null 오류 → 따로 1번째 같은 오류, 2번째 통과. 검사 모드 오류 0. (첫 한꺼번 실행(검사 고치기 전)에서는 `b2b-race` 11f·`home-link` 29만 기대 바뀜으로 실패.)
+
 # v0.7.0-b3b1b · b3b1a 리뷰 반영 (재확인 출처를 읽기 시작점에서 · 따라가기 저장 한 번) (브랜치 `v0.7-b`)
 
 기준: `badd3ab`(b3b1a 리뷰 요청서, 코드 `14ead7b`). b3b1a GPT 리뷰: P1 1, P2 1, P3 없음. 2차 의견과 사용자 동의대로 둘 다 반영. 파일: `index.js`, `manifest.json`(버전만), 검사(`b2b-race.cjs` 5i~5l), 문서.

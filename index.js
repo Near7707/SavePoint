@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b3b1b';
+const VERSION = '0.7.0-b3b2';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -195,8 +195,10 @@ function tidyMem(st, mark) {
 const basicTidied = new WeakSet(), tidyViews = new WeakMap();
 let tidyAsked = null;
 // v0.7.0-a1: the tidy-up as one queued change, waited for (a save needs it written before it starts).
+// v0.7.0-b3b2 (review of the b3b2 plan, P2): the tidy-up changes the memory's form only, never the hide flags (`hides: false`): a
+// room opened on an old-format memory (state() queues this) writes no chat file for it.
 function tidyNow() {
-    return transact(() => { const st = pageMem(); return st && st.v === 1 && tidyMem(st, true) ? undefined : false; }, { undoable: false, autosave: false });
+    return transact(() => { const st = pageMem(); return st && st.v === 1 && tidyMem(st, true) ? undefined : false; }, { undoable: false, autosave: false, hides: false });
 }
 function tidyQueued() {
     const id = `${roomKey()}|${roomEpoch}`;
@@ -1481,6 +1483,9 @@ async function queueIdle() {
 }
 function persistSoon() {
     clearTimeout(persistTimer);
+    // v0.7.0-b3b2 (review of b3b1, P2-2): a stopped room (H2) gets no save timer: none is set, and one set before it stopped neither
+    // runs nor is set again while a reply is made (checked before mainBusy). The same in saveChatSoon.
+    if (h2Here()) return;
     const key = roomKey(), epoch = roomEpoch;
     // v0.6.59: the memory on this page changed outside the queue (notes, repairs): this page wrote it
     // (marked now, so a SillyTavern save of the page before our write still shows it as this page's).
@@ -1489,16 +1494,17 @@ function persistSoon() {
     const mark = () => { const st = pageMem(); if (gateOpen() && st && typeof st === 'object') st.by = SESSION; };
     mark();
     persistTimer = setTimeout(function save() {
-        if (roomKey() !== key || roomEpoch !== epoch) return;
+        if (roomKey() !== key || roomEpoch !== epoch || h2Here()) return;
         if (mainBusy()) { persistTimer = setTimeout(save, 1500); return; }
         guardedSave(pre => { mark(); return persist(pre.meta); });
     }, 300);
 }
 function saveChatSoon() {
     clearTimeout(chatSaveTimer);
+    if (h2Here()) return;
     const key = roomKey(), epoch = roomEpoch;
     chatSaveTimer = setTimeout(function save() {
-        if (roomKey() !== key || roomEpoch !== epoch) return;
+        if (roomKey() !== key || roomEpoch !== epoch || h2Here()) return;
         if (mainBusy()) { chatSaveTimer = setTimeout(save, 1500); return; }
         guardedSave(pre => persist(pre.meta));
     }, 500);
@@ -1894,7 +1900,10 @@ function roomOpened() {
         refreshInjection(); render(true); return;
     }
     reconcile();
-    syncHide();
+    // v0.7.0-b3b2 (b3 design): opening writes no chat file. Only what must be taken away is fitted on the page (as when following a
+    // memory: no new hide, no save scheduled, no manual range queued); a user's own hide is kept. What the page tidied rides the next
+    // save; new hides wait for the next save, checkpoint or 👻.
+    syncHide({ release: true });
     const it = interruptedNote(state());
     if (it) toastr.info(`이 방의 지난 저장이 방을 옮기면서 중간에 멈췄어요 (#${it.from}부터 미저장). SavePoint에서 퀵세이브로 이어서 기록할 수 있어요.`, 'SavePoint', { timeOut: 10000 });
     refreshInjection(); render(true);

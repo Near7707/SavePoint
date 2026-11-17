@@ -53,7 +53,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const H = () => ev(() => { const h = __savePoint.home(); return { status: h.status, why: h.why, id: h.id, verdict: h.d?.verdict ?? null, row: h.d?.row ?? null, last: __savePoint.state()?.lastIndex ?? null, stop: h.line?.stop ?? null, pending: !!h.line?.pending }; });
     const memOf = id => ev(async id => { const H = await import('/ext/home.js'); const t = M.files.get(H.memName(id)); return t ? JSON.parse(t) : null; }, id);
     const names = () => ev(() => [...M.files.keys()].filter(n => /^savepoint-(mem|room|int|moved|moving|copy)-/.test(n)).sort());
-    let r, h;
+    let r, h, x;
 
     // v0.7.0-b3a2b: decideRoom row 5 moves a memory only over the one the room had when it was renamed — kept by a rename of the open
     // room (room-gate 7l). Renames made here in the list (another room open) keep nothing and are held since then (room-gate 7l), so
@@ -602,6 +602,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     // 29. P2-3: a new room finds another device's memory on `다시 확인` (new → linked): the hides follow it at once.
     await ev(() => { M.settings.savePoint.hideMode = 'auto'; M.settings.savePoint.keepRecent = 2; });
     await newRoom('fresh29'); await wait(900);
+    const s29 = await ev(() => (M.saveBodies || []).length);
     await ev(async ([o]) => {
         const H = await import('/ext/home.js'), hm = __savePoint.home(), addr = JSON.stringify(['ari.png', 'fresh29']);
         const st = { ...o, roomKey: addr, linkedSave: null, lastIndex: 4, hashes: M.chat.slice(0, 5).map(H.fingerprint), floor: 4, rev: 1, wid: 'other29' };
@@ -612,7 +613,13 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await wait(1500);
     h = await H();
     r = await ev(() => M.chat.map(m => !!m.is_system));
-    ok(h.status === 'linked' && h.last === 4 && r.some(Boolean), `29. 새 방 → 다시 확인으로 연결 → 바로 숨김 맞춤 (${JSON.stringify(h)} ${JSON.stringify(r)})`);
+    // v0.7.0-b3b2 (b3 design): linking is an opening — nothing is written and no new hide is set then; the next save sets them.
+    x = await ev(n => (M.saveBodies || []).length - n, s29);
+    ok(h.status === 'linked' && h.last === 4 && !r.some(Boolean) && x === 0, `29. (b3b2) 새 방 → 다시 확인으로 연결 → 숨김은 아직 없음, 채팅 저장 0 (${JSON.stringify(h)} ${JSON.stringify(r)} s=${x})`);
+    await ev(() => M.add(2)); await ev(() => __savePoint.handle('run').catch(() => {})); await wait(2000);
+    h = await H();
+    r = await ev(() => M.chat.map(m => !!m.is_system));
+    ok(h.last > 4 && r.some(Boolean), `29. (b3b2) 그 뒤 세이브에서 숨김 (${JSON.stringify(h)} ${JSON.stringify(r)})`);
 
     // ───── v0.7.0-b1d (review of b1c) ─────
     const linkedRoom = async n => { await newRoom(n); await wait(900); await ev(() => M.add(4)); await ev(() => __savePoint.handle('run')); await wait(2000); return (await H()).id; };

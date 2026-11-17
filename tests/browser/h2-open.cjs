@@ -217,6 +217,72 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     ok(!r.stop && r.h2?.why === 'source' && r.h2.at === 2 && r.file === 7 && r.s === 0 && r.puts.every(x => x.startsWith('savepoint-room-')),
         `6. 연결이 끝난 뒤 H2로 멈춤, 기억·채팅 쓰기 0 (${JSON.stringify(r)})`);
 
+    // v0.7.0-b3b2: the save timers (persistSoon, saveChatSoon: their callback is named `save`) are counted from here.
+    await ev(() => {
+        const st = window.setTimeout; window.__saveTimers = [];
+        window.setTimeout = function (fn, ms, ...a) { if (typeof fn === 'function' && fn.name === 'save') window.__saveTimers.push({ ms, h2: !!__savePoint.home().h2, at: Date.now() }); return st.call(this, fn, ms, ...a); };
+    });
+    const timers = () => ev(() => window.__saveTimers.splice(0));
+
+    // 14. (b3b2, b3b1 review P2-2) in the stopped room (6): a save asked for sets no timer.
+    await timers();
+    await ev(() => __savePoint.persistSoon());
+    await wait(500);
+    r = await timers();
+    ok(r.length === 0, `14. 멈춘 방에서 저장을 예약해도 타이머가 생기지 않음 (${JSON.stringify(r)})`);
+    // … nor a chat save asked by a hide pass (a SavePoint hide the user showed on the page: syncHide → saveChatSoon).
+    c = await mark();
+    x = await ev(() => { const m = M.chat[1]; m.extra = { ...(m.extra || {}), savepointHidden: 1 }; m.is_system = false; __savePoint.syncHide(); return { vis: !!m.extra.savepointVisible }; });
+    await wait(1000);
+    r = await timers();
+    const s14 = await look(c);
+    ok(x.vis && r.length === 0 && s14.s === 0, `14. 하이드 계산이 채팅 저장을 청해도 타이머 없음·저장 0 (${JSON.stringify({ x, r, s: s14.s })})`);
+
+    // 12. (b3b2) a room whose hides are not set yet (recorded with hiding off, then on): opening it writes nothing — no chat save, no
+    //     memory file write, no new hide on the page; the next save sets them.
+    await recorded('h2q', 'off');
+    c = await mark();
+    await reopen('h2q', '');
+    await wait(1500);
+    r = await look(c);
+    ok(r.status === 'linked' && !r.h2 && r.blocked !== 'room' && r.file === 7 && r.s === 0 && r.puts.length === 0 && r.page === '' && r.server === '',
+        `12. 숨길 게 남은 정상 방을 열어도 채팅 저장 0, 기억 파일 쓰기 0, 새 숨김 없음 (${JSON.stringify(r)})`);
+    await ev(() => M.add(2));
+    await ev(() => __savePoint.handle('run').catch(() => {}));
+    await wait(1800);
+    r = await look();
+    ok(r.file === 9 && r.page.startsWith('0,1,2,3,4,5') && r.server === r.page, `12. 그 뒤 세이브에서 숨김이 걸림 (${JSON.stringify(r)})`);
+
+    // 13. (b3b2, review of the b3b2 plan P2) an old-format memory with a stale mark on the chat file (a "held" mark, taken off by any
+    //     hide pass): opening it tidies the memory's form (one memory upload, as before) and writes no chat file; the mark is taken
+    //     off on the page only.
+    await recorded('h2o');
+    await ev(() => { const d = M.memDoc('h2o'); d.state.mem.evidenceVersion = 0; M.files.set(M.H.memName(d.id), JSON.stringify(d)); });
+    c = await mark();
+    await reopen('h2o', `f[7].extra = { ...(f[7].extra || {}), savepointHeld: 1 };`);
+    await wait(2000);
+    r = await look(c);
+    x = await ev(() => ({ ev: M.mem('h2o')?.mem?.evidenceVersion ?? null, pageHeld: !!M.chat[6].extra?.savepointHeld, serverHeld: !!M.serverFiles.h2o[7].extra?.savepointHeld }));
+    ok(r.status === 'linked' && !r.h2 && r.s === 0 && r.puts.every(n => n.startsWith('savepoint-mem-')) && x.ev === 1 && !x.pageHeld && x.serverHeld,
+        `13. 구형 기억 방을 열면 형식 정리(기억 업로드)만, 채팅 저장 0, 표시는 화면에서만 정리 (${JSON.stringify({ ...x, s: r.s, puts: r.puts })})`);
+
+    // 15. (b3b2, b3b1 review P2-2) a save timer set in a working room while a reply is being made, then the room stops (H2): the timer
+    //     neither saves nor is set again every 1.5 s. The stop is put on the room by hand, as the link would: a `다시 확인` asked during
+    //     a reply is put off by the chat file check (busy), so it cannot stop the room inside the reply here.
+    await recorded('h2w');
+    await ev(async () => { await eventSource.emit(event_types.GENERATION_STARTED, 'normal', {}, false); });
+    await timers();
+    c = await mark();
+    await ev(() => __savePoint.persistSoon());
+    await wait(800);   // the timer fires during the reply: put off by 1.5 s
+    r = await ev(() => { const h = __savePoint.home(); h.h2 = { why: 'source', at: 3, at2: Date.now() }; return { ...h.h2 }; });
+    await wait(4000);
+    x = await timers();
+    const y15 = await look(c);
+    await ev(async () => { await eventSource.emit(event_types.GENERATION_ENDED); __savePoint.home().h2 = null; });
+    ok(r?.why === 'source' && x.filter(t => t.h2).length === 0 && y15.s === 0,
+        `15. 답변 중 잡힌 저장 타이머는 방이 멈춘 뒤 다시 예약되지 않고 저장도 없음 (${JSON.stringify({ h2: r, timers: x, s: y15.s })})`);
+
 
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');

@@ -654,13 +654,24 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await putLive(5, false);
     r = await mk(5);
     ok(r.p.join() === 'false,false' && r.s.join() === 'false,false', `11f. 준비: 다른 탭이 임시로 펼친 #5 (${JSON.stringify(r)})`);
-    await ev(() => M.openFile(M.chatId));   // this tab opens the room from that file: its hiding hides #5 again
+    // v0.7.0-b3b2 (b3 design): opening the room writes nothing and sets no new hide: #5 and the other tab's value are left as they are; a
+    // save that hides again (here a save; 👻 the same) hides #5 and takes the value away, on the page and on the server.
+    let s11f = await ev(() => (M.saveBodies || []).length);
+    await ev(() => M.openFile(M.chatId));
     await ev(() => M.opened());
     await wait(2500);
     r = await mk(5);
-    const v11f = await liveAt(5);
+    let v11f = await liveAt(5);
+    s11f = await ev(n => (M.saveBodies || []).length - n, s11f);
+    ok(r.p.join() === 'false,false' && r.s.join() === 'false,false' && v11f.p === OTHER_LIVE && v11f.s === OTHER_LIVE && s11f === 0,
+        `11f. (b3b2) 방을 열면 그대로(펼침·다른 탭 값), 채팅 저장 0 (${JSON.stringify({ r, v11f, s11f })})`);
+    await ev(() => M.add(2));
+    await ev(() => __savePoint.handle('run').catch(() => {}));
+    await wait(2500);
+    r = await mk(5);
+    v11f = await liveAt(5);
     ok(r.p.join() === 'true,true' && r.s.join() === 'true,true' && v11f.p === null && v11f.s === null,
-        `11f. 방을 열며 다시 숨김 → 다른 탭 값 지움 (${JSON.stringify({ r, v11f })})`);
+        `11f. 다음 세이브가 다시 숨김 → 다른 탭 값 지움 (화면·서버) (${JSON.stringify({ r, v11f })})`);
 
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();

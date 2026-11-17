@@ -287,14 +287,18 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     r = await tagReadFails('other+clue');
     ok(r.failed > 1 && r.status === 'held' && r.last === -1 && r.ups.length === 0 && r.s === 0,
         `7e. (b3a1c) 이름표 충돌에 단서 읽기 실패가 겹쳐도 보류, 화면 기억 없음, 업로드 0 (${JSON.stringify(r)})`);
-    r = await ev(async () => { const n = M.fileLog.length, s = (M.saveBodies || []).length; await __savePoint.handle('home-recheck'); await M.opened(); await new Promise(z => setTimeout(z, 300));
+    r = await ev(async () => { const n = M.fileLog.length, s = (M.saveBodies || []).length, hid0 = M.chat.filter(m => m.extra?.savepointHidden).length; await __savePoint.handle('home-recheck'); await M.opened(); await new Promise(z => setTimeout(z, 300));
         const out = { n, s: (M.saveBodies || []).length - s, puts: M.fileLog.slice(n).filter(x => x[0] === 'put').map(x => x[1]), status: __savePoint.home().status, stop: __savePoint.home().line?.stop ?? null,
             last: __savePoint.state()?.lastIndex, blocked: __savePoint.autoBlocked() };
         // v0.7.0-b3a1a (review of b3a1, P2-2): what the opening that follows the link schedules (a hide's chat save 0.5 s on) is seen too.
-        await new Promise(z => setTimeout(z, 1500)); out.later = (M.saveBodies || []).length - s - out.s; return out; });
+        await new Promise(z => setTimeout(z, 1500)); out.later = (M.saveBodies || []).length - s - out.s;
+        out.newHid = M.chat.filter(m => m.extra?.savepointHidden).length - hid0; out.putsLater = M.fileLog.slice(n).filter(x => x[0] === 'put').length; return out; });
     ok(r.status === 'linked' && !r.stop && r.last === 9 && r.blocked !== 'room' && r.puts.length === 1 && r.puts[0].startsWith('savepoint-room-') && r.s === 0,
         `7e. (b3a1) 다시 확인 → 이름표만 써서 이어짐, 기억 본체·채팅 파일은 안 씀 (${JSON.stringify(r)})`);
-    console.log(`NOTE  7e. (b3a1a, 리뷰 P2-2) 이어진 뒤 방 열기 처리가 예약한 채팅 저장 ${r.later}회 — 이름표 복구 자체는 0회, 열기 쪽은 b3b에서 0회로`);
+    // v0.7.0-b3b2 (b3a1a review P2-2; was a NOTE line): the opening that follows the link writes nothing either — no chat save within 1.5 s,
+    // no new hide on the page, no upload past the tag.
+    ok(r.later === 0 && r.newHid <= 0 && r.putsLater === 1,
+        `7e. (b3b2) 이어진 뒤 방 열기 처리도 1.5초 동안 채팅 저장 0회, 화면 새 숨김 없음, 이름표 말고는 업로드 0 (${JSON.stringify({ later: r.later, newHid: r.newHid, putsLater: r.putsLater })})`);
     await ev(() => { M.add(2); toastr.log.length = 0; });
     await ev(() => __savePoint.handle('run').catch(() => {}));
     await page.waitForTimeout(1500);
