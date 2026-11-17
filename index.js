@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b3c1c';
+const VERSION = '0.7.0-b3c1d';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -2602,7 +2602,7 @@ async function fitTurn(t) {
             // holds and the page's hide state and 🔖 are the chat file's just read, the hides taken away included: otherwise it stops
             // ('stop'), and what the first request took away stays taken away. P2-1: 🔖 too, at the first request and every resend.
             // v0.7.0-b3c1b (review of b3c1a, P1): a copy stopped for a hide state or 🔖 that differs (`apart`) stops the room until reopened.
-            let apart = false;
+            let apart = false, made = false;
             const guard = ({ sent, file }) => {
                 const ok = fitOk(t) && !mainBusy() && !gate.unsure && !gate.pending, keeps = keepSame(file ? file.messages : msgs);
                 if (sent) {
@@ -2613,7 +2613,8 @@ async function fitTurn(t) {
                 const go = ok && keeps && changed.every(c => fitUntouched(c)) && fitSame(gate.seen, fit);
                 // v0.7.0-b3c1c (review of b3c1b, P1): from the first request until the end check, the room waits for that check
                 // (fitCheck), however the job ends; reopening the room clears it.
-                if (go) h.fitCheck = { n: msgs.length };
+                // v0.7.0-b3c1d (review of b3c1c, P1): a wait left by an earlier fit stays as it is; only this job's own is marked `made`.
+                if (go && !h.fitCheck) { h.fitCheck = { n: msgs.length }; made = true; }
                 return go;
             };
             // v0.7.0-b3c1b (review of b3c1a, P2): a copy sent again reads the memory file first (then the chat file), waited or not.
@@ -2621,7 +2622,8 @@ async function fitTurn(t) {
             let last;
             try { last = await persist(pre.meta, guard, 'user'); }
             catch (e) {
-                if (!e?.sents?.length && h.fitCheck) { delete h.fitCheck; refreshView(); }
+                // v0.7.0-b3c1d (review of b3c1c, P1): nothing sent: only the wait this job made goes (an earlier fit's stays until checked).
+                if (!e?.sents?.length && made && h.fitCheck) { delete h.fitCheck; refreshView(); }
                 // v0.7.0-b3c1b (review of b3c1a, P1): stopped for a hide or 🔖 changed elsewhere: the room stays stopped until it is opened again.
                 if (e?.fitHeld) { const n = gateHere() && gate.seen?.plain ? gate.seen.plain.length : msgs.length; const copy = chat().length > n ? FIT_TEXT.copy : ''; if (!apart) return say(FIT_TEXT.paused + copy); fitStop(h, n); return say(FIT_TEXT.held + copy); }
                 // v0.7.0-b3c1b (review of b3c1a, P2): the memory file changed (or could not be read) before a copy sent again: nothing more
@@ -2710,7 +2712,8 @@ function fitChecked(h, again) {
     if (!stale) { delete h.fitCheck; fitStop(h, Array.isArray(again.messages) ? again.messages.length : 0); return; }
     fitClear(stale);
     setSeen(again.snap);
-    delete h.fitCheck;
+    // v0.7.0-b3c1d (review of b3c1c, P2): as fitEnd, an old memory is tidied by the next save, not on resuming.
+    delete h.fitCheck; h.tidyLater = true;
     trustQueue(); refreshView();
 }
 // The room stays stopped until it is opened again (`n`: the messages of the chat file last read, for the notice to copy the rest).

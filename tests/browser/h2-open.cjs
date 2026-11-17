@@ -792,6 +792,75 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     r = await look(); x = await chk();
     ok(r.h2?.why === 'hides' && !x.check && !x.reopen && r.btn === 1, `33. 첫 요청 전에 멈추면 확인 대기 없음 (${JSON.stringify({ ...x, h2: r.h2, btn: r.btn })})`);
 
+    // ───── v0.7.0-b3c1d (review of b3c1c) ─────
+    // A fit whose chat write lands but whose end read fails: the room waits for the check (fitCheck), still stopped by H2.
+    const fitWaits = async id => {
+        await stopped(id);
+        await endReadFails(id, null);
+        await fit(); await wait(400);
+        await ev(() => window.__offSave());
+    };
+    // Another tab saves this room's memory recorded only to #3 (hides #4·#5 are past it now).
+    const SHRINK = `const H = window.__H, name = H.memName(__savePoint.home().id), d = JSON.parse(M.files.get(name)), st = JSON.parse(JSON.stringify(d.state));
+        st.lastIndex = 3; st.hashes = st.hashes.slice(0, 4); st.undo = null; st.undoInfo = null; M.otherPut(name, H.nextMem(d, st, 'other34'));`;
+
+    // 34. P1: the wait for a check left by a first fit stays when a second fit ends with nothing sent. The first fit's end read fails;
+    //     another tab saves a memory recorded to #3 → `다시 확인` links it, #4·#5 now stop the room (H2); a second fit is held back before
+    //     its first request (a 🔖 on #7 set elsewhere while SillyTavern saves) → still waiting; the other tab takes away #4·#5 →
+    //     `다시 확인` sees the 🔖 apart → stopped until reopened; a save writes nothing and the 🔖 stays.
+    await ev(async () => { window.__H = await import('/ext/home.js'); });
+    await fitWaits('h2i1');
+    x = await chk();
+    ok(!!x.check, `34. 준비: 첫 맞추기가 끝 확인을 못 해 확인 대기 (${JSON.stringify(x)})`);
+    await ev(new Function(SHRINK));
+    await recheck();
+    r = await look(); x = await chk();
+    ok(r.h2?.why === 'hides' && !!x.check && r.file === 3, `34. 준비: 다른 탭이 기억을 #3까지로 → 다시 확인 → #4·#5로 멈춤, 확인 대기 남음 (${JSON.stringify({ ...x, h2: r.h2, file: r.file, server: r.server })})`);
+    c = await mark();
+    await onRead('h2i1', 2, `M.stScript.setChatSaving(true); setTimeout(() => { ${KEEP7('h2i1')} M.stScript.setChatSaving(false); }, 300);`);
+    await fit(); await wait(600);
+    await ev(() => window.__offRead());
+    r = await look(c); x = await chk();
+    ok(r.s === 0 && !!x.check, `34. 두 번째 맞추기가 첫 요청 전에 멈춰도(저장 0) 앞 맞추기의 확인 대기는 남음 (${JSON.stringify({ ...x, s: r.s, t: r.t.slice(0, 80) })})`);
+    await ev(() => { for (const m of M.serverFiles.h2i1.slice(1)) if (m.extra?.savepointHidden && M.serverFiles.h2i1.indexOf(m) - 1 > 3) { m.is_system = false; delete m.extra.savepointHidden; } });
+    c = await mark();
+    await recheck(); await saveTry();
+    r = await look(c); x = { ...(await chk()), ...(await serverHas('h2i1')) };
+    ok(!!x.reopen && r.s === 0 && x.keep7, `34. 다른 탭이 남은 숨김을 풀어도 다시 확인이 🔖 차이를 보고 다시 열 때까지 멈춤, 세이브 쓰기 0, 🔖 그대로 (${JSON.stringify({ ...x, h2: r.h2, s: r.s })})`);
+
+    // 35. P2: an old-format memory resumed by `다시 확인` (fitCheck) is not tidied then (no memory write), but by the next save (as 17).
+    await recorded('h2i2');
+    await ev(() => M.add(2));
+    await wait(300);
+    await ev(() => { const d = M.memDoc('h2i2'); d.state.mem.evidenceVersion = 0; M.files.set(M.H.memName(d.id), JSON.stringify(d)); });
+    await reopen('h2i2', `f[10].is_system = true; f[10].extra = { ...(f[10].extra || {}), savepointHidden: 1 };`);
+    await wait(1200);
+    await endReadFails('h2i2', null);
+    await fit(); await wait(400);
+    await ev(() => window.__offSave());
+    x = await chk();
+    ok(!!x.check, `35. 준비: 예전 형식 기억 방, 맞추기가 끝 확인을 못 해 확인 대기 (${JSON.stringify(x)})`);
+    c = await mark();
+    await recheck(); await wait(1500);
+    r = await look(c); x = { ...(await chk()), ev: await ev(() => M.mem('h2i2')?.mem?.evidenceVersion ?? null) };
+    ok(!x.check && !x.reopen && !r.h2 && r.puts.length === 0 && r.s === 0 && x.ev === 0, `35. 다시 확인으로 이어질 때 기억 파일 쓰기 0, 정리는 아직 (${JSON.stringify({ ...x, h2: r.h2, puts: r.puts, s: r.s })})`);
+    c = await mark();
+    await saveTry(); await wait(500);
+    x = await ev(() => ({ ev: M.mem('h2i2')?.mem?.evidenceVersion ?? null }));
+    ok(x.ev === 1, `35. 다음 세이브에서 정리 (${JSON.stringify(x)})`);
+
+    // 36. (P3) `다시 확인` sees a SavePoint hide the linked memory covers (#2) taken away on the server only: that is a difference, not an
+    //     old hide to clear (taken away right before the link's second chat read, after the first was fitted) — stopped until reopened, the page keeps #2 hidden.
+    await fitWaits('h2i3');
+    x = await chk();
+    ok(!!x.check, `36. 준비: 확인 대기 (${JSON.stringify(x)})`);
+    await onRead('h2i3', 2, `const m = M.serverFiles.h2i3[3]; m.is_system = false; delete m.extra.savepointHidden;`);
+    c = await mark();
+    await recheck();
+    await ev(() => window.__offRead());
+    r = await look(c); x = await chk();
+    ok(!!x.reopen && !x.check && r.page.split(',').includes('2') && r.s === 0, `36. 기억 범위 안 숨김이 서버에서만 풀렸으면 다시 열 때까지 멈춤, 화면 #2 숨김 그대로 (${JSON.stringify({ ...x, page: r.page, server: r.server, s: r.s })})`);
+
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();
