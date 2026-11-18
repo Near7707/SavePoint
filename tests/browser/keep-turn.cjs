@@ -358,6 +358,39 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(!!r.held && !r.wait.keep && !r.wait.hid, `13. 준비: 세이브가 기억 쓰기를 기다리는 사이 #9 복구 요청 (${JSON.stringify(r)})`);
     ok(r.saves.length >= 1 && !r.saves[0], `13. (b3d1) 세이브의 채팅 저장이 #9를 숨기지 않음 (${JSON.stringify(r)})`);
     ok(r.keep && !r.hid && r.fkeep && !r.fhid, `13. 그 뒤 차례에서 🔖 복구 (${JSON.stringify(r)})`);
+    // v0.7.0-b3d2 (review of b3d1, P3): the hide left out only for the waiting 🔖 is no failure: the save ends with no error, nothing said of
+    // an original changed.
+    r.run = await ev(async () => { const v = await window.__r13; return v === undefined ? null : String(v); });
+    ok(!/원문이 바뀌어서|error/i.test(String(r.run || '')) && !/원문이 바뀌어서|^error:/m.test(r.t.split(' | ').join('\n')), `13. (b3d2) 복구 대기로만 건너뛴 숨김은 오류 없이 성공 (${JSON.stringify(r)})`);
+
+    // 14. v0.7.0-b3d2 (review of b3d1, P2): the message before the one repaired deleted right after the repair's first request (SillyTavern
+    // saves the page without it, a copy is sent again): the check before the copy sent again does not read the turn's old copy at the old
+    // place (another message there, no 🔖) as the 🔖 turned off. The 🔖 stays on the page and in the file through the next save.
+    await ev(() => { const m = M.chat[12]; m.extra = {}; for (const s of m.swipe_info || []) if (s && typeof s === 'object') s.extra = {}; delete m.is_system; M.stSave(); });
+    await keepOn(13);
+    c = await mark();
+    await gen(true);
+    await swipe(13, 'new');
+    await ev(() => {
+        const f = window.fetch;
+        window.fetch = async (u, o = {}) => {
+            if (String(u) === '/api/chats/save') {
+                window.fetch = f;
+                const res = await f(u, o);
+                M.chat.splice(12, 1); await M.eventSource.emit('message_deleted', 12); M.stSave();
+                return res;
+            }
+            return f(u, o);
+        };
+    });
+    await gen(false); await wait(3000);
+    r = await look(12, c);
+    ok(r.keep && r.proof.indexOf('1') >= 0 && r.fkeep && r.s >= 1 && !/🔖를 다시 붙이는 저장 중에/.test(r.t), `14. (b3d2) 복구 저장 직후 앞 메시지 삭제 → 화면·서버 🔖 유지 (${JSON.stringify(r)})`);
+    c = await mark();
+    await ev(() => __savePoint.toggleKeep(2)); await wait(600);
+    r = await look(12, c);
+    ok(r.s >= 1 && r.keep && r.fkeep, `14. (b3d2) 다음 일반 저장 뒤에도 서버 🔖 유지 (${JSON.stringify(r)})`);
+    await ev(() => __savePoint.toggleKeep(2)); await wait(600);
 
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');

@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b3d1';
+const VERSION = '0.7.0-b3d2';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -932,7 +932,7 @@ function holdNewHides(entry) {
 // Sets the held hides again (the memory is in its file now). Only on a message still as before the change (its hide marks as the
 // hold left them, no 🔖 since) and resting on messages unchanged since the change (#0 up to it: dropStaleHides' rule).
 // v0.7.0-b2a2 (review of b2a1, P1): returns { n: set, stale: left out because the message or what it rests on changed,
-// setting: left out only because the hide setting of now does not ask for it }.
+// setting: left out only because the hide setting of now does not ask for it, wait (b3d2): left out for a 🔖 waiting to be put back }.
 function putHeldHides(entry, held) {
     const list = chat(), order = entry.order || [], at = new Map(list.map((m, i) => [m, i]));
     // v0.7.0-b2a1 (review of b2a, P2): the hide setting of now (hide off, SavePoint off, a larger "keep the latest N", a manual
@@ -945,13 +945,15 @@ function putHeldHides(entry, held) {
     if (can && mode === 'manual') cutoff = Math.min(cutoff, manualRange(st, s, list, can).h.to, st.lastIndex);
     let first = order.length;
     for (let k = 0; k < order.length; k++) if (list[k] !== order[k] || entry.prints?.get(order[k]) !== fingerprint(list[k])) { first = k; break; }
-    let n = 0, stale = 0, setting = 0;
+    let n = 0, stale = 0, setting = 0, wait = 0;
     for (const v of held) {
         const i = at.get(v.m), post = entry.after?.get(v.m);
-        // v0.7.0-b3d1 (review of b3d, P2): nor on a message whose 🔖 waits to be put back (keepWait), as syncHide.
-        if (i === undefined || i >= first || !post || kept(v.m) || keepWait(v.m)) { stale++; continue; }
+        if (i === undefined || i >= first || !post || kept(v.m)) { stale++; continue; }
         const now = ownFlags(v.m);
         if (![0, 1, 2, 3].every(j => sameMark(now[j], v.flags[j]))) { stale++; continue; }
+        // v0.7.0-b3d1 (review of b3d, P2): nor on a message whose 🔖 waits to be put back (keepWait), as syncHide.
+        // v0.7.0-b3d2 (review of b3d1, P3): counted apart (`wait`): left out as meant, not because anything changed.
+        if (keepWait(v.m)) { wait++; continue; }
         if (i > cutoff) { setting++; continue; }
         setHidden(v.m, i, !!post.flags[0][1]);
         if (!post.flags[0][0]) delete v.m.is_system;
@@ -959,7 +961,7 @@ function putHeldHides(entry, held) {
         if (!v.hadExtra && v.m.extra && typeof v.m.extra === 'object' && !Object.keys(v.m.extra).length) delete v.m.extra;
         n++;
     }
-    return { n, stale, setting };
+    return { n, stale, setting, wait };
 }
 // Places past what the memory now covers (its last recorded message; none under review or without memory) where a hide of
 // SavePoint's goes away: taken away by this change on the page, or (b2 design review P1-1) still in the server file read
@@ -1322,7 +1324,8 @@ async function writeEntry(queue, entry) {
                 // v0.7.0-b2a2 (review of b2a1, P1): the held hides were left out only because the hide setting of now no longer asks
                 // for them (hide off, a larger "keep the latest N", a smaller manual range) and nothing else of the change was left:
                 // nothing to send, and the memory proved in its file is not reported as a failure.
-                if (!relinkedLate && heldWhy && !heldWhy.n && !heldWhy.stale && heldWhy.setting) settled = true;
+                // v0.7.0-b3d2 (review of b3d1, P3): or only for a 🔖 waiting to be put back (its own turn writes it): the same.
+                if (!relinkedLate && heldWhy && !heldWhy.n && !heldWhy.stale && (heldWhy.setting || heldWhy.wait)) settled = true;
                 else {
                 const err = new RoomBlocked(relinkedLate ? '기억은 저장했어요. 하지만 그사이 이 방의 기억을 다시 확인해서, 이번 원문 숨김은 저장하지 않았어요. 다시 세이브하면 맞춰요.' : '기억은 저장했어요. 하지만 그사이 원문이 바뀌어서 원문 숨김은 저장하지 않았어요. 다시 세이브하면 맞춰요.');
                 err.kept = true; throw err;
@@ -5550,12 +5553,16 @@ async function keepTurn(a) {
         if (!pre.ok) { blockRoom(pre.why, pre.at); warnBlocked(); return; }
         if (kept(m)) return;
         const i = chat().indexOf(m), msgs = pre.messages || [], f = msgs[i];
+        // v0.7.0-b3d2 (review of b3d1, P2): the message of the chat file there is this one (keepSame: text, speaker, swipes; SavePoint's
+        // marks and hides left out), or nothing is told from it.
+        const plain = x => snapshot(null, [x], OWN_KEYS).plain[0];
+        const keepSame = x => !!x && plain(x) === plain(m);
         // The 🔖 taken away in the chat file (another tab or device turned it off): nothing on the page, nothing written.
-        if (f && !keepIn(f)) { keepOff(a); return; }
+        // v0.7.0-b3d2: taken off the page only when that is this message; another one there writes nothing and leaves the page as it is.
+        if (f && !keepIn(f)) { if (keepSame(f)) keepOff(a); return; }
         // A hide of the user's own made elsewhere that the page does not have: not written over.
         if (userHid(f) && !m.is_system) return;
         // The chat file has it already as it would be sent (the same message, kept, no SavePoint hide): the page only.
-        const plain = x => snapshot(null, [x], OWN_KEYS).plain[0];
         const done = !!f && kept(f) && !(f.is_system && f.extra?.[HIDE_KEY]) && plain(f) === plain(m);
         c = keepApply(m, i);
         paintKeep(); refreshInjection(); render();
@@ -5564,9 +5571,13 @@ async function keepTurn(a) {
         // Right before the request and before every copy sent again: the ask still holds, the page as this turn left it, and the chat file
         // just read (or the turn's read) still has the 🔖 there and no hide of the user's own the page lacks (the content comparison leaves
         // both out).
+        // v0.7.0-b3d2 (review of b3d1, P2): the 🔖 is taken off the page (`off`) only from a file read for this check: the turn's read before
+        // the first request, the round's read (`file`) before a copy sent again — never the turn's read for a copy sent again (a call with
+        // no file there: a message deleted since moves the others) — and only when the message there is this one (keepSame). Anything
+        // else that does not hold the 🔖 stops what is sent and leaves the page's 🔖.
         const guard = ({ sent, file }) => {
-            const g = (file ? file.messages : msgs)?.[chat().indexOf(m)];
-            if (g && !keepIn(g)) off = true;
+            const g = (file ? file.messages : sent ? null : msgs)?.[chat().indexOf(m)];
+            if (g && !keepIn(g) && keepSame(g)) off = true;
             const go = here() && keepUntouched(c) && (!g || keepIn(g)) && !(userHid(g) && !m.is_system);
             return go ? true : sent ? 'stop' : false;
         };
