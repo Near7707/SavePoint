@@ -375,6 +375,25 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     const wid15 = await ev(() => __savePoint.home().line?.seen?.wid ?? null);
     ok(r.status === 'linked' && r.id === f4.id && !r.puts.length && r.saves === 0 && wid15 === 'other.f4', `15. (b4a4) 같은 기억의 연결이 이미 끝남 → 쓰기 0, 화면은 최신 기억 (${JSON.stringify({ r: { ...r, text: '' }, wid15 })})`);
 
+    // v0.7.0-b4a5 (review of b4a4, P2): another tab finishes the links and saves right after this page read the body again (before it reads
+    // the tags): found finished, nothing written, and the memory put on the page is read again (that tab's receipt), not the body read first.
+    r = await listRoom('chatFlate', 'chatFlateb');
+    const f5 = r;
+    await press(cut(f5.id, 'chatFlatex'));
+    await ev(() => { window.__restore?.(); window.__restore = null; });
+    r = await reopen('chatFlateb', f5, `let once = false; window.__listHook = async () => { if (!once) { once = true;
+        const name = M.H.memName(id), g = window.fetch; let done = false;
+        window.fetch = async (u, o) => { const res = await g(u, o);
+            if (!done && String(u).startsWith('/user/files/' + name)) { done = true; window.fetch = g;
+                const d = JSON.parse(M.files.get(name)), t = JSON.parse(M.files.get(M.H.tagName(A)));
+                M.otherPut(M.H.tagName(B), M.H.tagBody({ addr: B, integrity: d.home.integrity, mem: d.id }));
+                M.otherPut(M.H.tagName(A), M.H.renamedTag(t, B));
+                M.otherPut(name, M.H.nextMem(d, d.state, 'other.f5')); }
+            return res; }; } return null; };`);
+    await ev(() => { window.__listHook = null; });
+    const wid15b = await ev(() => __savePoint.home().line?.seen?.wid ?? null);
+    ok(r.status === 'linked' && r.id === f5.id && !r.puts.length && r.saves === 0 && wid15b === 'other.f5', `15b. (b4a5) 본체를 읽은 직후 다른 탭이 연결·저장을 마침 → 쓰기 0, 화면은 최신 기억 (${JSON.stringify({ r: { ...r, text: '' }, wid15b })})`);
+
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();

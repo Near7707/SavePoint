@@ -1,3 +1,27 @@
+# v0.7.0-b4a5 · b4a4 리뷰 반영 (이미 끝난 재개도 붙이기 전 다시 읽기) (브랜치 `v0.7-b`)
+
+기준: `ee927ce`(b4a4 리뷰 요청서, 코드 `3602943`). b4a4 GPT 리뷰: P1 없음, P2 1, P3 없음. 정리(🟡, 지금 고침) + 사용자 동의. 파일: `index.js`, `manifest.json`(버전만), `README.md`, 검사 `carry.cjs` 15b, 문서.
+
+| 리뷰 | 처리 |
+|---|---|
+| P2 `carryResume`은 본체를 먼저, 이름표를 나중에 읽음 → 그 사이 다른 탭이 연결을 마치고 저장하면 "마침"으로 판정하면서 먼저 읽은 옛 본체를 화면에 붙임(마침 경로가 b4a3의 마지막 다시 읽기를 건너뜀) | 고침: "마침"은 `'done'`만 돌려줘 연결 파일 쓰기를 건너뛰는 데만 씀. 화면에 붙일 본체는 재개 경로 모두 마지막 `readMemFile`(같은 ID·B 주소·고유값, 실패 `readFail`, 불일치 `carryResumeDiff`)을 거침 |
+
+## 바뀐 것
+- `carryResume`: "마침"이면 본체 대신 `'done'`.
+- `renameHome`: `again === 'done'`이면 `finished = true`(이름표·단서·A 이름표 단계 건너뜀). `if (finished) data = finished; else if (d.carried)` → `if (d.carried)`(마침도 다시 읽기).
+
+## ★ 특히 봐 줄 곳
+1. 마침 경로의 다시 읽기는 b4a3 것 그대로라 표시·영수증은 안 봐요(다른 탭의 정상 저장을 받아들임).
+
+## 검사 준비(`carry.cjs` 15b, 파일 끝)
+- 재개의 첫 목록 요청 때 `fetch`를 감싸, 그다음 이 기억 본체 읽기(`/user/files/<본체>`)의 응답을 받은 직후 다른 탭이 B 이름표 + A `renamed` + 본체 `nextMem`(`other.f5`) → `linked`·같은 ID·업로드 0·채팅 저장 0·화면 영수증 `other.f5`.
+
+## 검사와 망가뜨리기 결과
+- 고치기 전 코드(`3602943`): 15b FAIL.
+- 망가뜨리기: 마침이면 다시 읽기 건너뛰기(`d.carried && !finished`) → 14 두 줄·15 `done`·15b 잡힘.
+- Node 513 통과 / 0 실패 / 3 건너뜀.
+- 브라우저 61묶음 한꺼번에: 60 통과 + `status` 알려진 `autoFail` null 오류 → 따로 첫 번째에 통과. 검사 모드 오류 0(`carry` 47줄).
+
 # v0.7.0-b4a4 · b4a3 리뷰 반영 (재개 목록을 기다린 뒤 연결 파일 다시 확인) (브랜치 `v0.7-b`)
 
 기준: `e8d158f`(b4a3 리뷰 요청서, 코드 `8996fb3`). b4a3 GPT 리뷰: P1 1. 정리(🔴) + GPT 2차 의견 + 사용자 동의로 반영. 파일: `home.js`(한 줄), `index.js`, `manifest.json`(버전만), `README.md`, 검사 `carry.cjs` 15, 문서.

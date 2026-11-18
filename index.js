@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b4a4';
+const VERSION = '0.7.0-b4a5';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -2374,7 +2374,7 @@ async function renameHome(h, d, input, files) {
     // home here (read so, or written and read back: not UNREAD).
     let sure = data.home.addr === addr;
     const moving = data.home.addr !== addr;
-    let finished = null;
+    let finished = false;
     // v0.7.0-b3a2b2 (review of b3a2b1, P2): a memory already moved here without its list (made before b3a2b) gets the tag an empty
     // one only when no room was ever seen leaving this name here — the same rule as row 6; otherwise held before any write.
     if (!moving && !Array.isArray(data.closes) && (input.was.from.length || input.was.left.length)) { setHome(h, 'held', 'closesUnknown'); return; }
@@ -2395,7 +2395,7 @@ async function renameHome(h, d, input, files) {
         if (!mine()) return;
         if (again === 'read') { setHome(h, 'readFail'); return; }
         if (!again) { setHome(h, 'held', 'carryResumeChanged'); return; }
-        if (again !== true) { finished = again; }
+        if (again === 'done') finished = true;
     }
     if (d.agreed) {
         if (!moving) { setHome(h, 'held', 'carryChanged'); return; }
@@ -2445,8 +2445,9 @@ async function renameHome(h, d, input, files) {
     // v0.7.0-b4a3 (review of b4a2, P2): a picked-up move put on the page as the memory is now (another tab may have finished it first and
     // saved since: a newer receipt is fine), read again right before: the same memory at home here with this integrity. A failed read
     // or anything else: the copy read for the decision is not put on the page.
-    if (finished) data = finished;
-    else if (d.carried) {
+    // v0.7.0-b4a5 (review of b4a4, P2): a move found finished by another tab (no link written here) reads its body again here too: the
+    // tags read after the body may show a save that tab made after that read.
+    if (d.carried) {
         const now = await readMemFile(d.mem);
         if (!mine()) return;
         if (now.kind !== OK) { setHome(h, 'readFail'); return; }
@@ -2534,7 +2535,7 @@ async function carryClear(io, d, addr, integrity) {
 // v0.7.0-b4a4 (review of b4a3, P1): an agreed move picked up again, read again after the chat list and right before its first link is
 // written. `true`: it still waits for its links — the body at home here with this integrity still names this record, its old name and its
 // own receipt (`carried`), the old name's tag still links it, and this name has no tag, no start mark, no clue entry of another memory and
-// no memory of its own (the checks of decideRoom row 5). The body: another tab finished this very move — the old name's tag says it was
+// no memory of its own (the checks of decideRoom row 5). `'done'`: another tab finished this very move — the old name's tag says it was
 // renamed here, this name's tag links the same memory with this integrity, and the body is at home here (a newer receipt, its mark gone
 // with a save since: fine). `false`: anything else (nothing is written). `'read'`: a read failed.
 async function carryResume(io, d, addr, integrity) {
@@ -2549,7 +2550,7 @@ async function carryResume(io, d, addr, integrity) {
     const tagB = await get(tagName(addr), validTag(addr));
     if (bad(tagB)) return 'read';
     if (tagA.kind === OK && tagA.data.mem === d.mem && tagA.data.state === 'renamed' && tagA.data.to === addr
-        && tagB.kind === OK && tagB.data.state === 'linked' && tagB.data.mem === d.mem && (tagB.data.integrity ?? null) === integrity) return body.data;
+        && tagB.kind === OK && tagB.data.state === 'linked' && tagB.data.mem === d.mem && (tagB.data.integrity ?? null) === integrity) return 'done';
     const c = body.data.carried;
     if (!c || typeof c !== 'object' || c.id !== d.rid || c.from !== d.from || c.wid !== body.data.wid) return false;
     if (tagA.kind !== OK || tagA.data.state !== 'linked' || tagA.data.mem !== d.mem) return false;
