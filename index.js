@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b3d';
+const VERSION = '0.7.0-b3d1';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -948,7 +948,8 @@ function putHeldHides(entry, held) {
     let n = 0, stale = 0, setting = 0;
     for (const v of held) {
         const i = at.get(v.m), post = entry.after?.get(v.m);
-        if (i === undefined || i >= first || !post || kept(v.m)) { stale++; continue; }
+        // v0.7.0-b3d1 (review of b3d, P2): nor on a message whose 🔖 waits to be put back (keepWait), as syncHide.
+        if (i === undefined || i >= first || !post || kept(v.m) || keepWait(v.m)) { stale++; continue; }
         const now = ownFlags(v.m);
         if (![0, 1, 2, 3].every(j => sameMark(now[j], v.flags[j]))) { stale++; continue; }
         if (i > cutoff) { setting++; continue; }
@@ -1792,12 +1793,12 @@ function startRoomCheck() {
     if (hasChat()) gate.check = verifyRoom();
 }
 async function verifyRoom() {
-    const key = gate.key, epoch = gate.epoch;
+    const key = gate.key, epoch = gate.epoch, before = gate.status;
     gate.status = 'checking';
     const r = await serverCovered();
     if (gate.key !== key || gate.epoch !== epoch || r.why === 'moved' || !gateHere()) return false;
     // v0.6.91: a background save held back by a reply goes through once the room is open, whatever opened it.
-    if (r.ok) { gate.status = 'ready'; gate.why = ''; gate.at = null; if (gate.held) { gate.held = false; persistSoon(); } } else blockRoom(r.why, r.at);
+    if (r.ok) { if (before === 'bad' || before === 'unread' || before === 'unknown') resumed(); gate.status = 'ready'; gate.why = ''; gate.at = null; if (gate.held) { gate.held = false; persistSoon(); } } else blockRoom(r.why, r.at);
     // v0.7.0-b1 (P2-3): the memory is linked on the chat file just checked, before anything else is done in the room.
     if (r.ok && !gate.readied) { gate.readied = true; await linkHome(r); if (gate.key !== key || gate.epoch !== epoch || !gateHere()) return false; roomOpened(); }
     return r.ok;
@@ -1850,7 +1851,7 @@ async function confirmUnsure() {
     const held = x => writeHeld(x, { copies: u.copies || [u.written], proof: u.status ? null : wrote, before: u.before, marks: u.marks, written: u.written, status: u.status });
     const landed = held(r);
     if (landed) {
-        gate.unsure = null; clearTimeout(unsureTimer);
+        gate.unsure = null; clearTimeout(unsureTimer); resumed();
         // v0.6.60: finding the write confirms it, but that file becomes the base for the next writes only
         // when the page still covers it. What was written is the file as last confirmed: a message it had
         // that the file has lost since was deleted elsewhere (even when it was edited here meanwhile).
@@ -1879,7 +1880,7 @@ async function confirmUnsure() {
     // v0.6.92: a save of status marks only whose memory part is not in the file (still the one before it): nothing of a
     // memory to confirm, as when it is settled at once (settleWrite 'revert'). The room goes on as before.
     if (u.status && !u.noAnswer && u.before && (r.snap.meta?.[MODULE] ?? null) === (u.before.meta?.[MODULE] ?? null)) {
-        gate.unsure = null; clearTimeout(unsureTimer);
+        gate.unsure = null; clearTimeout(unsureTimer); resumed();
         toastr.info('직전 저장(기록 상태 표시만 바뀐 저장)은 채팅 파일에 들어가지 않았어요. 기억은 바뀌지 않아서 다시 평소처럼 저장해요.', 'SavePoint');
         render(); scheduleAuto();
         return gateOpen();
@@ -1888,7 +1889,7 @@ async function confirmUnsure() {
     // page is missing from the file and nothing in it is foreign, whatever happened to the write (SillyTavern saved a newer
     // status with the same messages). The file is the base; the room goes on.
     if (!u.noAnswer && samePage(sendSnap(r.meta), r.snap, null)) {
-        gate.unsure = null; clearTimeout(unsureTimer);
+        gate.unsure = null; clearTimeout(unsureTimer); resumed();
         setSeen(r.snap);
         if (gate.pending) { toastr.warning(gateMessage(), 'SavePoint', { timeOut: 15000 }); render(); return false; }
         toastr.success('채팅 파일이 지금 화면과 같아져서 다시 평소처럼 저장해요.', 'SavePoint');
@@ -1909,6 +1910,7 @@ async function confirmUnsure() {
 // What was put off until the room was confirmed (formerly done straight on CHAT_CHANGED).
 function roomOpened() {
     if (!hasChat()) return;
+    resumed();
     // v0.7.0-b1: a branch's memory is decided when the room is linked (linkHome); nothing of another room's is fixed up here.
     if (!homeOpen()) {
         // v0.7.0-b3b1 (H2): told once as the room opens (the window shows it with `다시 확인`).
@@ -2418,7 +2420,7 @@ async function recheckHome(by = 'user') {
         // that was not stopped: `다시 확인` never takes a stop away while hides the memory does not cover are left on the server.
         if (by === 'auto' && !h.userDuring && !stoppedBefore
             && homeHere() && home === h && h.h2?.why === 'hides' && prior && h.status === 'linked' && h.line?.seen
-            && JSON.stringify([h.id, h.line.seen.rev ?? null, h.line.seen.wid ?? null]) !== prior) { h.h2 = null; trustQueue(); refreshView(); }
+            && JSON.stringify([h.id, h.line.seen.rev ?? null, h.line.seen.wid ?? null]) !== prior) { h.h2 = null; resumed(); trustQueue(); refreshView(); }
         // v0.7.0-b1a (review of b1a, P2-1): a room that can save now (linked, or new with its id) gets what opening gives it.
         // v0.7.0-b1c (review of b1b, P2-3): also a new room that found its memory (new → linked): the hides and the briefing
         // follow that memory now.
@@ -2845,6 +2847,7 @@ function fitChecked(h, again) {
     setSeen(again.snap);
     // v0.7.0-b3c1d (review of b3c1c, P2): as fitEnd, an old memory is tidied by the next save, not on resuming.
     delete h.fitCheck; h.tidyLater = true;
+    resumed();
     trustQueue(); refreshView();
 }
 // The room stays stopped until it is opened again (`n`: the messages of the chat file last read, for the notice to copy the rest).
@@ -2878,6 +2881,7 @@ function fitEnd(t, look, text) {
     fitClear(stale);
     setSeen(look.r.snap);
     h.h2 = null; h.tidyLater = true; delete h.fitCheck;
+    resumed();
     trustQueue();
     const ok = text === FIT_TEXT.done || text === FIT_TEXT.rewound || text === FIT_TEXT.reviewed;
     setTimeout(() => { if (homeHere() && home === h) { roomOpened(); toastr[ok ? 'success' : 'info'](text, 'SavePoint', { timeOut: 8000 }); } }, 0);
@@ -5429,11 +5433,16 @@ async function toggleKeep(index) {
 // reply made meanwhile still gets its original. At its turn (keepTurn) everything is looked at again; only the chat file is written (the
 // memory file is read only). A stopped room asks nothing, and an ask whose room stopped meanwhile is dropped (not run when it opens again).
 const keepAsks = new Map();
+// v0.7.0-b3d1 (review of b3d, P2): a room that stopped and could save again (resumed: `다시 확인`, a fit ended, a write confirmed, the chat
+// file checked again) drops what was asked before: `keepEra` goes up there, an ask holds only in the era it was made in. A wait for a reply
+// (busy) is not a stop and leaves it.
+let keepEra = 0;
+function resumed() { keepEra++; }
 const keepProof = m => Array.isArray(m?.swipe_info) && m.swipe_info.some(x => x?.extra?.[KEEP_KEY]);
 // The ask still holds: this room and opening, open; the same message object still in the chat, on the swipe asked, a 🔖 left on a swipe.
 function keepPlace(a) {
     const m = a.m;
-    return roomKey() === a.key && roomEpoch === a.epoch && gateOpen() && chat().includes(m) && m.swipe_id === a.swipe && keepProof(m);
+    return roomKey() === a.key && roomEpoch === a.epoch && a.era === keepEra && gateOpen() && chat().includes(m) && m.swipe_id === a.swipe && keepProof(m);
 }
 const keepAsked = a => keepPlace(a) && !kept(a.m);
 // Kept out of new hides while its ask holds; an ask that no longer holds goes (and its protection with it).
@@ -5450,8 +5459,8 @@ function repairKeep(index) {
     const m = chat()[Number(index)];
     if (!m || kept(m) || !keepProof(m)) return false;
     const was = keepAsks.get(m);
-    if (was && !was.started && was.key === roomKey() && was.epoch === roomEpoch) { was.swipe = m.swipe_id; return false; }
-    const a = { m, key: roomKey(), epoch: roomEpoch, swipe: m.swipe_id, started: false, queued: false, timer: null };
+    if (was && !was.started && was.key === roomKey() && was.epoch === roomEpoch && was.era === keepEra) { was.swipe = m.swipe_id; return false; }
+    const a = { m, key: roomKey(), epoch: roomEpoch, era: keepEra, swipe: m.swipe_id, started: false, queued: false, timer: null };
     keepAsks.set(m, a);
     keepSoon(a, 0);
     // No change on the page now (false: nothing for the caller to hide or show).
@@ -5503,6 +5512,14 @@ function keepBack(a, c) {
 }
 // Does a message of the chat file still carry the 🔖 (on itself or a swipe)? A 🔖 turned off elsewhere takes them all away (setKeep).
 const keepIn = f => kept(f) || keepProof(f);
+// v0.7.0-b3d1 (review of b3d, P1): the 🔖 found turned off in the chat file (another tab or device) goes from the page too, the message
+// and every swipe, so no later save of this page sends the old one back. Nothing is written.
+function keepOff(a) {
+    const m = a.m;
+    if (roomKey() !== a.key || roomEpoch !== a.epoch || !chat().includes(m) || !(kept(m) || keepProof(m))) return;
+    setKeep(m, false);
+    paintKeep(); refreshInjection(); render();
+}
 async function keepTurn(a) {
     const m = a.m, mine = () => keepAsks.get(m) === a;
     if (!mine()) return;
@@ -5511,7 +5528,7 @@ async function keepTurn(a) {
     if (mainBusy()) { keepSoon(a, 1500); return; }
     a.started = true;
     const here = () => mine() && keepPlace(a);
-    let c = null, again = false;
+    let c = null, again = false, off = false;
     try {
         await stIdle();
         if (!here()) return;
@@ -5534,7 +5551,7 @@ async function keepTurn(a) {
         if (kept(m)) return;
         const i = chat().indexOf(m), msgs = pre.messages || [], f = msgs[i];
         // The 🔖 taken away in the chat file (another tab or device turned it off): nothing on the page, nothing written.
-        if (f && !keepIn(f)) return;
+        if (f && !keepIn(f)) { keepOff(a); return; }
         // A hide of the user's own made elsewhere that the page does not have: not written over.
         if (userHid(f) && !m.is_system) return;
         // The chat file has it already as it would be sent (the same message, kept, no SavePoint hide): the page only.
@@ -5549,6 +5566,7 @@ async function keepTurn(a) {
         // both out).
         const guard = ({ sent, file }) => {
             const g = (file ? file.messages : msgs)?.[chat().indexOf(m)];
+            if (g && !keepIn(g)) off = true;
             const go = here() && keepUntouched(c) && (!g || keepIn(g)) && !(userHid(g) && !m.is_system);
             return go ? true : sent ? 'stop' : false;
         };
@@ -5561,7 +5579,12 @@ async function keepTurn(a) {
             if (err === 'revert') { keepBack(a, c); err = e; }
             if (err && roomKey() === a.key && roomEpoch === a.epoch) reportError(err);
         }
-    } finally { if (!again && mine()) keepAsks.delete(m); }
+    } finally {
+        // v0.7.0-b3d1 (review of b3d, P1): the 🔖 the chat file had turned off is taken from the page last, after any taking back (keepBack
+        // would put the old 🔖 back otherwise).
+        if (off && mine()) keepOff(a);
+        if (!again && mine()) keepAsks.delete(m);
+    }
 }
 const KEEP_HELD_TEXT = '🔖를 다시 붙이는 저장 중에 이 메시지나 서버의 🔖·숨김이 바뀌어서 더 보내지 않았어요. 이미 보낸 저장은 그대로예요.';
 // v0.6.57: the 🔖 list in the status area — go to a message, turn one off, or turn all off.

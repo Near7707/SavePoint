@@ -180,7 +180,9 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(!r.kept && r.s === c.s, `6. 기다리는 동안 메시지 삭제 → 쓰기 0 (${JSON.stringify(r)})`);
     await ev(() => { M.chat.push(window.__m6); M.stSave(); }); await wait(300);
 
-    // 7. The 🔖 turned off in the chat file elsewhere (another tab): the turn writes nothing and leaves the page as it is.
+    // 7. The 🔖 turned off in the chat file elsewhere (another tab): the turn writes nothing.
+    // v0.7.0-b3d1 (review of b3d, P1): and takes the 🔖 off the page too (the swipes' marks with it), so a later save of another 🔖 does not
+    // send the old one back (7c).
     c = await mark();
     await gen(true);
     await swipe(12, 'new');
@@ -188,6 +190,14 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await gen(false); await wait(2500);
     r = await look(12, c);
     ok(!r.keep && r.s === 0 && !r.fkeep && r.fproof.indexOf('1') < 0, `7. 서버에서 🔖 해제 → 쓰기 0 (${JSON.stringify(r)})`);
+    ok(r.proof.indexOf('1') < 0, `7. (b3d1) 화면 스와이프의 🔖 흔적도 지움 (${JSON.stringify(r)})`);
+    // 7c. Another message's 🔖 saved after it: the chat file keeps #12 off.
+    c = await mark();
+    await ev(() => __savePoint.toggleKeep(2)); await wait(600);
+    r = await look(12, c);
+    ok(r.s === 1 && !r.fkeep && r.fproof.indexOf('1') < 0, `7c. (b3d1) 다른 메시지 🔖 저장 뒤에도 서버의 해제 유지 (${JSON.stringify(r)})`);
+    await ev(() => __savePoint.toggleKeep(2)); await wait(600);
+    await keepOn(12);
     // 7b. Put back already in the chat file (another tab repaired it): the page only, no write.
     await ev(() => M.stSave());
     c = await mark();
@@ -258,6 +268,96 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await gen(false); await wait(3000);
     r = await look(13, c);
     ok(!r.keep && r.s === 0 && r.fproof.indexOf('1') < 0, `10. 차례 읽기 뒤 다른 곳에서 🔖 해제 → 요청 직전 확인에서 멈춤, 쓰기 0 (${JSON.stringify(r)})`);
+    // v0.7.0-b3d1 (review of b3d, P1): taken back first, then the 🔖 the file turned off is taken off the page too (not put back by keepBack).
+    ok(r.proof.indexOf('1') < 0, `10. (b3d1) 되돌린 뒤 화면 스와이프의 🔖 흔적도 지움 (${JSON.stringify(r)})`);
+    c = await mark();
+    await ev(() => __savePoint.toggleKeep(2)); await wait(600);
+    r = await look(13, c);
+    ok(r.s === 1 && !r.fkeep && r.fproof.indexOf('1') < 0, `10. (b3d1) 다른 메시지 🔖 저장 뒤에도 서버의 해제 유지 (${JSON.stringify(r)})`);
+    await ev(() => __savePoint.toggleKeep(2)); await wait(600);
+
+    // 11. v0.7.0-b3d1 (review of b3d, P2): a room that stopped and went on again before the waiting ask looked (a real H2: #9 hidden by
+    // SavePoint on the server past what the memory covers, then taken away again and `다시 확인`): the ask is dropped, nothing written.
+    await keepOn(13);
+    c = await mark();
+    await gen(true);
+    await swipe(13, 'new');
+    await ev(async () => {
+        const f = M.serverFiles[M.chatId][13]; f.is_system = true; f.extra = { ...(f.extra || {}), savepointHidden: 1 };
+        await __savePoint.handle('home-recheck');
+    });
+    const h11 = await ev(() => __savePoint.home().h2?.why || null);
+    await ev(async () => {
+        const f = M.serverFiles[M.chatId][13]; delete f.is_system; delete f.extra.savepointHidden;
+        await __savePoint.handle('home-recheck');
+    });
+    r = { ...(await look(13, c)), h2: h11, now: await ev(() => __savePoint.home().h2?.why || null) };
+    ok(r.h2 === 'hides' && !r.now && !r.keep && r.s === 0, `11. 준비: 기다리는 사이 실제 H2 → 다시 확인으로 재개 (${JSON.stringify(r)})`);
+    await gen(false); await wait(3000);
+    r = await look(13, c);
+    ok(!r.keep && r.s === 0, `11. (b3d1) 멈췄다 재개된 방의 옛 요청은 버림 · 쓰기 0 (${JSON.stringify(r)})`);
+    await swipe(13, 'same'); await wait(1500);
+    r = await look(13, c);
+    ok(r.keep && r.s === 1, `11. 새 스와이프 이벤트에서 다시 요청 → 복구 (${JSON.stringify(r)})`);
+
+    // 12. v0.7.0-b3d1 (review of b3d, P1): the 🔖 turned off elsewhere after the first request, seen before a copy is sent again (SillyTavern
+    // saved a newer page with a new message first): nothing more sent, and the 🔖 goes from the page; a later save keeps it off.
+    await keepOn(13);
+    c = await mark();
+    await gen(true);
+    await swipe(13, 'new');
+    await ev(() => {
+        const f = window.fetch;
+        window.fetch = async (u, o = {}) => {
+            if (String(u) === '/api/chats/save') {
+                window.fetch = f;
+                const m = JSON.parse(JSON.stringify(M.chat[M.chat.length - 1])); m.mes = 'new while repairing'; m.swipes = [m.mes]; m.swipe_id = 0; m.swipe_info = [{ extra: {} }]; m.extra = {};
+                M.chat.push(m); M.stSave();
+                const res = await f(u, o);
+                const g = M.serverFiles[M.chatId][14]; delete g.extra.savepointKeep; for (const s of g.swipe_info || []) if (s?.extra) delete s.extra.savepointKeep;
+                return res;
+            }
+            return f(u, o);
+        };
+    });
+    await gen(false); await wait(3000);
+    r = await look(13, c);
+    ok(/🔖를 다시 붙이는 저장 중에/.test(r.t) && r.s === 1 && !r.fkeep, `12. 준비: 다시 보내기 전 서버 🔖 해제 → 더 안 보냄 (${JSON.stringify(r)})`);
+    ok(!r.keep && r.proof.indexOf('1') < 0, `12. (b3d1) 화면 🔖·스와이프 흔적 지움 (${JSON.stringify(r)})`);
+    c = await mark();
+    await ev(() => __savePoint.toggleKeep(2)); await wait(600);
+    r = await look(13, c);
+    ok(r.s >= 1 && !r.fkeep && r.fproof.indexOf('1') < 0, `12. (b3d1) 다른 메시지 🔖 저장 뒤에도 서버의 해제 유지 (${JSON.stringify(r)})`);
+    await ev(() => __savePoint.toggleKeep(2)); await wait(600);
+
+    // 13. v0.7.0-b3d1 (review of b3d, P2): a save waiting for its memory write holds new hides; a 🔖 repair asked meanwhile for one of those
+    // messages (#9: its swipe changed with no event before the save, the event during the wait) keeps it out when the held hides are put
+    // back (putHeldHides): the save's chat request does not hide it, and the repair puts the 🔖 back.
+    await keepOn(9);
+    await swipe(9, 0, { still: true, emit: false });
+    await ev(() => M.stSave());
+    c = await mark();
+    await ev(() => {
+        M.holdMem(() => true);
+        window.__s13 = [];
+        const f = window.fetch;
+        window.fetch = async (u, o = {}) => {
+            const res = await f(u, o);
+            if (String(u) === '/api/chats/save') { const g = M.serverFiles[M.chatId][10]; window.__s13.push(!!g?.is_system); if (window.__s13.length >= 2) window.fetch = f; }
+            return res;
+        };
+        window.__r13 = __savePoint.handle('run').catch(e => String(e));
+    });
+    for (let k = 0; k < 40 && !(await ev(() => M.held)); k++) await wait(100);
+    r = { held: await ev(() => M.held) };
+    await ev(() => M.eventSource.emit('message_swiped', 9)); await wait(300);
+    r.wait = await look(9);
+    await ev(() => M.release && M.release());
+    await ev(() => window.__r13); await wait(3000);
+    r = { ...r, saves: await ev(() => window.__s13), ...(await look(9, c)) };
+    ok(!!r.held && !r.wait.keep && !r.wait.hid, `13. 준비: 세이브가 기억 쓰기를 기다리는 사이 #9 복구 요청 (${JSON.stringify(r)})`);
+    ok(r.saves.length >= 1 && !r.saves[0], `13. (b3d1) 세이브의 채팅 저장이 #9를 숨기지 않음 (${JSON.stringify(r)})`);
+    ok(r.keep && !r.hid && r.fkeep && !r.fhid, `13. 그 뒤 차례에서 🔖 복구 (${JSON.stringify(r)})`);
 
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');

@@ -1,3 +1,38 @@
+# v0.7.0-b3d1 · b3d 리뷰 반영 (서버에서 끈 🔖를 화면에도, 재개 때 옛 요청 버림, 보류 숨김의 대기 보호) (브랜치 `v0.7-b`)
+
+기준: `3f9eccc`(b3d 리뷰 요청서, 코드 `0f841ba`). b3d GPT 리뷰: P1 1, P2 3, P3 없음. 2차 의견 + 사용자 동의: P1·P2 둘 고침, P2 하나는 README 알려진 한계. 파일: `index.js`, `manifest.json`(버전만), 검사 `keep-turn.cjs`, 문서.
+
+| 리뷰 | 처리 |
+|---|---|
+| P1 서버에서 끈 🔖가 다음 저장으로 되살아남(첫 읽기에서 발견하면 화면 스와이프 흔적이, 다시 보내기에서 발견하면 화면 🔖가 남음) | 🟡로 고침(데이터 손실 없음, 사용자 동의). `keepOff(a)`: 같은 방·회차·메시지면 `setKeep(m, false)`(메시지와 모든 스와이프), 파일은 안 씀. 차례 첫 읽기(`f && !keepIn(f)`)는 곧바로. `guard`가 서버 해제를 보면 `off = true` → 실패 처리(`keepBack` 등)가 끝난 뒤 `finally`에서 마지막에(2차 의견: 되돌림이 방금 지운 🔖를 복원하지 않게). 요청이 직접 🔖로 바뀌었으면(`mine()` 거짓) 안 지움 |
+| P2 방이 잠깐 멈췄다 풀리면 옛 요청이 실행됨 | 재개 번호 `keepEra`. 요청에 만들 때의 `era`, `keepPlace`가 같을 때만 유효. `resumed()`는 실제로 멈췄던 방이 다시 저장 가능해지는 곳: `roomOpened`(`다시 확인` 재개·맞추기 완료·첫 열기), `fitEnd`(대기열 다음 차례가 `roomOpened` 예약보다 먼저 돌 수 있어서 직접), `fitChecked`, `confirmUnsure`의 해소 세 곳, `verifyRoom`이 `bad`·`unread`·`unknown`에서 통과할 때, `recheckHome('auto')`의 H2 지우기. 답변 때문에 막힌 `busy` → `verifyRoom` 통과는 번호 유지(`keepTurn`의 `busy` 다시 기다리기도 그대로) |
+| P2 기억 쓰기를 기다리던 앞선 저장이 복구 대기 메시지를 숨김 | `putHeldHides`의 건너뛰기 조건에 `keepWait(v.m)`(`kept`와 같이 `stale`) |
+| P2 #13 복구가 #12에서 끈 🔖도 되살림 | ⚪ 안 고침(2차 의견 동의): 세이브·직접 🔖 등 모든 채팅 저장이 화면의 🔖를 그대로 보내서 복구 경로만 막는 실익이 작음. README 알려진 한계(v0.7.0-b3d1) |
+
+## 바뀐 것
+- `index.js` 🔖 구역: `keepEra`·`resumed()`, 요청의 `era`, `keepPlace`·`repairKeep` 합치기 조건에 번호, `keepOff`, `keepTurn`의 `off`와 `finally`.
+- `roomOpened`·`fitEnd`·`fitChecked`·`confirmUnsure`(세 곳)·`verifyRoom`·`recheckHome`에 `resumed()`.
+- `putHeldHides`: 대기 보호 확인.
+
+## ★ 특히 봐 줄 곳
+1. **재개 지점:** 위 표의 목록이 빠짐없는지. `roomOpened`는 열린 방의 상태가 `new` → `linked`로만 바뀌어도 불려 그때도 요청을 버려요(안전한 쪽, 새 방엔 보통 🔖 요청이 없음). `recheckHome('auto')`의 H2 지우기는 같은 재확인 안에서 걸렸다 풀린 경우라 넣지 않아도 될 수 있는데, 안전한 쪽으로 넣었어요.
+2. **`busy` 구분:** 답변 때문에 `busy`로 막혔다가 풀리는 길(`recheckAfterReply` → `verifyRoom`)은 번호를 안 올려요. `keepTurn`의 `busy`는 방을 막지 않으니 이 길과 상관없어요.
+3. **첫 읽기의 서버 해제 판단:** 예전처럼 서버의 같은 위치 메시지에 🔖 근거가 없으면 "다른 곳에서 끔"이에요. 이제 그 판단으로 화면 🔖도 지우니, 잘못 판단하면 화면 🔖가 사라져요. `serverCovered`를 통과한 파일이라 같은 메시지라고 봤어요.
+4. **검사 안 한 재개 길:** 검사 11은 `다시 확인`(`roomOpened`)만 봐요. 망가뜨리기로 `roomOpened`의 `resumed()`를 빼면 잡혀요. 나머지 재개 길(`fitEnd`·`fitChecked`·확인 대기 해소·`verifyRoom`)은 검사가 없어요.
+
+## 검사 준비(`keep-turn.cjs`)
+- 7 둘째 줄: 화면 스와이프 흔적도 없음. 7c(새): `toggleKeep(2)`로 다른 메시지 저장 → 서버 #12 해제 유지, 되돌린 뒤 `keepOn(12)`로 7b 준비.
+- 10 둘째·셋째 줄: 되돌린 뒤 화면 흔적 없음, 다른 메시지 저장 뒤 서버 해제 유지.
+- 11(새): 답변 중 #13 스와이프(요청 기다림) → 서버 #12에 SavePoint 숨김 → `다시 확인` = 실제 H2(`hides`) → 숨김 떼고 `다시 확인` = 재개 → 답변 끝 → 쓰기 0 → 새 이벤트로 복구.
+- 12(새): 답변 중 #13 스와이프 → 첫 `/api/chats/save` 직전에 화면에 새 메시지 + `M.stSave()`(실리태번의 더 새 저장), 응답 뒤 서버 #13 🔖 지움 → 다시 보내기 전 `guard`가 `'stop'` → 안내, 화면 🔖·흔적 지움, 다른 메시지 저장 뒤 서버 해제 유지.
+- 13(새): `keepOn(9)` → 이벤트 없이 스와이프 칸만 추가(화면 🔖 빠짐) + `M.stSave()` → `M.holdMem` 중 `run`(#9를 새로 숨기는 세이브) → 기억 쓰기가 붙잡힌 사이 `message_swiped` 9 → 풀기 → 세이브의 첫 채팅 저장 때 서버 #9 안 숨김 → 그 뒤 복구.
+
+## 검사와 망가뜨리기 결과
+- 고치기 전 코드(`0f841ba`, 새 검사 파일·mock 복사): 새 줄 8개 FAIL(7·7c·10 둘·11·12 둘·13).
+- 망가뜨리기 5개 모두 잡힘: `putHeldHides`의 `keepWait` 빼기 → 13 · 첫 읽기의 `keepOff` 빼기 → 7·7c · `finally`의 `keepOff` 빼기 → 10·12 · `keepPlace`의 번호 비교 빼기 → 11 · `roomOpened`의 `resumed()` 빼기 → 11.
+- Node 511 통과 / 0 실패 / 3 건너뜀.
+- 브라우저 60묶음 한꺼번에: 59 통과 + `status` 알려진 `autoFail` null 오류 → 따로 첫 번째에 통과. 검사 모드 오류 0(`keep-turn` 36줄). b3d 때 고친 뒤 안 돌렸던 한꺼번 실행도 이걸로 함께 확인했어요(`save-adopt` 통과).
+
 # v0.7.0-b3d · 🔖 고치기를 방 대기열 차례로 (대기 보호, 멈춘 방 버림) (브랜치 `v0.7-b`)
 
 기준: `8005828`(b3c2 리뷰 요청서, 코드 `d3db48a`). b3c2 GPT 리뷰: P1·P2·P3 없음 → b3c 끝. 설계는 GPT 1·2차 의견 + 사용자 동의. 파일: `index.js`, `manifest.json`(버전만), 검사 `tests/browser/keep-turn.cjs`(새 묶음)·`tests/gate-stub.mjs`(`keepWait` 기본값), 문서.
