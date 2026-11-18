@@ -1,3 +1,42 @@
+# v0.7.0-c1 · 일반 전송 답변 전 확인 (브랜치 `v0.7-b`)
+
+기준: `def63ab`(b4b 문서). c 설계(GPT 1·2차 + 사용자 동의, PLAN "v0.7.0-c 설계" 줄) 중 c1. 파일: `index.js`, `manifest.json`(버전 + `generate_interceptor`), `README.md`, `docs/PLAN-v0.7.md`, 검사 `send-guard.cjs`(새)·`mock.js`·`home-link.cjs` 11, 이 문서.
+
+## 바뀐 것
+- `index.js` 새 구역 "send guard (v0.7.0-c1)"(`onGenerationStarted` 바로 위): `genCount`·`genDry`(dry run이 아닌 생성 시작 수, 마지막 시작이 dry run인지), `sendAllow`(그룹의 이번만 `{ key, epoch, sig }`), `sendAsk`(열린 확인창), `hiddenMarked()`, `sendGap(hidden)`(`liveState()`와 `refreshInjection`과 같은 브리핑 조건으로 `floor` = 기록 범위 끝, 브리핑 없으면 -1 → `gap` = 범위 밖 숨김, `sig` = 방·회차·기억 ID·rev·`lastIndex`·검토·브리핑 여부·`gap`), `sendRanges`·`sendWhy`·`sendAskText`, `sendConfirm`(`callGenericPopup` + 버튼 이름, 방 바뀌면 거짓으로 끝남, 그 뒤 답은 무시), `sendEnd`, `sendGuard`(interceptor), `globalThis.savePointSendGuard`.
+- `sendGuard` 순서: 설정 꺼짐·dry run·채팅 없음·일반 전송 아님(`'normal'`·없음만) → 통과 → 들어온 순간 숨김 목록(`hidden`, 비면 통과) → 방 찾는 중이면 최대 5초 기다림 → 방 바뀜 = `moved` / 숨김 목록 바뀜 = `changed` → `gap` 비면 브리핑 다시 넣고 통과 → 그룹이고 같은 `sig`의 이번만이면 통과 → 확인창 → 방 바뀜 = `moved`, 아니요·창 닫기 = `cancel`, 숨김 목록·`sig` 바뀜 = `changed` → 그룹이면 이번만 기록 → 브리핑 다시 넣고 통과. 오류 = `error`(멈춤).
+- 멈춤(`stop`): `abort(true)`, 그룹이고 `genCount`가 들어올 때와 같을 때만 `stopGeneration()`, 그룹 이번만 지움, 안내(입력칸·빈 전송 문구, 그룹은 캐릭터 답하기 안내 추가, 방 이동은 짧게).
+- `onChatChanged`: `sendEnd()`(열린 확인창 거짓으로 끝냄, 이번만 지움). `GROUP_WRAPPER_STARTED`·`FINISHED`에서 이번만 지움.
+- `onGenerationStarted`: dry run 표시·생성 수. 연결 전 경고 알림은 일반 전송이 아닐 때만(일반 전송은 확인창).
+
+## ★ 특히 봐 줄 곳
+1. **방 이동 때 곧바로 끝냄:** 확인창이 열린 채 방이 바뀌면 `sendEnd`가 그 자리에서 `moved`로 끝내고(그룹이면 그때 `stopGeneration` — 아직 새 생성이 없음), 나중에 창이 닫혀도 무시. GPT가 말한 "늦게 닫힌 옛 창"은 이렇게 막았어요. 실리태번 화면의 그 창은 열린 채 남을 수 있어요(닫아도 아무 일 없음).
+2. **숨김 목록 기준:** 들어온 순간 화면의 `is_system` + 표시 목록을 생성용 사본이 뺀 것으로 봐요. 사본을 만든 뒤 interceptor 전까지 화면이 바뀌는 틈은 보지 않아요.
+3. **기다린 뒤 숨김 목록이 조금이라도 다르면 멈춤:** 방을 연 직후 정리(`roomOpened`의 해제 정리)로 목록이 바뀌어도 멈춰요(정상 방은 덮인 숨김이라 안 바뀜).
+4. **원문 바뀐 방:** `liveState()`의 되감기는 체크포인트 단위라, 한 번에 기록한 장면이 통째로 빠지면 바뀐 곳 앞 숨김도 빠지는 구간이에요(검사 5). 브리핑과 같은 기준이라 맞다고 봤어요.
+5. **1:1 이번만:** 따로 기록하지 않음(그 답변 하나). 그룹에서만 `sendAllow`.
+
+## 바뀐 기대(기존 검사)
+- `home-link` 11: 연결 전 경고 알림을 일반 전송 대신 재생성으로 확인(일반 전송은 확인창, `send-guard`).
+
+## 검사 준비(`send-guard.cjs`, 새 묶음)
+- `send(type, { dry, pre, during })`: `pre`(방 열기 등, 기다리지 않음) → `generation_started` → `savePointSendGuard([], 4096, abort, type)` → `during` → 끝 → `generation_ended`. 결과: `aborted`·걸린 시간·확인창 글·안내·`M.stops`(모의 `stopGeneration`)·버튼 이름·상태·브리핑 길이.
+- `copied(tag)`: 기억 없는 방에 #0–#3 SavePoint 숨김(복사된 숨김) → 방은 `held`.
+- 1 기록한 방(재생성·dry run 포함) · 2 숨김 없는 방 · 3 복사된 숨김: 취소·이번만·한 번만·다른 종류 5가지·창 닫기 · 4 기억 읽기 실패 · 5 원문 #3 바뀜(되감은 기억 브리핑 없음 → #0–#5), 기억 쓰기 응답 없음(`pending`)인데 덮음 → 묻지 않음 · 6 기억 파일 읽기 1.2초 지연 중 전송 → 기다렸다 연결·브리핑, 기다리는 사이 화면 숨김 바뀜 → 멈춤 · 7 확인창 중 방 이동, 확인 중 오류(`M.promptThrow`) · 8 그룹(`M.groupId`): 한 번 묻고 다음 캐릭터 통과, 구간 바뀌면 다시 물음, 다음 전송 다시 물음·취소 = 전체 중단, 확인창 중 방 이동 → 그때 한 번 멈춤·늦게 닫힌 창은 새 방 생성 안 멈춤, 묻는 사이 다른 생성 시작 → 전체 중단 안 부름.
+- `mock.js`: `GROUP_WRAPPER_STARTED/FINISHED`, `stopGeneration()`(`M.stops`), `callGenericPopup`의 넷째 인자(`M.popupOpts`).
+
+## 검사와 망가뜨리기 결과
+- 고치기 전 코드: 장치가 없어 새 묶음 전부 해당 없음(interceptor 없음).
+- 망가뜨리기 7개 중 5개 잡힘: `genCount` 비교 빼기 → 8(다른 생성) · 기다린 뒤 숨김 비교 빼기 → 6 · 그룹 이번만 `sig` 비교 빼기 → 8(구간 바뀜) · `liveState` 대신 `state` → 5 · 모든 종류 묻기 → 3(4줄). 안 잡힘(겹 장치): 이번만 읽을 때 그룹 확인 빼기 / 기록할 때 그룹 확인 빼기(하나만 빼면 다른 쪽이 1:1에 이번만을 안 남김).
+- Node 513 통과 / 0 실패 / 3 건너뜀.
+- 브라우저 62묶음 한꺼번에: 60 통과 + `inject-wait` 5·`status` 알려진 타이밍 실패 → 따로 둘 다 첫 번째에 통과. 검사 모드 오류 0(`send-guard` 25줄).
+
+## 실제 실리태번에서 확인할 것 (모의 검사로 못 봄)
+- 일반 전송 × `취소`/`이번만`/창 닫기 → 입력 중복·글 유실 없음, 종료 뒤 보내기 버튼이 돌아오는지.
+- 그룹 두 명 이상: 한 번만 묻는지, 취소하면 다음 캐릭터가 안 이어지는지.
+- 확인창이 열린 채 다른 방으로 옮기면 그 답변이 안 만들어지고, 남은 창을 닫아도 새 방에 영향 없는지.
+- 방을 열자마자 보냈을 때 기다렸다 진행하는지. 재생성·스와이프·이어쓰기는 묻지 않고 그대로인지.
+
 # v0.7.0-b4b · 문서·합격 기준 점검 (브랜치 `v0.7-b`, 코드·버전 그대로)
 
 기준: `b6c59cd`(b4a 끝 기록). b4 설계의 b4b 그대로, 사용자 동의. 파일: `README.md`, `docs/PLAN-v0.7.md`, 이 문서. 코드 변경이 없어 검사는 다시 돌리지 않았어요.

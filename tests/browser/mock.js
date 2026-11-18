@@ -11,6 +11,7 @@ const event_types = {
     MESSAGE_UPDATED: 'message_updated', MESSAGE_SWIPE_DELETED: 'message_swipe_deleted',
     GENERATION_STARTED: 'generation_started', GENERATION_ENDED: 'generation_ended', GENERATION_STOPPED: 'generation_stopped',
     CHAT_RENAMED: 'chat_renamed', CHAT_DELETED: 'chat_deleted', GROUP_CHAT_DELETED: 'group_chat_deleted', CHAT_CREATED: 'chat_created',
+    GROUP_WRAPPER_STARTED: 'group_wrapper_started', GROUP_WRAPPER_FINISHED: 'group_wrapper_finished',
 };
 window.__spStrict = true;   // v0.7.0-a: a memory change outside the room queue is an error (index.js checkQueue)
 const M = window.M = { files: new Map(Object.entries(window.__presetFiles || {})), fileLog: [], serverDown: !!window.__presetServerDown, chatId: 'chatA', chat: [], meta: {}, settings: window.__presetSettings || {}, prompts: {}, calls: [], popupInput: 'Save', confirm: 1, eventSource, event_types, chatSaves: 0 };
@@ -136,8 +137,10 @@ window.SillyTavern = {
             drawMes(typeof forceId === 'number' ? forceId : typeof insertBefore === 'number' ? insertBefore - 1 : i >= 0 ? i : M.chat.length - 1, m, insertBefore); },
         updateMessageBlock(i, m) { M.redraws = (M.redraws || 0) + 1; drawMes(i, m); },
         async reloadCurrentChat() { M.reloads = (M.reloads || 0) + 1; await M.openFile(M.chatId); },
-        callGenericPopup: async (text, type) => { (M.popups ||= []).push(String(text)); if (M.onPopup) await M.onPopup(String(text), type); return type === 3 ? M.popupInput : M.confirm; },
+        callGenericPopup: async (text, type, _v, opts) => { (M.popups ||= []).push(String(text)); M.popupOpts = opts || null; if (M.onPopup) await M.onPopup(String(text), type); return type === 3 ? M.popupInput : M.confirm; },
         POPUP_TYPE: { TEXT: 1, CONFIRM: 2, INPUT: 3 },
+        // v0.7.0-c1: SillyTavern's stop of the generation going now (a group's loop too); counted.
+        stopGeneration() { M.stops = (M.stops || 0) + 1; return true; },
     }),
 };
 // v0.6.58: the character card (its greetings decide whether a one-message room may get a carried #0).

@@ -214,10 +214,11 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     r = await ev(() => ({ alert: document.querySelector('.sp-home-alert')?.textContent || '', btn: !!document.querySelector('.sp-home-alert [data-act="home-recheck"]'), sp: M.spSaves, puts: M.fileLog.filter(x => x[0] === 'put').length }));
     await ev(() => M.add(2));
     const blocked = await ev(() => __savePoint.transact(() => {}).then(() => 'saved', e => e.message));
-    await ev(() => M.eventSource.emit('generation_started', 'normal', {}, false)); await ev(() => M.eventSource.emit('generation_ended'));
+    // v0.7.0-c1: a normal send is asked in the interceptor (send-guard.cjs); the other kinds of reply are still told.
+    await ev(() => M.eventSource.emit('generation_started', 'regenerate', {}, false)); await ev(() => M.eventSource.emit('generation_ended'));
     const warned = await ev(() => toastr.log.slice(-3).some(x => x[0] === 'warning' && /연결되지 않아서/.test(x[1])));
     ok(h.status === 'readFail' && h.last === null && /읽지 못했/.test(r.alert) && r.btn && /읽지|찾는/.test(blocked), `11. 읽기 실패 → 쓰기 0·이유·다시 확인 (${JSON.stringify(h)}, ${blocked.slice(0, 50)})`);
-    ok(warned, '11. 연결 전 일반 전송 → 경고 알림');
+    ok(warned, '11. 연결 전 재생성 → 경고 알림 (일반 전송은 c1부터 확인창)');
     // v0.7.0-b1a (review P3): nothing was written while the room was not linked (chat saves and user files).
     r = { ...r, sp2: await ev(() => M.spSaves), puts2: await ev(() => M.fileLog.filter(x => x[0] === 'put').length) };
     ok(r.sp2 === r.sp && r.puts2 === r.puts, `11. 읽기 실패 중 채팅 저장·파일 쓰기 0 (${JSON.stringify({ sp: [r.sp, r.sp2], puts: [r.puts, r.puts2] })})`);

@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b4a5';
+const VERSION = '0.7.0-c1';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -7703,6 +7703,7 @@ function onChatChanged() {
     leftRoom = home.epoch === roomEpoch && home.key && home.status === 'linked' && home.id && home.line?.seen?.wid && !home.line.unread && !home.line.pending && !home.line.stop
         ? { addr: home.key, id: home.id, rev: home.line.seen.rev, wid: home.line.seen.wid, at: Date.now() } : null;
     roomEpoch++; cancelRun(); clearTimeout(autoTimer);
+    sendEnd();   // v0.7.0-c1: a question open for the room left is answered (no reply), a group's "이번만" ends
     // v0.7.0-b1: the room left takes its memory (and so its briefing) with it; the new one is linked once its chat file is checked.
     home = newHome();
     noteLeftDuringRun(leaving);
@@ -7779,8 +7780,111 @@ function onSourceChanged() {
         reconcile(); syncHide(); refreshInjection(); render();
     }, 150);
 }
+// ───────── send guard (v0.7.0-c1) ─────────
+// A normal send whose reply would leave out originals SavePoint hid (marked `savepointHidden`, so left out of the messages sent)
+// that the memory the briefing is made from does not cover: the reply would see neither the original nor its summary. Asked once,
+// in SillyTavern's generation interceptor (after the user's message is in the chat and the messages to send were copied; before
+// the prompt is put together): `취소` (or closing the window, or an error) stops that reply, the message sent stays in the chat;
+// `이번만 그대로 답변 만들기` lets it go. Regenerate, swipe, continue and impersonate are only told (stopping them is not safe: a
+// regenerate removes the old reply first). What counts is what goes into the reply, not why the room stopped: a room whose saving
+// stopped but whose memory covers its hides passes; the briefing's own budget (old scenes cut short or left out) is no gap.
+// A group's "이번만" holds for the replies that send started (until GROUP_WRAPPER_FINISHED), asked again if the gap changes.
+let genCount = 0, genDry = false;   // non-dry generations started (any type), and whether the last start was a dry run
+let sendAllow = null;               // a group's "이번만": { key, epoch, sig }
+let sendAsk = null;                 // the question open now: { key, epoch, end }
+const SEND_WAIT_MS = 5000;
+const SEND_TAIL = ' 다시 답변을 받으려면 입력칸이 비어 있는지 먼저 확인하고 보내기를 눌러 주세요. 실리태번의 빈 전송 문구 설정이 켜져 있으면 그 문구가 새 글로 추가돼요.';
+const SEND_GROUP_TAIL = ' 그룹에서는 실리태번의 캐릭터 답하기 버튼도 쓸 수 있어요. 이때도 입력칸의 글은 함께 보내지고, 빈 전송 문구가 추가될 수 있어요.';
+const SEND_TEXT = {
+    cancel: '이번 답변은 만들지 않았어요. 보낸 글은 채팅에 남아 있어요.',
+    changed: '확인하는 사이 이 방의 기억이나 숨김이 바뀌어서, 이번 답변은 만들지 않았어요. 보낸 글은 채팅에 남아 있어요.',
+    moved: '답변 전에 확인하는 사이 방이 바뀌어서, 그 방의 답변은 만들지 않았어요.',
+    error: '답변 전 확인에서 오류가 나서, 이번 답변은 만들지 않았어요. 보낸 글은 채팅에 남아 있어요.',
+};
+const sendTypeAsked = type => type === undefined || type === 'normal';
+function hiddenMarked() { return chat().map((m, i) => (m?.is_system && m.extra?.[HIDE_KEY] ? i : -1)).filter(i => i >= 0); }
+// The hidden originals (from `hidden`) the briefing would not cover now, and what that was worked out from (room, memory, gap).
+function sendGap(hidden) {
+    const st = liveState(), s = settings();
+    const brief = !!(s.enabled && st && hasChat() && !st.review && hasMemory(st.mem));
+    const floor = brief ? st.lastIndex : -1;
+    const gap = hidden.filter(i => i > floor);
+    const mem = st ? [homeHere() ? home.id : null, st.rev ?? null, st.lastIndex, !!st.review, brief] : null;
+    return { gap, sig: JSON.stringify([roomKey(), roomEpoch, mem, gap]) };
+}
+function sendRanges(list) {
+    const out = [];
+    for (const i of list) { const last = out[out.length - 1]; if (last && i === last[1] + 1) last[1] = i; else out.push([i, i]); }
+    return out.map(([a, b]) => (a === b ? `#${a}` : `#${a}–#${b}`)).join(', ');
+}
+function sendWhy() {
+    if (!homeHere() || home.status === 'opening' || home.status === 'idle') return '이 방의 기억 파일을 아직 찾지 못했어요.';
+    if (home.status === 'held') return '이 방의 기억을 보류했어요.';
+    if (home.status === 'readFail') return '이 방의 기억 파일을 읽지 못했어요.';
+    if (home.status === 'stopped') return '이 방의 기억 파일을 만드는 중에 멈췄어요.';
+    if (home.status === 'new') return '이 방에는 아직 기억이 없는데, 원문이 SavePoint 숨김으로 남아 있어요(숨김이 복사됐을 수 있어요).';
+    if (home.h2?.why === 'source') return '기록한 원문이 바뀌어서, 바뀐 곳부터는 기억이 덮지 못해요.';
+    if (home.h2) return '기억이 기록하지 않은 메시지가 SavePoint 숨김으로 남아 있어요.';
+    if (liveState()?.review) return '기억이 검토 상태라 브리핑이 들어가지 않아요.';
+    return '기억이 그 메시지까지 기록하지 않았어요.';
+}
+function sendAskText(gap) {
+    return `이번 답변에는 숨긴 원문 ${sendRanges(gap)}(${gap.length}개)이 빠지고, 그 부분의 기억 브리핑도 들어가지 않아요. 이유: ${sendWhy()}\n\n`
+        + '그래도 이번만 그대로 답변을 만들까요? 취소하면 보낸 글은 채팅에 남고 답변만 만들지 않아요.';
+}
+// The question, answered false when the room changes (the window may stay open: its answer is then ignored).
+function sendConfirm(text, key, epoch) {
+    return new Promise(res => {
+        let done = false;
+        const ask = { key, epoch, end: v => { if (done) return; done = true; if (sendAsk === ask) sendAsk = null; res(v); } };
+        sendAsk = ask;
+        const c = ctx();
+        const shown = typeof c.callGenericPopup === 'function' && c.POPUP_TYPE
+            ? c.callGenericPopup(esc(text).replace(/\n/g, '<br>'), c.POPUP_TYPE.CONFIRM, '', { okButton: '이번만 그대로 답변 만들기', cancelButton: '취소' })
+            : Promise.resolve(typeof globalThis.confirm === 'function' ? globalThis.confirm(text) : false);
+        Promise.resolve(shown).then(v => ask.end(v === true || v === 1), () => ask.end(false));
+    });
+}
+function sendEnd() { sendAsk?.end(false); sendAsk = null; sendAllow = null; }
+async function sendGuard(_chat, _size, abort, type) {
+    const n = genCount, key = roomKey(), epoch = roomEpoch, group = !!ctx().groupId;
+    const here = () => roomKey() === key && roomEpoch === epoch;
+    const stop = why => {
+        try { abort(true); } catch (e) { console.error('[SavePoint] send guard abort', e); }
+        // A group goes on to its next member unless its stop signal is cancelled too; only while this reply is still the one going
+        // (a question left in another room, closed late, must not stop a reply started since).
+        if (group && genCount === n) { try { ctx().stopGeneration?.(); } catch (e) { console.error('[SavePoint] send guard stop', e); } }
+        if (group) sendAllow = null;
+        toastr.warning(SEND_TEXT[why] + (why === 'moved' ? '' : SEND_TAIL + (group ? SEND_GROUP_TAIL : '')), 'SavePoint', { timeOut: 15000 });
+    };
+    try {
+        if (!settings().enabled || genDry || !hasChat() || !sendTypeAsked(type)) return;
+        const hidden = hiddenMarked();
+        if (!hidden.length) return;
+        // Still finding the room's memory: a short wait here (the messages to send are copied already, so what changes meanwhile is
+        // checked against what they left out).
+        const finding = () => !homeHere() || home.status === 'opening' || home.status === 'idle' || !!home.linking;
+        for (const end = Date.now() + SEND_WAIT_MS; here() && finding() && Date.now() < end;) await wait(150);
+        if (!here()) return stop('moved');
+        if (hiddenMarked().join() !== hidden.join()) return stop('changed');
+        const first = sendGap(hidden);
+        if (!first.gap.length) { refreshInjection(); return; }
+        if (group && sendAllow && sendAllow.key === key && sendAllow.epoch === epoch && sendAllow.sig === first.sig) { refreshInjection(); return; }
+        const yes = await sendConfirm(sendAskText(first.gap), key, epoch);
+        if (!here()) return stop('moved');
+        if (!yes) return stop('cancel');
+        if (hiddenMarked().join() !== hidden.join() || sendGap(hidden).sig !== first.sig) return stop('changed');
+        if (group) sendAllow = { key, epoch, sig: first.sig };
+        refreshInjection();
+    } catch (e) {
+        console.error('[SavePoint] send guard', e);
+        stop('error');
+    }
+}
+globalThis.savePointSendGuard = sendGuard;
 function onGenerationStarted(type, options, dryRun) {
-    if (dryRun) return;
+    if (dryRun) { genDry = true; return; }
+    genDry = false; genCount++;
     mainGenerating = true;
     if (ui.run?.viaMain) cancelRun();
     // Recall depends on the newest message, so rebuild right before the prompt is assembled.
@@ -7789,8 +7893,9 @@ function onGenerationStarted(type, options, dryRun) {
     if (gateOpen() && !reconcile()) syncHide();
     refreshInjection();
     // v0.7.0-b1: a reply made before this room's memory is linked (or while it is held) gets no briefing and no hides from
-    // SavePoint. Until the send confirmation (v0.7.0-c) it is only told.
-    if (hasChat() && !homeOpen() && homeHere() && home.status !== 'new' && !(type === 'quiet')) {
+    // SavePoint. A normal send is asked (v0.7.0-c1, sendGuard); regenerate, swipe, continue and impersonate are only told.
+    // v0.7.0-c1: a normal send is asked about in the interceptor (sendGuard) instead.
+    if (hasChat() && !homeOpen() && homeHere() && home.status !== 'new' && !(type === 'quiet') && !sendTypeAsked(type)) {
         const id = `${roomKey()}|${roomEpoch}`;
         if (ui.sendWarned !== id) { ui.sendWarned = id; toastr.warning(`SavePoint 기억이 아직 연결되지 않아서, 이번 답변에는 기억 브리핑과 원문 숨김이 들어가지 않을 수 있어요. ${homeMessage()}`, 'SavePoint', { timeOut: 12000 }); }
     }
@@ -7838,6 +7943,8 @@ jQuery(() => {
     installLootBar();
     on('GENERATION_STARTED', onGenerationStarted);
     for (const t of ['GENERATION_ENDED', 'GENERATION_STOPPED']) on(t, onGenerationEnded);
+    // v0.7.0-c1: a group's "이번만" holds for the replies of one send.
+    for (const t of ['GROUP_WRAPPER_STARTED', 'GROUP_WRAPPER_FINISHED']) on(t, () => { sendAllow = null; });
     for (const t of ['CONNECTION_PROFILE_UPDATED', 'CONNECTION_PROFILE_DELETED', 'CONNECTION_PROFILE_CREATED']) on(t, () => { fillProfiles(); updateSettingsSummaries(); });
     onChatChanged(); paintKeepSoon();
     // Server-side save slots: the server index is the list; then move any settings-only slots over.
