@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-c1';
+const VERSION = '0.7.0-c1a';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -7789,8 +7789,20 @@ function onSourceChanged() {
 // regenerate removes the old reply first). What counts is what goes into the reply, not why the room stopped: a room whose saving
 // stopped but whose memory covers its hides passes; the briefing's own budget (old scenes cut short or left out) is no gap.
 // A group's "이번만" holds for the replies that send started (until GROUP_WRAPPER_FINISHED), asked again if the gap changes.
-let genCount = 0, genDry = false;   // non-dry generations started (any type), and whether the last start was a dry run
+// v0.7.0-c1a (review of c1, P1): in a group only the replies of a send are asked. SillyTavern's group regenerate removes the old
+// replies first and then runs each member as 'normal', and auto mode runs them as 'normal' too: stopping those would lose the
+// removed replies. A send passes through Generate first (GENERATION_AFTER_COMMANDS, reached only when no slash command ended it,
+// outside a group run): that leaves a candidate, which the group run starting next takes once (sendGroup). A new generation, a
+// deleted message (a regenerate deletes before it runs), the end of a generation or a room change drops an unused candidate.
+// (P2-2) A dry run never reaches the interceptor (SillyTavern skips it), so nothing is kept for it.
+let genCount = 0;                   // non-dry generations started (any type)
 let sendAllow = null;               // a group's "이번만": { key, epoch, sig }
+let sendCand = null;                // a send through Generate, not yet taken by a group run: { key, epoch, n }
+let groupOn = false;                // a group run is going (GROUP_WRAPPER_STARTED .. FINISHED)
+let sendGroup = null;               // that run is a send's: { key, epoch }
+// v0.7.0-c1a (review of c1, P2-1): the SavePoint hides at the start of the generation (after its own hide pass), each with its
+// message: a hide taken away before the interceptor is still left out of the messages SillyTavern copied, so it stops that reply.
+let sendStart = null;               // { n, key, epoch, list: [[i, m]] }
 let sendAsk = null;                 // the question open now: { key, epoch, end }
 const SEND_WAIT_MS = 5000;
 const SEND_TAIL = ' 다시 답변을 받으려면 입력칸이 비어 있는지 먼저 확인하고 보내기를 눌러 주세요. 실리태번의 빈 전송 문구 설정이 켜져 있으면 그 문구가 새 글로 추가돼요.';
@@ -7845,7 +7857,31 @@ function sendConfirm(text, key, epoch) {
         Promise.resolve(shown).then(v => ask.end(v === true || v === 1), () => ask.end(false));
     });
 }
-function sendEnd() { sendAsk?.end(false); sendAsk = null; sendAllow = null; }
+function sendEnd() { sendAsk?.end(false); sendAsk = null; sendAllow = null; sendCand = null; sendGroup = null; sendStart = null; }
+function sendHides() { return chat().map((m, i) => (m?.is_system && m.extra?.[HIDE_KEY] ? [i, m] : null)).filter(Boolean); }
+// Every hide of the start still there (same message at the same place, still SavePoint's hide); hides added since do not count.
+function startHeld(n, key, epoch) {
+    const s = sendStart;
+    if (!s || s.n !== n || s.key !== key || s.epoch !== epoch) return true;
+    const list = chat();
+    return s.list.every(([i, m]) => list[i] === m && !!m.is_system && !!m.extra?.[HIDE_KEY]);
+}
+// Whether this reply is one the guard asks about: a normal send (1:1), or a member's reply in a group run a send started.
+function sendAsked(type) {
+    if (!sendTypeAsked(type)) return false;
+    if (!ctx().groupId) return true;
+    return !!sendGroup && sendGroup.key === roomKey() && sendGroup.epoch === roomEpoch;
+}
+function onAfterCommands(type, _opts, dryRun) {
+    if (dryRun || groupOn || !ctx().groupId || !sendTypeAsked(type)) return;
+    sendCand = { key: roomKey(), epoch: roomEpoch, n: genCount };
+}
+function onGroupStarted(e) {
+    const c = sendCand;
+    sendCand = null; sendAllow = null; groupOn = true;
+    sendGroup = c && c.key === roomKey() && c.epoch === roomEpoch && c.n === genCount && sendTypeAsked(e?.type ?? undefined) ? { key: c.key, epoch: c.epoch } : null;
+}
+function onGroupFinished() { groupOn = false; sendGroup = null; sendAllow = null; }
 async function sendGuard(_chat, _size, abort, type) {
     const n = genCount, key = roomKey(), epoch = roomEpoch, group = !!ctx().groupId;
     const here = () => roomKey() === key && roomEpoch === epoch;
@@ -7858,7 +7894,9 @@ async function sendGuard(_chat, _size, abort, type) {
         toastr.warning(SEND_TEXT[why] + (why === 'moved' ? '' : SEND_TAIL + (group ? SEND_GROUP_TAIL : '')), 'SavePoint', { timeOut: 15000 });
     };
     try {
-        if (!settings().enabled || genDry || !hasChat() || !sendTypeAsked(type)) return;
+        if (!settings().enabled || !hasChat() || !sendAsked(type)) return;
+        // v0.7.0-c1a (review of c1, P2-1): a hide of the start taken away since: the copy to send still leaves that original out.
+        if (!startHeld(n, key, epoch)) return stop('changed');
         const hidden = hiddenMarked();
         if (!hidden.length) return;
         // Still finding the room's memory: a short wait here (the messages to send are copied already, so what changes meanwhile is
@@ -7883,8 +7921,9 @@ async function sendGuard(_chat, _size, abort, type) {
 }
 globalThis.savePointSendGuard = sendGuard;
 function onGenerationStarted(type, options, dryRun) {
-    if (dryRun) { genDry = true; return; }
-    genDry = false; genCount++;
+    if (dryRun) return;
+    genCount++;
+    sendCand = null;   // v0.7.0-c1a: a send's candidate not taken by a group run is over
     mainGenerating = true;
     if (ui.run?.viaMain) cancelRun();
     // Recall depends on the newest message, so rebuild right before the prompt is assembled.
@@ -7892,15 +7931,16 @@ function onGenerationStarted(type, options, dryRun) {
     // and the briefing that change will leave (liveState).
     if (gateOpen() && !reconcile()) syncHide();
     refreshInjection();
+    sendStart = { n: genCount, key: roomKey(), epoch: roomEpoch, list: sendHides() };
     // v0.7.0-b1: a reply made before this room's memory is linked (or while it is held) gets no briefing and no hides from
     // SavePoint. A normal send is asked (v0.7.0-c1, sendGuard); regenerate, swipe, continue and impersonate are only told.
     // v0.7.0-c1: a normal send is asked about in the interceptor (sendGuard) instead.
-    if (hasChat() && !homeOpen() && homeHere() && home.status !== 'new' && !(type === 'quiet') && !sendTypeAsked(type)) {
+    if (hasChat() && !homeOpen() && homeHere() && home.status !== 'new' && !(type === 'quiet') && !sendAsked(type)) {
         const id = `${roomKey()}|${roomEpoch}`;
         if (ui.sendWarned !== id) { ui.sendWarned = id; toastr.warning(`SavePoint 기억이 아직 연결되지 않아서, 이번 답변에는 기억 브리핑과 원문 숨김이 들어가지 않을 수 있어요. ${homeMessage()}`, 'SavePoint', { timeOut: 12000 }); }
     }
 }
-function onGenerationEnded() { mainGenerating = false; render(); scheduleAuto(); }
+function onGenerationEnded() { mainGenerating = false; sendCand = null; render(); scheduleAuto(); }
 
 jQuery(() => {
     settings();
@@ -7944,7 +7984,10 @@ jQuery(() => {
     on('GENERATION_STARTED', onGenerationStarted);
     for (const t of ['GENERATION_ENDED', 'GENERATION_STOPPED']) on(t, onGenerationEnded);
     // v0.7.0-c1: a group's "이번만" holds for the replies of one send.
-    for (const t of ['GROUP_WRAPPER_STARTED', 'GROUP_WRAPPER_FINISHED']) on(t, () => { sendAllow = null; });
+    on('GENERATION_AFTER_COMMANDS', onAfterCommands);
+    on('GROUP_WRAPPER_STARTED', onGroupStarted);
+    on('GROUP_WRAPPER_FINISHED', onGroupFinished);
+    on('MESSAGE_DELETED', () => { sendCand = null; });   // v0.7.0-c1a: a group regenerate deletes the old replies first
     for (const t of ['CONNECTION_PROFILE_UPDATED', 'CONNECTION_PROFILE_DELETED', 'CONNECTION_PROFILE_CREATED']) on(t, () => { fillProfiles(); updateSettingsSummaries(); });
     onChatChanged(); paintKeepSoon();
     // Server-side save slots: the server index is the list; then move any settings-only slots over.

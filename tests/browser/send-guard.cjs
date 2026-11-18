@@ -60,22 +60,33 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
         await wait(1800);
     };
     const openRoom = async (id, f) => { await ev(([id, f]) => { if (f) M.serverFiles[id] = f; return M.openFile(id); }, [id, f || null]); await ev(() => M.opened()); await wait(400); };
-    // One reply as SillyTavern makes it: GENERATION_STARTED, then the interceptor (abort(true) recorded), then the end. `pre`: run
-    // (as page code) right before the start, without waiting for the room (a send made while it opens).
-    const send = (type = 'normal', { dry = false, pre = null, during = null } = {}) => ev(async ([type, dry, pre, during]) => {
+    // One reply as SillyTavern makes it: GENERATION_STARTED, GENERATION_AFTER_COMMANDS, then the interceptor (abort(true) recorded),
+    // then the end. `pre`: run (as page code) right before the start, without waiting for the room (a send made while it opens).
+    // `mid`: run after the start, before the interceptor (v0.7.0-c1a). A dry run never reaches the interceptor (SillyTavern skips it).
+    const send = (type = 'normal', { dry = false, pre = null, during = null, mid = null } = {}) => ev(async ([type, dry, pre, during, mid]) => {
         const c = { p: (M.popups || []).length, t: toastr.log.length, s: M.stops || 0 };
         if (pre) await new Function(`return (async () => { ${pre} })()`)();
         await M.eventSource.emit('generation_started', type, {}, dry);
+        await M.eventSource.emit('generation_after_commands', type, {}, dry);
+        if (mid) await new Function(`return (async () => { ${mid} })()`)();
         let aborted = null; const t0 = Date.now();
+        if (dry) return { aborted, pop: (M.popups || []).slice(c.p), toast: toastr.log.slice(c.t).map(x => x[1]).join(' | ') };
         const run = globalThis.savePointSendGuard([], 4096, now => { aborted = now; }, type);
         if (during) await new Function(`return (async () => { ${during} })()`)();
         await run;
         const ms = Date.now() - t0;
-        if (!dry) await M.eventSource.emit('generation_ended');
+        await M.eventSource.emit('generation_ended');
         const h = __savePoint.home();
         return { aborted, ms, pop: (M.popups || []).slice(c.p), toast: toastr.log.slice(c.t).map(x => x[1]).join(' | '), stops: (M.stops || 0) - c.s,
             ok: M.popupOpts?.okButton || null, status: h.status, pending: !!(h.status === 'pending' || h.line?.pending), h2: h.h2?.why || null, inj: (M.prompts.savepoint?.v || '').length };
-    }, [type, dry, pre, during]);
+    }, [type, dry, pre, during, mid]);
+    // v0.7.0-c1a: a group as SillyTavern runs it. A send: Generate (start + after commands, no interceptor: it hands over to the
+    // group run) → GROUP_WRAPPER_STARTED → each member's reply (send) → FINISHED. A regenerate: the old replies deleted
+    // (MESSAGE_DELETED) → the group run straight away, its members 'normal'. Auto mode: the run with type 'auto'.
+    const outer = (type = 'normal') => ev(async type => { await M.eventSource.emit('generation_started', type, {}, false); await M.eventSource.emit('generation_after_commands', type, {}, false); }, type);
+    const wrapStart = (type = 'normal') => ev(type => M.eventSource.emit('group_wrapper_started', { selected_group: 'g1', type }), type);
+    const wrapEnd = (type = 'normal') => ev(type => M.eventSource.emit('group_wrapper_finished', { selected_group: 'g1', type }), type);
+    const groupSend = async () => { await outer(); await wrapStart(); };
     let r;
 
     // 1. a recorded room: its hides (#0–#5) are covered by the memory → not asked, not stopped. Other kinds too.
@@ -85,7 +96,7 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     r = await send('regenerate');
     ok(r.aborted === null && !r.pop.length, `1. 재생성도 그대로 (${JSON.stringify(r)})`);
     r = await send('normal', { dry: true });
-    ok(r.aborted === null && !r.pop.length, `1. 미리 계산(dry run)은 묻지 않음 (${JSON.stringify(r)})`);
+    ok(r.aborted === null && !r.pop.length, `1. 미리 계산(dry run)은 확인 단계까지 안 감 (${JSON.stringify(r)})`);
 
     // 2. a room with no hides of SavePoint's (no memory) → not asked.
     await openRoom('sgN', file(msgs(6, 'sgN')));
@@ -161,7 +172,7 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     // 8. a group: "이번만" holds for the replies of one send; 취소 stops the whole group (only the reply going now).
     await ev(f => { M.groups = [{ id: 'g1', name: 'Team', chat_id: 'sgG' }]; M.groupId = 'g1'; M.serverFiles.sgG = f; }, copied('sgG'));
     await openRoom('sgG');
-    await ev(() => M.eventSource.emit('group_wrapper_started'));
+    await groupSend();
     r = await send();
     const r2 = await send();
     ok(r.pop.length === 1 && r.aborted === null && !r2.pop.length && r2.aborted === null, `8. 그룹: 한 번 묻고 같은 전송의 다음 캐릭터는 그대로 (${JSON.stringify([r, r2])})`);
@@ -170,14 +181,18 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     r = await send();
     ok(r.pop.length === 1 && /#0–#3, #5\(5개\)/.test(r.pop[0]) && r.aborted === null, `8. 같은 전송 안에서도 빠지는 구간이 바뀌면 다시 물음 (${JSON.stringify(r)})`);
     await ev(() => { M.chat[5].is_system = false; M.chat[5].extra = {}; });
-    await ev(() => M.eventSource.emit('group_wrapper_finished'));
+    await wrapEnd();
     await ev(() => { M.confirm = 0; });
+    await groupSend();
     r = await send();
+    await wrapEnd();
     ok(r.pop.length === 1 && r.aborted === true && r.stops === 1 && /캐릭터 답하기/.test(r.toast) && /빈 전송 문구/.test(r.toast), `8. 다음 전송은 다시 물음, 취소 → 그룹 전체 중단 + 그룹 안내 (${JSON.stringify(r)})`);
     //    the room changes while asked: that reply stops at once (the old group's loop too, nothing else goes yet); the window answered
     //    later, after a reply started in the new room, changes nothing (no second stop).
     await ev(() => { M.confirm = 1; M.onPopup = async () => { M.groupId = null; await M.openFile('sgA'); await new Promise(z => setTimeout(z, 100)); window.__s0 = M.stops || 0; await M.eventSource.emit('generation_started', 'quiet', {}, false); await new Promise(z => setTimeout(z, 100)); }; });
+    await groupSend();
     r = await send();
+    await wrapEnd();
     await wait(500);   // the window (onPopup) is answered only now, after the new room's reply started
     const late = await ev(() => (M.stops || 0) - window.__s0);
     ok(r.aborted === true && r.stops === 1 && late === 0 && /방이 바뀌어서/.test(r.toast), `8. 확인창 중 방 이동 → 그때 멈춤, 늦게 닫힌 창은 새 방 생성을 안 멈춤 (${JSON.stringify({ r, late })})`);
@@ -185,9 +200,62 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     await openRoom('sgG');
     //    a reply of the group already moved on (another generation started meanwhile, same room): the answer stops nothing else.
     await ev(() => { M.confirm = 0; M.onPopup = async () => { await M.eventSource.emit('generation_started', 'quiet', {}, false); }; });
+    await groupSend();
     r = await send();
+    await wrapEnd();
     ok(r.aborted === true && r.stops === 0, `8. 묻는 사이 다른 생성이 시작됨 → 전체 중단은 안 부름 (${JSON.stringify(r)})`);
+    await ev(() => { M.onPopup = null; });
+
+    // ───── v0.7.0-c1a: review of c1 ─────
+    // 9. (P1) a group regenerate deletes the old replies, then runs its members as 'normal': not asked, not stopped (cancelling would
+    //    lose the deleted replies). Auto mode the same. A send is still asked, once.
+    await ev(() => { M.confirm = 0; });
+    await groupSend(); r = await send(); await wrapEnd();
+    ok(r.pop.length === 1 && r.aborted === true, `9. 그룹 일반 전송은 여전히 물음 (${JSON.stringify(r)})`);
+    await ev(() => M.eventSource.emit('message_deleted', M.chat.length));
+    await wrapStart(); r = await send(); const r9b = await send(); await wrapEnd();
+    ok(!r.pop.length && r.aborted === null && r.stops === 0 && !r9b.pop.length && r9b.aborted === null, `9. 그룹 재생성(답변 삭제 → 묶음) → 묻지 않고 진행 (${JSON.stringify([r, r9b])})`);
+    await wrapStart('auto'); r = await send(); await wrapEnd('auto');
+    ok(!r.pop.length && r.aborted === null, `9. 그룹 자동 진행 → 묻지 않음 (${JSON.stringify(r)})`);
+    //    a send ended by a slash command: GENERATION_STARTED only (no after-commands, no end) — the regenerate that follows is not asked.
+    await ev(() => M.eventSource.emit('generation_started', 'normal', {}, false));
+    await wrapStart(); r = await send(); await wrapEnd();
+    ok(!r.pop.length && r.aborted === null, `9. 슬래시 명령으로 끝난 전송 뒤 재생성 → 묻지 않음 (${JSON.stringify(r)})`);
+    //    a send whose group run never started (it returned before: no connection), then a regenerate: its deletion drops the candidate.
+    await outer();
+    await ev(() => M.eventSource.emit('message_deleted', M.chat.length));
+    await wrapStart(); r = await send(); await wrapEnd();
+    ok(!r.pop.length && r.aborted === null, `9. 묶음이 시작 안 된 전송의 후보는 삭제로 버려짐 → 그 뒤 재생성은 묻지 않음 (${JSON.stringify(r)})`);
+    //    a send whose group run never started, then another generation started (and ended by a command, no end signal) before a
+    //    group run (a regenerate that deleted nothing): the candidate is not that run's.
+    await outer();
+    await ev(() => M.eventSource.emit('generation_started', 'normal', {}, false));
+    await wrapStart(); r = await send(); await wrapEnd();
+    ok(!r.pop.length && r.aborted === null, `9. 후보 뒤 다른 생성이 시작됨 → 그 뒤 묶음은 묻지 않음 (${JSON.stringify(r)})`);
+    //    a dry run (prompt preview) started in between does not change that: the send's member is still asked.
+    await groupSend();
+    r = await send('normal', { mid: "await M.eventSource.emit('generation_started', 'normal', {}, true); await M.eventSource.emit('generation_after_commands', 'normal', {}, true);" });
+    await wrapEnd();
+    ok(r.pop.length === 1 && r.aborted === true, `9. 그룹 전송 중 미리 계산이 끼어도 물음 (${JSON.stringify(r)})`);
     await ev(() => { M.onPopup = null; M.groupId = null; M.groups = []; });
+
+    // 10. (P2-2) 1:1: a dry run started after the send started (before its interceptor) does not let the send pass unasked.
+    await openRoom('sgC');
+    r = await send('normal', { mid: "await M.eventSource.emit('generation_started', 'normal', {}, true); await M.eventSource.emit('generation_after_commands', 'normal', {}, true);" });
+    ok(r.pop.length === 1 && r.aborted === true, `10. 전송 중 미리 계산이 끼어도 물음 (${JSON.stringify(r)})`);
+    // 11. (P2-1) a hide of the start taken away before the interceptor (the copy to send still leaves it out): stopped, told.
+    r = await send('normal', { mid: "for (const m of M.chat) if (m.is_system && m.extra?.savepointHidden) { m.is_system = false; delete m.extra.savepointHidden; }" });
+    ok(r.aborted === true && !r.pop.length && /바뀌어서, 이번 답변은 만들지 않았어요/.test(r.toast), `11. 시작 뒤 숨김이 모두 풀림 → 멈추고 안내 (${JSON.stringify(r)})`);
+    //    the same with a dry run started in between (it keeps no start of its own).
+    await openRoom('sgC', copied('sgC2'));
+    r = await send('normal', { mid: "await M.eventSource.emit('generation_started', 'normal', {}, true); for (const m of M.chat) if (m.is_system && m.extra?.savepointHidden) { m.is_system = false; delete m.extra.savepointHidden; }" });
+    ok(r.aborted === true && !r.pop.length && /바뀌어서/.test(r.toast), `11. 사이에 미리 계산이 끼어도 시작 숨김과 비교 (${JSON.stringify(r)})`);
+    //    a recorded room: a hide added after the start (covered) is no change; the message at a hidden place replaced is.
+    await recorded('sgH');
+    r = await send('normal', { mid: "const i = M.chat.findIndex(m => !m.is_system); M.chat[i].is_system = true; M.chat[i].extra = { ...(M.chat[i].extra || {}), savepointHidden: 1 };" });
+    ok(r.aborted === null && !r.pop.length, `11. 시작 뒤 숨김이 늘어난 건 멈추지 않음 (${JSON.stringify(r)})`);
+    r = await send('normal', { mid: "const i = M.chat.findIndex(m => m.is_system && m.extra?.savepointHidden); M.chat[i] = JSON.parse(JSON.stringify(M.chat[i]));" });
+    ok(r.aborted === true && /바뀌어서/.test(r.toast), `11. 숨긴 자리의 메시지가 바뀜 → 멈춤 (${JSON.stringify(r)})`);
 
     await page.close();
     await browser.close(); srv.close();
