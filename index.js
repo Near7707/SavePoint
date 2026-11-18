@@ -11,7 +11,7 @@ import { foldLegacyOutline,
 } from './core.js';
 import { lootStatus, lootWarning, lootInChunk, lootBlock, attachLoot, settleLoot, failLoot, lootTarget, applyLootSupplement, restoreLostLoot } from './loot.js';
 import { Vault, roomHash, quickId } from './vault.js';
-import { decideRoom, placeMemory, relinkMemory, memName, tagName, clueName, validMem, validTag, validClue, tagBody, renamedTag, renameId, withCloses, clueWith, nextMem, renameNotice, cleanName, copyHash, hasTraces, readUserFile, checked, pickPrints, validState, sameLink, MISSING, OK } from './home.js';
+import { decideRoom, placeMemory, relinkMemory, memName, tagName, clueName, validMem, validTag, validClue, tagBody, renamedTag, renameId, withCloses, clueWith, nextMem, renameNotice, cleanName, copyHash, hasTraces, readUserFile, checked, pickPrints, validState, sameLink, homeId, startName, validStart, MISSING, OK } from './home.js';
 import { memLine, writeMem, serverMemIO, MEM_OK, PENDING, REFUSED, UNREAD, CONFLICT, OVERWRITTEN, READ_ERROR, HELD } from './memfile.js';
 import { snapshot, splitFile, covers, writeResult, samePage, canon, PAGE_KEYS } from './guard.js';
 import { upgradeEvidence, segmentPrior, evidenceNumbers } from './provenance.js';
@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b4a';
+const VERSION = '0.7.0-b4a1';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -2378,12 +2378,22 @@ async function renameHome(h, d, input, files) {
         const names = await chatNames(carryScope(d.from, addr));
         if (!mine()) return;
         if (!carrySees(names, d.from, addr)) { setHome(h, 'held', names ? 'carryGone' : 'carryList'); return; }
+        // v0.7.0-b4a1 (review of b4a, P1): after that last list read, right before the body is written, the links at both names are read
+        // again: the old name's tag still links this memory, and this name still has no tag, start mark, clue entry or memory of its own.
+        // Anything else (another tab linked something here meanwhile): nothing written, held.
+        const clear = await carryClear(io, d, addr, integrity);
+        if (!mine()) return;
+        if (clear !== true) { setHome(h, clear === 'read' ? 'readFail' : 'held', clear === 'read' ? '' : 'carryChanged'); return; }
     }
     if (moving) {
         const wid = newId();
         // v0.7.0-b3a2b: at its new home the memory keeps the renames seen away from the new name (`closes`, the same as its tag).
+        // v0.7.0-b4a1 (review of b4a, P2): a move the user agreed to is uploaded only while this page is still on the room it opened (asked
+        // right before the upload, after the body is read again: no read of its own). The automatic move of an open room is as before.
+        const epoch = roomEpoch;
         const w = await writeMem(memIO(), h.line, { name: memName(d.mem), valid: validMem(d.mem), make: f => ({ ...nextMem(f, { ...f.state, roomKey: addr }, wid),
-            home: { addr, integrity: f.home.integrity ?? null, was: [...new Set([...(f.home.was || []), f.home.addr])].filter(a => a !== addr) }, closes: [...input.closes] }) });
+            home: { addr, integrity: f.home.integrity ?? null, was: [...new Set([...(f.home.was || []), f.home.addr])].filter(a => a !== addr) }, closes: [...input.closes] }),
+            ...(d.agreed ? { ready: () => mine() && roomEpoch === epoch } : {}) });
         if (!mine()) return;
         if (w.status === PENDING) { setHome(h, 'pending'); return; }
         if (w.status !== MEM_OK && w.status !== UNREAD) { setHome(h, w.status === READ_ERROR ? 'readFail' : 'stopped', w.status); return; }
@@ -2430,6 +2440,7 @@ const CARRY_TEXT = {
     moved: '확인하는 사이 다른 방으로 옮겨서 연결하지 않았어요.',
     changed: '확인하는 사이 이름 변경 기록이나 기억이 바뀌어서 연결하지 않았어요. 다시 확인해 주세요. 기억 파일은 그대로 있어요.',
     done: '이름 변경을 이어서 이 방에 기억을 연결했어요.',
+    other: '확인하는 사이 이 방에 다른 기억이 이미 연결돼 있어서, 예전 이름의 기억은 옮기지 않았어요. 지금 연결된 기억을 확인해 주세요.',
 };
 // The scope (character avatar) of a personal chat renamed within it, or null (a group chat, another scope, not an address).
 function carryScope(from, to) {
@@ -2455,6 +2466,32 @@ async function chatNames(scope) {
         }
         return names;
     } catch { return null; }
+}
+// v0.7.0-b4a1 (review of b4a, P1): the links decideRoom saw for the offer, read again right before the move: true, 'read' (a read failed)
+// or false (changed).
+async function carryClear(io, d, addr, integrity) {
+    const get = async (name, valid) => { try { return checked(await io.read(name), valid); } catch { return { kind: 'error' }; } };
+    const bad = r => r.kind !== OK && r.kind !== MISSING;
+    const tagA = await get(tagName(d.from), validTag(d.from));
+    if (bad(tagA)) return 'read';
+    if (tagA.kind !== OK || tagA.data.state !== 'linked' || tagA.data.mem !== d.mem) return false;
+    const tagB = await get(tagName(addr), validTag(addr));
+    if (bad(tagB)) return 'read';
+    if (tagB.kind !== MISSING) return false;
+    const start = await get(startName(addr), validStart(addr));
+    if (bad(start)) return 'read';
+    if (start.kind !== MISSING) return false;
+    if (!integrity) return false;
+    const clue = await get(clueName(integrity), validClue(integrity));
+    if (bad(clue)) return 'read';
+    if (clue.kind === OK && clue.data.rooms.some(x => x.addr === addr)) return false;
+    const own = homeId(addr, integrity);
+    if (own !== d.mem) {
+        const m = await get(memName(own), validMem(own));
+        if (bad(m)) return 'read';
+        if (m.kind !== MISSING) return false;
+    }
+    return true;
 }
 const carrySees = (names, from, to) => !!names && !names.has(carryName(from)) && names.has(carryName(to));
 // After a decision held the room for a rename that may be carried on: the chat list decides whether the offer is shown (h.carry).
@@ -2501,7 +2538,10 @@ async function carryRoom() {
         await recheckHome('user');
         if (!here()) return;
         h.agree = null;
-        if (h.status === 'linked') toastr.success(CARRY_TEXT.done, 'SavePoint');
+        // v0.7.0-b4a1 (review of b4a, P3): carried on only when the memory linked is the one agreed to; another memory linked here meanwhile
+        // (read by the decision made again) is told as such.
+        if (h.status === 'linked' && h.id === c.mem) toastr.success(CARRY_TEXT.done, 'SavePoint');
+        else if (h.status === 'linked') toastr.warning(CARRY_TEXT.other, 'SavePoint', { timeOut: 10000 });
         else if (h.status === 'held' && h.why === 'renameUnproven') toastr.warning(CARRY_TEXT.changed, 'SavePoint', { timeOut: 10000 });
         else toastr.warning(homeMessage() || CARRY_TEXT.changed, 'SavePoint', { timeOut: 10000 });
     } finally { carryJob = false; }

@@ -1,3 +1,36 @@
+# v0.7.0-b4a1 · b4a 리뷰 반영 (옮기기 직전 연결 다시 확인, 방 이동 중 업로드 막기, 성공 안내) (브랜치 `v0.7-b`)
+
+기준: `9514c4a`(b4a 리뷰 요청서, 코드 `2e6a328`). b4a GPT 리뷰: P1 1, P2 1, P3 1. 정리 + 사용자 동의로 셋 다 반영(P2는 버튼 경로만). 파일: `index.js`, `manifest.json`(버전만), 검사 `carry.cjs` 9~11, 문서.
+
+| 리뷰 | 처리 |
+|---|---|
+| P1 이동 직전 목록 읽기 사이 B에 다른 이름표가 생겨도 A 본체를 B로 옮김 → B 이름표는 안 덮어 연결이 반쯤, A 이름표도 옮겨진 본체를 가리킴 | 고침: 마지막 목록 읽기 뒤 본체 쓰기 직전 `carryClear` — 판정 때 조건 전부(A 이름표가 이 기억 `linked` · B 이름표·시작 표시·단서 항목·B 자기 기억 없음)를 다시 읽음. 다르면 `held`(`carryChanged`), 읽기 실패 `readFail`, 쓰기 0 |
+| P2 `writeMem`이 본체를 다시 읽는 사이 방을 옮겨도 업로드(같은 방 확인이 쓰기 뒤) | 고침(버튼 경로만): 동의한 이동은 `writeMem`의 `ready`에 `mine() && roomEpoch === epoch`. 열어 둔 방 자동 이름 변경 경로는 그대로(b4a 전부터, README 알려진 한계 v0.7.0-b4a1) |
+| P3 확인창 중 B에 다른 기억이 연결되면 재판정이 그걸 연결해도 "이어서 연결했어요" | 고침: `h.id === c.mem`일 때만 성공, 다른 기억이면 `CARRY_TEXT.other` |
+
+## 바뀐 것
+- `carryClear(io, d, addr, integrity)`(carry 구역): `true` / `'read'` / `false`. `renameHome`의 `d.agreed` 블록에서 목록 확인 뒤.
+- `renameHome`: `const epoch = roomEpoch`, `d.agreed`면 `writeMem(…, { ready })`.
+- `carryRoom` 끝 안내 갈래, `CARRY_TEXT.other`.
+- import에 `homeId`·`startName`·`validStart`(별칭 없이).
+
+## ★ 특히 봐 줄 곳
+1. `carryClear`와 본체 업로드 사이 틈은 남아요(읽기 뒤 쓰기, 서버에 비교 후 쓰기 없음). 틈을 목록 읽기 뒤로 좁힌 것.
+2. P2를 자동 경로에 안 넣은 것: 이미 검사가 끝난 경로라 회귀를 피함. 그 경로의 중간 상태는 다시 열면 증거(`mem`)로 마저 끝남.
+3. `carryChanged`로 멈춘 뒤엔 버튼이 안 보여요. `다시 확인`이나 다시 열기에서 새로 판정(B에 다른 연결이 생겼으니 대개 그 연결을 따름).
+
+## 검사 준비(`carry.cjs` 9~11, 파일 끝)
+- `atMove(js)`: 확인창이 열린 동안 기준을 잡고, 그 뒤 두 번째 목록 요청(= 이동 직전) 때 `js`.
+- 9 이동 직전 B 이름표(다른 기억) / B 단서 항목 → `carryChanged`, 본체 업로드 0, 기억·A 이름표 그대로.
+- 10 이동 직전 목록 뒤 첫 본체 읽기 응답 때 `M.switchChat` → 업로드 0.
+- 11 확인창 중 B에 다른 기억(이름표 + 본체 `home: B`) → `linked`이지만 그 기억, 성공 안내 없음, `other` 안내.
+
+## 검사와 망가뜨리기 결과
+- 고치기 전 코드(`2e6a328`): 새 4줄 모두 FAIL.
+- 망가뜨리기 4개: `carryClear` 결과 무시 → 9 두 줄 · `ready` 빼기 → 10 · 성공 안내의 ID 비교 빼기 → 11 · `carryClear`의 단서 항목 확인 빼기 → 9(clue). 모두 잡힘.
+- Node 512 통과 / 0 실패 / 3 건너뜀.
+- 브라우저 61묶음 한꺼번에: 61 모두 통과, 검사 모드 오류 0(`carry` 24줄).
+
 # v0.7.0-b4a · 목록에서 바꾼 이름 이어서 연결 (브랜치 `v0.7-b`)
 
 기준: `a09e1ce`(b3 끝). b4 설계(GPT 1·2차 + 사용자 동의)의 첫 조각. 파일: `home.js`(`decideRoom` 5행), `index.js`, `manifest.json`(버전만), 검사 `tests/browser/carry.cjs`(새), `tests/home.test.mjs` 1개, 문서.

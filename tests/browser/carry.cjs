@@ -191,6 +191,40 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     });
     ok(r.status === 'held' && r.why === 'renameUnproven' && !r.carry && r.btn === 0, `8. 목록에서 두 번 바꿈(A → B → C) → 버튼 없음 (${JSON.stringify({ ...r, text: '' })})`);
 
+    // v0.7.0-b4a1 (review of b4a). P1: another link made at B after the last list read, before the body is written (a tag of another memory,
+    // or a clue entry): nothing written, the memory left at A, A's tag untouched.
+    const atMove = js => `window.__base = window.__log.lists; window.__listHook = async n => { if (n === window.__base + 2) { ${js} } return null; };`;
+    for (const [tag, js] of [['tag', `M.otherPut(M.H.tagName(B), M.H.tagBody({ addr: B, integrity: M.meta.integrity, mem: 'mem-other-' + b }));`],
+        ['clue', `M.otherPut(M.H.clueName(M.meta.integrity), M.H.clueBody(M.meta.integrity, [{ addr: B, mem: 'mem-other-' + b }]));`]]) {
+        r = await listRoom('chatD' + tag, 'chatD' + tag + 'b');
+        const x = r;
+        r = await press(atMove(`const B = ${JSON.stringify(x.B)}, b = ${JSON.stringify('chatD' + tag + 'b')}; ${js}`));
+        await ev(() => { window.__listHook = null; });
+        m = await memAt(x.id, x.A, x.B);
+        ok(x.carry && r.status === 'held' && r.why === 'carryChanged' && !r.ups.length && !r.puts.filter(n => !n.includes('mem-other')).length && r.saves === 0 && m.at === 'A' && m.tagA === 'linked',
+            `9. (b4a1) 옮기기 직전 B에 다른 연결(${tag}) → 본체 쓰기 0, 기억·A 이름표 그대로 (${JSON.stringify({ r: { ...r, text: '' }, m })})`);
+    }
+    // P2: the page moves to another room while the body is read again (writeMem's read, after the last list read): nothing uploaded.
+    r = await listRoom('chatD2', 'chatD2b');
+    const d2 = r;
+    r = await press(`window.__base = window.__log.lists; const name = '/user/files/' + M.H.memName(${JSON.stringify(d2.id)}), g = window.fetch; let done = false;
+        window.fetch = async (u, o) => { if (!done && window.__log.lists >= window.__base + 2 && String(u).startsWith(name)) { done = true; const res = await g(u, o); await M.switchChat('chatD2x', [], {}); window.fetch = g; return res; } return g(u, o); };
+        window.__restore = () => { window.fetch = g; };`);
+    await ev(() => { window.__restore?.(); window.__restore = null; });
+    m = await memAt(d2.id, d2.A, d2.B);
+    ok(d2.carry && !r.ups.length && !r.puts.length && r.saves === 0 && m.at === 'A' && !m.tagB && m.tagA === 'linked',
+        `10. (b4a1) 본체를 다시 읽는 사이 방 이동 → 업로드 0, 기억 A에 그대로 (${JSON.stringify({ r: { ...r, text: '' }, m })})`);
+    // P3: another memory linked at B while the box is open (read by the decision made again): no "carried on" notice.
+    r = await listRoom('chatD3', 'chatD3b');
+    const d3 = r;
+    r = await press(`const B = ${JSON.stringify(d3.B)}, doc = JSON.parse(M.files.get(M.H.memName(${JSON.stringify(d3.id)}))), id = 'mem-d3-other';
+        M.otherPut(M.H.memName(id), { ...doc, id, rev: 0, wid: 'other.d3', recent: [{ rev: 0, wid: 'other.d3' }], home: { addr: B, integrity: doc.home.integrity }, closes: [] });
+        M.otherPut(M.H.tagName(B), M.H.tagBody({ addr: B, integrity: doc.home.integrity, mem: id }));`);
+    m = await memAt(d3.id, d3.A, d3.B);
+    r.id = await ev(() => __savePoint.home().id);
+    ok(d3.carry && r.status === 'linked' && r.id === 'mem-d3-other' && !r.toast.includes('이어서 이 방에 기억을 연결했어요') && r.toast.includes('다른 기억이 이미 연결돼') && m.at === 'A' && r.saves === 0,
+        `11. (b4a1) 확인창 중 B에 다른 기억이 연결됨 → 이어받기 성공 안내 없음, 예전 기억 그대로 (${JSON.stringify({ r: { ...r, text: '' }, m })})`);
+
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();
