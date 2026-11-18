@@ -216,31 +216,32 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     await ev(() => { M.confirm = 0; });
     await groupSend(); r = await send(); await wrapEnd();
     ok(r.pop.length === 1 && r.aborted === true, `9. 그룹 일반 전송은 여전히 물음 (${JSON.stringify(r)})`);
-    await ev(() => M.eventSource.emit('message_deleted', M.chat.length));
-    await wrapStart(); r = await send(); const r9b = await send(); await wrapEnd();
-    ok(!r.pop.length && r.aborted === null && r.stops === 0 && !r9b.pop.length && r9b.aborted === null, `9. 그룹 재생성(답변 삭제 → 묶음) → 묻지 않고 진행 (${JSON.stringify([r, r9b])})`);
+    //    (v0.7.0-c1c: a deletion now marks the room until the page reloads, so the checks with no deletion go first.)
+    //    a dry run (prompt preview) started in between does not change that: the send's member is still asked.
+    await groupSend();
+    r = await send('normal', { mid: "await M.eventSource.emit('generation_started', 'normal', {}, true); await M.eventSource.emit('generation_after_commands', 'normal', {}, true);" });
+    await wrapEnd();
+    ok(r.pop.length === 1 && r.aborted === true, `9. 그룹 전송 중 미리 계산이 끼어도 물음 (${JSON.stringify(r)})`);
     await wrapStart('auto'); r = await send(); await wrapEnd('auto');
     ok(!r.pop.length && r.aborted === null, `9. 그룹 자동 진행 → 묻지 않음 (${JSON.stringify(r)})`);
-    //    a send ended by a slash command: GENERATION_STARTED only (no after-commands, no end) — the regenerate that follows is not asked.
+    //    a send ended by a slash command: GENERATION_STARTED only (no after-commands, no end) — the run that follows is not asked.
     await ev(() => M.eventSource.emit('generation_started', 'normal', {}, false));
     await wrapStart(); r = await send(); await wrapEnd();
     ok(!r.pop.length && r.aborted === null, `9. 슬래시 명령으로 끝난 전송 뒤 재생성 → 묻지 않음 (${JSON.stringify(r)})`);
-    //    a send whose group run never started (it returned before: no connection), then a regenerate: its deletion drops the candidate.
-    await outer();
-    await ev(() => M.eventSource.emit('message_deleted', M.chat.length));
-    await wrapStart(); r = await send(); await wrapEnd();
-    ok(!r.pop.length && r.aborted === null, `9. 묶음이 시작 안 된 전송의 후보는 삭제로 버려짐 → 그 뒤 재생성은 묻지 않음 (${JSON.stringify(r)})`);
     //    a send whose group run never started, then another generation started (and ended by a command, no end signal) before a
     //    group run (a regenerate that deleted nothing): the candidate is not that run's.
     await outer();
     await ev(() => M.eventSource.emit('generation_started', 'normal', {}, false));
     await wrapStart(); r = await send(); await wrapEnd();
     ok(!r.pop.length && r.aborted === null, `9. 후보 뒤 다른 생성이 시작됨 → 그 뒤 묶음은 묻지 않음 (${JSON.stringify(r)})`);
-    //    a dry run (prompt preview) started in between does not change that: the send's member is still asked.
-    await groupSend();
-    r = await send('normal', { mid: "await M.eventSource.emit('generation_started', 'normal', {}, true); await M.eventSource.emit('generation_after_commands', 'normal', {}, true);" });
-    await wrapEnd();
-    ok(r.pop.length === 1 && r.aborted === true, `9. 그룹 전송 중 미리 계산이 끼어도 물음 (${JSON.stringify(r)})`);
+    await ev(() => M.eventSource.emit('message_deleted', M.chat.length));
+    await wrapStart(); r = await send(); const r9b = await send(); await wrapEnd();
+    ok(!r.pop.length && r.aborted === null && r.stops === 0 && !r9b.pop.length && r9b.aborted === null, `9. 그룹 재생성(답변 삭제 → 묶음) → 묻지 않고 진행 (${JSON.stringify([r, r9b])})`);
+    //    a send whose group run never started (it returned before: no connection), then a regenerate: its deletion drops the candidate.
+    await outer();
+    await ev(() => M.eventSource.emit('message_deleted', M.chat.length));
+    await wrapStart(); r = await send(); await wrapEnd();
+    ok(!r.pop.length && r.aborted === null, `9. 묶음이 시작 안 된 전송의 후보는 삭제로 버려짐 → 그 뒤 재생성은 묻지 않음 (${JSON.stringify(r)})`);
     await ev(() => { M.onPopup = null; M.groupId = null; M.groups = []; });
 
     // 10. (P2-2) 1:1: a dry run started after the send started (before its interceptor) does not let the send pass unasked.
@@ -276,20 +277,44 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     await outer();
     await wrapStart(); r = await send(); const r12b = await send(); await wrapEnd();
     ok(!r.pop.length && r.aborted === null && !r12b.pop.length && r12b.aborted === null, `12. 삭제 표시는 다른 생성의 시작·끝에도 남고, 그 묶음 전체가 묻지 않음 (${JSON.stringify([r, r12b])})`);
-    //     taken once: the next send is asked again.
-    await groupSend(); r = await send(); await wrapEnd();
-    ok(r.pop.length === 1 && r.aborted === true, `12. 표시는 한 번만 → 다음 전송은 다시 물음 (${JSON.stringify(r)})`);
-    //     a message deleted by hand: the first send after it is only told (known side effect), the one after asked.
-    await ev(() => M.eventSource.emit('message_deleted', M.chat.length));
-    await groupSend(); r = await send(); await wrapEnd();
-    await groupSend(); const r12c = await send(); await wrapEnd();
-    ok(!r.pop.length && r.aborted === null && r12c.pop.length === 1, `12. 손으로 지운 뒤 첫 전송은 알림만, 그다음은 물음 (${JSON.stringify([r, r12c])})`);
-    //     the room opened again (or left) drops the mark.
-    await ev(() => M.eventSource.emit('message_deleted', M.chat.length));
+    //     (v0.7.0-c1c) told once for the run (its first reply leaving a gap), never stopped.
+    const TOLD = /확인창 대신 알림으로 바꿨어요/;
+    ok(TOLD.test(r.toast) && !TOLD.test(r12b.toast) && /새로고침하면 확인창을 다시 사용해요/.test(r.toast) && /#0–#3\(4개\)/.test(r.toast), `12. 묶음마다 한 번 알림(빠지는 구간·새로고침 안내) (${JSON.stringify([r.toast, r12b.toast])})`);
+    // ───── v0.7.0-c1c: review of c1b ─────
+    //     (P1) the room stays marked: later sends are told too (never asked, never stopped), each run told once.
+    await groupSend(); r = await send(); const r12c = await send(); await wrapEnd();
+    await groupSend(); const r12d = await send(); await wrapEnd();
+    ok(!r.pop.length && r.aborted === null && r.stops === 0 && TOLD.test(r.toast) && !TOLD.test(r12c.toast) && !r12d.pop.length && TOLD.test(r12d.toast), `12. 삭제가 있었던 방은 그 뒤 전송도 알림만, 묶음마다 한 번 (${JSON.stringify([r, r12c, r12d])})`);
+    //     the room opened again keeps the mark (only a reload drops it).
     await openRoom('sgG2');
     await groupSend(); r = await send(); await wrapEnd();
-    ok(r.pop.length === 1 && r.aborted === true, `12. 방을 다시 열면 삭제 표시는 지워짐 → 물음 (${JSON.stringify(r)})`);
-    await ev(() => { M.groupId = null; M.groups = []; });
+    ok(!r.pop.length && r.aborted === null && TOLD.test(r.toast), `12. 방을 다시 열어도 알림만 (${JSON.stringify(r)})`);
+    //     (P1) another group run starting first (a quiet run, or a send's) while the regenerate still waits for its members, then a
+    //     send leaves a candidate and the regenerate's run starts: not asked (before, the other run took the mark).
+    for (const [id, other] of [['sgG3', 'quiet'], ['sgG4', 'send']]) {
+        await ev(([id, f]) => { M.groups = [{ id: 'g1', name: 'Team', chat_id: id }]; M.groupId = 'g1'; M.serverFiles[id] = f; }, [id, copied(id)]);
+        await openRoom(id);
+        await ev(() => { M.confirm = 0; });
+        await ev(() => M.eventSource.emit('message_deleted', M.chat.length));
+        if (other === 'quiet') { await wrapStart('quiet'); await send('quiet'); await wrapEnd('quiet'); }
+        else { await groupSend(); await send(); await wrapEnd(); }
+        await outer();
+        await wrapStart(); r = await send(); await wrapEnd();
+        ok(!r.pop.length && r.aborted === null && r.stops === 0, `12. 재생성이 기다리는 사이 다른 묶음(${other})이 먼저 → 새 보내기 후보가 있어도 재생성 묶음은 묻지 않음 (${JSON.stringify(r)})`);
+    }
+    //     a reply whose gap the briefing covers (here: no SavePoint hide left) passes untold; a hide of the start taken away before
+    //     the interceptor (stopped in an asked run) is told, not stopped.
+    r = await send('normal', { pre: "await M.eventSource.emit('group_wrapper_started', { selected_group: 'g1', type: 'normal' });", mid: "for (const m of M.chat) if (m.is_system && m.extra?.savepointHidden) { m.is_system = false; delete m.extra.savepointHidden; }" });
+    await wrapEnd();
+    ok(r.aborted === null && r.stops === 0 && TOLD.test(r.toast) && /빠졌을 수 있어요/.test(r.toast), `12. 시작 뒤 숨김이 풀려도 멈추지 않고 알림 (${JSON.stringify(r)})`);
+    await wrapStart(); r = await send(); await wrapEnd();
+    ok(r.aborted === null && !r.pop.length && !r.toast, `12. 빠지는 원문이 없으면 알림 없음 (${JSON.stringify(r)})`);
+    //     1:1 rooms are not marked: a deletion there changes nothing (still asked).
+    await ev(() => { M.groupId = null; M.groups = []; M.confirm = 0; });
+    await openRoom('sgC', copied('sgC3'));
+    await ev(() => M.eventSource.emit('message_deleted', M.chat.length));
+    r = await send();
+    ok(r.pop.length === 1 && r.aborted === true, `12. 1:1 방은 삭제 뒤에도 물음 (${JSON.stringify(r)})`);
 
     // 13. (P2) the copy the interceptor gets decides. A hide of the start taken away before the copy: the original is in the copy →
     //     not stopped, not asked.
@@ -324,6 +349,22 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     r = await send('normal', { late: HIDE8 });
     ok(r.pop.length === 1 && r.aborted === true, `13. 사본을 못 받으면(빈 목록) 예전처럼 물음 (${JSON.stringify(r)})`);
     await ev(new Function(SHOW8));
+
+    // ───── v0.7.0-c1c: review of c1b ─────
+    // 14. (P3) a hidden A and a visible B shared one `extra` at the start; the copy has B only; then B is given a new `extra` and A
+    //     is unhidden: the `extra` is now held once in the chat and found once in the copy, but it was shared → no proof → stopped.
+    await ev(() => { M.confirm = 0; });
+    await openRoom('sgP', copied('sgP5'));
+    r = await send('normal', { pre: "M.chat[4].extra = M.chat[0].extra;", copy: true, late: "M.chat[4].extra = {}; M.chat[0].is_system = false; delete M.chat[0].extra.savepointHidden;" });
+    ok(r.aborted === true && !r.pop.length && /바뀌어서/.test(r.toast), `14. 시작 때 공유하던 extra는 짝 근거로 안 씀 → 멈춤 (${JSON.stringify(r)})`);
+    // 15. (P2) a long room with many hides: the chat is read a few times per check, not once per hide. Every message's `extra` read is
+    //     counted from the copy on (a getter); 2000 messages, 1980 hides.
+    const big = file(msgs(2000, 'sgZ').map((m, i) => (i < 1980 ? { ...m, is_system: true, extra: { savepointHidden: 1 } } : m)));
+    await openRoom('sgZ', big);
+    const COUNT = "window.__ex = 0; for (const m of M.chat) { let v = m.extra; Object.defineProperty(m, 'extra', { configurable: true, enumerable: true, get() { window.__ex++; return v; }, set(x) { v = x; } }); }";
+    r = await send('normal', { copy: true, late: COUNT });
+    const reads = await ev(() => { const n = window.__ex; for (const m of M.chat) { const v = m.extra; Object.defineProperty(m, 'extra', { configurable: true, enumerable: true, writable: true, value: v }); } return n; });
+    ok(r.pop.length === 1 && reads < 2000 * 40, `15. 숨김이 많은 방: 확인마다 채팅을 몇 번만 읽음 (extra 읽기 ${reads}회, ${r.ms}ms)`);
     await ev(() => { M.confirm = 1; });
 
     await page.close();
