@@ -392,6 +392,52 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.s >= 1 && r.keep && r.fkeep, `14. (b3d2) 다음 일반 저장 뒤에도 서버 🔖 유지 (${JSON.stringify(r)})`);
     await ev(() => __savePoint.toggleKeep(2)); await wait(600);
 
+    // 15. v0.7.0-b3d3 (review of b3d2, P2): two messages alike (text, speaker, swipes), the 🔖 on the later one only. Right as the repair's
+    // first request leaves, the earlier one is deleted and SillyTavern saves the page first; the repair's request lands after it, so the file
+    // is the copy sent (before the deletion). The check before a copy sent again reads that copy at the moved place (the earlier message, no
+    // 🔖): it is this write's own copy, no 🔖 turned off. Nothing more is sent, the page keeps the 🔖 and the swipes' marks; the next save
+    // takes the deletion to the file and keeps the 🔖 there.
+    await ev(() => M.add(2)); await wait(300);   // #14, #15
+    await keepOn(15);
+    c = await mark();
+    await gen(true);
+    await swipe(15, 'new');
+    await ev(() => {
+        const a = M.chat[14], b = JSON.parse(JSON.stringify(M.chat[15]));
+        b.extra = {}; for (const s of b.swipe_info || []) if (s && typeof s === 'object') s.extra = {};
+        delete b.is_system;
+        for (const k of Object.keys(a)) delete a[k];
+        Object.assign(a, b);
+        M.stSave();
+        const f = window.fetch;
+        window.__s15 = [];
+        window.fetch = async (u, o = {}) => {
+            if (String(u) === '/api/chats/save') {
+                window.__s15.push(1);
+                if (window.__s15.length === 1) {
+                    M.chat.splice(14, 1); await M.eventSource.emit('message_deleted', 14); M.stSave();
+                    return f(u, o);
+                }
+            }
+            return f(u, o);
+        };
+        window.__off15 = () => { window.fetch = f; };
+    });
+    await gen(false); await wait(3000);
+    r = { ...(await look(14, c)), sent: await ev(() => window.__s15.length), n: await ev(() => [M.chat.length, M.serverFiles[M.chatId].length - 1]) };
+    await ev(() => window.__off15());
+    ok(r.sent === 1 && r.n[0] + 1 === r.n[1] && /🔖를 다시 붙이는 저장 중에/.test(r.t), `15. 준비: 앞의 같은 메시지 삭제 뒤 내 첫 요청이 늦게 들어감 → 재전송 멈춤 (${JSON.stringify(r)})`);
+    ok(r.keep && r.proof.indexOf('1') >= 0, `15. (b3d3) 내 사본을 🔖 해제로 안 봄 → 화면 🔖·스와이프 흔적 유지 (${JSON.stringify(r)})`);
+    // SillyTavern's next save of the page (the deletion it already made) puts it in the file.
+    await ev(() => M.stSave()); await wait(300);
+    r = { ...(await look(14)), n: await ev(() => [M.chat.length, M.serverFiles[M.chatId].length - 1]) };
+    ok(r.n[0] === r.n[1] && r.keep && r.fkeep && r.fproof.indexOf('1') >= 0, `15. (b3d3) 다음 일반 저장에서 삭제 반영·서버 🔖 유지 (${JSON.stringify(r)})`);
+    c = await mark();
+    await ev(() => __savePoint.toggleKeep(2)); await wait(600);
+    r = await look(14, c);
+    ok(r.s >= 1 && r.keep && r.fkeep, `15. (b3d3) 그 뒤 SavePoint 저장도 평소대로·서버 🔖 유지 (${JSON.stringify(r)})`);
+    await ev(() => __savePoint.toggleKeep(2)); await wait(600);
+
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();

@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b3d2';
+const VERSION = '0.7.0-b3d3';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -344,7 +344,7 @@ async function writeChatFile(fileMeta = null, guard = null, by = 'user') {
     // whose answer cannot be told from SillyTavern's own) may still land at any time, even after the file shows
     // the same copy (SillyTavern saves the whole page too): the room is `pending` and SavePoint writes nothing
     // more there until it is opened again.
-    let sent = null, sentSnap = null, landed = false, adopted = null;
+    let sent = null, sentSnap = null, landed = false, adopted = null, own = false;
     const sents = [];
     // v0.6.90: `answered` — a request of this write was answered with success (its copy became `gate.seen`, seenSent).
     // Without one, `gate.seen` is still a file read before any copy of this write was in it (settleWrite, confirmUnsure).
@@ -389,6 +389,10 @@ async function writeChatFile(fileMeta = null, guard = null, by = 'user') {
             // v0.6.104: made `gate.seen` here, after `moved()` above (no longer in fileAllows).
             if (gateHere()) setSeen(c.r.snap);
             adopted = c.r;
+            // v0.7.0-b3d3 (review of b3d2, P2): is the file just read the very copy this write sent last (it landed after SillyTavern saved
+            // a newer page)? Compared here on its own, whether covers passed or not: a guard does not read this page's own older copy as a
+            // change made elsewhere.
+            own = !!sentSnap && ownCopy(sentSnap, c.r.snap);
             fileMeta = c.r.meta ?? null;   // v0.6.102: a resend carries the metadata of the read that cleared it
             // SillyTavern started writing again during the read: wait for it and look again.
             if (stScript?.isChatSaving) continue;
@@ -404,7 +408,7 @@ async function writeChatFile(fileMeta = null, guard = null, by = 'user') {
         if (guard && sent === null && !chatReady()) { const e = new RoomBlocked('채팅방이 아직 다 열리지 않아서(메시지나 채팅 파일 고유값이 없음) 저장하지 않았어요.'); e.noTarget = true; throw fail(e); }
         // v0.7.0-b3c1a (review of b3c1, P1): a guard may stop a copy sent again ('stop'): what was sent stays, nothing more goes
         // (`fitHeld`). `file`: the chat file this round read (null when nothing was waited for: the caller's own read is the base).
-        const g = guard ? guard({ sent: sent !== null, file: adopted }) : true;
+        const g = guard ? guard({ sent: sent !== null, file: adopted, own: !!adopted && own }) : true;
         if (g === false && sent === null) { const e = new RoomBlocked('nothing to send'); e.nothingSent = true; throw fail(e); }
         if (g === 'stop' && sent !== null) { const e = new RoomBlocked(FIT_TEXT.held); e.fitHeld = true; throw fail(e); }
         const t = chatTarget(fileMeta), tSnap = t ? t.snap : null;
@@ -5575,9 +5579,12 @@ async function keepTurn(a) {
         // the first request, the round's read (`file`) before a copy sent again — never the turn's read for a copy sent again (a call with
         // no file there: a message deleted since moves the others) — and only when the message there is this one (keepSame). Anything
         // else that does not hold the 🔖 stops what is sent and leaves the page's 🔖.
-        const guard = ({ sent, file }) => {
+        // v0.7.0-b3d3 (review of b3d2, P2): never from a file that is this write's own copy sent last (`own`: it landed after SillyTavern's
+        // newer save): a message deleted since moves the others there, and a message of the same text before this one is no 🔖 turned off.
+        // Nothing more is sent ('stop', as before) and the page keeps its 🔖; SillyTavern's next save takes the deleted message away.
+        const guard = ({ sent, file, own }) => {
             const g = (file ? file.messages : sent ? null : msgs)?.[chat().indexOf(m)];
-            if (g && !keepIn(g) && keepSame(g)) off = true;
+            if (g && !keepIn(g) && keepSame(g) && !own) off = true;
             const go = here() && keepUntouched(c) && (!g || keepIn(g)) && !(userHid(g) && !m.is_system);
             return go ? true : sent ? 'stop' : false;
         };
