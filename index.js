@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b3c2';
+const VERSION = '0.7.0-b3d';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -3248,7 +3248,7 @@ function syncHide({ rehide = false, grow = false, release = false } = {}) {
             liveShown.delete(m);
             // v0.7.0-b2b3: the page's value goes; this tab still knows it (liveTok) for the file SillyTavern saved meanwhile.
             if (m.extra && Object.hasOwn(m.extra, LIVE_KEY)) delete m.extra[LIVE_KEY];
-            if (can && mode === 'manual' && !mark && !m.is_system && i <= reach) { m.extra ||= {}; m.extra[HIDE_KEY] = 1; setHidden(m, i, true); changed = true; return; }
+            if (can && mode === 'manual' && !mark && !m.is_system && i <= reach && !keepWait(m)) { m.extra ||= {}; m.extra[HIDE_KEY] = 1; setHidden(m, i, true); changed = true; return; }
         }
         // v0.7.0-a4 (review of v0.7.0-a3, P2): while the change is still there, no hide (auto, a save's rescan, 👻) takes it back.
         if (liveShown.has(m) && sourcePending && !m.is_system) return;
@@ -3260,6 +3260,9 @@ function syncHide({ rehide = false, grow = false, release = false } = {}) {
             if (live) { liveShown.add(m); const t = `${SESSION}.${++liveSeq}`; m.extra[LIVE_KEY] = t; liveTok.set(m, t); }
             return;
         }
+        // v0.7.0-b3d: a message whose 🔖 waits to be put back (keepWait) is hidden by nothing new until that turn (it puts the 🔖 back and
+        // takes SavePoint's hide away itself); what was taken away above still goes.
+        if (keepWait(m)) return;
         // v0.7.0-b2b: shown because the server file took its hide away: only a save or 👻 pressed hides it again.
         if (rescan && m.extra?.[VISIBLE_KEY] === SERVER_SHOWN && rehide !== 'save' && rehide !== 'button') return;
         if (rescan && i <= cutoff && (may || hold())) {
@@ -5408,6 +5411,8 @@ async function toggleKeep(index) {
     const m = chat()[index];
     if (!m) return;
     const on = !kept(m);
+    // v0.7.0-b3d: a 🔖 pressed by hand takes the place of a repair still asked for this message (and of its protection).
+    keepAsks.delete(m);
     // v0.6.81: the message's flags and its swipes' marks come back with the change itself (restoreEntry),
     // and only when the write surely failed: one that may be in the file (unconfirmed, kept) stays.
     try {
@@ -5418,13 +5423,147 @@ async function toggleKeep(index) {
         : hideModeOf(settings()) === 'manual' ? '🔶 하이드 제외를 껐어요. 다음에 👻 하이드를 누를 때 함께 숨겨요.' : '🔶 하이드 제외를 껐어요.', 'SavePoint');
 }
 // A swipe (or a new reply in place) brings that swipe's own extra; a kept message gets its mark back.
+// v0.7.0-b3d (b3d design, GPT 1·2차): the mark is put back at the room's turn, not at once. Asked here (the room open, the message not kept,
+// a 🔖 left on one of its swipes: the rule as before), it waits as one ask per message (`keepAsks`: the last swipe asked wins until its turn
+// starts) and goes to the queue once no reply is being made. Until then the message is kept out of SavePoint's new hides (keepWait), so a
+// reply made meanwhile still gets its original. At its turn (keepTurn) everything is looked at again; only the chat file is written (the
+// memory file is read only). A stopped room asks nothing, and an ask whose room stopped meanwhile is dropped (not run when it opens again).
+const keepAsks = new Map();
+const keepProof = m => Array.isArray(m?.swipe_info) && m.swipe_info.some(x => x?.extra?.[KEEP_KEY]);
+// The ask still holds: this room and opening, open; the same message object still in the chat, on the swipe asked, a 🔖 left on a swipe.
+function keepPlace(a) {
+    const m = a.m;
+    return roomKey() === a.key && roomEpoch === a.epoch && gateOpen() && chat().includes(m) && m.swipe_id === a.swipe && keepProof(m);
+}
+const keepAsked = a => keepPlace(a) && !kept(a.m);
+// Kept out of new hides while its ask holds; an ask that no longer holds goes (and its protection with it).
+function keepWait(m) {
+    const a = keepAsks.get(m);
+    if (!a) return false;
+    if (a.started ? keepPlace(a) : keepAsked(a)) return true;
+    keepAsks.delete(m);
+    return false;
+}
 function repairKeep(index) {
     // v0.7.0-b3b1: not even on the page while the room may not be saved (a stopped room: the mark would wait for a later save).
     if (!gateOpen()) return false;
     const m = chat()[Number(index)];
-    if (!m || kept(m) || !(Array.isArray(m.swipe_info) && m.swipe_info.some(x => x?.extra?.[KEEP_KEY]))) return false;
-    setKeep(m, true); saveChatSoon(); return true;
+    if (!m || kept(m) || !keepProof(m)) return false;
+    const was = keepAsks.get(m);
+    if (was && !was.started && was.key === roomKey() && was.epoch === roomEpoch) { was.swipe = m.swipe_id; return false; }
+    const a = { m, key: roomKey(), epoch: roomEpoch, swipe: m.swipe_id, started: false, queued: false, timer: null };
+    keepAsks.set(m, a);
+    keepSoon(a, 0);
+    // No change on the page now (false: nothing for the caller to hide or show).
+    return false;
 }
+// To the room's queue once no reply is being made (as the background save before b3d waited).
+function keepSoon(a, ms) {
+    clearTimeout(a.timer);
+    a.queued = false;
+    a.timer = setTimeout(function go() {
+        if (keepAsks.get(a.m) !== a) return;
+        if (!keepAsked(a)) { keepAsks.delete(a.m); return; }
+        if (mainBusy()) { a.timer = setTimeout(go, 1500); return; }
+        a.queued = true;
+        const queue = saveQueue(a.key, a.epoch);
+        const job = queue.chain.then(() => keepTurn(a));
+        queue.chain = job.catch(() => {});
+    }, ms);
+}
+const userHid = x => !!x?.is_system && !x.extra?.[HIDE_KEY];
+// The message's 🔖 as the page will send it (the message and every swipe), its SavePoint hide taken away (a hide of the user's own stays),
+// as syncHide does for a kept message. What it had is kept to take a refused write back.
+function keepApply(m, i) {
+    const x = m.extra || {}, has = (o, k) => o && Object.hasOwn(o, k) ? o[k] : undefined;
+    const c = { m, keep: has(x, KEEP_KEY), swipes: (Array.isArray(m.swipe_info) ? m.swipe_info : []).map(s => has(s?.extra, KEEP_KEY)),
+        sys: !!m.is_system, hide: has(x, HIDE_KEY), held: has(x, HELD_KEY), vis: has(x, VISIBLE_KEY), live: has(x, LIVE_KEY), tok: liveTok.get(m) };
+    setKeep(m, true);
+    if (m.extra[HIDE_KEY]) { if (m.is_system) setHidden(m, i, false); delete m.extra[HIDE_KEY]; }
+    delete m.extra[VISIBLE_KEY]; delete m.extra[HELD_KEY]; dropLive(m);
+    c.after = !!m.is_system;
+    return c;
+}
+// Still as this turn left it: kept, hidden or shown as it left it, no SavePoint hide on it.
+const keepUntouched = c => kept(c.m) && !!c.m.is_system === c.after && !c.m.extra?.[HIDE_KEY];
+// A write shown not to be in the file: the message goes back to what it had, where nothing touched it since.
+function keepBack(a, c) {
+    if (!c || roomKey() !== a.key || roomEpoch !== a.epoch || !keepUntouched(c)) return;
+    const m = c.m, i = chat().indexOf(m);
+    if (i < 0) return;
+    const put = (o, k, v) => { if (v === undefined) delete o[k]; else o[k] = v; };
+    m.extra ||= {};
+    put(m.extra, KEEP_KEY, c.keep);
+    const info = Array.isArray(m.swipe_info) ? m.swipe_info : [];
+    if (info.length === c.swipes.length) info.forEach((s, k) => { if (s && typeof s === 'object') { s.extra ||= {}; put(s.extra, KEEP_KEY, c.swipes[k]); } });
+    put(m.extra, HIDE_KEY, c.hide); put(m.extra, HELD_KEY, c.held); put(m.extra, VISIBLE_KEY, c.vis); put(m.extra, LIVE_KEY, c.live);
+    if (c.tok !== undefined) liveTok.set(m, c.tok);
+    if (c.sys !== !!m.is_system) setHidden(m, i, c.sys);
+    paintKeep(); refreshInjection(); render();
+}
+// Does a message of the chat file still carry the 🔖 (on itself or a swipe)? A 🔖 turned off elsewhere takes them all away (setKeep).
+const keepIn = f => kept(f) || keepProof(f);
+async function keepTurn(a) {
+    const m = a.m, mine = () => keepAsks.get(m) === a;
+    if (!mine()) return;
+    if (!keepAsked(a)) { keepAsks.delete(m); return; }
+    // A reply started while it waited in the queue: back to waiting for it (still asked, still kept out of new hides).
+    if (mainBusy()) { keepSoon(a, 1500); return; }
+    a.started = true;
+    const here = () => mine() && keepPlace(a);
+    let c = null, again = false;
+    try {
+        await stIdle();
+        if (!here()) return;
+        // As guardedSave: the memory file is still the one this room last saw (read only), then the chat file.
+        const memStill = async () => {
+            const still = await homeStill();
+            if (!here()) return false;
+            if (!still.ok) { console.warn('[SavePoint] 🔖 repair held: the memory file changed or could not be read'); render(); return false; }
+            return true;
+        };
+        if (!(await memStill())) return;
+        for (let k = 0; k < 3 && await stIdle(); k++) { if (!here() || !(await memStill())) return; }
+        if (!here()) return;
+        const pre = await serverCovered();
+        if (!here()) return;
+        if (pre.ok && pre.released?.length) { render(); return; }
+        // A reply being made explains the difference: nothing is blocked; the ask waits for the reply and takes its turn again.
+        if (!pre.ok && pre.why === 'busy') { a.started = false; again = true; keepSoon(a, 1500); return; }
+        if (!pre.ok) { blockRoom(pre.why, pre.at); warnBlocked(); return; }
+        if (kept(m)) return;
+        const i = chat().indexOf(m), msgs = pre.messages || [], f = msgs[i];
+        // The 🔖 taken away in the chat file (another tab or device turned it off): nothing on the page, nothing written.
+        if (f && !keepIn(f)) return;
+        // A hide of the user's own made elsewhere that the page does not have: not written over.
+        if (userHid(f) && !m.is_system) return;
+        // The chat file has it already as it would be sent (the same message, kept, no SavePoint hide): the page only.
+        const plain = x => snapshot(null, [x], OWN_KEYS).plain[0];
+        const done = !!f && kept(f) && !(f.is_system && f.extra?.[HIDE_KEY]) && plain(f) === plain(m);
+        c = keepApply(m, i);
+        paintKeep(); refreshInjection(); render();
+        if (done) return;
+        const written = sendSnap(pre.meta), rev = state()?.rev ?? null, tick = delTick;
+        // Right before the request and before every copy sent again: the ask still holds, the page as this turn left it, and the chat file
+        // just read (or the turn's read) still has the 🔖 there and no hide of the user's own the page lacks (the content comparison leaves
+        // both out).
+        const guard = ({ sent, file }) => {
+            const g = (file ? file.messages : msgs)?.[chat().indexOf(m)];
+            const go = here() && keepUntouched(c) && (!g || keepIn(g)) && !(userHid(g) && !m.is_system);
+            return go ? true : sent ? 'stop' : false;
+        };
+        try { await persist(pre.meta, guard, 'user'); }
+        catch (e) {
+            // Stopped before a copy sent again: what went stays (it may be in the file), nothing more is sent.
+            if (e?.fitHeld) { if (roomKey() === a.key && roomEpoch === a.epoch) toastr.warning(KEEP_HELD_TEXT, 'SavePoint', { timeOut: 10000 }); return; }
+            if (e?.nothingSent || e?.noTarget || (e?.released || e?.memMoved) && !e.sents?.length) { keepBack(a, c); return; }
+            let err = await settleWrite(e, { written, rev, proof: null, pre, key: a.key, epoch: a.epoch, tick });
+            if (err === 'revert') { keepBack(a, c); err = e; }
+            if (err && roomKey() === a.key && roomEpoch === a.epoch) reportError(err);
+        }
+    } finally { if (!again && mine()) keepAsks.delete(m); }
+}
+const KEEP_HELD_TEXT = '🔖를 다시 붙이는 저장 중에 이 메시지나 서버의 🔖·숨김이 바뀌어서 더 보내지 않았어요. 이미 보낸 저장은 그대로예요.';
 // v0.6.57: the 🔖 list in the status area — go to a message, turn one off, or turn all off.
 function keepListHtml() {
     const rows = chat().map((m, i) => kept(m) ? i : -1).filter(i => i >= 0);

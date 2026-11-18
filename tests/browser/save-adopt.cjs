@@ -162,7 +162,8 @@ const msg = t => ({ name: 'Me', is_user: true, is_system: false, mes: t, swipe_i
         await ev(m => { M.chat.push(m); M.stSave(); }, msg('Thirteenth.'));
         await page.waitForTimeout(500);
         await ev(() => { M.serverReadDelay = 400; BG(); });
-        await page.waitForTimeout(650);   // saveChatSoon starts after 0.5 s: the reply starts while it reads the file
+        // v0.7.0-b3d: the 🔖 repair takes its turn at once (no 0.5 s timer any more): the reply starts while it reads the file.
+        await page.waitForTimeout(200);
         await ev(() => { SillyTavern.getContext().eventSource.emit('generation_started', 'continue', {}, false);
             const m = M.chat.at(-1); M.grow = setInterval(() => { m.mes += ' more'; }, 100); });
         await page.waitForTimeout(3000 + phase);
