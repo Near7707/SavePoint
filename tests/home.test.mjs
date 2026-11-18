@@ -316,6 +316,41 @@ test('v0.7.0-b3a2b row 5: the move needs the memory the room had when renamed; a
     assert.deepEqual([r.verdict, r.row, r.why], ['hold', 5, 'renameUnproven']);
 });
 
+test('v0.7.0-b4a row 5: a rename made in the list may be carried on by hand (carry), and only the agreed record and memory move', async () => {
+    const id = homeId(A, 'i-A');
+    const files = { [tagName(A)]: tagBody({ addr: A, integrity: 'i-A', mem: id }), [memName(id)]: memFile(id) };
+    const at = (rx = {}, extra = {}) => ({ ...room(), addr: B, renames: [{ from: A, to: B, id: 'A|1', direct: true, ...rx }], ...extra });
+    let r = await decideRoom(at(), world(files).read);
+    assert.deepEqual([r.verdict, r.row, r.why], ['hold', 5, 'renameUnproven']);
+    assert.deepEqual([r.carry?.id, r.carry?.from, r.carry?.to, r.carry?.mem, r.carry?.rev, r.carry?.wid], ['A|1', A, B, id, 0, 'w0']);
+    const ok = { id: 'A|1', from: A, mem: id, rev: 0, wid: 'w0' };
+    r = await decideRoom(at({}, { agreed: ok }), world(files).read);
+    assert.deepEqual([r.verdict, r.row, r.from, r.agreed], ['rename', 5, A, true]);
+    // Consent for another record, receipt or memory → held (with the offer again).
+    for (const bad of [{ ...ok, id: 'A|2' }, { ...ok, wid: 'w9' }, { ...ok, rev: 1 }, { ...ok, mem: 'other' }]) {
+        r = await decideRoom(at({}, { agreed: bad }), world(files).read);
+        assert.deepEqual([r.verdict, r.why], ['hold', 'renameUnproven']);
+    }
+    // Not direct, a record with memory, a renamed tag, a room seen leaving this name, an old copy, no integrity → no offer.
+    const no = async (input, f = files) => { const d = await decideRoom(input, world(f).read); assert.equal(d.carry, undefined); return d; };
+    await no(at({ direct: false }));
+    await no(at({ mem: { id, rev: 5, wid: 'x' } }));
+    await no(at({}, { left: roomAddr('ari.png', 'Ari - later') }));
+    await no(at({}, { copy: { hash: 'c1', ok: true } }));
+    await no(at({}, { integrity: null }));
+    await no(at(), { ...files, [tagName(A)]: renamedTag(files[tagName(A)], B) });
+    // Something links this name already: its start mark, a clue entry, its own memory.
+    await no(at(), { ...files, [startName(B)]: startBody({ addr: B, copy: 'c1', mem: 'm2', wid: 'w0' }) });
+    await no(at(), { ...files, [clueName('i-A')]: clueBody('i-A', [{ addr: B, mem: 'm2' }]) });
+    await no(at(), { ...files, [memName(homeId(B, 'i-A'))]: memFile(homeId(B, 'i-A'), { addr: B }) });
+    // A clue that names the old name only is fine.
+    r = await decideRoom(at(), world({ ...files, [clueName('i-A')]: clueBody('i-A', [{ addr: A, mem: id }]) }).read);
+    assert.equal(r.carry?.id, 'A|1');
+    // The memory at home elsewhere (moved half way) → the "already moved" rule, never the offer.
+    r = await decideRoom(at({}, { agreed: ok }), world({ ...files, [memName(id)]: memBody({ id, state: recorded(P80, 19), rev: 1, wid: 'w1', from: { kind: 'new', addr: A, integrity: 'i-A' }, home: { addr: B, integrity: 'i-A', was: [A] } }) }).read);
+    assert.deepEqual([r.verdict, r.why, r.carry], ['hold', 'renameUnproven', undefined]);
+});
+
 test('v0.7.0-b3a2b2 row 5 (review of b3a2b1, P1): a record whose memory was dropped never links another memory "already moved" here', async () => {
     // A → B kept memory X; B → C in the list dropped it (the record now reads A → C). The tag at A names Y, which went A → C.
     const X = homeId(A, 'i-A'), Y = 'mem-y';

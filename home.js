@@ -340,6 +340,23 @@ export async function decideRoom(input, read, { readMem = id => read(memName(id)
         return out('link', changedAt < 0 ? 3 : 4, { proof, mem: tag.mem, changedAt, fill: !str(tag.integrity) && str(integrity) ? { integrity } : null });
     }
 
+    // v0.7.0-b4a: a rename the user may carry on (see row 5). Only: the record is direct and the only one to this name (`direct`, set by
+    // homeInput), the old name's tag is linked (not renamed: a move half done is not picked up by hand), its memory is at home at the old
+    // name with this integrity, and this name has no tag, no start mark, no clue entry, no own memory, no old copy, no room seen leaving
+    // it. A read that fails gives no carry (the room stays held as before).
+    const carryOf = async (r, tag, body) => {
+        if (r.direct !== true || tag.state !== 'linked' || tagRes.kind !== MISSING || copy || input.left || !str(integrity)) return null;
+        if (!homeOk(body.home, r.from, integrity) || body.home.integrity !== integrity) return null;
+        if (files.get(startName(addr))?.kind !== MISSING) return null;
+        const clue = files.get(clueName(integrity));
+        if (clue?.kind !== OK && clue?.kind !== MISSING) return null;
+        if (clue.kind === OK && clue.data.rooms.some(x => x.addr === addr)) return null;
+        const own = await mem(homeId(addr, integrity));
+        if (own.kind !== MISSING) return null;
+        const st = body.state;
+        return { id: r.id, from: r.from, to: addr, mem: tag.mem, rev: body.rev, wid: body.wid,
+            last: Number.isInteger(st?.lastIndex) ? st.lastIndex : -1, at: Number.isFinite(st?.lastRecord?.at) ? st.lastRecord.at : null };
+    };
     // 5: renamed on this device, same integrity.
     for (const r of input.renames || []) {
         if (r?.to !== addr || !str(r.from) || r.from === addr) continue;
@@ -368,8 +385,14 @@ export async function decideRoom(input, read, { readMem = id => read(memName(id)
         // Otherwise the tag at the old name may be a memory another tab linked there after the rename (same integrity: a copy):
         // the move is made only over the very memory the room had when it was renamed (`r.mem`, kept from the room open then:
         // its id, rev and receipt). No such record (renamed in the list, or before b3a2b), or saved since anywhere → hold.
-        if (!plainObj(r.mem) || r.mem.id !== t.data.mem || r.mem.rev !== m.data.rev || r.mem.wid !== m.data.wid) return hold(5, 'renameUnproven', { mem: t.data.mem, from: r.from });
-        return out('rename', 5, { from: r.from, mem: t.data.mem });
+        if (plainObj(r.mem) && r.mem.id === t.data.mem && r.mem.rev === m.data.rev && r.mem.wid === m.data.wid) return out('rename', 5, { from: r.from, mem: t.data.mem });
+        // v0.7.0-b4a (b4 design): a rename made in the chat list carries no memory. One the user may carry on by hand (`carry`): the one
+        // direct record of a rename to this name, the old name's tag still linked to a memory at home there, and nothing here linking this
+        // name yet. The user's consent (`input.agreed`) binds that record and the memory's id, rev and receipt; anything else changed → held.
+        const carry = plainObj(r.mem) ? null : await carryOf(r, t.data, m.data);
+        if (carry && plainObj(input.agreed) && input.agreed.id === carry.id && input.agreed.from === carry.from && input.agreed.mem === carry.mem
+            && input.agreed.rev === carry.rev && input.agreed.wid === carry.wid) return out('rename', 5, { from: r.from, mem: t.data.mem, agreed: true });
+        return hold(5, 'renameUnproven', { mem: t.data.mem, from: r.from, ...(carry ? { carry } : {}) });
     }
     // This name's tag says it was renamed away and no rename back to it was seen here: a room under the
     // old name again is not that room.

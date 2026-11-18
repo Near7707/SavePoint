@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b3d3';
+const VERSION = '0.7.0-b4a';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -1974,7 +1974,7 @@ function homeMessage() {
     if (home.status === 'new' && !home.id) return '이 방의 채팅 파일에 아직 고유값이 없어서 기억 파일을 만들 수 없어요. 메시지를 하나 보내거나 방을 다시 열어 주세요.';
     if (home.status === 'readFail') return '이 방의 기억 파일을 읽지 못했어요. 그래서 아무것도 저장하지 않고 자동 기록도 멈췄어요. 잠시 뒤 `다시 확인`을 눌러 주세요.';
     if (home.status === 'stopped') return `이 방의 기억 파일을 만드는 중에 멈췄어요(${home.why}). 그래서 아무것도 저장하지 않았어요. \`다시 확인\`을 눌러 이어서 해 주세요.`;
-    if (home.status === 'held') return `이 방의 기억을 정하지 못해서 보류했어요: ${HOLD_TEXT[home.why] || home.why}. 그동안 아무것도 저장하지 않고 자동 기록도 멈춰요.`;
+    if (home.status === 'held') return `이 방의 기억을 정하지 못해서 보류했어요: ${HOLD_TEXT[home.why] || home.why}. 그동안 아무것도 저장하지 않고 자동 기록도 멈춰요.${home.carry ? ' 채팅 목록에서 이름만 바꾼 같은 채팅이면 `이름 변경 이어서 연결`로 이어서 연결할 수 있어요.' : ''}`;
     if (home.status === 'linked' && home.fitReopen) return FIT_TEXT.reopen + (chat().length > home.fitReopen.n ? FIT_TEXT.copy : '');
     // v0.7.0-b3c2: a changed original's fit wrote the memory file and could not read it back: the old H2 note would be out of date.
     if (home.status === 'linked' && home.fitCheck?.mem && home.h2?.why === 'source') return FIT_TEXT.checkMem + (chat().length > home.fitCheck.n ? FIT_TEXT.copy : '');
@@ -2013,6 +2013,9 @@ const HOLD_TEXT = {
     tagChanged: '기억 이름표가 그사이 바뀌었어요', otherOrigin: '같은 이름의 기억 파일이 다른 곳에서 만들어졌어요', unsure: '기억 파일을 쓴 뒤 다시 읽어 확인하지 못했어요', changing: '채팅 파일이 계속 바뀌고 있어요',
     linkLate: '이 방의 이름표 저장에 응답이 오지 않아서, 이름 바뀐 방의 기억을 옮기지 않았어요. 방을 다시 열거나 새로고침해 주세요',
     renameUnproven: '이름을 바꾸기 전 이 방의 기억이 맞는지 확인할 수 없어서 옮기지 않았어요(채팅 목록에서 이름을 바꿨거나, 그사이 다른 곳에서 저장했을 수 있어요). 기억 파일은 그대로 있어요',
+    carryChanged: '이름 변경을 이어서 연결하려던 사이 기억이 이미 옮겨지는 중이어서 연결하지 않았어요. 기억 파일은 그대로 있어요',
+    carryList: '이름 변경을 이어서 연결하기 직전에 채팅 목록을 읽지 못해서 연결하지 않았어요. 기억 파일은 그대로 있어요',
+    carryGone: '채팅 목록에서 예전 이름의 채팅이 아직 보이거나 지금 이름의 채팅이 보이지 않아서 연결하지 않았어요. 기억 파일은 그대로 있어요',
     closesUnknown: '예전 버전에서 만든 기억이라, 이 이름을 떠난 다른 방의 기록과 섞이지 않았는지 확인할 수 없어요. 기억 파일은 그대로 있어요',
 };
 const MF_CONFLICT = CONFLICT, MF_OVERWRITTEN = OVERWRITTEN, MF_HELD = HELD;
@@ -2027,6 +2030,9 @@ function homeInput(r) {
     // v0.7.0-b1g (review of b1f, P1-2): a rename away from a name where a new room's own first write has started (`closed`) is no
     // proof for that name's tag any more (it may be the new room's).
     const addr = roomKey(), seen = renamesSeen(), list = seen.filter(x => x.to === addr && !x.foreign && !x.closed);
+    // v0.7.0-b4a (b4 design): a rename the user may carry on by hand is the only record to this name (any kind) and a direct one (made
+    // as A → B in one notice, its `to` never changed by a later rename, not taking over a name another room left).
+    const only = seen.filter(x => x.to === addr).length === 1;
     // v0.7.0-b1d (review of b1c, P1-3): also from the rooms kept as having left a name (`leftSeen`), which a deleted chat or
     // the 20-record limit never takes away.
     const left = seen.find(x => x.from === addr && x.to !== addr && !x.foreign && !x.settled)?.to ?? leftSeen().find(x => x.from === addr && !x.foreign)?.to ?? null;
@@ -2035,7 +2041,7 @@ function homeInput(r) {
     // the server they are settled (clearLeft) — nothing seen later (this room's own A → C) is touched.
     const was = leftNow(addr);
     return { addr, was, closes: was.from.map(renameId), integrity: typeof meta.integrity === 'string' && meta.integrity ? meta.integrity : null, mainChat: typeof meta.main_chat === 'string' && meta.main_chat ? meta.main_chat : null,
-        copy, traces: hasTraces(meta, r.messages || []), prints: (r.messages || []).map(fingerprint), renames: list.map(x => ({ from: x.from, to: x.to, id: renameId(x), mem: x.mem ?? null })), left, old };
+        copy, traces: hasTraces(meta, r.messages || []), prints: (r.messages || []).map(fingerprint), renames: list.map(x => ({ from: x.from, to: x.to, id: renameId(x), mem: x.mem ?? null, direct: only && x.direct === true && !x.took })), left, old };
 }
 // The decision still holds for the chat file read again: the same identity and old copy, the same messages (more may follow).
 function sameInput(a, b) {
@@ -2105,7 +2111,8 @@ function onChatRenamed(data) {
     // to B) is never taken for it.
     // v0.7.0-b3a2b1 (review of b3a2b, P1-3): the memory kept for the earlier rename (`mem`) is dropped: this rename may be of another
     // chat under that name by now (renamed in the list). The room open now gets this notice's own record with its proof.
-    for (const x of list) if (x.to === n.from) { x.to = n.to; delete x.mem; }
+    // v0.7.0-b4a (b4 design): nor is it a direct record of a rename to its new `to` any more (`direct`: carried on by hand only then).
+    for (const x of list) if (x.to === n.from) { x.to = n.to; delete x.mem; delete x.direct; }
     const left = leftSeen();
     for (const x of left) if (!x.gone && x.to === n.from) x.to = n.to;
     left.splice(0, left.length, ...left.filter(x => x.to !== x.from));
@@ -2113,7 +2120,7 @@ function onChatRenamed(data) {
     // A room seen leaving `n.to` before and still elsewhere: this one takes over its name (A → B, a copy → A). A room coming
     // back to its own name (A → B → A) has its record at `n.to` again by now, so it is not taken for a copy.
     const took = list.some(x => x.from === n.to && x.to !== n.to && !x.foreign);
-    list.push({ ...n, at: Date.now(), ...(foreign ? { foreign: true } : {}), ...(took ? { took: n.to } : {}), ...(mem ? { mem } : {}) });
+    list.push({ ...n, at: Date.now(), direct: true, ...(foreign ? { foreign: true } : {}), ...(took ? { took: n.to } : {}), ...(mem ? { mem } : {}) });
     // P2-4: the server may clean the typed name; the room reopened just before the notice is the renamed one when its
     // scope is the same (decideRoom row 5 still needs the old tag's integrity to be this room's).
     // v0.7.0-b1a (review P1-4): only when its name is the typed one as the server cleans it (cleanName). Another room open
@@ -2123,7 +2130,7 @@ function onChatRenamed(data) {
         try {
             const [scope, name] = JSON.parse(addr), [toScope, typed] = JSON.parse(n.to);
             if (scope === toScope && name === cleanName(typed)) {
-                list.push({ from: n.from, to: addr, at: Date.now(), ...(foreign ? { foreign: true } : {}), ...(mem ? { mem } : {}) });
+                list.push({ from: n.from, to: addr, at: Date.now(), direct: true, ...(foreign ? { foreign: true } : {}), ...(mem ? { mem } : {}) });
                 // v0.7.0-b1d: the room is at the name as the server cleaned it: its left record follows it from there.
                 const mineLeft = left[left.length - 1];
                 if (mineLeft && mineLeft.from === n.from && mineLeft.to === n.to) { mineLeft.to = addr; if (addr === n.from) left.pop(); }
@@ -2178,11 +2185,14 @@ async function linkRounds(h, r0, owned) {
     const mine = () => homeHere() && home === h;
     if (h.line?.pending) { setHome(h, 'pending'); return; }
     h.status = 'opening'; h.why = ''; if (!owned) h.again = false; h.wasOf = new Map(); h.h2 = null;
+    // v0.7.0-b4a (b4 design): the user's consent to carry a rename on (carryRoom) is for this one decision only; the offer is made again
+    // only by a decision that holds the room for it.
+    const agreed = h.agree || null; h.agree = null; h.carry = null;
     let r = r0;
     for (let round = 0; round < 3; round++) {
         if (h.line?.pending) { setHome(h, 'pending'); return; }
         if (!r?.ok) { r = await readServerChat(); if (!mine()) return; if (!r.ok) { setHome(h, 'readFail'); return; } }
-        const input = homeInput(r), files = new Map();
+        const input = { ...homeInput(r), agreed }, files = new Map();
         const read = async name => {
             if (files.has(name)) return files.get(name);
             const res = await readUserFile(fetch, name, { headers: serverHeaders() });
@@ -2204,6 +2214,9 @@ async function linkRounds(h, r0, owned) {
         if (!mine()) return;
         if (h.line?.pending) { if (h.status !== 'pending') setHome(h, 'pending'); return; }
         if (h.again && h.status !== 'linked') { r = null; h.again = false; continue; }
+        // v0.7.0-b4a: a room held for a rename made in the chat list that may be carried on: the chat list is read (reads only) to see the old
+        // name gone and this one there before the offer is shown.
+        if (h.status === 'held' && h.why === 'renameUnproven' && d.carry) carryLook(h, d);
         // v0.7.0-b3b1 (b3 design, H2): a link confirmed (no stop of its own: those notices come first) is checked against the chat file
         // read last (`again`: the first read can miss a hide changed in between, sameInput compares originals only), before anything
         // may be written in the room. `다시 확인` comes through here every time, so a room put right goes on.
@@ -2358,6 +2371,14 @@ async function renameHome(h, d, input, files) {
     // v0.7.0-b3a2b2 (review of b3a2b1, P2): a memory already moved here without its list (made before b3a2b) gets the tag an empty
     // one only when no room was ever seen leaving this name here — the same rule as row 6; otherwise held before any write.
     if (!moving && !Array.isArray(data.closes) && (input.was.from.length || input.was.left.length)) { setHome(h, 'held', 'closesUnknown'); return; }
+    // v0.7.0-b4a (b4 design): a move the user agreed to (carryRoom) is made only when the chat list read right before it still has no chat
+    // under the old name and has this one. Anything else: nothing written, held (the offer comes back with the next decision).
+    if (d.agreed) {
+        if (!moving) { setHome(h, 'held', 'carryChanged'); return; }
+        const names = await chatNames(carryScope(d.from, addr));
+        if (!mine()) return;
+        if (!carrySees(names, d.from, addr)) { setHome(h, 'held', names ? 'carryGone' : 'carryList'); return; }
+    }
     if (moving) {
         const wid = newId();
         // v0.7.0-b3a2b: at its new home the memory keeps the renames seen away from the new name (`closes`, the same as its tag).
@@ -2394,6 +2415,96 @@ async function renameHome(h, d, input, files) {
         if (moving) clearLeft(input.was);
         else clearLeft({ ...input.was, from: input.was.from.filter(x => data.closes.includes(renameId(x))), took: [], left: [] });
     }
+}
+// ───────── carrying on a rename made in the chat list (v0.7.0-b4a) ─────────
+//
+// A personal chat renamed A → B in the chat list leaves no proof of its memory (the room was not open: decideRoom row 5 holds it,
+// renameUnproven). When that rename is the one direct record to B, A's tag still links a memory at home at A with the same integrity,
+// nothing links B yet, and the chat list shows A gone and B there, the hold offers `이름 변경 이어서 연결`: after the user agrees (the
+// old and new names, the recorded range and the last record time shown), the room is decided again with that consent (`h.agree`), bound
+// to the record and the memory's id, rev and receipt; the chat list is read again right before the move. The move itself is renameHome
+// (writeMem's checks). Group chats have no such list here: never offered. Nothing here writes a chat file.
+const CARRY_TEXT = {
+    gone: '채팅 목록에서 예전 이름의 채팅이 아직 보이거나 지금 이름의 채팅이 보이지 않아서 연결하지 않았어요. 기억 파일은 그대로 있어요.',
+    list: '채팅 목록을 읽지 못해서 연결하지 않았어요. 잠시 뒤 다시 시도해 주세요. 기억 파일은 그대로 있어요.',
+    moved: '확인하는 사이 다른 방으로 옮겨서 연결하지 않았어요.',
+    changed: '확인하는 사이 이름 변경 기록이나 기억이 바뀌어서 연결하지 않았어요. 다시 확인해 주세요. 기억 파일은 그대로 있어요.',
+    done: '이름 변경을 이어서 이 방에 기억을 연결했어요.',
+};
+// The scope (character avatar) of a personal chat renamed within it, or null (a group chat, another scope, not an address).
+function carryScope(from, to) {
+    try {
+        const [a] = JSON.parse(from), [b] = JSON.parse(to);
+        return typeof a === 'string' && a && a === b && !a.startsWith('group:') ? a : null;
+    } catch { return null; }
+}
+const carryName = addr => { try { return String(JSON.parse(addr)[1]); } catch { return ''; } };
+// The names of a character's chats on the server (simple list: file names only, no chat read). null when it cannot be told: no scope, a
+// failed request, an error answer, anything but a list of file names, or an empty list.
+async function chatNames(scope) {
+    if (!scope) return null;
+    try {
+        const r = await fetch('/api/characters/chats', { method: 'POST', headers: serverHeaders(), body: JSON.stringify({ avatar_url: scope, simple: true }) });
+        if (!r.ok) return null;
+        const list = await r.json();
+        if (!Array.isArray(list) || !list.length) return null;
+        const names = new Set();
+        for (const x of list) {
+            if (!x || typeof x.file_name !== 'string' || !x.file_name) return null;
+            names.add(x.file_name.replace(/\.jsonl$/i, ''));
+        }
+        return names;
+    } catch { return null; }
+}
+const carrySees = (names, from, to) => !!names && !names.has(carryName(from)) && names.has(carryName(to));
+// After a decision held the room for a rename that may be carried on: the chat list decides whether the offer is shown (h.carry).
+async function carryLook(h, d) {
+    const scope = carryScope(d.carry.from, d.carry.to);
+    if (!scope) return;
+    const names = await chatNames(scope);
+    if (!homeHere() || home !== h || h.d !== d || h.status !== 'held' || h.why !== 'renameUnproven') return;
+    if (!carrySees(names, d.carry.from, d.carry.to)) return;
+    h.carry = { ...d.carry, scope };
+    refreshView();
+}
+const carryReady = h => homeHere() && home === h && h.status === 'held' && h.why === 'renameUnproven' && !!h.carry && h.d?.carry?.id === h.carry.id
+    && !h.linking && !h.writing && !h.fitReopen && !h.line?.pending;
+function carryAskText(c) {
+    const range = c.last >= 0 ? `#0–#${c.last}` : '아직 기록 없음';
+    return ['이름 변경을 이어서 연결할까요?', '',
+        `예전 방 이름: ${carryName(c.from)}`, `지금 방 이름: ${carryName(c.to)}`, `기록된 범위: ${range}`,
+        ...(c.at ? [`마지막 대화 기록: ${fmtDate(c.at)}`] : []), '',
+        '이 기억을 현재 방에 연결합니다. 채팅 목록에서 이름을 바꾼 같은 채팅이 맞을 때만 확인을 눌러 주세요.'].join('\n');
+}
+let carryJob = false;
+async function carryRoom() {
+    const h = home;
+    if (carryJob || !carryReady(h)) return;
+    carryJob = true;
+    try {
+        const c = h.carry, epoch = roomEpoch;
+        const here = () => homeHere() && home === h && roomEpoch === epoch;
+        const still = () => here() && h.carry === c && carryReady(h);
+        const ok = await confirmBox(carryAskText(c));
+        if (!ok) return;
+        if (!here()) { toastr.warning(CARRY_TEXT.moved, 'SavePoint'); return; }
+        if (!still()) { toastr.warning(CARRY_TEXT.changed, 'SavePoint', { timeOut: 10000 }); return; }
+        const names = await chatNames(c.scope);
+        if (!here()) { toastr.warning(CARRY_TEXT.moved, 'SavePoint'); return; }
+        if (!still()) { toastr.warning(CARRY_TEXT.changed, 'SavePoint', { timeOut: 10000 }); return; }
+        if (!carrySees(names, c.from, c.to)) {
+            h.carry = null; refreshView();
+            toastr.warning(names ? CARRY_TEXT.gone : CARRY_TEXT.list, 'SavePoint', { timeOut: 10000 });
+            return;
+        }
+        h.agree = { id: c.id, from: c.from, mem: c.mem, rev: c.rev, wid: c.wid };
+        await recheckHome('user');
+        if (!here()) return;
+        h.agree = null;
+        if (h.status === 'linked') toastr.success(CARRY_TEXT.done, 'SavePoint');
+        else if (h.status === 'held' && h.why === 'renameUnproven') toastr.warning(CARRY_TEXT.changed, 'SavePoint', { timeOut: 10000 });
+        else toastr.warning(homeMessage() || CARRY_TEXT.changed, 'SavePoint', { timeOut: 10000 });
+    } finally { carryJob = false; }
 }
 // `다시 확인`: the chat file is read again and the room decided again. Reads only for a line whose write got no answer
 // (P1-2: that room waits to be opened again).
@@ -3064,7 +3175,9 @@ function homeAlert() {
     const fit = homeHere() && home.status === 'linked' && !home.fitReopen && (home.h2?.why === 'hides' || home.h2?.why === 'source')
         ? btn('home-fit', '', '원문과 기억 맞추기', home.h2.why === 'hides' ? '기억이 기록하지 않은 메시지의 SavePoint 숨김만 풀고 채팅 파일을 저장해요(기억 파일은 안 바꿔요)'
             : '바뀐 원문부터 기억을 되감거나 검토로 바꿀지 먼저 물어보고, 그 뒤 SavePoint 숨김 풀기와 기억 저장을 차례로 해요') : '';
-    return `<div class="sp-alert sp-home-alert">${esc(text)}${again ? `<div class="sp-row">${fit}${btn('home-recheck', '', '다시 확인', '채팅 파일과 기억 파일을 다시 읽어 이 방의 기억을 다시 찾아요')}</div>` : ''}</div>`;
+    // v0.7.0-b4a: a room held for a rename made in the chat list, when it may be carried on (carryLook).
+    const carry = homeHere() && home.carry && carryReady(home) ? btn('home-carry', '', '이름 변경 이어서 연결', '채팅 목록에서 바꾼 이름을 확인하고, 예전 이름의 기억을 이 방에 연결해요') : '';
+    return `<div class="sp-alert sp-home-alert">${esc(text)}${again ? `<div class="sp-row">${fit}${carry}${btn('home-recheck', '', '다시 확인', '채팅 파일과 기억 파일을 다시 읽어 이 방의 기억을 다시 찾아요')}</div>` : ''}</div>`;
 }
 
 // ───────── source fingerprints ─────────
@@ -6954,6 +7067,7 @@ async function handle(act, id) {
         case 'review-accept': return acceptCurrentSource();
         case 'home-recheck': if (homeHere() && home.fitReopen) { toastr.warning(homeMessage(), 'SavePoint', { timeOut: 10000 }); return; } return recheckHome();
         case 'home-fit': return fitRoom();
+        case 'home-carry': return carryRoom();
         case 'edit-cancel': ui.edit = null; backToChecks(); return render(true);
         case 'edit-save': return saveEdit();
         case 'edit-scene': return startEdit('scene', id);

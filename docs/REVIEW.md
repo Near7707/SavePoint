@@ -1,3 +1,42 @@
+# v0.7.0-b4a · 목록에서 바꾼 이름 이어서 연결 (브랜치 `v0.7-b`)
+
+기준: `a09e1ce`(b3 끝). b4 설계(GPT 1·2차 + 사용자 동의)의 첫 조각. 파일: `home.js`(`decideRoom` 5행), `index.js`, `manifest.json`(버전만), 검사 `tests/browser/carry.cjs`(새), `tests/home.test.mjs` 1개, 문서.
+
+## 설계 요점(GPT 의견)
+- 목록에서 A → B로 **한 번** 바꾼 1:1 채팅만. `renameUnproven`이 출발점. 버튼은: 직접 기록된 A → B 변경이 하나 · 채팅 목록에 A 없음·B 있음 · A 이름표와 기억 본체가 일치 · B에 충돌하는 연결 없음.
+- 연속 이름 변경은 예전 기록의 도착지를 바꿔서 직접 변경과 구분 못 함 → 표시 없는 옛 기록은 보류. 같은 고유값·원문의 가져온 사본이 있으니 확인 버튼이 그 구분을 대신하면 안 됨(그래서 목록 확인).
+- 개별 채팅 읽기(`/api/chats/get`)는 없는 파일·빈 파일에 `[]`, 오류에도 200 `{}`를 줄 수 있음 → 목록(`/api/characters/chats`, `simple: true`, 본문 안 읽음 = 빈 파일·손상 파일도 목록에 남음)을 씀. 그룹은 목록이 없어 보류.
+- 확인창: 예전·지금 방 이름, 기록 범위 #0–#N, 마지막 대화 기록 시각(`lastRecord.at`이 있을 때만, 파일 수정 시각처럼 안내하지 않음), "이 기억을 현재 방에 연결합니다". 취소·닫기 = 쓰기 0.
+- 확인 뒤: 같은 방·같은 기록·출발/도착 이름표·기억 ID·rev·wid 다시 확인. 다른 탭이 이미 연결했으면 읽기만, 후보가 바뀌었거나 이동 중간이면 이번 동의로 안 씀. 이동은 `renameHome`·`writeMem` 그대로. 이동 직전 목록 다시.
+- 방 열 때 "덮였을 수 있어요"(두 기기) 안내는 v0.7.1로(b4b에서 문서에 적음).
+
+## 바뀐 것
+- `onChatRenamed`: 새 기록에 `direct: true`(정리된 이름 기록도). 뒤 이름 변경이 도착지를 바꿀 때 `delete x.direct`(`mem`과 함께).
+- `homeInput`: `renames`에 `direct` = 그 이름으로 온 기록이 (종류 상관없이) 하나뿐 && `x.direct` && `!x.took`.
+- `home.js decideRoom` 5행: 증거(`mem`)가 맞으면 예전대로 `rename`. 아니면 `carryOf(r, tag, body)` — `r.direct` · A 이름표 `linked`(이름표가 `renamed`면 아님) · 지금 이름 이름표 없음(`MISSING`) · 옛 사본(`copy`) 없음 · `input.left` 없음 · 고유값 있음 · 본체 `home`이 A·같은 고유값 · 지금 이름의 시작 표시 없음 · 단서 파일이 없거나 지금 이름 항목 없음 · 지금 이름의 자기 기억 본체(`homeId(B, integrity)`) 없음(읽기 실패면 후보 아님). 후보면 `{ id, from, to, mem, rev, wid, last, at }`. `input.agreed`가 그 기록·본체 ID·rev·wid와 정확히 같으면 `rename`(`agreed: true`), 아니면 `hold('renameUnproven', { carry })`. "이미 여기로 옮겨짐" 분기는 그 앞이라 동의로 안 감.
+- `index.js` 새 구역 "carrying on a rename made in the chat list": `CARRY_TEXT`, `carryScope`(1:1, 같은 캐릭터만), `chatNames`(목록 읽기, 실패·`{ error }`·빈 목록·`file_name` 없는 항목 = `null`), `carrySees`(A 없음·B 있음), `carryLook`(보류 판정 뒤 목록 → `h.carry`), `carryReady`, `carryAskText`, `carryRoom`(확인창 → 같은 방·같은 후보 → 목록 다시 → `h.agree` → `recheckHome('user')` → 결과 안내).
+- `linkRounds`: 처음에 `agreed = h.agree; h.agree = null; h.carry = null`, 라운드마다 `input.agreed`. 판정 뒤 `held`·`renameUnproven`·`d.carry`면 `carryLook`.
+- `renameHome`: `d.agreed`면 본체가 아직 옮겨지지 않았을 때만(아니면 `carryChanged`), 본체 쓰기 직전 목록을 다시 읽어 A 없음·B 있음이 아니면 `carryGone`(읽기 실패 `carryList`) 보류, 쓰기 0.
+- `homeAlert`: `이름 변경 이어서 연결`(`home-carry`) 버튼, `homeMessage` 안내 한 문장, `handle` `case 'home-carry'`, `HOLD_TEXT`에 `carryChanged`·`carryList`·`carryGone`.
+
+## ★ 특히 봐 줄 곳
+1. **목록 확인과 이동 사이 틈:** 목록은 버튼을 보일 때 · 확인 직후 · 본체 쓰기 직전에 읽어요. 마지막 읽기와 본체 업로드 사이에 A가 다시 생기는 틈은 남아요(서버에 비교 후 쓰기 없음). 이름표·본체 쪽은 `writeMem`의 rev·wid 확인이 지켜요.
+2. **"하나뿐" 조건:** 그 이름으로 온 기록 전체(떠난 기록 정리·`foreign`·`closed` 포함)가 하나일 때만. A → B → C는 이어 붙인 A → C(`direct` 지움)와 B → C 두 개라 안 됨. `delete x.direct`와 "하나뿐"은 서로 겹 장치(아래 망가뜨리기).
+3. **동의 뒤 다른 곳 저장:** rev·wid가 달라져서 이번 동의로 안 옮기고 새 영수증으로 다시 물어봐요(검사 6). 다른 기기가 오래된 A 화면에서 저장한 경우인데 다시 묻는 게 맞는지.
+4. **이동 뒤 남는 것:** 옮긴 뒤 `clearLeft(input.was)`는 B에서 떠난 기록만 정리해요. A의 떠난 이름(`leftNames`)·A → B 기록은 그대로라, 나중에 A 이름으로 새 채팅을 열면 기존처럼 `renamedAway` 보류. 열어 둔 방 이름 변경과 같은 결과예요.
+5. **그룹 채팅:** `carryScope`가 `group:`이면 후보 표시만 남고 버튼 없음(목록 요청도 안 보냄).
+
+## 검사 준비(`carry.cjs`, 새)
+- `listRoom(a, b, between)`: 방 `a`에 10개 기록 → 다른 방으로 → `M.renameChat(a, b)`(목록 이름 변경) → `between` → `b` 열기 → `h.carry`까지 기다림. 업로드 셈은 `savepoint-(mem|room|int|moved|moving|copy)-`만(떠난 방의 AUTO 백업이 섞임).
+- `press(onPopup, answer)`: 확인창이 열린 동안 `onPopup` 실행, `M.confirm = answer`, `handle('home-carry')`. `window.__listHook(n)`: n번째 목록 요청 직전(응답을 돌려주면 그걸로).
+- 1 정상(버튼·취소 쓰기 0·확인창 문구·이동·이름표·다음 세이브) · 2 빈 파일 A · 2b A에 같은 고유값 사본 · 3 목록 500·`{ error }`·빈 목록·이상한 답 · 3b 확인 뒤 목록 실패 · 4 확인창 중 A 재생성 · 4b 본체 쓰기 직전 목록에서 A(3번째 목록 요청) · 5 확인창 중 방 이동 → 다시 열면 버튼 · 6 확인창 중 다른 곳 기억 저장 → 보류·새 영수증으로 다시 물음 · 7 다른 탭이 이동 끝냄 → 1행 연결·쓰기 0 · 7b 다른 탭 이동 중간 → 보류·버튼 없음 · 8 목록에서 두 번 바꿈 → 버튼 없음. 모든 장면 채팅 저장 0.
+
+## 검사와 망가뜨리기 결과
+- 고치기 전 코드(`a09e1ce`, 새 검사·mock 복사): 18줄 FAIL(버튼 없음).
+- 망가뜨리기: `renameHome` 직전 목록 확인 빼기 → 4b · `carryLook`의 목록 확인 빼기 → 2·2b·3 넷 · 동의의 rev·wid 비교 빼기 → 6 두 줄 · `delete x.direct`와 "하나뿐" 함께 빼기 → 8 · `carryOf`의 자기 기억 본체 확인 빼기 / 단서 항목 확인 빼기 → `home.test` b4a. 안 잡힘(겹 장치): `delete x.direct`만 빼기·"하나뿐"만 빼기(서로 막음), 확인 직후 `here()`·`still()` 빼기(목록 읽은 뒤 같은 확인이 또 있음).
+- Node 512 통과 / 0 실패 / 3 건너뜀.
+- 브라우저 61묶음 한꺼번에: 60 통과 + `status` 알려진 `autoFail` null 오류 → 따로 첫 번째에 통과. 검사 모드 오류 0(`carry` 20줄, `room-gate` 74줄, `home-link` 82줄).
+
 # v0.7.0-b3d3 · b3d2 리뷰 반영 (늦게 들어간 내 사본을 🔖 해제로 착각) (브랜치 `v0.7-b`)
 
 > **b3d3 GPT 리뷰(`546da3e..3852e6e`, 요청서 `1d5b470`): P1·P2 없음, P3 문서 표현 1(★1 고침) → b3 끝.** 내 사본이면 🔖 유지·재전송 멈춤, 실제 다른 탭 해제는 화면에도 반영, 삭제 뒤 서버=화면이면 기존대로 재전송(모의 저장으로 확인). 삭제 전 사본이 남은 동안 SavePoint 저장 거절도 그대로 두기로(변경 적용 전에 멈춤, 실리태번 저장 뒤 다시 확인).
