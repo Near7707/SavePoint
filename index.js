@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b4a1';
+const VERSION = '0.7.0-b4a2';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -2392,7 +2392,10 @@ async function renameHome(h, d, input, files) {
         // right before the upload, after the body is read again: no read of its own). The automatic move of an open room is as before.
         const epoch = roomEpoch;
         const w = await writeMem(memIO(), h.line, { name: memName(d.mem), valid: validMem(d.mem), make: f => ({ ...nextMem(f, { ...f.state, roomKey: addr }, wid),
-            home: { addr, integrity: f.home.integrity ?? null, was: [...new Set([...(f.home.was || []), f.home.addr])].filter(a => a !== addr) }, closes: [...input.closes] }),
+            home: { addr, integrity: f.home.integrity ?? null, was: [...new Set([...(f.home.was || []), f.home.addr])].filter(a => a !== addr) }, closes: [...input.closes],
+            // v0.7.0-b4a2 (review of b4a1, P1): the agreed move says so in the body it uploads (the record, the old name, this receipt), so an
+            // opening after a cut (the room left after the upload, no answer, the tab closed, a tag not written) finishes it (decideRoom row 5).
+            ...(d.agreed ? { carried: { id: d.rid, from: d.from, wid } } : {}) }),
             ...(d.agreed ? { ready: () => mine() && roomEpoch === epoch } : {}) });
         if (!mine()) return;
         if (w.status === PENDING) { setHome(h, 'pending'); return; }

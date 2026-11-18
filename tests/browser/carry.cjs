@@ -225,6 +225,76 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     ok(d3.carry && r.status === 'linked' && r.id === 'mem-d3-other' && !r.toast.includes('이어서 이 방에 기억을 연결했어요') && r.toast.includes('다른 기억이 이미 연결돼') && m.at === 'A' && r.saves === 0,
         `11. (b4a1) 확인창 중 B에 다른 기억이 연결됨 → 이어받기 성공 안내 없음, 예전 기억 그대로 (${JSON.stringify({ r: { ...r, text: '' }, m })})`);
 
+    // v0.7.0-b4a2 (review of b4a1, P1): the agreed move cut off after its body was uploaded (the room left before the answer, a tag not
+    // written): the body says so itself (`carried`: the record, the old name, that upload's receipt), and opening B again finishes the
+    // links without writing the body again. Saved since (another receipt), another record, or another link at B: held, nothing written.
+    // `cut(id, x)`: while the box is open, arrange to leave for room `x` right after the body's upload lands (before its answer is read).
+    const cut = (id, x) => `window.__base = window.__log.lists; const name = M.H.memName(${JSON.stringify(id)}), g = window.fetch; let done = false;
+        window.fetch = async (u, o = {}) => { if (!done && String(u) === '/api/files/upload' && JSON.parse(o.body).name === name) { done = true; const res = await g(u, o);
+            await M.switchChat(${JSON.stringify(x)}, [], {}); window.fetch = g; return res; } return g(u, o); };
+        window.__restore = () => { window.fetch = g; };`;
+    // Open `b` again (from wherever the page is), with `before` (JS, `A`·`B`·`id`) run first; what this page wrote meanwhile.
+    const reopen = (b, x, before = '') => ev(async ([b, x, before]) => {
+        if (before) await (0, eval)(`(async (A, B, id) => { ${before} })`)(x.A, x.B, x.id);
+        await M.switchChat(b + 'y', [], {}); await M.opened();
+        const n = M.fileLog.length, m = __mark();
+        await M.openFile(b); await M.opened(); await new Promise(z => setTimeout(z, 400)); await M.opened();
+        const h = __savePoint.home();
+        return { ...__look(), ...__since(m), id: h.id, puts: M.fileLog.slice(n).filter(x => x[0] === 'put' && /^savepoint-(mem|room|int|moved|moving|copy)-/.test(x[1])).map(x => x[1]) };
+    }, [b, x, before]);
+    const memPuts = r => r.puts.filter(n => /^savepoint-mem-/.test(n)).length;
+    // 12. Left right after the body's upload: B opened again → the links made, the body not written again; then saves go on.
+    r = await listRoom('chatE1', 'chatE1b');
+    const e1 = r;
+    r = await press(cut(e1.id, 'chatE1x'));
+    await ev(() => { window.__restore?.(); window.__restore = null; });
+    m = await memAt(e1.id, e1.A, e1.B);
+    const carried = await ev(id => JSON.parse(M.files.get(M.H.memName(id))).carried || null, e1.id);
+    ok(e1.carry && m.at === 'B' && !m.tagB && m.tagA === 'linked' && carried?.from === e1.A && !!carried?.id, `12. 본체 업로드 직후 방 이동 → 본체만 B, 이어 가기 표시 있음 (${JSON.stringify({ m, carried })})`);
+    r = await reopen('chatE1b', e1);
+    m = await memAt(e1.id, e1.A, e1.B);
+    ok(r.status === 'linked' && r.id === e1.id && memPuts(r) === 0 && m.tagB && m.tagA === 'renamed' && r.saves === 0, `12. B를 다시 열면 이름표만 써서 연결, 본체 쓰기 0 (${JSON.stringify({ r: { ...r, text: '' }, m })})`);
+    r = await ev(async () => { M.add(2); await __savePoint.handle('run').catch(() => {}); const id = __savePoint.home().id, d = id ? JSON.parse(M.files.get(M.H.memName(id)) || 'null') : null;
+        return { last: __savePoint.state()?.lastIndex, file: id ? M.mem()?.lastIndex : null, status: __savePoint.home().status, carried: d ? d.carried || null : 'none' }; });
+    ok(r.last === 11 && r.file === 11 && r.status === 'linked' && !r.carried, `12. 그 뒤 세이브 평소대로, 표시는 다음 저장에서 사라짐 (${JSON.stringify(r)})`);
+    // 12b. The tag at B refused after the move: stopped; B opened again → finished the same way.
+    r = await listRoom('chatE2', 'chatE2b');
+    const e2 = r;
+    await ev(() => { M.failFile = 'savepoint-room-'; M.failFileStatus = 400; });
+    r = await press();
+    await ev(() => { M.failFile = null; M.failFileStatus = null; });
+    m = await memAt(e2.id, e2.A, e2.B);
+    ok(e2.carry && r.status !== 'linked' && m.at === 'B' && !m.tagB && m.tagA === 'linked', `12b. 옮긴 뒤 B 이름표 거절 → 본체만 B (${JSON.stringify({ r: { ...r, text: '' }, m })})`);
+    r = await reopen('chatE2b', e2);
+    m = await memAt(e2.id, e2.A, e2.B);
+    ok(r.status === 'linked' && r.id === e2.id && memPuts(r) === 0 && m.tagB && m.tagA === 'renamed' && r.saves === 0, `12b. B를 다시 열면 이어서 연결, 본체 쓰기 0 (${JSON.stringify({ r: { ...r, text: '' }, m })})`);
+    // 12c. Cut the same way, then: saved elsewhere (another receipt, the mark copied along) / the record no longer the same / another
+    // memory's clue entry at B → held, nothing written.
+    for (const [tag, js] of [['saved', `const d = JSON.parse(M.files.get(M.H.memName(id))); M.otherPut(M.H.memName(id), { ...d, rev: d.rev + 1, wid: 'other.e3', recent: [...d.recent, { rev: d.rev + 1, wid: 'other.e3' }] });`],
+        ['record', `const rec = M.settings.savePoint.renames.find(x => x.to === B); rec.at += 1;`],
+        ['clue', `const d = JSON.parse(M.files.get(M.H.memName(id))); M.otherPut(M.H.clueName(d.home.integrity), M.H.clueBody(d.home.integrity, [{ addr: B, mem: 'mem-other-e3' }]));`]]) {
+        r = await listRoom('chatE3' + tag, 'chatE3' + tag + 'b');
+        const x = r;
+        await press(cut(x.id, 'chatE3' + tag + 'x'));
+        await ev(() => { window.__restore?.(); window.__restore = null; });
+        r = await reopen('chatE3' + tag + 'b', x, js);
+        m = await memAt(x.id, x.A, x.B);
+        ok(x.carry && r.status === 'held' && !r.ups.length && !r.puts.length && r.saves === 0 && m.at === 'B' && !m.tagB && m.tagA === 'linked',
+            `12c. 이어 가기 표시가 안 맞음(${tag}) → 보류, 쓰기 0 (${JSON.stringify({ r: { ...r, text: '' }, m })})`);
+    }
+    // 12d. B's tag written, then the clue refused: B opened again links by its tag (row 3), saves go on (A's old tag is left as it was).
+    r = await listRoom('chatE4', 'chatE4b');
+    const e4 = r;
+    await ev(() => { M.failFile = 'savepoint-int-'; M.failFileStatus = 400; });
+    r = await press();
+    await ev(() => { M.failFile = null; M.failFileStatus = null; });
+    m = await memAt(e4.id, e4.A, e4.B);
+    ok(e4.carry && r.status !== 'linked' && m.at === 'B' && m.tagB && m.tagA === 'linked', `12d. B 이름표 뒤 단서 거절 → 본체·B 이름표 있음 (${JSON.stringify({ r: { ...r, text: '' }, m })})`);
+    r = await reopen('chatE4b', e4);
+    const r2 = await ev(async () => { M.add(2); await __savePoint.handle('run').catch(() => {}); return { last: __savePoint.state()?.lastIndex, file: M.mem()?.lastIndex, status: __savePoint.home().status }; });
+    ok(r.status === 'linked' && r.id === e4.id && memPuts(r) === 0 && r.saves === 0 && r2.last === 11 && r2.file === 11 && r2.status === 'linked',
+        `12d. B를 다시 열면 연결, 그 뒤 세이브 평소대로 (${JSON.stringify({ r: { ...r, text: '' }, r2 })})`);
+
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();

@@ -164,7 +164,8 @@ const validFrom = f => plainObj(f) && ['migrate', 'branch', 'new'].includes(f.ki
 export const validMem = id => d => plainObj(d) && d.format === 'savepoint-mem' && d.v === 1 && d.id === id && int(d.rev) && d.rev >= 0 && str(d.wid)
     && Array.isArray(d.recent) && d.recent.every(x => plainObj(x) && int(x.rev) && str(x.wid))
     && validFrom(d.from) && plainObj(d.home) && str(d.home.addr) && optStr(d.home.integrity) && optStr(d.copy) && validState(d.state)
-    && (d.closes === undefined || Array.isArray(d.closes) && d.closes.every(str));
+    && (d.closes === undefined || Array.isArray(d.closes) && d.closes.every(str))
+    && (d.carried === undefined || plainObj(d.carried) && str(d.carried.id) && str(d.carried.from) && str(d.carried.wid));
 export const validTag = addr => d => plainObj(d) && d.format === 'savepoint-room' && d.v === 1 && d.addr === addr && str(d.mem)
     && optStr(d.integrity) && optStr(d.copy) && Array.isArray(d.prints) && d.prints.every(p => plainObj(p) && int(p.i) && p.i >= 0 && str(p.h))
     && (d.state === 'linked' || d.state === 'renamed' && str(d.to));
@@ -179,6 +180,9 @@ export const validCopyHint = copy => d => plainObj(d) && d.format === 'savepoint
 // same list its tag got). An empty list is a known one; none at all (a memory made before b3a2b) is unknown. Kept by every save.
 export const memBody = ({ id, state, rev = 0, wid, recent = [], from, home, copy = null, closes }) =>
     ({ format: 'savepoint-mem', v: 1, id, rev, wid, recent: [...recent, { rev, wid }].slice(-RECENT), from, home, copy, ...(Array.isArray(closes) ? { closes: [...closes] } : {}), state });
+// v0.7.0-b4a2 (review of b4a1, P1): `carried` ({ id, from, wid }): written only with the body a move the user agreed to uploads (renameHome):
+// the rename record's id, the old name and that upload's receipt. Never made by memBody, so the next save (nextMem) drops it; it is
+// proof only while the body's receipt is still that upload's (decideRoom row 5, a move already made).
 // v0.7.0-b1h (review of b1g, P1): `closes`: the renames seen away from this name before a new room's first write here (their ids,
 // `from|at` on the device that saw them). The tag carries them, so they are never proof for it, whatever the settings say.
 export const tagBody = ({ addr, integrity = null, mem, copy = null, prints = [], at = Date.now(), closes = [] }) =>
@@ -357,6 +361,21 @@ export async function decideRoom(input, read, { readMem = id => read(memName(id)
         return { id: r.id, from: r.from, to: addr, mem: tag.mem, rev: body.rev, wid: body.wid,
             last: Number.isInteger(st?.lastIndex) ? st.lastIndex : -1, at: Number.isFinite(st?.lastRecord?.at) ? st.lastRecord.at : null };
     };
+    // v0.7.0-b4a2 (review of b4a1, P1): a move the user agreed to, already made by its body (see row 5): the body names this record and
+    // its old name, its receipt is still that upload's, its home is here with this integrity, and nothing else links this name yet.
+    const carriedOn = async (r, tag, body) => {
+        const c = body.carried;
+        if (!plainObj(c) || c.id !== r.id || c.from !== r.from || c.wid !== body.wid || tag.mem !== body.id) return false;
+        if (!str(integrity) || body.home.integrity !== integrity || copy) return false;
+        if (tagRes.kind !== MISSING) return false;
+        if (files.get(startName(addr))?.kind !== MISSING) return false;
+        const clue = files.get(clueName(integrity));
+        if (clue?.kind !== OK && clue?.kind !== MISSING) return false;
+        if (clue.kind === OK && clue.data.rooms.some(x => x.addr === addr && x.mem !== body.id)) return false;
+        const own = homeId(addr, integrity);
+        if (own !== body.id && (await mem(own)).kind !== MISSING) return false;
+        return true;
+    };
     // 5: renamed on this device, same integrity.
     for (const r of input.renames || []) {
         if (r?.to !== addr || !str(r.from) || r.from === addr) continue;
@@ -378,6 +397,15 @@ export async function decideRoom(input, read, { readMem = id => read(memName(id)
         // v0.7.0-b3a2b2 (review of b3a2b1, P1): a record without its memory (renamed in the list, its proof dropped, or before b3a2b)
         // proves nothing either: held (the move left half done before b3a2b is picked up in b4).
         if (m.data.home.addr === addr && Array.isArray(m.data.home.was) && m.data.home.was.includes(r.from)) {
+            // v0.7.0-b4a2 (review of b4a1, P1): a move the user agreed to, its body uploaded and the rest cut off (the room left, no
+            // answer, the tab closed, a tag not written): that body says so itself (`carried`, see memBody), for this very record and
+            // while its receipt is that upload's. Then the steps after the move are made (the body is not written again), with the same
+            // checks this name had when the move was offered (no start mark, no clue entry or own memory of another one).
+            const carried = !plainObj(r.mem) && r.direct === true && await carriedOn(r, t.data, m.data);
+            if (carried) {
+                if (input.left) return hold(5, 'renamedAway', { mem: t.data.mem, to: input.left });
+                return out('rename', 5, { from: r.from, mem: t.data.mem, moved: true, carried: true });
+            }
             if (!plainObj(r.mem) || r.mem.id !== t.data.mem) return hold(5, 'renameUnproven', { mem: t.data.mem, from: r.from });
             if (input.left) return hold(5, 'renamedAway', { mem: t.data.mem, to: input.left });
             return out('rename', 5, { from: r.from, mem: t.data.mem, moved: true });
@@ -391,7 +419,7 @@ export async function decideRoom(input, read, { readMem = id => read(memName(id)
         // name yet. The user's consent (`input.agreed`) binds that record and the memory's id, rev and receipt; anything else changed → held.
         const carry = plainObj(r.mem) ? null : await carryOf(r, t.data, m.data);
         if (carry && plainObj(input.agreed) && input.agreed.id === carry.id && input.agreed.from === carry.from && input.agreed.mem === carry.mem
-            && input.agreed.rev === carry.rev && input.agreed.wid === carry.wid) return out('rename', 5, { from: r.from, mem: t.data.mem, agreed: true });
+            && input.agreed.rev === carry.rev && input.agreed.wid === carry.wid) return out('rename', 5, { from: r.from, mem: t.data.mem, agreed: true, rid: r.id });
         return hold(5, 'renameUnproven', { mem: t.data.mem, from: r.from, ...(carry ? { carry } : {}) });
     }
     // This name's tag says it was renamed away and no rename back to it was seen here: a room under the
