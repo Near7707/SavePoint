@@ -63,7 +63,9 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     // One reply as SillyTavern makes it: GENERATION_STARTED, GENERATION_AFTER_COMMANDS, then the interceptor (abort(true) recorded),
     // then the end. `pre`: run (as page code) right before the start, without waiting for the room (a send made while it opens).
     // `mid`: run after the start, before the interceptor (v0.7.0-c1a). A dry run never reaches the interceptor (SillyTavern skips it).
-    const send = (type = 'normal', { dry = false, pre = null, during = null, mid = null } = {}) => ev(async ([type, dry, pre, during, mid]) => {
+    // v0.7.0-c1b: `copy`: the interceptor gets SillyTavern's copy of the messages to send, made after `mid` (no system messages; new
+    // objects, the same `extra`), else an empty list as before. `late`: run after the copy, before the interceptor.
+    const send = (type = 'normal', { dry = false, pre = null, during = null, mid = null, copy = false, late = null } = {}) => ev(async ([type, dry, pre, during, mid, copy, late]) => {
         const c = { p: (M.popups || []).length, t: toastr.log.length, s: M.stops || 0 };
         if (pre) await new Function(`return (async () => { ${pre} })()`)();
         await M.eventSource.emit('generation_started', type, {}, dry);
@@ -71,7 +73,9 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
         if (mid) await new Function(`return (async () => { ${mid} })()`)();
         let aborted = null; const t0 = Date.now();
         if (dry) return { aborted, pop: (M.popups || []).slice(c.p), toast: toastr.log.slice(c.t).map(x => x[1]).join(' | ') };
-        const run = globalThis.savePointSendGuard([], 4096, now => { aborted = now; }, type);
+        const made = copy ? M.chat.filter(m => !m.is_system).map((m, index) => ({ ...m, mes: m.mes, index })) : [];
+        if (late) await new Function('made', `return (async () => { ${late} })()`)(made);
+        const run = globalThis.savePointSendGuard(made, 4096, now => { aborted = now; }, type);
         if (during) await new Function(`return (async () => { ${during} })()`)();
         await run;
         const ms = Date.now() - t0;
@@ -79,7 +83,7 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
         const h = __savePoint.home();
         return { aborted, ms, pop: (M.popups || []).slice(c.p), toast: toastr.log.slice(c.t).map(x => x[1]).join(' | '), stops: (M.stops || 0) - c.s,
             ok: M.popupOpts?.okButton || null, status: h.status, pending: !!(h.status === 'pending' || h.line?.pending), h2: h.h2?.why || null, inj: (M.prompts.savepoint?.v || '').length };
-    }, [type, dry, pre, during, mid]);
+    }, [type, dry, pre, during, mid, copy, late]);
     // v0.7.0-c1a: a group as SillyTavern runs it. A send: Generate (start + after commands, no interceptor: it hands over to the
     // group run) → GROUP_WRAPPER_STARTED → each member's reply (send) → FINISHED. A regenerate: the old replies deleted
     // (MESSAGE_DELETED) → the group run straight away, its members 'normal'. Auto mode: the run with type 'auto'.
@@ -256,6 +260,71 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     ok(r.aborted === null && !r.pop.length, `11. 시작 뒤 숨김이 늘어난 건 멈추지 않음 (${JSON.stringify(r)})`);
     r = await send('normal', { mid: "const i = M.chat.findIndex(m => m.is_system && m.extra?.savepointHidden); M.chat[i] = JSON.parse(JSON.stringify(M.chat[i]));" });
     ok(r.aborted === true && /바뀌어서/.test(r.toast), `11. 숨긴 자리의 메시지가 바뀜 → 멈춤 (${JSON.stringify(r)})`);
+
+    // ───── v0.7.0-c1b: review of c1a ─────
+    // 12. (P1) a group regenerate deletes the old replies and waits before its run starts; a send made meanwhile leaves a candidate.
+    //     The deletion marks the room: the run that starts next is only told (cancelling would lose the deleted replies).
+    await ev(f => { M.groups = [{ id: 'g1', name: 'Team', chat_id: 'sgG2' }]; M.groupId = 'g1'; M.serverFiles.sgG2 = f; }, copied('sgG2'));
+    await openRoom('sgG2');
+    await ev(() => { M.confirm = 0; });
+    await ev(() => M.eventSource.emit('message_deleted', M.chat.length));
+    await outer();
+    await wrapStart(); r = await send(); await wrapEnd();
+    ok(!r.pop.length && r.aborted === null && r.stops === 0, `12. 재생성 삭제 뒤 새 보내기가 먼저 후보를 남겨도 그 묶음은 묻지 않음 (${JSON.stringify(r)})`);
+    //     the mark is kept through other generations (their starts and ends) until a group run takes it.
+    await ev(async () => { await M.eventSource.emit('message_deleted', M.chat.length); await M.eventSource.emit('generation_started', 'quiet', {}, false); await M.eventSource.emit('generation_ended'); });
+    await outer();
+    await wrapStart(); r = await send(); const r12b = await send(); await wrapEnd();
+    ok(!r.pop.length && r.aborted === null && !r12b.pop.length && r12b.aborted === null, `12. 삭제 표시는 다른 생성의 시작·끝에도 남고, 그 묶음 전체가 묻지 않음 (${JSON.stringify([r, r12b])})`);
+    //     taken once: the next send is asked again.
+    await groupSend(); r = await send(); await wrapEnd();
+    ok(r.pop.length === 1 && r.aborted === true, `12. 표시는 한 번만 → 다음 전송은 다시 물음 (${JSON.stringify(r)})`);
+    //     a message deleted by hand: the first send after it is only told (known side effect), the one after asked.
+    await ev(() => M.eventSource.emit('message_deleted', M.chat.length));
+    await groupSend(); r = await send(); await wrapEnd();
+    await groupSend(); const r12c = await send(); await wrapEnd();
+    ok(!r.pop.length && r.aborted === null && r12c.pop.length === 1, `12. 손으로 지운 뒤 첫 전송은 알림만, 그다음은 물음 (${JSON.stringify([r, r12c])})`);
+    //     the room opened again (or left) drops the mark.
+    await ev(() => M.eventSource.emit('message_deleted', M.chat.length));
+    await openRoom('sgG2');
+    await groupSend(); r = await send(); await wrapEnd();
+    ok(r.pop.length === 1 && r.aborted === true, `12. 방을 다시 열면 삭제 표시는 지워짐 → 물음 (${JSON.stringify(r)})`);
+    await ev(() => { M.groupId = null; M.groups = []; });
+
+    // 13. (P2) the copy the interceptor gets decides. A hide of the start taken away before the copy: the original is in the copy →
+    //     not stopped, not asked.
+    await ev(() => { M.confirm = 0; });
+    const UNHIDE = "for (const m of M.chat) if (m.is_system && m.extra?.savepointHidden) { m.is_system = false; delete m.extra.savepointHidden; }";
+    await openRoom('sgP', copied('sgP'));
+    r = await send('normal', { mid: UNHIDE, copy: true });
+    ok(r.aborted === null && !r.pop.length && !r.toast, `13. 시작 뒤 풀린 숨김이 사본에 들어감 → 멈추지 않음 (${JSON.stringify(r)})`);
+    //     not surely matched → stopped as before: the `extra` replaced, the copy's `extra` deep-copied (another extension), or one
+    //     `extra` held by two messages.
+    await openRoom('sgP', copied('sgP2'));
+    r = await send('normal', { mid: "for (const m of M.chat) if (m.is_system && m.extra?.savepointHidden) { m.is_system = false; m.extra = {}; }", copy: true });
+    ok(r.aborted === true && /바뀌어서/.test(r.toast), `13. extra가 바뀌어 짝을 못 찾음 → 멈춤 (${JSON.stringify(r)})`);
+    await openRoom('sgP', copied('sgP3'));
+    r = await send('normal', { mid: UNHIDE, copy: true, late: "for (const c of made) c.extra = JSON.parse(JSON.stringify(c.extra || {}));" });
+    ok(r.aborted === true && /바뀌어서/.test(r.toast), `13. 다른 확장이 사본의 extra를 깊게 복사 → 멈춤 (${JSON.stringify(r)})`);
+    await openRoom('sgP', copied('sgP4'));
+    r = await send('normal', { pre: "M.chat[1].extra = M.chat[0].extra;", mid: UNHIDE, copy: true });
+    ok(r.aborted === true && /바뀌어서/.test(r.toast), `13. 두 메시지가 같은 extra → 짝 안 지음 → 멈춤 (${JSON.stringify(r)})`);
+    //     a hide put on after the copy (the original sent) beyond what the memory covers: not asked; a replaced `extra` is asked.
+    await recorded('sgQ');
+    await ev(() => M.add(2));
+    await wait(400);
+    const HIDE8 = "M.chat[8].is_system = true; M.chat[8].extra.savepointHidden = 1;";
+    const SHOW8 = "M.chat[8].is_system = false; delete M.chat[8].extra.savepointHidden;";
+    r = await send('normal', { copy: true, late: HIDE8 });
+    ok(r.aborted === null && !r.pop.length, `13. 사본을 만든 뒤 숨겨진 원문은 사본에 있음 → 묻지 않음 (${JSON.stringify(r)})`);
+    await ev(new Function(SHOW8));
+    r = await send('normal', { copy: true, late: "M.chat[8].is_system = true; M.chat[8].extra = { savepointHidden: 1 };" });
+    ok(r.pop.length === 1 && /#8\(1개\)/.test(r.pop[0]) && r.aborted === true, `13. extra가 바뀐 숨김은 짝을 못 찾음 → 물음 (${JSON.stringify(r)})`);
+    await ev(new Function(SHOW8));
+    r = await send('normal', { late: HIDE8 });
+    ok(r.pop.length === 1 && r.aborted === true, `13. 사본을 못 받으면(빈 목록) 예전처럼 물음 (${JSON.stringify(r)})`);
+    await ev(new Function(SHOW8));
+    await ev(() => { M.confirm = 1; });
 
     await page.close();
     await browser.close(); srv.close();

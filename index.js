@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-c1a';
+const VERSION = '0.7.0-c1b';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -7795,14 +7795,23 @@ function onSourceChanged() {
 // outside a group run): that leaves a candidate, which the group run starting next takes once (sendGroup). A new generation, a
 // deleted message (a regenerate deletes before it runs), the end of a generation or a room change drops an unused candidate.
 // (P2-2) A dry run never reaches the interceptor (SillyTavern skips it), so nothing is kept for it.
+// v0.7.0-c1b (review of c1a, P1): a regenerate deletes the old replies, then waits (the members are read) before its run starts:
+// a send made in that gap leaves a candidate the regenerate's run would take. So a message deleted in a group room marks the room
+// (sendCut, kept through generation starts and ends) and the next group run there takes the mark instead: no candidate, that whole
+// run only told. A message deleted by hand makes the first send after it only told too (SillyTavern names no request for a run).
 let genCount = 0;                   // non-dry generations started (any type)
 let sendAllow = null;               // a group's "이번만": { key, epoch, sig }
 let sendCand = null;                // a send through Generate, not yet taken by a group run: { key, epoch, n }
 let groupOn = false;                // a group run is going (GROUP_WRAPPER_STARTED .. FINISHED)
 let sendGroup = null;               // that run is a send's: { key, epoch }
+let sendCut = null;                 // a message deleted in a group room, not yet taken by a group run: { key, epoch }
 // v0.7.0-c1a (review of c1, P2-1): the SavePoint hides at the start of the generation (after its own hide pass), each with its
 // message: a hide taken away before the interceptor is still left out of the messages SillyTavern copied, so it stops that reply.
-let sendStart = null;               // { n, key, epoch, list: [[i, m]] }
+// v0.7.0-c1b (review of c1a, P2): unless the copy the interceptor gets surely has that original (sendHas). SillyTavern's copy makes
+// new message objects but keeps each one's `extra`: so the `extra` of the start (or, for a hide put back after the copy, of now)
+// found exactly once in the copy, and held by no other message of the chat, is that original sent. Anything else is not known:
+// the stop (or the question) stays as it was.
+let sendStart = null;               // { n, key, epoch, list: [[i, m, extra]] }
 let sendAsk = null;                 // the question open now: { key, epoch, end }
 const SEND_WAIT_MS = 5000;
 const SEND_TAIL = ' 다시 답변을 받으려면 입력칸이 비어 있는지 먼저 확인하고 보내기를 눌러 주세요. 실리태번의 빈 전송 문구 설정이 켜져 있으면 그 문구가 새 글로 추가돼요.';
@@ -7857,14 +7866,22 @@ function sendConfirm(text, key, epoch) {
         Promise.resolve(shown).then(v => ask.end(v === true || v === 1), () => ask.end(false));
     });
 }
-function sendEnd() { sendAsk?.end(false); sendAsk = null; sendAllow = null; sendCand = null; sendGroup = null; sendStart = null; }
-function sendHides() { return chat().map((m, i) => (m?.is_system && m.extra?.[HIDE_KEY] ? [i, m] : null)).filter(Boolean); }
-// Every hide of the start still there (same message at the same place, still SavePoint's hide); hides added since do not count.
-function startHeld(n, key, epoch) {
+function sendEnd() { sendAsk?.end(false); sendAsk = null; sendAllow = null; sendCand = null; sendGroup = null; sendStart = null; sendCut = null; }
+function sendHides() { return chat().map((m, i) => (m?.is_system && m.extra?.[HIDE_KEY] ? [i, m, m.extra] : null)).filter(Boolean); }
+// v0.7.0-c1b: `x` (a message's `extra`) is surely in the copy to send: an object held by no more than one message of the chat and
+// found exactly once in the copy.
+function sendHas(copy, x) {
+    if (!x || typeof x !== 'object' || !Array.isArray(copy)) return false;
+    if (chat().filter(m => m?.extra === x).length > 1) return false;
+    return copy.filter(c => c?.extra === x).length === 1;
+}
+// Every hide of the start still there (same message at the same place, still SavePoint's hide) or, taken away, that original surely
+// in the copy (v0.7.0-c1b); hides added since do not count.
+function startHeld(n, key, epoch, copy) {
     const s = sendStart;
     if (!s || s.n !== n || s.key !== key || s.epoch !== epoch) return true;
     const list = chat();
-    return s.list.every(([i, m]) => list[i] === m && !!m.is_system && !!m.extra?.[HIDE_KEY]);
+    return s.list.every(([i, m, x]) => list[i] === m && (!!m.is_system && !!m.extra?.[HIDE_KEY] || sendHas(copy, x)));
 }
 // Whether this reply is one the guard asks about: a normal send (1:1), or a member's reply in a group run a send started.
 function sendAsked(type) {
@@ -7877,12 +7894,18 @@ function onAfterCommands(type, _opts, dryRun) {
     sendCand = { key: roomKey(), epoch: roomEpoch, n: genCount };
 }
 function onGroupStarted(e) {
-    const c = sendCand;
-    sendCand = null; sendAllow = null; groupOn = true;
+    const c = sendCand, cut = sendCut;
+    sendCand = null; sendCut = null; sendAllow = null; groupOn = true;
+    // v0.7.0-c1b: a run after a deletion in this room is taken as a regenerate's: only told, whatever candidate is waiting.
+    if (cut && cut.key === roomKey() && cut.epoch === roomEpoch) { sendGroup = null; return; }
     sendGroup = c && c.key === roomKey() && c.epoch === roomEpoch && c.n === genCount && sendTypeAsked(e?.type ?? undefined) ? { key: c.key, epoch: c.epoch } : null;
 }
+function onSendDeleted() {
+    sendCand = null;   // v0.7.0-c1a: a group regenerate deletes the old replies first
+    if (ctx().groupId) sendCut = { key: roomKey(), epoch: roomEpoch };   // v0.7.0-c1b
+}
 function onGroupFinished() { groupOn = false; sendGroup = null; sendAllow = null; }
-async function sendGuard(_chat, _size, abort, type) {
+async function sendGuard(copy, _size, abort, type) {
     const n = genCount, key = roomKey(), epoch = roomEpoch, group = !!ctx().groupId;
     const here = () => roomKey() === key && roomEpoch === epoch;
     const stop = why => {
@@ -7896,22 +7919,25 @@ async function sendGuard(_chat, _size, abort, type) {
     try {
         if (!settings().enabled || !hasChat() || !sendAsked(type)) return;
         // v0.7.0-c1a (review of c1, P2-1): a hide of the start taken away since: the copy to send still leaves that original out.
-        if (!startHeld(n, key, epoch)) return stop('changed');
-        const hidden = hiddenMarked();
+        if (!startHeld(n, key, epoch, copy)) return stop('changed');
+        const seen = hiddenMarked();
+        // v0.7.0-c1b: a hide put on after the copy was made, its original surely in the copy, is no gap.
+        const sent = i => sendHas(copy, chat()[i]?.extra);
+        const hidden = seen.filter(i => !sent(i));
         if (!hidden.length) return;
         // Still finding the room's memory: a short wait here (the messages to send are copied already, so what changes meanwhile is
         // checked against what they left out).
         const finding = () => !homeHere() || home.status === 'opening' || home.status === 'idle' || !!home.linking;
         for (const end = Date.now() + SEND_WAIT_MS; here() && finding() && Date.now() < end;) await wait(150);
         if (!here()) return stop('moved');
-        if (hiddenMarked().join() !== hidden.join()) return stop('changed');
+        if (hiddenMarked().join() !== seen.join() || seen.filter(i => !sent(i)).join() !== hidden.join()) return stop('changed');
         const first = sendGap(hidden);
         if (!first.gap.length) { refreshInjection(); return; }
         if (group && sendAllow && sendAllow.key === key && sendAllow.epoch === epoch && sendAllow.sig === first.sig) { refreshInjection(); return; }
         const yes = await sendConfirm(sendAskText(first.gap), key, epoch);
         if (!here()) return stop('moved');
         if (!yes) return stop('cancel');
-        if (hiddenMarked().join() !== hidden.join() || sendGap(hidden).sig !== first.sig) return stop('changed');
+        if (hiddenMarked().join() !== seen.join() || seen.filter(i => !sent(i)).join() !== hidden.join() || sendGap(hidden).sig !== first.sig) return stop('changed');
         if (group) sendAllow = { key, epoch, sig: first.sig };
         refreshInjection();
     } catch (e) {
@@ -7987,7 +8013,7 @@ jQuery(() => {
     on('GENERATION_AFTER_COMMANDS', onAfterCommands);
     on('GROUP_WRAPPER_STARTED', onGroupStarted);
     on('GROUP_WRAPPER_FINISHED', onGroupFinished);
-    on('MESSAGE_DELETED', () => { sendCand = null; });   // v0.7.0-c1a: a group regenerate deletes the old replies first
+    on('MESSAGE_DELETED', onSendDeleted);   // v0.7.0-c1a·c1b: a group regenerate deletes the old replies first
     for (const t of ['CONNECTION_PROFILE_UPDATED', 'CONNECTION_PROFILE_DELETED', 'CONNECTION_PROFILE_CREATED']) on(t, () => { fillProfiles(); updateSettingsSummaries(); });
     onChatChanged(); paintKeepSoon();
     // Server-side save slots: the server index is the list; then move any settings-only slots over.
