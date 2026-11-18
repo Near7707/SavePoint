@@ -344,6 +344,37 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     r = await recheck();
     ok(r.status === 'linked' && r.id === e7.id && !r.puts.some(n => /^savepoint-mem-/.test(n)), `14b. 다시 확인 → 연결, 본체 쓰기 0 (${JSON.stringify({ ...r, text: '' })})`);
 
+    // v0.7.0-b4a4 (review of b4a3, P1): while the picked-up move awaits its chat list, the files its decision read change (at the first list
+    // request). Read again after the list, before any link: the body back at A (an old save from A landing late), another memory's clue at B,
+    // the move's mark gone with a save elsewhere and no tag at B → held, nothing written. Another tab finished this very move (both tags,
+    // no clue written here) → its body as it is now, nothing written.
+    const atList = js => `let once = false; window.__listHook = async () => { if (!once) { once = true; const d = JSON.parse(M.files.get(M.H.memName(id))); ${js} } return null; };`;
+    for (const [tag, js] of [['back', `M.otherPut(M.H.memName(id), { ...M.H.nextMem(d, d.state, 'other.f1'), home: { ...d.home, addr: A, was: [] } });`],
+        ['clue', `M.otherPut(M.H.clueName(d.home.integrity), M.H.clueBody(d.home.integrity, [{ addr: B, mem: 'mem-other-f2' }]));`],
+        ['saved', `M.otherPut(M.H.memName(id), M.H.nextMem(d, d.state, 'other.f3'));`]]) {
+        r = await listRoom('chatF' + tag, 'chatF' + tag + 'b');
+        const x = r;
+        await press(cut(x.id, 'chatF' + tag + 'x'));
+        await ev(() => { window.__restore?.(); window.__restore = null; });
+        r = await reopen('chatF' + tag + 'b', x, atList(js));
+        await ev(() => { window.__listHook = null; });
+        m = await memAt(x.id, x.A, x.B);
+        const clue = await ev(([id, B]) => { const d = JSON.parse(M.files.get(M.H.memName(id))); return JSON.parse(M.files.get(M.H.clueName(d.home.integrity)) || 'null')?.rooms?.filter(z => z.addr === B).length ?? 0; }, [x.id, x.B]);
+        ok(x.carry && r.status === 'held' && r.why === 'carryResumeChanged' && r.text.includes('다시 확인') && !r.puts.length && r.saves === 0 && !m.tagB && m.tagA === 'linked'
+            && clue === (tag === 'clue' ? 1 : 0), `15. (b4a4) 재개 목록을 기다리는 사이 ${tag} → 이름표 쓰기 0, 보류 (${JSON.stringify({ r, m, clue })})`);
+    }
+    r = await listRoom('chatFdone', 'chatFdoneb');
+    const f4 = r;
+    await press(cut(f4.id, 'chatFdonex'));
+    await ev(() => { window.__restore?.(); window.__restore = null; });
+    r = await reopen('chatFdoneb', f4, atList(`const t = JSON.parse(M.files.get(M.H.tagName(A)));
+        M.otherPut(M.H.tagName(B), M.H.tagBody({ addr: B, integrity: d.home.integrity, mem: d.id }));
+        M.otherPut(M.H.tagName(A), M.H.renamedTag(t, B));
+        M.otherPut(M.H.memName(id), M.H.nextMem(d, d.state, 'other.f4'));`));
+    await ev(() => { window.__listHook = null; });
+    const wid15 = await ev(() => __savePoint.home().line?.seen?.wid ?? null);
+    ok(r.status === 'linked' && r.id === f4.id && !r.puts.length && r.saves === 0 && wid15 === 'other.f4', `15. (b4a4) 같은 기억의 연결이 이미 끝남 → 쓰기 0, 화면은 최신 기억 (${JSON.stringify({ r: { ...r, text: '' }, wid15 })})`);
+
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();

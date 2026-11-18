@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b4a3';
+const VERSION = '0.7.0-b4a4';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -2020,6 +2020,7 @@ const HOLD_TEXT = {
     carryResumeList: '이름 변경을 이어서 연결하던 기억을 마저 연결하기 전에 채팅 목록을 읽지 못해서 멈췄어요. 기억 파일은 지금 이름 쪽에 그대로 있어요. 잠시 뒤 `다시 확인`을 눌러 주세요',
     carryResumeGone: '이름 변경을 이어서 연결하던 기억을 마저 연결하려는데, 채팅 목록에 예전 이름의 채팅이 다시 보이거나 지금 이름의 채팅이 보이지 않아서 멈췄어요. 기억 파일은 지금 이름 쪽에 그대로 있어요. 채팅 목록을 확인한 뒤 `다시 확인`을 눌러 주세요',
     // v0.7.0-b4a3 (review of b4a2, P2): the links finished, the memory read again right before it is put on the page did not match.
+    carryResumeChanged: '이름 변경을 이어서 연결하던 기억을 마저 연결하려는데, 그사이 기억 파일이나 연결 기록이 바뀌어서 아무것도 쓰지 않고 멈췄어요. 기억 파일은 그대로 있어요. `다시 확인`을 눌러 주세요',
     carryResumeDiff: '이름 변경을 이어서 연결한 뒤 기억 파일을 다시 읽어 보니 이 방의 기억이 아니었어요. `다시 확인`을 눌러 주세요',
     closesUnknown: '예전 버전에서 만든 기억이라, 이 이름을 떠난 다른 방의 기록과 섞이지 않았는지 확인할 수 없어요. 기억 파일은 그대로 있어요',
 };
@@ -2373,6 +2374,7 @@ async function renameHome(h, d, input, files) {
     // home here (read so, or written and read back: not UNREAD).
     let sure = data.home.addr === addr;
     const moving = data.home.addr !== addr;
+    let finished = null;
     // v0.7.0-b3a2b2 (review of b3a2b1, P2): a memory already moved here without its list (made before b3a2b) gets the tag an empty
     // one only when no room was ever seen leaving this name here — the same rule as row 6; otherwise held before any write.
     if (!moving && !Array.isArray(data.closes) && (input.was.from.length || input.was.left.length)) { setHome(h, 'held', 'closesUnknown'); return; }
@@ -2385,6 +2387,15 @@ async function renameHome(h, d, input, files) {
         const names = await chatNames(carryScope(d.from, addr));
         if (!mine()) return;
         if (!carrySees(names, d.from, addr)) { setHome(h, 'held', names ? 'carryResumeGone' : 'carryResumeList'); return; }
+        // v0.7.0-b4a4 (review of b4a3, P1): the files the decision read may have changed while the list was awaited. Read again right
+        // before the first link is written: the move still waits for its links (its body marked, no tag here) → on; another tab finished
+        // this very move (both tags say so, the body is here) → that body as it is now, nothing written; anything else → held, nothing
+        // written (the mark read for the decision is not used). A failed read: readFail.
+        const again = await carryResume(io, d, addr, integrity);
+        if (!mine()) return;
+        if (again === 'read') { setHome(h, 'readFail'); return; }
+        if (!again) { setHome(h, 'held', 'carryResumeChanged'); return; }
+        if (again !== true) { finished = again; }
     }
     if (d.agreed) {
         if (!moving) { setHome(h, 'held', 'carryChanged'); return; }
@@ -2426,15 +2437,16 @@ async function renameHome(h, d, input, files) {
     const fromTag = checked(files.get(tagName(d.from)), validTag(d.from));
     const copy = fromTag?.kind === OK ? fromTag.data.copy ?? null : null;
     const closes = Array.isArray(data.closes) ? data.closes : [];
-    let why = await step(tagName(addr), validTag(addr), t => !t ? tagBody({ addr, integrity, mem: d.mem, copy, prints: pickPrints(data.state.hashes), closes }) : sameLink(t, { id: d.mem, integrity, copy }) ? withCloses(t, closes) || true : null);
-    if (!why && integrity) why = await step(clueName(integrity), validClue(integrity), c => c?.rooms.some(x => x.addr === addr && x.mem === d.mem) ? true : clueWith(c, integrity, addr, d.mem));
-    if (!why) why = await step(tagName(d.from), validTag(d.from), t => !t ? true : t.state === 'renamed' ? true : t.mem === d.mem ? renamedTag(t, addr) : null);
+    let why = finished ? null : await step(tagName(addr), validTag(addr), t => !t ? tagBody({ addr, integrity, mem: d.mem, copy, prints: pickPrints(data.state.hashes), closes }) : sameLink(t, { id: d.mem, integrity, copy }) ? withCloses(t, closes) || true : null);
+    if (!why && !finished && integrity) why = await step(clueName(integrity), validClue(integrity), c => c?.rooms.some(x => x.addr === addr && x.mem === d.mem) ? true : clueWith(c, integrity, addr, d.mem));
+    if (!why && !finished) why = await step(tagName(d.from), validTag(d.from), t => !t ? true : t.state === 'renamed' ? true : t.mem === d.mem ? renamedTag(t, addr) : null);
     if (!mine()) return;
     if (why) { setHome(h, why === 'read' ? 'readFail' : why === 'tagChanged' ? 'held' : 'stopped', why); return; }
     // v0.7.0-b4a3 (review of b4a2, P2): a picked-up move put on the page as the memory is now (another tab may have finished it first and
     // saved since: a newer receipt is fine), read again right before: the same memory at home here with this integrity. A failed read
     // or anything else: the copy read for the decision is not put on the page.
-    if (d.carried) {
+    if (finished) data = finished;
+    else if (d.carried) {
         const now = await readMemFile(d.mem);
         if (!mine()) return;
         if (now.kind !== OK) { setHome(h, 'readFail'); return; }
@@ -2511,6 +2523,43 @@ async function carryClear(io, d, addr, integrity) {
     const clue = await get(clueName(integrity), validClue(integrity));
     if (bad(clue)) return 'read';
     if (clue.kind === OK && clue.data.rooms.some(x => x.addr === addr)) return false;
+    const own = homeId(addr, integrity);
+    if (own !== d.mem) {
+        const m = await get(memName(own), validMem(own));
+        if (bad(m)) return 'read';
+        if (m.kind !== MISSING) return false;
+    }
+    return true;
+}
+// v0.7.0-b4a4 (review of b4a3, P1): an agreed move picked up again, read again after the chat list and right before its first link is
+// written. `true`: it still waits for its links — the body at home here with this integrity still names this record, its old name and its
+// own receipt (`carried`), the old name's tag still links it, and this name has no tag, no start mark, no clue entry of another memory and
+// no memory of its own (the checks of decideRoom row 5). The body: another tab finished this very move — the old name's tag says it was
+// renamed here, this name's tag links the same memory with this integrity, and the body is at home here (a newer receipt, its mark gone
+// with a save since: fine). `false`: anything else (nothing is written). `'read'`: a read failed.
+async function carryResume(io, d, addr, integrity) {
+    const get = async (name, valid) => { try { return checked(await io.read(name), valid); } catch { return { kind: 'error' }; } };
+    const bad = r => r.kind !== OK && r.kind !== MISSING;
+    if (!integrity) return false;
+    const body = await get(memName(d.mem), validMem(d.mem));
+    if (bad(body)) return 'read';
+    if (body.kind !== OK || body.data.home.addr !== addr || (body.data.home.integrity ?? null) !== integrity) return false;
+    const tagA = await get(tagName(d.from), validTag(d.from));
+    if (bad(tagA)) return 'read';
+    const tagB = await get(tagName(addr), validTag(addr));
+    if (bad(tagB)) return 'read';
+    if (tagA.kind === OK && tagA.data.mem === d.mem && tagA.data.state === 'renamed' && tagA.data.to === addr
+        && tagB.kind === OK && tagB.data.state === 'linked' && tagB.data.mem === d.mem && (tagB.data.integrity ?? null) === integrity) return body.data;
+    const c = body.data.carried;
+    if (!c || typeof c !== 'object' || c.id !== d.rid || c.from !== d.from || c.wid !== body.data.wid) return false;
+    if (tagA.kind !== OK || tagA.data.state !== 'linked' || tagA.data.mem !== d.mem) return false;
+    if (tagB.kind !== MISSING) return false;
+    const start = await get(startName(addr), validStart(addr));
+    if (bad(start)) return 'read';
+    if (start.kind !== MISSING) return false;
+    const clue = await get(clueName(integrity), validClue(integrity));
+    if (bad(clue)) return 'read';
+    if (clue.kind === OK && clue.data.rooms.some(x => x.addr === addr && x.mem !== d.mem)) return false;
     const own = homeId(addr, integrity);
     if (own !== d.mem) {
         const m = await get(memName(own), validMem(own));

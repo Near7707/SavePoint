@@ -404,7 +404,7 @@ export async function decideRoom(input, read, { readMem = id => read(memName(id)
             const carried = !plainObj(r.mem) && r.direct === true && await carriedOn(r, t.data, m.data);
             if (carried) {
                 if (input.left) return hold(5, 'renamedAway', { mem: t.data.mem, to: input.left });
-                return out('rename', 5, { from: r.from, mem: t.data.mem, moved: true, carried: true });
+                return out('rename', 5, { from: r.from, mem: t.data.mem, moved: true, carried: true, rid: r.id });
             }
             if (!plainObj(r.mem) || r.mem.id !== t.data.mem) return hold(5, 'renameUnproven', { mem: t.data.mem, from: r.from });
             if (input.left) return hold(5, 'renamedAway', { mem: t.data.mem, to: input.left });

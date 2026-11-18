@@ -1,3 +1,38 @@
+# v0.7.0-b4a4 · b4a3 리뷰 반영 (재개 목록을 기다린 뒤 연결 파일 다시 확인) (브랜치 `v0.7-b`)
+
+기준: `e8d158f`(b4a3 리뷰 요청서, 코드 `8996fb3`). b4a3 GPT 리뷰: P1 1. 정리(🔴) + GPT 2차 의견 + 사용자 동의로 반영. 파일: `home.js`(한 줄), `index.js`, `manifest.json`(버전만), `README.md`, 검사 `carry.cjs` 15, 문서.
+
+| 리뷰 | 처리 |
+|---|---|
+| P1 재개 판정은 채팅 목록을 읽기 전에 본체·연결 파일을 봄 → 목록을 기다리는 사이 바뀌어도(A의 옛 저장이 늦게 와서 본체가 A로 돌아옴, B에 다른 기억 단서) 예전 판정으로 이름표를 씀 | 고침: `renameHome`의 `d.carried` 블록에서 목록 확인 뒤, 첫 연결 파일을 쓰기 전에 `carryResume`로 다시 읽음. 이어서 씀 / 다른 탭이 마침 → 쓰기 0으로 최신 본체 / 그 밖 쓰기 0 보류(`carryResumeChanged`) / 읽기 실패 `readFail` |
+
+## 바뀐 것
+- `home.js decideRoom`: 5행 재개(`carried: true`) 결과에 `rid: r.id`(재개가 표시의 기록 ID를 다시 맞추려고).
+- `index.js` 새 `carryResume(io, d, addr, integrity)`(`carryClear` 아래) → `true` / 본체 / `false` / `'read'`:
+  - 고유값 없으면 `false`. 본체가 이 기억·주소 B·같은 고유값이 아니면 `false`.
+  - **마침:** A 이름표가 같은 기억·`renamed`·`to === B`이고 B 이름표가 같은 기억·`linked`·같은 고유값이면 지금 본체(영수증이 바뀌었거나 `carried`가 빠졌어도 됨).
+  - **이어서:** 본체 `carried`의 `id === d.rid`·`from === d.from`·`wid === 본체 wid` · A 이름표 `linked`·같은 기억 · B 이름표 없음 · B 시작 표시 없음 · 단서에 B의 다른 기억 항목 없음 · B 자기 기억(`homeId`) 없음(그게 이 기억이면 괜찮음) → `true`. 판정 때 읽은 표시는 안 씀.
+  - 읽기 실패는 어느 단계든 `'read'`.
+- `renameHome`: `d.carried`면 목록 확인 뒤 `carryResume`. `'read'` → `readFail`, `false` → `held`(`carryResumeChanged`), 본체 → `finished`(이름표·단서·A 이름표 단계 건너뜀, b4a3의 마지막 다시 읽기 대신 이 본체를 `attachHome`). 첫 동의 이동·자동 이름 변경 경로는 그대로.
+- `HOLD_TEXT.carryResumeChanged`: "…그사이 기억 파일이나 연결 기록이 바뀌어서 아무것도 쓰지 않고 멈췄어요. … `다시 확인`을 눌러 주세요".
+- README 변경 기록, 알려진 한계(v0.7.0-b4a2) 문장 추가(다시 읽은 뒤 쓰기 직전의 짧은 틈은 첫 이동과 같음), 테스트 목록 한 줄.
+
+## ★ 특히 봐 줄 곳
+1. 다시 읽은 뒤 첫 쓰기까지의 틈은 첫 이동(`carryClear`)과 같아요(비교 후 쓰기 없음).
+2. "마침" 판정은 단서를 안 봐요. A 이름표가 `renamed`면 다른 탭이 B 이름표 → 단서 → A 이름표 순서를 끝낸 것이라, 단서가 없어도 여기서 쓰지 않아요(검사 15 `done`은 단서 없이 만듦).
+3. 이어서 쓸 때는 `carriedOn`과 같은 조건을 다시 보지만 옛 사본(`copy`) 확인은 판정 때 것 그대로예요(A 이름표의 `copy`는 이어서 쓸 B 이름표에 그대로 들어가요).
+
+## 검사 준비(`carry.cjs` 15, 파일 끝)
+- `atList(js)`: 재개의 첫 채팅 목록 요청 때 한 번 `js` 실행(`d` = 그때 본체, `A`·`B`·`id`). `reopen`의 `before`로 넘김.
+- 15 `back`(본체를 `nextMem` + `home.addr = A`로 = A의 옛 저장이 늦게 옴) · `clue`(B에 다른 기억 단서) · `saved`(다른 곳 저장 `nextMem` = 표시 빠짐, B 이름표 없음) → `held`·`carryResumeChanged`·문구에 `다시 확인`·업로드 0·채팅 저장 0·B 이름표 없음·A 이름표 `linked`·B 단서 항목 수(`clue`만 1).
+- 15 `done`: 다른 탭이 B 이름표 + A `renamed` + 본체 `nextMem`(`other.f4`), 단서는 안 씀 → `linked`·같은 ID·업로드 0·채팅 저장 0·화면 영수증 `other.f4`.
+
+## 검사와 망가뜨리기 결과
+- 고치기 전 코드(`8996fb3`): 15 네 줄 모두 FAIL(`done`은 고치기 전엔 단서를 써서 업로드 1).
+- 망가뜨리기 5개 중 4개 잡힘: 다시 읽기 빼기(늘 `true`) → 15 네 줄 · "마침" 갈래 빼기 → 14 두 줄·15 `done` · 표시 확인 줄 빼기 → 15 `saved` · 단서 확인 빼기 → 15 `clue`. 안 잡힘: 본체 주소 확인 빼기(겹 장치: `back`의 본체는 옛 저장이라 표시도 없어 표시 확인이 막음).
+- Node 513 통과 / 0 실패 / 3 건너뜀.
+- 브라우저 61묶음 한꺼번에 모두 통과, 검사 모드 오류 0(`carry` 46줄).
+
 # v0.7.0-b4a3 · b4a2 리뷰 반영 (재개 전 목록 확인, 재개 뒤 최신 기억) (브랜치 `v0.7-b`)
 
 기준: `8fa0f9e`(b4a2 리뷰 요청서, 코드 `2bced2b`). b4a2 GPT 리뷰: P1 1, P2 1, P3 1. 정리 + GPT 2차 의견 + 사용자 동의로 셋 다 반영(P3는 문서만). 파일: `index.js`, `manifest.json`(버전만), `README.md`, 검사 `carry.cjs` 13~14b, 문서.
