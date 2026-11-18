@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-b4a2';
+const VERSION = '0.7.0-b4a3';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -2016,6 +2016,11 @@ const HOLD_TEXT = {
     carryChanged: '이름 변경을 이어서 연결하려던 사이 기억이 이미 옮겨지는 중이어서 연결하지 않았어요. 기억 파일은 그대로 있어요',
     carryList: '이름 변경을 이어서 연결하기 직전에 채팅 목록을 읽지 못해서 연결하지 않았어요. 기억 파일은 그대로 있어요',
     carryGone: '채팅 목록에서 예전 이름의 채팅이 아직 보이거나 지금 이름의 채팅이 보이지 않아서 연결하지 않았어요. 기억 파일은 그대로 있어요',
+    // v0.7.0-b4a3 (review of b4a2, P1): an agreed move cut off, picked up again: the chat list right before its links are written.
+    carryResumeList: '이름 변경을 이어서 연결하던 기억을 마저 연결하기 전에 채팅 목록을 읽지 못해서 멈췄어요. 기억 파일은 지금 이름 쪽에 그대로 있어요. 잠시 뒤 `다시 확인`을 눌러 주세요',
+    carryResumeGone: '이름 변경을 이어서 연결하던 기억을 마저 연결하려는데, 채팅 목록에 예전 이름의 채팅이 다시 보이거나 지금 이름의 채팅이 보이지 않아서 멈췄어요. 기억 파일은 지금 이름 쪽에 그대로 있어요. 채팅 목록을 확인한 뒤 `다시 확인`을 눌러 주세요',
+    // v0.7.0-b4a3 (review of b4a2, P2): the links finished, the memory read again right before it is put on the page did not match.
+    carryResumeDiff: '이름 변경을 이어서 연결한 뒤 기억 파일을 다시 읽어 보니 이 방의 기억이 아니었어요. `다시 확인`을 눌러 주세요',
     closesUnknown: '예전 버전에서 만든 기억이라, 이 이름을 떠난 다른 방의 기록과 섞이지 않았는지 확인할 수 없어요. 기억 파일은 그대로 있어요',
 };
 const MF_CONFLICT = CONFLICT, MF_OVERWRITTEN = OVERWRITTEN, MF_HELD = HELD;
@@ -2373,6 +2378,14 @@ async function renameHome(h, d, input, files) {
     if (!moving && !Array.isArray(data.closes) && (input.was.from.length || input.was.left.length)) { setHome(h, 'held', 'closesUnknown'); return; }
     // v0.7.0-b4a (b4 design): a move the user agreed to (carryRoom) is made only when the chat list read right before it still has no chat
     // under the old name and has this one. Anything else: nothing written, held (the offer comes back with the next decision).
+    // v0.7.0-b4a3 (review of b4a2, P1): an agreed move cut off and picked up again (`carried`, decideRoom row 5): the same chat list check
+    // as the move itself (the old name gone, this one there) before any link is written. Otherwise nothing written, held (`다시 확인`
+    // picks it up again once the list is right); the memory stays at home here.
+    if (d.carried) {
+        const names = await chatNames(carryScope(d.from, addr));
+        if (!mine()) return;
+        if (!carrySees(names, d.from, addr)) { setHome(h, 'held', names ? 'carryResumeGone' : 'carryResumeList'); return; }
+    }
     if (d.agreed) {
         if (!moving) { setHome(h, 'held', 'carryChanged'); return; }
         const names = await chatNames(carryScope(d.from, addr));
@@ -2418,6 +2431,16 @@ async function renameHome(h, d, input, files) {
     if (!why) why = await step(tagName(d.from), validTag(d.from), t => !t ? true : t.state === 'renamed' ? true : t.mem === d.mem ? renamedTag(t, addr) : null);
     if (!mine()) return;
     if (why) { setHome(h, why === 'read' ? 'readFail' : why === 'tagChanged' ? 'held' : 'stopped', why); return; }
+    // v0.7.0-b4a3 (review of b4a2, P2): a picked-up move put on the page as the memory is now (another tab may have finished it first and
+    // saved since: a newer receipt is fine), read again right before: the same memory at home here with this integrity. A failed read
+    // or anything else: the copy read for the decision is not put on the page.
+    if (d.carried) {
+        const now = await readMemFile(d.mem);
+        if (!mine()) return;
+        if (now.kind !== OK) { setHome(h, 'readFail'); return; }
+        if (now.data.home.addr !== addr || (now.data.home.integrity ?? null) !== (integrity ?? null)) { setHome(h, 'held', 'carryResumeDiff'); return; }
+        data = now.data;
+    }
     attachHome(h, data);
     // v0.7.0-b3a2b1 (review of b3a2b, P2): only the renames the memory itself names (`closes`, the list its tag got) are settled.
     // A memory without the list (made before b3a2b) settles nothing.

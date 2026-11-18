@@ -295,6 +295,55 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     ok(r.status === 'linked' && r.id === e4.id && memPuts(r) === 0 && r.saves === 0 && r2.last === 11 && r2.file === 11 && r2.status === 'linked',
         `12d. B를 다시 열면 연결, 그 뒤 세이브 평소대로 (${JSON.stringify({ r: { ...r, text: '' }, r2 })})`);
 
+    // v0.7.0-b4a3 (review of b4a2). P1: picking a cut move up checks the chat list first (the old name gone, this one there), like the move.
+    // Not so (the old name back, or the list not read): no link written, held with `다시 확인`; once the list is right, `다시 확인` finishes it.
+    const recheck = () => ev(async () => {
+        const n = M.fileLog.length; await __savePoint.handle('home-recheck').catch(() => {}); await M.opened(); await new Promise(z => setTimeout(z, 400));
+        const h = __savePoint.home();
+        return { ...__look(), id: h.id, wid: h.line?.seen?.wid ?? null, puts: M.fileLog.slice(n).filter(x => x[0] === 'put' && /^savepoint-(mem|room|int|moved|moving|copy)-/.test(x[1])).map(x => x[1]) };
+    });
+    for (const [tag, js, why, says] of [['back', `M.serverFiles[JSON.parse(A)[1]] = [{ chat_metadata: { integrity: 'back-e5' } }];`, 'carryResumeGone', '예전 이름의 채팅이 다시 보이거나'],
+        ['list', `window.__listHook = async () => new Response('down', { status: 500 });`, 'carryResumeList', '채팅 목록을 읽지 못해서']]) {
+        r = await listRoom('chatE5' + tag, 'chatE5' + tag + 'b');
+        const x = r;
+        await press(cut(x.id, 'chatE5' + tag + 'x'));
+        await ev(() => { window.__restore?.(); window.__restore = null; });
+        r = await reopen('chatE5' + tag + 'b', x, js);
+        m = await memAt(x.id, x.A, x.B);
+        ok(x.carry && r.status === 'held' && r.why === why && r.text.includes(says) && r.text.includes('다시 확인') && r.btn === 0 && !r.puts.length && r.saves === 0 && m.at === 'B' && !m.tagB && m.tagA === 'linked',
+            `13. (b4a3) 재개 전 목록 ${tag} → 이름표 쓰기 0, 보류 + 다시 확인 (${JSON.stringify({ r, m })})`);
+        r = await ev(a => { window.__listHook = null; delete M.serverFiles[a]; }, JSON.parse(x.A)[1]);
+        r = await recheck();
+        m = await memAt(x.id, x.A, x.B);
+        ok(r.status === 'linked' && r.id === x.id && !r.puts.some(n => /^savepoint-mem-/.test(n)) && m.tagB && m.tagA === 'renamed', `13. (b4a3) 목록이 맞으면 다시 확인으로 마저 연결, 본체 쓰기 0 (${JSON.stringify({ r: { ...r, text: '' }, m })})`);
+    }
+    // P2: another tab finishes the links and saves while this page picks the move up (at its list read): nothing written here, and the page
+    // gets the memory as it is now (that tab's receipt), not the copy read for the decision. The read failing → no memory on the page.
+    const other = (id, A, B) => `const d = JSON.parse(M.files.get(M.H.memName(${JSON.stringify(id)}))), t = JSON.parse(M.files.get(M.H.tagName(${JSON.stringify(A)})));
+        M.otherPut(M.H.tagName(${JSON.stringify(B)}), M.H.tagBody({ addr: ${JSON.stringify(B)}, integrity: d.home.integrity, mem: d.id }));
+        M.otherPut(M.H.clueName(d.home.integrity), M.H.clueBody(d.home.integrity, [{ addr: ${JSON.stringify(B)}, mem: d.id }]));
+        M.otherPut(M.H.tagName(${JSON.stringify(A)}), M.H.renamedTag(t, ${JSON.stringify(B)}));
+        M.otherPut(M.H.memName(d.id), M.H.nextMem(d, d.state, 'other.e6'));`;
+    r = await listRoom('chatE6', 'chatE6b');
+    const e6 = r;
+    await press(cut(e6.id, 'chatE6x'));
+    await ev(() => { window.__restore?.(); window.__restore = null; });
+    r = await reopen('chatE6b', e6, `let once = false; window.__listHook = async () => { if (!once) { once = true; ${other(e6.id, e6.A, e6.B)} } return null; };`);
+    await ev(() => { window.__listHook = null; });
+    const wid6 = await ev(() => __savePoint.home().line?.seen?.wid ?? null);
+    ok(r.status === 'linked' && r.id === e6.id && !r.puts.length && r.saves === 0 && wid6 === 'other.e6', `14. (b4a3) 재개 중 다른 탭이 마저 연결·저장 → 쓰기 0, 화면은 최신 기억 (${JSON.stringify({ r: { ...r, text: '' }, wid6 })})`);
+    r = await ev(async () => { M.add(2); await __savePoint.handle('run').catch(() => {}); return { last: __savePoint.state()?.lastIndex, file: M.mem()?.lastIndex, status: __savePoint.home().status }; });
+    ok(r.last === 11 && r.file === 11 && r.status === 'linked', `14. 그 뒤 세이브 평소대로 (${JSON.stringify(r)})`);
+    r = await listRoom('chatE7', 'chatE7b');
+    const e7 = r;
+    await press(cut(e7.id, 'chatE7x'));
+    await ev(() => { window.__restore?.(); window.__restore = null; });
+    r = await reopen('chatE7b', e7, `let once = false; window.__listHook = async () => { if (!once) { once = true; M.memReadFail = true; } return null; };`);
+    const st7 = await ev(() => { window.__listHook = null; M.memReadFail = false; return __savePoint.home().st ? 'some' : null; });
+    ok(r.status === 'readFail' && !st7 && r.saves === 0, `14b. (b4a3) 붙이기 직전 기억 읽기 실패 → 화면 기억 없음 (${JSON.stringify({ r: { ...r, text: '' }, st7 })})`);
+    r = await recheck();
+    ok(r.status === 'linked' && r.id === e7.id && !r.puts.some(n => /^savepoint-mem-/.test(n)), `14b. 다시 확인 → 연결, 본체 쓰기 0 (${JSON.stringify({ ...r, text: '' })})`);
+
     await page.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
     await browser.close(); srv.close();
