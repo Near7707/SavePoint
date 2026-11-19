@@ -1,13 +1,13 @@
-# 코드 리뷰 요청 · v0.7.0-c4 (복사 복구 `이 방에 기억 복사해 복구` · `답변 만들기` Esc 안내, 브랜치 `v0.7-b`)
+# 코드 리뷰 요청 · v0.7.0-c4a (복사 복구의 마지막 확인, 브랜치 `v0.7-b`)
 
-- 범위: `git diff 078430e 87a946c`, 커밋 하나예요. `home.js`(`decideRoom` 8행 + `rescueOffer`·`sameRescue`), `index.js`(`linkRounds` 동의 전달·제안, 새 구역 "a copy of another room's memory, made by hand", `homeMessage`·`homeAlert`·`handle`, `sendRetryRun`·`sendPrepOpen`의 Esc 구분, 버전), `manifest.json`(버전), `README.md`, `docs/PLAN-v0.7.md`, `docs/REVIEW.md`, `docs/CHECKLIST-v0.7.0.md`, 검사(`tests/browser/rescue.cjs` 새로, `send-guard.cjs` 31, `tests/home.test.mjs` 2개).
-- 설계는 GPT 1·2·3차 의견대로예요(독립 사본, 원래 기억·이름표 보존, 후보 하나·같은 범위·고유값·기록 범위 원문 전체 일치, 동의는 후보와 대상 방 모두에 묶음, 갈래 쓰기·재개 재사용, 이름표 응답 없음은 `linkLate`대로, Esc는 멈춤 신호 + 멈춤 오류일 때만).
-- 자세한 내용은 [REVIEW.md](REVIEW.md) 맨 위 v0.7.0-c4에 있어요. 결과는 P1/P2/P3로 주세요.
-  - 고치기 전 코드(`078430e`)에서 `rescue` 11줄·`send-guard` 31 두 줄 FAIL. 망가뜨리기 7개 모두 잡힘.
+- 범위: `git diff d13d71c 5635b7c`, 커밋 하나예요. `index.js`(`linkRounds` 복구 뒤 채팅 다시 읽기, `homeOpen`·`homeMessage`의 `rescueCheck`, `RESCUE_TEXT.lost`·`rescueRoom` 안내 갈래), `tests/browser/rescue.cjs` 8~10, 문서(README·PLAN·REVIEW), 버전 `0.7.0-c4a`.
+- c4 리뷰 P2(복구 저장 중 바뀐 원문·기록 밖 숨김을 마지막 확인이 놓침)를 GPT 2차 의견 + 사용자 동의 범위로 고쳤어요: 복구 경로만, 사본을 쓴 뒤 새로 읽은 채팅으로 판정, 그 확인이 끝나기 전엔 완료 안내·자동 처리 재개 없음, 읽기 실패는 기존 읽기 실패 + `다시 확인`(사본 보존, 원래 기억 다시 복사 안 함). 갈래·이전 경로의 같은 틈은 별도 보류로 기록했어요.
+- 자세한 내용은 [REVIEW.md](REVIEW.md) 맨 위 v0.7.0-c4a에 있어요. 결과는 P1/P2/P3로 주세요.
+  - 고치기 전 코드(`87a946c`)에서 새 4줄 FAIL. 망가뜨리기 3개 모두 잡힘.
   - Node 518개: 515 통과 / 0 실패 / 3 건너뜀. 브라우저 63묶음 한꺼번에 모두 통과, 검사 모드 오류 0.
 
 ## 특히 봐 줄 곳
-1. 동의 뒤 판정은 `다시 확인`이 두 파일과 이 방 채팅을 새로 읽어 다시 함 → 그 뒤 `placeMemory` 쓰기까지의 짧은 틈은 갈래와 같음. 연결 뒤 H2 판정이 기록 범위 원문 차이를 잡는 것으로 충분한지.
-2. 채팅 속 예전 사본이 있는 복제본에서, 원래 방이 그 사본에서 이전된 방이어도(`moved` 표시·사본 힌트가 원래 방을 가리킴) 갈래 쓰기·다시 열기(6행이 자기 기억을 먼저 찾음)에 문제가 없는지.
-3. `AbortError`도 멈춤 오류로 보는 것(우리 `중지 요청`·일반 요청 중단)이 너무 넓은지.
-4. 망가뜨리기로 못 지킨 곳: `rescueReady`의 제안 ID 비교, 동의의 열기 회차 비교(방을 옮기면 `home`이 새로 만들어지는 겹 장치).
+1. "같은 채팅 파일" 판정은 주소·고유값·`mainChat`만 봐요. 기록 범위 원문 차이는 `h2Of`(H2 `source`)로 잡고, 기록 밖 메시지의 원문 변경이나 새 메시지로는 멈추지 않아요(평소 방 열기와 같은 기준).
+2. 마지막 읽기를 기다리는 동안은 `rescueCheck`로 `homeOpen`이 거짓이에요(`autoBlocked()` = `'room'`, 검사 8). 저장 타이머 입구의 `h2Here()`는 그대로이고, 콜백이 `gateOpen`을 다시 보는 것에 기대요.
+3. 마지막 읽기가 실패한 방은 `다시 확인`의 새 판정이 이 방 이름표(3행)나 자기 기억(6행)으로 연결하고, 그때의 H2 판정이 차이를 잡아요. 검사 10 둘째 줄은 차이가 없는 장면만 있어요.
+4. 갈래 만들기·채팅 속 예전 기억 이전에도 같은 틈이 남아 있어요(⚪ 별도 보류, README 한계 v0.7.0-c4a). 이번에 넓히지 않은 판단이 맞는지 봐 주세요.
