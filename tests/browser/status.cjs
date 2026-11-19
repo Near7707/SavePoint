@@ -31,6 +31,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: SHOTS ? 2 : 1 });
     page.on('pageerror', e => { console.log('PAGE ERROR', e.message); failures++; });
     await page.goto(`http://localhost:${srv.address().port}/`); await page.waitForFunction(() => !!globalThis.__savePoint);
+    // a new page is still opening its room for a moment; a save pressed then is refused (as meant), so wait.
+    await page.evaluate(() => M.opened());
     const ev = (fn, arg) => page.evaluate(fn, arg), run = () => ev(() => __savePoint.autoCollect());
     const banner = () => ev(() => { const b = document.getElementById('sp_save_banner'); return b ? { shown: !b.hidden, text: b.textContent, tone: b.dataset.tone, top: b.style.top } : { shown: false }; });
     await ev(() => { M.settings.savePoint.check = false; M.add(21); });
@@ -104,14 +106,14 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
 
     // 7. wide screens start unfolded
     const wide = await browser.newPage({ viewport: { width: 1200, height: 900 } });
-    await wide.goto(`http://localhost:${srv.address().port}/`); await wide.waitForFunction(() => !!globalThis.__savePoint);
+    await wide.goto(`http://localhost:${srv.address().port}/`); await wide.waitForFunction(() => !!globalThis.__savePoint); await wide.evaluate(() => M.opened());
     await wide.evaluate(() => { M.add(3); document.querySelector('#sp_open').click(); });
     ok(await wide.evaluate(() => !!document.querySelector('.sp-hud.sp-hud-open')), '7. 넓은 화면은 처음부터 펼침');
 
     // 8. an input rejected before sending cannot borrow a previous successful request
     const small = await browser.newPage({ viewport: { width: 390, height: 844 } });
     small.on('pageerror', e => { console.log('PAGE ERROR', e.message); failures++; });
-    await small.goto(`http://localhost:${srv.address().port}/`); await small.waitForFunction(() => !!globalThis.__savePoint && __savePoint.vault.ready);
+    await small.goto(`http://localhost:${srv.address().port}/`); await small.waitForFunction(() => !!globalThis.__savePoint && __savePoint.vault.ready); await small.evaluate(() => M.opened());
     await small.evaluate(async () => {
         M.settings.savePoint.check = false; M.add(21); await __savePoint.summarize();
         M.add(20); M.settings.savePoint.inputChars = 5000; await __savePoint.autoCollect();
@@ -126,7 +128,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     // 9. distinct failures count separately even when they have exactly the same timestamp
     const twice = await browser.newPage({ viewport: { width: 390, height: 844 } });
     twice.on('pageerror', e => { console.log('PAGE ERROR', e.message); failures++; });
-    await twice.goto(`http://localhost:${srv.address().port}/`); await twice.waitForFunction(() => !!globalThis.__savePoint && __savePoint.vault.ready);
+    await twice.goto(`http://localhost:${srv.address().port}/`); await twice.waitForFunction(() => !!globalThis.__savePoint && __savePoint.vault.ready); await twice.evaluate(() => M.opened());
     await twice.evaluate(async () => {
         const now = Date.now(); Date.now = () => now;
         M.settings.savePoint.check = false; M.add(21); M.throwNext = new Error('First request failed');
