@@ -46,7 +46,8 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     // v0.7.0-c1: the send guard (sendGuard, SillyTavern's generation interceptor). A normal send whose reply would leave out
     // originals SavePoint hid that the briefing's memory does not cover is asked once: 취소 stops it, 이번만 lets it go; a group
     // keeps "이번만" for one send. Other kinds of reply are not asked. Found while the room is still opening: a short wait.
-    const page = await session({ settings: { savePoint: { firstTab: 'journal', check: false, hideMode: 'auto', keepRecent: 2, askResume: false } } });
+    const SETTINGS = { savePoint: { firstTab: 'journal', check: false, hideMode: 'auto', keepRecent: 2, askResume: false } };
+    let page = await session({ settings: SETTINGS });   // v0.7.0-c1d: 16·17 run on a new page (a new tab, nothing deleted yet)
     const ev = (fn, arg) => page.evaluate(fn, arg);
     const wait = ms => page.waitForTimeout(ms);
     const msgs = (n, tag) => Array.from({ length: n }, (_, i) => ({ name: i % 2 ? 'Me' : 'Ari', is_user: i % 2 === 1, is_system: false, mes: `${tag} message ${i} ${'and more '.repeat(6)}.`, swipe_id: 0, swipes: [`${tag} message ${i} ${'and more '.repeat(6)}.`], extra: {} }));
@@ -366,6 +367,69 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     const reads = await ev(() => { const n = window.__ex; for (const m of M.chat) { const v = m.extra; Object.defineProperty(m, 'extra', { configurable: true, enumerable: true, writable: true, value: v }); } return n; });
     ok(r.pop.length === 1 && reads < 2000 * 40, `15. 숨김이 많은 방: 확인마다 채팅을 몇 번만 읽음 (extra 읽기 ${reads}회, ${r.ms}ms)`);
     await ev(() => { M.confirm = 1; });
+
+    // ───── v0.7.0-c1d: review of c1c ─────
+    // 16. (P1) the mark is the tab's, not the room's: a new page (nothing deleted yet in this tab).
+    const page1 = page;
+    page = await session({ settings: SETTINGS });
+    const GROUP = (id, gid = 'g1') => ev(([id, gid]) => { M.groups = [{ id: 'g1', name: 'Team', chat_id: id }, { id: 'g2', name: 'Two', chat_id: 'sgR9' }]; M.groupId = gid; }, [id, gid]);
+    await ev(f => { M.serverFiles.sgR = f.a; M.serverFiles.sgR9 = f.b; M.serverFiles.sgR1 = f.c; }, { a: copied('sgR'), b: copied('sgR9'), c: copied('sgR1') });
+    //     a message deleted in a 1:1 chat marks nothing: a group send is still asked.
+    await ev(() => { M.groupId = null; M.groups = []; M.confirm = 0; });
+    await openRoom('sgR1');
+    await ev(() => M.eventSource.emit('message_deleted', M.chat.length));
+    await GROUP('sgR'); await openRoom('sgR');
+    await groupSend(); r = await send(); await wrapEnd();
+    ok(r.pop.length === 1 && r.aborted === true, `16. 1:1에서 지운 건 표시 안 함 → 그룹 전송은 물음 (${JSON.stringify(r)})`);
+    //     a group regenerate deletes, then the room is renamed (SillyTavern opens it under the new name first), then a send leaves a
+    //     candidate and the regenerate's run starts: not asked (before, the mark stayed with the old name).
+    await ev(() => M.eventSource.emit('message_deleted', M.chat.length));
+    await ev(async () => { M.groups[0].chat_id = 'sgR2'; await M.renameChat('sgR', 'sgR2', { groupId: 'g1' }); });
+    await ev(() => M.opened()); await wait(400);
+    await outer();
+    await wrapStart(); r = await send(); await wrapEnd();
+    ok(!r.pop.length && r.aborted === null && r.stops === 0, `16. 그룹 삭제 뒤 방 이름을 바꿔도 재생성 묶음은 묻지 않음 (${JSON.stringify(r)})`);
+    //     another group room: told too (a waiting regenerate may go on there).
+    await GROUP('sgR9', 'g2'); await openRoom('sgR9');
+    await groupSend(); r = await send(); await wrapEnd();
+    ok(!r.pop.length && r.aborted === null && TOLD.test(r.toast), `16. 다른 그룹 방도 알림만 (${JSON.stringify(r)})`);
+    //     a deletion in a 1:1 chat after that keeps the mark; 1:1 itself is still asked.
+    await ev(() => { M.groupId = null; M.groups = []; });
+    await openRoom('sgR1');
+    await ev(() => M.eventSource.emit('message_deleted', M.chat.length));
+    r = await send();
+    ok(r.pop.length === 1 && r.aborted === true, `16. 1:1은 그대로 물음 (${JSON.stringify(r)})`);
+    await GROUP('sgR2'); await openRoom('sgR2');
+    await groupSend(); r = await send(); await wrapEnd();
+    ok(!r.pop.length && r.aborted === null && TOLD.test(r.toast), `16. 그 뒤 1:1에서 지워도 표시 유지 → 그룹은 알림만 (${JSON.stringify(r)})`);
+
+    // 17. (P2) a told run sent while the room still opens: the copy was made before it waited. A hide of the start taken away while
+    //     it waits is still left out of the copy → told it may be missing (before: counted again on the page, no gap, nothing told).
+    const OPEN_RUN = id => `await M.openFile('${id}'); await M.eventSource.emit('group_wrapper_started', { selected_group: 'g1', type: 'normal' });`;
+    await ev(f => { M.serverFiles.sgR5 = f.a; M.serverFiles.sgR6 = f.b; M.groups[0].chat_id = 'sgR5'; }, { a: copied('sgR5'), b: copied('sgR6') });
+    await openRoom('sgR1');
+    await ev(() => { M.groupId = null; });
+    await ev(() => { M.fileDelay['*'] = 1200; M.groupId = 'g1'; });
+    r = await send('normal', { pre: OPEN_RUN('sgR5'), copy: true, during: `await new Promise(z => setTimeout(z, 300)); ${UNHIDE}` });
+    await wrapEnd();
+    ok(r.aborted === null && r.stops === 0 && r.ms >= 700 && TOLD.test(r.toast) && /빠졌을 수 있어요/.test(r.toast), `17. 기다리는 사이 숨김이 풀림 → 빠졌을 수 있다고 알림 (${JSON.stringify(r)})`);
+    //     another generation starts while it waits (a new start record), then the hides are taken away: its own start still decides.
+    await ev(() => { M.groupId = null; });
+    await openRoom('sgR1');
+    await ev(() => { M.groupId = 'g1'; M.groups[0].chat_id = 'sgR6'; });
+    r = await send('normal', { pre: OPEN_RUN('sgR6'), copy: true, during: `await new Promise(z => setTimeout(z, 300)); await M.eventSource.emit('generation_started', 'quiet', {}, false); ${UNHIDE}` });
+    await wrapEnd();
+    ok(r.aborted === null && r.stops === 0 && TOLD.test(r.toast) && /빠졌을 수 있어요/.test(r.toast), `17. 기다리는 사이 다른 생성이 시작돼도 자기 시작 기록으로 대조 (${JSON.stringify(r)})`);
+    //     nothing taken away while it waits: the gap is worked out as before (no "may be missing").
+    await ev(f => { M.groupId = null; M.serverFiles.sgR7 = f; }, copied('sgR7'));
+    await openRoom('sgR1');
+    await ev(() => { M.groupId = 'g1'; M.groups[0].chat_id = 'sgR7'; });
+    r = await send('normal', { pre: OPEN_RUN('sgR7'), copy: true });
+    await wrapEnd();
+    ok(r.aborted === null && TOLD.test(r.toast) && /#0–#3\(4개\)/.test(r.toast) && !/빠졌을 수 있어요/.test(r.toast), `17. 그대로면 예전처럼 빠지는 구간 알림 (${JSON.stringify(r)})`);
+    await ev(() => { M.fileDelay = {}; });
+    await page.close();
+    page = page1;
 
     await page.close();
     await browser.close(); srv.close();
