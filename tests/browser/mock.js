@@ -5,7 +5,8 @@ for (const k of ['info', 'success', 'warning', 'error']) window.toastr[k] = (m, 
 const listeners = {};
 // SillyTavern saves the chat before it tells extensions a message came, changed or went.
 const SAVED_EVENTS = ['message_sent', 'message_received', 'message_edited', 'message_deleted', 'message_swiped', 'message_updated', 'message_swipe_deleted'];
-const eventSource = { on(t, f) { (listeners[t] ??= []).push(f); }, async emit(t, ...a) { if (SAVED_EVENTS.includes(t)) window.M?.stSave?.(); for (const f of listeners[t] || []) await f(...a); } };
+// v0.7.0-c2a1: onFirst puts a listener before SavePoint's (another extension's handler running first); returns its remover.
+const eventSource = { on(t, f) { (listeners[t] ??= []).push(f); }, onFirst(t, f) { (listeners[t] ??= []).unshift(f); return () => { const l = listeners[t], i = l.indexOf(f); if (i >= 0) l.splice(i, 1); }; }, async emit(t, ...a) { if (SAVED_EVENTS.includes(t)) window.M?.stSave?.(); for (const f of listeners[t] || []) await f(...a); } };
 const event_types = {
     CHAT_CHANGED: 'chat_id_changed', MESSAGE_SENT: 'message_sent', MESSAGE_RECEIVED: 'message_received',
     MESSAGE_EDITED: 'message_edited', MESSAGE_DELETED: 'message_deleted', MESSAGE_SWIPED: 'message_swiped',
@@ -142,7 +143,8 @@ window.SillyTavern = {
         callGenericPopup: async (text, type, _v, opts) => { (M.popups ||= []).push(String(text)); M.popupOpts = opts || null; if (M.onPopup) await M.onPopup(String(text), type); return type === 3 ? M.popupInput : M.confirm; },
         POPUP_TYPE: { TEXT: 1, CONFIRM: 2, INPUT: 3 },
         // v0.7.0-c1: SillyTavern's stop of the generation going now (a group's loop too); counted.
-        stopGeneration() { M.stops = (M.stops || 0) + 1; return true; },
+        // v0.7.0-c2a1: it aborts the latest controller (M.genCtl, made by M.generate after its start event).
+        stopGeneration() { M.stops = (M.stops || 0) + 1; if (M.genCtl) M.genCtl.aborted = true; return true; },
         // v0.7.0-c2a: SillyTavern's Popup (a real <dialog> shown modal: the page outside takes no keys or taps), and Generate as
         // `답변 만들기` calls it (see M.generate).
         Popup: MockPopup, POPUP_RESULT: { AFFIRMATIVE: 1, NEGATIVE: 0, CANCELLED: null },
@@ -152,11 +154,19 @@ window.SillyTavern = {
 // v0.7.0-c2a: SillyTavern's Popup, as far as SavePoint uses it: show() opens a modal <dialog> (M.modals), complete(v) asks
 // onClosing first (false keeps it open), Escape goes through complete(null) when allowEscapeClose is not false (as SillyTavern's
 // cancel listener; with it false SillyTavern wants a double Escape and a confirmation, so here it just stays open).
+// v0.7.0-c2a1: customButtons (`.popup-button-custom`): one with a result closes with it (complete), one without only runs its action.
 class MockPopup {
     constructor(content, type, _v, opts = {}) {
         this.opts = opts; this.type = type; this.closed = false;
         this.dlg = document.createElement('dialog'); this.dlg.className = 'popup';
-        this.dlg.innerHTML = `<div class="popup-content">${typeof content === 'string' ? content : ''}</div>`;
+        this.dlg.innerHTML = `<div class="popup-content">${typeof content === 'string' ? content : ''}</div><div class="popup-controls"></div>`;
+        for (const b of opts.customButtons || []) {
+            const el = document.createElement('div'); el.className = 'menu_button popup-button-custom result-control';
+            el.textContent = typeof b === 'string' ? b : b.text;
+            if (typeof b === 'object' && typeof b.action === 'function') el.addEventListener('click', b.action);
+            if (typeof b === 'object' && b.result !== undefined) el.addEventListener('click', () => this.complete(b.result));
+            this.dlg.querySelector('.popup-controls').append(el);
+        }
         this.dlg.addEventListener('cancel', e => { e.preventDefault(); if (opts.allowEscapeClose !== false) this.complete(null); });
     }
     show() { document.body.append(this.dlg); this.dlg.showModal(); (M.modals ||= []).push(this); return new Promise(r => { this.resolve = r; }); }
@@ -168,14 +178,22 @@ class MockPopup {
 }
 // v0.7.0-c2a: Generate as SillyTavern 1.19.0 runs it for `답변 만들기` (type 'normal', automatic_trigger): GENERATION_STARTED, after
 // commands, the server check (M.genPing: a function the test gives, awaited), then the box (#send_textarea) is emptied (its text at
-// that moment: M.boxAtClear), no user message added (automatic_trigger), the copy and the interceptor; stopped there → returns at
-// once with no end event (as SillyTavern does). Else a reply is added (message_received) and the generation ends.
-// M.genEarly: returns before the box (no connection); M.genThrow: throws there. Calls are kept in M.gens.
+// that moment: M.boxAtClear), no user message added (automatic_trigger), the copy and the interceptor. Else a reply is added
+// (message_received) and the generation ends. M.genEarly: returns before the box (no connection; no end event, as SillyTavern's send
+// buttons are not busy yet); M.genThrow: throws there. Calls are kept in M.gens.
+// v0.7.0-c2a1 (review P3): stopped by the interceptor → SillyTavern frees its send buttons, which sends the end event
+// (unblockGeneration → activateSendButtons → hideStopButton); M.genNoEnd: the exception, no end event. The stop controller
+// (M.genCtl, aborted by stopGeneration) is made after the start event's handlers (M.genPre, awaited before it: a stop asked then
+// does not take). Stopped during the server check: the box is still emptied, no reply. M.genStream (ms): the reply comes in
+// pieces; stopped meanwhile → the part made so far stays (saved, 0.4 s, before Generate returns). M.genPings: one server check per call, taken in order (before M.genPing).
 M.generate = async (type, opts = {}) => {
     (M.gens ||= []).push({ type, opts });
+    const ping = (M.genPings || []).shift() || M.genPing;
     await eventSource.emit('generation_started', type, opts, false);
+    if (M.genPre) await M.genPre();
+    const ctl = M.genCtl = { aborted: false };
     await eventSource.emit('generation_after_commands', type, opts, false);
-    if (M.genPing) await M.genPing();
+    if (ping) await ping();
     if (M.genEarly) { M.genEarly = false; return; }
     if (M.genThrow) { const e = M.genThrow; M.genThrow = null; throw e; }
     const box = document.getElementById('send_textarea');
@@ -185,10 +203,18 @@ M.generate = async (type, opts = {}) => {
     let aborted = false;
     await globalThis.savePointSendGuard?.(made, 4096, () => { aborted = true; }, type);
     M.afterGuard = { prep: !!globalThis.__savePoint?.sendPrep?.(), modal: !!document.querySelector('dialog.popup[open]') };
-    if (aborted) return;
-    M.chat.push({ name: 'Ari', is_user: false, is_system: false, mes: `A reply ${M.chat.length} ${'and more '.repeat(6)}.`, swipe_id: 0, swipes: [], extra: {} });
+    const end = async () => { if (M.genNoEnd) { M.genNoEnd = false; return; } await eventSource.emit('generation_ended', M.chat.length - 1); };
+    if (aborted || ctl.aborted) return end();
+    const reply = { name: 'Ari', is_user: false, is_system: false, mes: `A reply ${M.chat.length} ${'and more '.repeat(6)}.`, swipe_id: 0, swipes: [], extra: {} };
+    if (M.genStream) {
+        const whole = reply.mes;
+        reply.mes = whole.slice(0, 8);
+        M.chat.push(reply);
+        for (let t = 0; t < M.genStream && !ctl.aborted; t += 100) await new Promise(z => setTimeout(z, 100));
+        if (!ctl.aborted) reply.mes = whole; else await new Promise(z => setTimeout(z, 400));   // stopped: SillyTavern saves the part first
+    } else M.chat.push(reply);
     await eventSource.emit('message_received', M.chat.length - 1);
-    await eventSource.emit('generation_ended', M.chat.length - 1);
+    await end();
 };
 // v0.6.58: the character card (its greetings decide whether a one-message room may get a carried #0).
 M.characters = [{ avatar: 'ari.png', name: 'Ari', description: 'Ari is a courier with green hair.', first_mes: 'Hello! This is the very first greeting.',

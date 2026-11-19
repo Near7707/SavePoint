@@ -460,7 +460,8 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     // A 1:1 send the guard stopped leaves its message without a reply: the window's top offers `답변 만들기` (SillyTavern's
     // Generate('normal', { automatic_trigger: true }): no user message, no "send if empty" text; it empties the box after the server
     // check). Refused while a reply goes, while the box holds anything or a file waits. A modal window covers the page from the
-    // press until this generation reaches the guard or Generate is over (never by time). The guard checks its reply as any send.
+    // press until Generate is over (v0.7.0-c2a1: not when a generation reaches the guard; never by time; its `중지 요청` only asks
+    // to stop). The guard checks its reply as any send.
     page = await session({ settings: SETTINGS });
     await ev(() => {
         const t = document.createElement('textarea'); t.id = 'send_textarea'; document.body.append(t);
@@ -494,10 +495,10 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     const opened = await ev(() => { $('#sp_overlay').hide(); __savePoint.ui.open = false; const e = toastr.log.findLast(x => /만들지 않았어요/.test(x[1])); e?.opts?.onclick?.(); return { onclick: typeof e?.opts?.onclick, open: __savePoint.ui.open }; });
     ok(r.aborted === true && RETRY.test(r.toast) && L.retry && L.btn === 1 && L.last === 'user' && opened.onclick === 'function' && opened.open, `19. 1:1 취소 → 창 맨 위 답변 만들기·알림이 창을 엶 (${JSON.stringify([r, L, opened])})`);
 
-    //     a send stopped as SillyTavern stops it (the interceptor aborts, Generate returns with no end event): the reply is over,
-    //     so the button is not refused as "a reply going".
+    //     a send stopped by the interceptor with no end event (v0.7.0-c2a1: the exception — SillyTavern 1.19.0 does send one as it
+    //     frees its send buttons): the reply is over, so the button is not refused as "a reply going".
     await openRoom('sgDa', copied('sgDa'));
-    await ev(() => { M.confirm = 0; return M.generate(undefined, {}); });
+    await ev(() => { M.confirm = 0; M.genNoEnd = true; return M.generate(undefined, {}); });
     await ev(() => { M.confirm = 1; });
     let p = await press();
     L = await look();
@@ -516,20 +517,20 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     L = await look();
     ok(/지금 답변을 만드는 중/.test(p.toast) && !p.gens.length && L.btn === 1, `20. 다른 생성 중(조용한 생성) → 거절 (${JSON.stringify([p, L])})`);
 
-    // 21. pressed, still a gap: Generate('normal', automatic) once, the modal gone by the time the guard runs, asked again;
-    //     이번만 → a reply, no new user message; the button gone.
+    // 21. pressed, still a gap: Generate('normal', automatic) once, the modal still up when the guard runs (v0.7.0-c2a1), asked
+    //     again; 이번만 → a reply, no new user message; the modal gone once Generate is over; the button gone.
     await ev(() => { M.confirm = 1; });
     const users0 = L.users;
     p = await press();
     L = await look();
-    ok(p.gens.length === 1 && p.gens[0].type === 'normal' && p.gens[0].opts?.automatic_trigger === true && p.pop === 1 && p.afterGuard && !p.afterGuard.prep && !p.afterGuard.modal
-        && L.users === users0 && L.last === 'ai' && !L.btn && !L.retry && !L.prep && !L.modal, `21. 누름 → 생성 한 번·확인 단계 전에 보호 풀림·다시 물음·새 사용자 글 없음·버튼 사라짐 (${JSON.stringify([p, L])})`);
-    //     no gap any more (the hides taken off the page): the guard passes without asking; the modal is gone at its entry.
+    ok(p.gens.length === 1 && p.gens[0].type === 'normal' && p.gens[0].opts?.automatic_trigger === true && p.pop === 1 && p.afterGuard?.prep && p.afterGuard?.modal
+        && L.users === users0 && L.last === 'ai' && !L.btn && !L.retry && !L.prep && !L.modal, `21. 누름 → 생성 한 번·확인 단계에서도 보호 유지·다시 물음·새 사용자 글 없음·끝나면 풀림·버튼 사라짐 (${JSON.stringify([p, L])})`);
+    //     no gap any more (the hides taken off the page): the guard passes without asking; the modal stays until Generate is over.
     await stopped('sgD2');
     await ev(UNHIDE_ALL => new Function(UNHIDE_ALL)(), UNHIDE);
     p = await press();
     L = await look();
-    ok(p.gens.length === 1 && p.pop === 0 && p.afterGuard && !p.afterGuard.prep && !p.afterGuard.modal && L.last === 'ai' && !L.modal, `21. 빠지는 구간 없음 → 묻지 않고 통과, 그때도 보호 풀림 (${JSON.stringify([p, L])})`);
+    ok(p.gens.length === 1 && p.pop === 0 && p.afterGuard?.prep && p.afterGuard?.modal && L.last === 'ai' && !L.modal && !L.prep, `21. 빠지는 구간 없음 → 묻지 않고 통과, 확인 단계에서도 보호 유지·끝나면 풀림 (${JSON.stringify([p, L])})`);
 
     // 22. the box focused when pressed, typed into while the server check is slow: nothing reaches the box (the modal has the keys);
     //     the box emptied at the end held nothing.
@@ -591,6 +592,99 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     await ev(() => { M.onPopup = null; });
     L = await look();
     ok(r.aborted === true && !L.btn && !L.retry, `25. 확인창 중 방을 옮김 → 새 방에 버튼 없음 (${JSON.stringify([r, L])})`);
+
+    // ───── v0.7.0-c2a1: review of c2a ─────
+    // 26. `중지 요청` in the modal: it asks SillyTavern to stop and never closes the window; the window closes only when Generate is
+    //     over. Three moments: while the reply streams (the part made stays), during the server check (the box is still emptied, no
+    //     reply), before the stop controller exists (the stop does not take; pressed again while streaming, it does).
+    const STOPPED = /중지를 요청했어요/;
+    const stopBtn = () => ev(() => {
+        const b = document.querySelector('dialog.popup[open] .popup-button-custom');
+        const s0 = M.stops || 0;
+        b?.click();
+        return { btn: b?.textContent || null, modal: !!document.querySelector('dialog.popup[open]'), prep: !!__savePoint.sendPrep(), stops: (M.stops || 0) - s0,
+            text: document.querySelector('#sp_prep_text')?.textContent || '' };
+    });
+    const going = () => ev(() => ({ modal: !!document.querySelector('dialog.popup[open]'), prep: !!__savePoint.sendPrep(), text: document.querySelector('#sp_prep_text')?.textContent || '' }));
+    await stopped('sgE1');
+    await ev(() => { M.confirm = 1; M.genStream = 3000; window.__rr = __savePoint.handle('send-retry'); });
+    await wait(1000);
+    let s1 = await stopBtn();
+    await wait(50);
+    let g1 = await going();
+    await ev(() => window.__rr);
+    await ev(() => { M.genStream = 0; });
+    L = await look();
+    let lastMes = await ev(() => M.chat.at(-1).mes);
+    ok(s1.btn === '중지 요청' && s1.stops === 1 && s1.modal && s1.prep && STOPPED.test(s1.text) && g1.modal && !L.modal && !L.prep && L.last === 'ai' && lastMes === 'A reply ',
+        `26. 스트리밍 중 중지 요청 → 창 안 닫힘·끝나면 닫힘·나온 부분 남음 (${JSON.stringify([s1, g1, L, lastMes])})`);
+
+    await stopped('sgE2');
+    await ev(() => { M.confirm = 1; M.genPings = [() => new Promise(z => setTimeout(z, 2000))]; window.__rr = __savePoint.handle('send-retry'); });
+    await wait(500);
+    s1 = await stopBtn();
+    await wait(1000);
+    g1 = await going();
+    await ev(() => window.__rr);
+    p = await ev(() => ({ boxAtClear: M.boxAtClear }));
+    L = await look();
+    ok(s1.stops === 1 && s1.modal && STOPPED.test(s1.text) && g1.modal && g1.prep && STOPPED.test(g1.text) && p.boxAtClear === '' && !L.modal && !L.prep && L.last === 'user' && L.retry && L.btn === 1,
+        `26. 서버 확인 중 중지 요청 → 서버 확인 동안 창 유지·답변 없음·끝나면 닫힘·버튼 다시 (${JSON.stringify([s1, g1, p, L])})`);
+
+    await stopped('sgE3');
+    await ev(() => { M.confirm = 1; M.genPre = () => new Promise(z => setTimeout(z, 800)); M.genStream = 3000; window.__rr = __savePoint.handle('send-retry'); });
+    await wait(300);
+    s1 = await stopBtn();
+    await wait(1500);
+    g1 = await going();
+    const midMes = await ev(() => ({ last: M.chat.at(-1).is_user ? 'user' : 'ai', mes: M.chat.at(-1).mes }));
+    const s2 = await stopBtn();
+    await ev(() => window.__rr);
+    await ev(() => { M.genPre = null; M.genStream = 0; });
+    L = await look();
+    lastMes = await ev(() => M.chat.at(-1).mes);
+    ok(s1.stops === 1 && s1.modal && g1.modal && g1.prep && midMes.last === 'ai' && s2.btn === '중지 요청' && s2.stops === 1 && s2.modal && !L.modal && !L.prep && L.last === 'ai' && lastMes === 'A reply ',
+        `26. 준비 앞 단계 중지는 안 먹힘 → 답변 이어짐·다시 눌러 멈춤·창은 끝날 때만 닫힘 (${JSON.stringify([s1, g1, midMes, s2, L, lastMes])})`);
+
+    // 27. (review P2) another extension's normal, automatic generation reaches the guard while the button's call goes: the window
+    //     stays. a) started from a start-event handler that runs before SavePoint's (the only start seen so far is the other one);
+    //     b) one waiting since before the press (its start seen, then another generation's end) reaches the guard after this start.
+    await stopped('sgE4');
+    await ev(() => {
+        M.confirm = 1; M.gens = []; window.__other = null; let once = true;
+        const off = M.eventSource.onFirst('generation_started', async () => {
+            if (!once) return; once = false; off();
+            await M.generate('normal', { automatic_trigger: true });
+            window.__other = { ...M.afterGuard, open: !!document.querySelector('dialog.popup[open]'), prep: !!__savePoint.sendPrep() };
+        });
+    });
+    p = await press();
+    L = await look();
+    let other = await ev(() => window.__other);
+    ok(p.gens.length === 2 && other && other.prep && other.modal && other.open && !L.modal && !L.prep, `27. 다른 확장의 시작 처리에서 먼저 돈 일반 자동 생성이 확인 단계에 와도 창 유지 (${JSON.stringify([p.gens.length, other, L])})`);
+
+    await openRoom('sgE5', copied('sgE5'));
+    await ev(() => {
+        M.gens = []; window.__xAfter = null;
+        M.genPings = [() => new Promise(z => setTimeout(z, 3000)), () => new Promise(z => setTimeout(z, 4000))];
+        window.__x = M.generate('normal', { automatic_trigger: true }).then(() => { window.__xAfter = { ...M.afterGuard, open: !!document.querySelector('dialog.popup[open]') }; });
+    });
+    await ev(() => { M.confirm = 0; });
+    r = await send();   // a send stopped meanwhile: its end makes SavePoint see no reply going; the button is there
+    await ev(() => { M.confirm = 1; });
+    L = await look();
+    p = await press();
+    await ev(() => window.__x);
+    const L2 = await look();
+    other = await ev(() => window.__xAfter);
+    ok(L.btn === 1 && p.gens.length === 1 && other && other.prep && other.modal && other.open && !L2.modal && !L2.prep, `27. 누르기 전부터 기다리던 일반 생성이 내 시작 뒤 확인 단계에 와도 창 유지 (${JSON.stringify([L, p.gens, other, L2])})`);
+
+    // 28. Generate returning early with no end event (no connection): over → the reply is not left "going" (exactly one start
+    //     during the call, none shown going).
+    await stopped('sgE6');
+    p = await press({ before: 'M.genEarly = true;' });
+    const again2 = await press({ before: 'M.genEarly = true;' });
+    ok(p.gens.length === 1 && again2.gens.length === 1 && !/만드는 중/.test(again2.toast), `28. 끝 신호 없이 일찍 끝난 버튼 생성 → 답변 중으로 남지 않음 (${JSON.stringify([p, again2])})`);
 
     await page.close();
     await browser.close(); srv.close();

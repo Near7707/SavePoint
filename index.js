@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-c2a';
+const VERSION = '0.7.0-c2a1';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -7946,13 +7946,16 @@ function onGroupFinished() { groupOn = false; sendGroup = null; sendAllow = null
 // SillyTavern's Generate('normal', { automatic_trigger: true }) adds no user message and no such text, but it still empties the box
 // (after the server check, so later than the press) and leaves a waiting attachment unsent. So the button is refused while a reply
 // is going, while the box holds anything (spaces and line breaks too) or a file waits, and it covers the page with SillyTavern's own
-// modal window (outside keys and taps go nowhere; it cannot be closed by hand) until this button's generation reaches the guard
-// (the box is emptied by then) or the call to Generate is over (an early return or an error too). Nothing else lifts it: not time
-// (the server's answer may come later and still empty the box), not another generation's end. Its reply is checked by the guard as
-// any send (no pass given). The message it is for is the one the guard saw last when it began (taken before it waits or asks): the
+// modal window (outside keys and taps go nowhere; it cannot be closed by hand) until the call to Generate is over (its reply made
+// and saved, stopped, an early return or an error). v0.7.0-c2a1 (review P2): no earlier release. The guard is not told which
+// generation reached it, and another extension's generation can reach it first (its start may even come before this one's is seen),
+// so nothing there can tell this call's generation apart; not time either (the server's answer may come later and still empty the
+// box), not another generation's end. The window's `중지 요청` asks SillyTavern to stop (again and again if need be) and leaves the
+// window up: a stop asked while it gets ready may not take, and the box may still be emptied before the call is over. Its reply is
+// checked by the guard as any send (no pass given). The message it is for is the one the guard saw last when it began (taken before it waits or asks): the
 // same room and opening, the same message object still last, its text unchanged; checked when shown and when pressed.
 let sendRetry = null;               // { key, epoch, m, i, mes }
-let sendPrep = null;                // the button's generation getting ready: { n, calling, release }
+let sendPrep = null;                // the button's call to Generate going: { release }
 const SEND_PREP_SLOW_MS = 10000;
 const RETRY_TAIL = ' SavePoint 창 맨 위의 `답변 만들기`로 이 글에 대한 답변을 다시 만들 수 있어요(새 글은 추가되지 않아요). 이 알림을 누르면 SavePoint 창이 열려요.';
 const RETRY_TEXT = {
@@ -7963,8 +7966,9 @@ const RETRY_TEXT = {
     file: '보내지 않은 첨부 파일이 있어요. `답변 만들기`로는 첨부가 보내지지 않아요. 첨부를 보내거나 취소한 뒤 다시 눌러 주세요.',
     none: '이 실리태번에서는 `답변 만들기`를 쓸 수 없어요. 입력칸을 비우고 보내기를 눌러 주세요(빈 전송 문구 설정이 켜져 있으면 그 문구가 새 글로 추가돼요).',
     failed: '답변을 만들지 못했어요: ',
-    prep: '답변을 준비하고 있어요. 준비가 끝나면 이 창은 저절로 닫혀요.',
-    slow: '답변 준비가 오래 걸리고 있어요(서버 응답을 기다리는 중). 준비가 끝나면 이 창은 저절로 닫혀요. 계속 닫히지 않으면 새로고침해 주세요. 새로고침하면 이번 답변은 만들어지지 않을 수 있어요.',
+    prep: '답변을 만들고 있어요. 답변이 끝나면 이 창은 저절로 닫혀요. 멈추려면 `중지 요청`을 눌러 주세요.',
+    slow: '답변이 오래 걸리고 있어요(서버 응답을 기다리는 중일 수 있어요). 끝나면 이 창은 저절로 닫혀요. 계속 닫히지 않으면 새로고침해 주세요. 새로고침하면 이번 답변은 만들어지지 않을 수 있어요.',
+    stop: '중지를 요청했어요. 준비 중에는 요청이 적용되지 않을 수 있어요. 작업이 끝나면 이 창이 닫혀요.',
 };
 function sendTarget() {
     if (ctx().groupId || !hasChat()) return null;
@@ -7980,13 +7984,19 @@ function retryHtml() {
     if (!retryOk(sendRetry)) return '';
     return `<div class="sp-alert sp-retry-alert">${esc(RETRY_TEXT.note)}<div class="sp-row">${btn('send-retry', '', '답변 만들기', '입력칸이 비어 있을 때, 마지막 글에 대한 답변을 만들어요(새 글은 추가하지 않아요)')}</div></div>`;
 }
-// SillyTavern's modal window over the page while the button's generation gets ready; released only by `release()`.
+// SillyTavern's modal window over the page while the button's call to Generate goes; released only by `release()` (when that
+// call is over). `중지 요청` (a button without a result: SillyTavern's Popup keeps the window open) only asks to stop.
 function sendPrepOpen() {
     const c = ctx();
     if (typeof c.Popup !== 'function' || !c.POPUP_TYPE) return null;
-    let done = false, popup = null, slow = 0;
+    let done = false, popup = null, slow = 0, stopped = false;
+    const stopAsk = () => {
+        if (done) return;
+        stopped = true;
+        try { c.stopGeneration?.(); } catch (e) { console.error('[SavePoint] prep stop', e); }
+        $('#sp_prep_text').text(RETRY_TEXT.stop);
+    };
     const prep = {
-        n: null, calling: false,
         release() {
             if (done) return;
             done = true; clearTimeout(slow);
@@ -7996,11 +8006,12 @@ function sendPrepOpen() {
     };
     try {
         popup = new c.Popup(`<div class="sp-prep" id="sp_prep_text">${esc(RETRY_TEXT.prep)}</div>`, c.POPUP_TYPE.TEXT, '',
-            { okButton: false, cancelButton: false, allowEscapeClose: false, onClosing: () => done });
+            { okButton: false, cancelButton: false, allowEscapeClose: false, onClosing: () => done,
+                customButtons: [{ text: '중지 요청', action: stopAsk, appendAtEnd: true }] });
         Promise.resolve(popup.show()).catch(e => console.error('[SavePoint] prep window', e));
     } catch (e) { console.error('[SavePoint] prep window', e); return null; }
     sendPrep = prep;
-    slow = setTimeout(() => { if (!done) $('#sp_prep_text').text(RETRY_TEXT.slow); }, SEND_PREP_SLOW_MS);
+    slow = setTimeout(() => { if (!done && !stopped) $('#sp_prep_text').text(RETRY_TEXT.slow); }, SEND_PREP_SLOW_MS);
     return prep;
 }
 async function sendRetryRun() {
@@ -8018,12 +8029,12 @@ async function sendRetryRun() {
     sendRetry = null;
     render();
     let err = null;
-    prep.calling = true;
+    const n0 = genCount;
     try { await c.generate('normal', { automatic_trigger: true }); } catch (e) { err = e; console.error('[SavePoint] retry generate', e); } finally {
-        prep.calling = false;
         prep.release();
-        // Generate is over: a generation of its own that SillyTavern ended without an end event (an early return, an error) is over.
-        if (prep.n !== null && genCount === prep.n && mainGenerating) { mainGenerating = false; scheduleAuto(); }
+        // Generate is over. SillyTavern sends no end event when it returns before its send buttons go busy (no connection, a failed
+        // server check): if exactly one generation started during the call and SillyTavern shows none going, it was this one.
+        if (mainGenerating && genCount === n0 + 1 && document.body?.dataset?.generating === undefined) { mainGenerating = false; scheduleAuto(); }
         // Nothing made for it (stopped again, an early return, an error): the button again, for the same message.
         if (!sendRetry && retryOk(t)) sendRetry = t;
         render();
@@ -8032,8 +8043,6 @@ async function sendRetryRun() {
 }
 async function sendGuard(copy, _size, abort, type) {
     const n = genCount, key = roomKey(), epoch = roomEpoch, group = !!ctx().groupId;
-    // v0.7.0-c2a: this button's generation reached the guard: the box is emptied by now, the page may be used again.
-    if (sendPrep && sendPrep.calling && sendPrep.n === n) sendPrep.release();
     // v0.7.0-c2a: the message this 1:1 send is for, taken before it waits or asks (a window closed late leaves nothing behind).
     const target = group ? null : sendTarget();
     const here = () => roomKey() === key && roomEpoch === epoch;
@@ -8043,8 +8052,8 @@ async function sendGuard(copy, _size, abort, type) {
         // (a question left in another room, closed late, must not stop a reply started since).
         if (group && genCount === n) { try { ctx().stopGeneration?.(); } catch (e) { console.error('[SavePoint] send guard stop', e); } }
         if (group) sendAllow = null;
-        // v0.7.0-c2a: a 1:1 reply stopped here: SillyTavern returns at once without a generation's end, so it is over now; its
-        // message can be answered from the window (`답변 만들기`).
+        // v0.7.0-c2a: a 1:1 reply stopped here is over now (SillyTavern sends its end as it frees the send buttons — v0.7.0-c2a1:
+        // not "no end event" as c2a said; turning it off here too does no harm); its message can be answered from the window.
         let retry = false;
         if (!group && genCount === n) { mainGenerating = false; setTimeout(() => { render(); scheduleAuto(); }, 0); }
         if (!group && why !== 'moved' && here() && retryOk(target)) { sendRetry = target; retry = true; render(); }
@@ -8107,8 +8116,6 @@ function onGenerationStarted(type, options, dryRun) {
     if (dryRun) return;
     genCount++;
     sendCand = null;   // v0.7.0-c1a: a send's candidate not taken by a group run is over
-    // v0.7.0-c2a: the first normal, automatic generation while `답변 만들기` calls Generate is that button's (released at the guard).
-    if (sendPrep && sendPrep.calling && sendPrep.n === null && type === 'normal' && options?.automatic_trigger === true) sendPrep.n = genCount;
     if (type !== 'quiet' && type !== 'impersonate') sendRetry = null;   // v0.7.0-c2a: a reply going (the guard puts it back if it stops it)
     mainGenerating = true;
     if (ui.run?.viaMain) cancelRun();

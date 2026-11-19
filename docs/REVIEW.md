@@ -1,4 +1,46 @@
+# v0.7.0-c2a1 · c2a 리뷰 반영 (준비 창은 답변이 끝날 때만 닫힘 + `중지 요청`) (브랜치 `v0.7-b`)
+
+기준: `132c92e`(c2a 리뷰 요청서, 코드 `40164c9`). c2a GPT 리뷰: P1 없음, P2 1, P3 1. 정리 → 내 1차 수정안("일반 종류 + 시작 하나"면 입구에서 풂) → GPT 2차(그 조건도 뚫림: 다른 확장의 시작 처리에서 먼저 돈 일반 자동 생성은 우리 시작보다 먼저 보임) → 내 2차(`automatic_trigger` 고유 표식 + 미도착 숫자) → GPT 3차(표식은 `boolean` 호환성을 바꿈, "같은 순간 시작"도 `unshallowCharacter` 대기 때문에 근거 아님, 미도착 숫자는 0으로 돌릴 신호가 없고 확인 단계에 안 오는 길이 많음 → **조기 해제를 빼고 창 안에 `중지 요청`**) → 사용자 동의. 두 질문(스트리밍 중 중지·준비 중 중지)은 GPT가 원본 함수로 확인.
+
+## 리뷰 처리
+| 항목 | 분류 | 처리 |
+|---|---|---|
+| P2 다른 생성이 확인 단계에 먼저 와서 준비 창을 풂 → 그 뒤 친 글을 버튼 생성이 늦게 지움 | 🔴 | 입구 해제·생성 번호(`sendPrep.n`) 없앰, 창은 `generate()`가 돌아올 때만 닫음 |
+| 답변 내내 창이 덮여 실리태번 멈춤 버튼을 못 누름 | 🔴(같이) | 창 안 `중지 요청`(창·보호 그대로, 여러 번), 누르면 문구 바뀜 |
+| P3 "멈추면 끝 신호 없음" 설명 | 🟡 | REVIEW.md·주석 바로잡음, 모의 환경 기본은 끝 신호 보냄, 없는 경우는 `M.genNoEnd` 예외 |
+| 호출 표식(`automatic_trigger` 고유값)·미도착 숫자·"같은 순간 시작" | ⚪ | 안 함(호환성·남는 숫자·근거 없음) |
+| `중지 요청`이 창을 닫기 | ⚪ | 안 함(늦은 응답이 입력칸을 지우는 원래 문제가 돌아옴) |
+
+## 바뀐 것
+- **`sendGuard` 입구:** `sendPrep.release()` 줄 없앰. `onGenerationStarted`의 `sendPrep.n` 기록 없앰(`sendPrep`는 `{ release }`만).
+- **`sendPrepOpen`:** `customButtons: [{ text: '중지 요청', action: stopAsk, appendAtEnd: true }]`. 실리태번 `Popup`은 `result`가 없는 버튼을 누르면 `action`만 돌리고 창을 닫지 않음(원본 `popup.js` 확인). `stopAsk` = `ctx().stopGeneration()` + 문구 `RETRY_TEXT.stop`("중지를 요청했어요. 준비 중에는 요청이 적용되지 않을 수 있어요. 작업이 끝나면 이 창이 닫혀요."), 창이 닫히면(`done`) 아무것도 안 함. 10초 안내는 중지를 누른 뒤엔 문구를 덮지 않음. 처음 문구 `RETRY_TEXT.prep`은 "답변이 끝나면 저절로 닫혀요. 멈추려면 `중지 요청`".
+- **`sendRetryRun` `finally`:** 보호 풂 → '답변 중' 정리는 `mainGenerating && genCount === n0 + 1 && body.dataset.generating === undefined`일 때만(호출 중 시작이 정확히 하나·실리태번이 생성 중 표시 없음 = 끝 신호 없이 일찍 돌아온 이 호출의 생성). 다른 생성이 겹치면 그대로 둠(그 끝 신호가 끔).
+- **`stop(why)`의 1:1 `mainGenerating` 끄기:** 그대로(실제로는 끝 신호가 오니 겹 장치, 해 없음). 주석만 바로잡음.
+
+## ★ 특히 봐 줄 곳
+1. **실리태번 `Popup`의 Enter:** 원본을 보면 포커스된 결과 없는 버튼에서 Enter를 누르면 `complete(NaN)`이 불릴 수 있음 → `onClosing`이 거짓이라 창은 그대로(우리 쪽 영향 없음으로 봄).
+2. **'답변 중' 정리 조건:** 실리태번은 보내기 버튼을 바쁘게 만들기 전에 돌아가면(서버 확인 실패·연결 없음) 끝 신호가 없음 → 위 조건일 때만 끔. 조건이 틀려도 다음 시작이 다시 켜고, 어떤 끝 신호든 끄는 기존 동작과 같은 정도.
+3. **덮는 창이 답변 내내 남음:** 확인창(`callGenericPopup`)은 준비 창 위에 뜸. 취소하면 호출이 끝나 창이 닫힘.
+4. **서버 확인 중 중지:** 입력칸은 비워질 수 있고 답변은 안 만들어짐 → 버튼이 다시 생김(같은 글).
+
+## 바뀐 기대(기존 검사)
+- `send-guard` 21 두 줄: 확인 단계 시점에 보호·창이 **남아 있음**(전엔 풀림), 끝나면 풀림.
+- `send-guard` 19 둘째 줄: 끝 신호 없는 중단을 `M.genNoEnd`로 따로 만듦(모의 기본은 이제 끝 신호를 보냄).
+
+## 검사 준비
+- `mock.js`: `eventSource.onFirst(t, f)`(실리태번 확장보다 먼저 도는 처리기, 지우는 함수 돌려줌). `MockPopup`이 `customButtons`(`.popup-button-custom`, `result` 있으면 닫음, 없으면 `action`만). `stopGeneration()`이 `M.genCtl.aborted = true`. `M.generate`: 시작 이벤트 → `M.genPre`(기다림) → 중단 컨트롤러 `M.genCtl` → 명령 뒤 → 서버 확인(`M.genPings` 한 호출에 하나씩, 없으면 `M.genPing`) → 입력칸 비움 → 확인 단계 → 멈췄거나 중지됐으면 끝 신호(`M.genNoEnd`면 없음) → 답변(`M.genStream` ms면 조각으로, 중지되면 나온 부분 남기고 0.4초 정리 뒤 끝 신호).
+- `send-guard.cjs` 26~28은 25 뒤(파일 끝). 도우미 `stopBtn()`(창 안 `중지 요청` 누름 + 그 순간 창·보호·`stopGeneration` 횟수·문구), `going()`.
+
+## 검사와 망가뜨리기 결과
+- 26 스트리밍 중(`sgE1`) · 서버 확인 중(`sgE2`) · 준비 앞 단계 + 다시 누름(`sgE3`). 27 다른 확장의 시작 처리에서 먼저 돈 일반 자동 생성(`sgE4`, `onFirst`) · 누르기 전부터 서버 확인을 기다리던 일반 생성이 그사이 취소된 전송의 끝 신호 뒤 내 시작 다음에 확인 단계에 옴(`sgE5`). 28 끝 신호 없이 일찍 끝난 버튼 생성 두 번.
+- 고치기 전 코드(`40164c9`, 새 검사·`mock.js` 복사): 7줄 FAIL(21 두 줄 · 26 세 줄 · 27 두 줄).
+- 망가뜨리기 4개 모두 잡힘: `중지 요청`이 창을 닫음 → 26 세 줄 · 입구에서 다시 풂 → 21 둘·26 둘·27 둘 · `stopGeneration` 안 부름 → 26 세 줄 · `finally`의 '답변 중' 정리 빼기 → 24 둘·26·28.
+- 10초 안내가 중지 문구를 덮지 않는 것은 검사 없음(26은 10초 안에 끝남).
+- Node 513 통과 / 0 실패 / 3 건너뜀. 브라우저 62묶음 한꺼번에 모두 통과, 검사 모드 오류 0(`send-guard` 89줄).
+
 # v0.7.0-c2a · 1:1 `답변 만들기` + 누른 뒤 준비 보호 + 취소 알림이 창을 엶 (브랜치 `v0.7-b`)
+
+> **c2a GPT 리뷰(`7b738cd..40164c9`, 요청서 `132c92e`): P1 없음, P2 1(다른 생성이 준비 보호를 먼저 풂), P3 1("멈추면 끝 신호 없음" 설명이 원본과 다름) → c2a1.** 스트리밍은 끝까지 기다려 돌아오고, Esc 두 번 강제 닫기도 `onClosing`을 거친다고 확인(★2·★3).
 
 기준: `7b738cd`(c1e 리뷰 깨끗 기록, 코드 `1db269d`). c2 설계: 내 정리 → GPT 1차(버튼은 창 맨 위 별도 안내 · 대기 첨부 거절 · 멈춘 글을 확인창 전에 정확히 기억 · 누른 뒤 생성 준비가 끝날 때까지 입력·방 이동 보호 · 재확인은 실제 완료 뒤 안내) → 내 2차 정리(c2a/c2b 나눔, 투명 덮개 + 10초 해제) → GPT 2차(덮개 대신 실리태번 모달, **시간 해제는 🔴 빼기** — 서버 확인이 늦으면 해제 뒤 쓴 글을 늦은 응답이 지움, `stopGeneration`도 이 구간을 못 끝냄 · 해제는 이 버튼 생성의 확인 단계 입구 또는 `generate()` 반환·오류만 · 10초는 안내만) + 사용자 동의.
 
@@ -15,7 +57,7 @@
 | 취소 알림 안의 직접 `답변 만들기`, 그룹 전용 버튼, 버튼 답변 통과 권한, 입력칸 글 빼 두기 | ⚪ | 안 함 |
 
 ## 바뀐 것
-- **실리태번 1.19.0에서 확인한 것(원본 `0a85854`):** `Generate`는 `GENERATION_STARTED` → 슬래시 명령 → `GENERATION_AFTER_COMMANDS` → 서버 확인(`pingServer`) → 그 뒤에 입력칸을 읽고 비움(`automatic_trigger`여도) → 사용자 글 추가·빈 전송 문구는 `!automatic_trigger`일 때만 → 생성용 사본 → interceptor. interceptor가 멈추면 `unblockGeneration` 후 곧바로 돌아가고 끝 이벤트가 없음. `getContext()`에 `generate`·`Popup`·`POPUP_RESULT`가 있음. `Popup`: `okButton: false`·`cancelButton: false`면 버튼 숨김, Esc는 `allowEscapeClose`가 거짓이면 두 번 + 확인, 닫기는 모두 `complete()` → `onClosing`이 거짓이면 다시 `showModal()`. 대기 첨부 = `#file_form_input`의 파일.
+- **실리태번 1.19.0에서 확인한 것(원본 `0a85854`):** `Generate`는 `GENERATION_STARTED` → 슬래시 명령 → `GENERATION_AFTER_COMMANDS` → 서버 확인(`pingServer`) → 그 뒤에 입력칸을 읽고 비움(`automatic_trigger`여도) → 사용자 글 추가·빈 전송 문구는 `!automatic_trigger`일 때만 → 생성용 사본 → interceptor. interceptor가 멈추면 `unblockGeneration` 후 곧바로 돌아가고 끝 이벤트가 없음(**c2a1에서 바로잡음:** `unblockGeneration → activateSendButtons → hideStopButton`이 끝 이벤트를 보냄). `getContext()`에 `generate`·`Popup`·`POPUP_RESULT`가 있음. `Popup`: `okButton: false`·`cancelButton: false`면 버튼 숨김, Esc는 `allowEscapeClose`가 거짓이면 두 번 + 확인, 닫기는 모두 `complete()` → `onClosing`이 거짓이면 다시 `showModal()`. 대기 첨부 = `#file_form_input`의 파일.
 - **`sendGuard` 입구:** ① `sendPrep.calling && sendPrep.n === n`이면 보호 풂(다른 판정보다 먼저 — 설정 꺼짐·통과·묻기 어느 쪽이든). ② 1:1이면 `target = sendTarget()`(마지막 글이 사용자 글이면 방·회차·객체·위치·원문).
 - **`stop(why)` 1:1:** `genCount === n`이면 `mainGenerating = false` + 다음 틱 `render`·`scheduleAuto`. `why !== 'moved' && here() && retryOk(target)`이면 `sendRetry = target`, 알림 꼬리 `RETRY_TAIL` + `onclick: openWindow`. 그렇지 않으면 예전 꼬리(`SEND_TAIL`).
 - **`retryOk(t)`:** 1:1 · 같은 방 키·회차 · 채팅 길이 − 1 = 위치 · 그 자리가 같은 객체 · 사용자 글·숨김 아님 · 원문 같음. 보일 때(`retryHtml`)·누를 때 둘 다.
