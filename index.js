@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-c4';
+const VERSION = '0.7.0-c4a';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -1960,12 +1960,14 @@ function homeOpen() {
     if (!homeHere()) return false;
     // v0.7.0-b3b1 (b3 design, H2): linked, but the chat file and the memory disagree (h2Of): nothing is written until they agree.
     // v0.7.0-b3c1b (review of b3c1a, P1): a fit that saw the chat file's hides or 🔖 changed elsewhere stops the room until it is opened again.
-    if (home.status === 'linked') return !!home.line && !home.line.pending && !home.line.stop && !home.h2 && !home.fitReopen && !home.fitCheck;
+    if (home.status === 'linked') return !!home.line && !home.line.pending && !home.line.stop && !home.h2 && !home.fitReopen && !home.fitCheck && !home.rescueCheck;
     return home.status === 'new' && !!home.id;
 }
 function homeMessage() {
     if (!hasChat()) return '채팅방을 먼저 열어 주세요.';
     if (!homeHere() || home.status === 'opening' || home.status === 'idle') return '이 방의 기억 파일을 아직 찾는 중이에요. 잠시 뒤 다시 해 주세요.';
+    // v0.7.0-c4a: a rescue copy written, its chat file not read back yet.
+    if (home.rescueCheck) return '기억 사본을 만든 뒤 채팅 파일을 다시 확인하는 중이에요. 잠시 뒤 다시 해 주세요.';
     if (home.status === 'pending' || home.line?.pending) return '응답을 받지 못한 기억 저장이 아직 기억 파일에 도착할 수 있어요. 그 저장이 새 기억을 덮지 않도록, 이 방은 다시 열거나 새로고침할 때까지 기억을 저장하지 않아요.';
     if (home.line?.stop === FIRST_UNSURE) return FIRST_UNSURE_TEXT;
     if (home.line?.stop === LINK_PART) return home.linkLate ? LINK_LATE_TEXT : LINK_PART_TEXT;
@@ -2217,9 +2219,13 @@ async function linkRounds(h, r0, owned) {
         if (!again.ok) { setHome(h, 'readFail'); return; }
         if (!sameInput(input, homeInput(again))) { r = again; continue; }
         h.d = d; h.integrity = input.integrity;
+        // v0.7.0-c4a (review of c4, P2): a rescue copy is checked against the chat file read after it was written (below); until then the
+        // room stays shut (`rescueCheck`: homeOpen false), so nothing resumes on the copy before that check.
+        h.rescueCheck = d.rescued === true; h.rescueLost = false;
         try { await actHome(h, d, input, files); }
         catch (e) { console.warn('[SavePoint] room link', e); if (mine()) setHome(h, 'readFail'); }
-        if (!mine()) return;
+        if (!mine()) { h.rescueCheck = false; return; }
+        if (h.status !== 'linked' || !h.line || h.line.pending || h.line.stop) h.rescueCheck = false;
         if (h.line?.pending) { if (h.status !== 'pending') setHome(h, 'pending'); return; }
         if (h.again && h.status !== 'linked') { r = null; h.again = false; continue; }
         // v0.7.0-b4a: a room held for a rename made in the chat list that may be carried on: the chat list is read (reads only) to see the old
@@ -2230,13 +2236,33 @@ async function linkRounds(h, r0, owned) {
         // v0.7.0-b3b1 (b3 design, H2): a link confirmed (no stop of its own: those notices come first) is checked against the chat file
         // read last (`again`: the first read can miss a hide changed in between, sameInput compares originals only), before anything
         // may be written in the room. `다시 확인` comes through here every time, so a room put right goes on.
+        // v0.7.0-c4a (review of c4, P2): `again` was read before a rescue copy was written; the copy is checked against the chat file read
+        // after it (`last`): originals or hides changed elsewhere while it was saved stop the room (H2). That read failing, or the file no
+        // longer this room's (address, integrity, main chat): readFail — the copy stays, `다시 확인` links this room's own copy (row 3/6),
+        // the other room's memory is never copied again. Branches and moves out keep `again` (the same gap: held over, PLAN c4a).
+        let last = again;
+        const rescue = h.rescueCheck;
+        if (rescue) {
+            if (h.status === 'linked' && h.line && !h.line.pending && !h.line.stop) {
+                try { last = await readServerChat(); } catch { last = { ok: false }; }
+                if (!mine()) { h.rescueCheck = false; return; }
+                const now = last.ok ? homeInput(last) : null;
+                if (!now || now.addr !== input.addr || now.integrity !== input.integrity || now.mainChat !== input.mainChat) {
+                    h.rescueCheck = false; h.rescueLost = true;
+                    console.warn('[SavePoint] rescue copy not checked: chat file', last.ok ? 'changed' : 'unread');
+                    setHome(h, 'readFail'); return;
+                }
+            }
+            h.rescueCheck = false;
+        }
         if (h.status === 'linked' && h.line && !h.line.pending && !h.line.stop) {
-            h.h2 = h2Of(h.st, again.messages || []);
+            h.h2 = h2Of(h.st, last.messages || []);
             if (h.h2) { console.warn('[SavePoint] room stopped (H2)', h.h2); trustQueue(); refreshView(); }
             // v0.7.0-b3c1c (review of b3c1b, P1): a fit that sent its chat write and did not finish checking it (fitCheck) goes on only
             // when this read (`again`) is this room's file, the page covers it, and its hides and 🔖 are the page's.
-            else if (h.fitCheck) fitChecked(h, again);
+            else if (h.fitCheck) fitChecked(h, last);
         }
+        if (rescue) { trustQueue(); refreshView(); }
         return;
     }
     if (mine()) setHome(h, 'held', 'changing');
@@ -2640,6 +2666,8 @@ const RESCUE_TEXT = {
     done: '이 방에 기억 사본을 만들어 연결했어요. 원래 기억 파일은 그대로 있고, 이제부터 두 방의 기억은 따로 저장돼요.',
     hides: '이 방에 기억 사본을 만들어 연결했지만, 기억이 기록하지 않은 메시지에 SavePoint 숨김이 남아 있어서 저장과 자동 기록을 멈췄어요. `원문과 기억 맞추기`로 숨김을 정리해 주세요.',
     other: '확인하는 사이 이 방에 다른 기억이 이미 연결돼 있어서 기억 사본을 만들지 않았어요. 지금 연결된 기억을 확인해 주세요.',
+    // v0.7.0-c4a (review of c4, P2)
+    lost: '이 방에 기억 사본을 만들었지만, 만든 뒤 채팅 파일을 다시 확인하지 못해서 저장과 자동 기록을 멈췄어요. 사본과 원래 기억 파일은 그대로 있어요. 잠시 뒤 `다시 확인`을 눌러 주세요.',
 };
 const rescueReady = h => homeHere() && home === h && h.status === 'held' && h.why === 'sameIntegrity' && !!h.rescue && h.rescue.epoch === roomEpoch
     && h.d?.rescue?.mem === h.rescue.mem && !h.linking && !h.writing && !h.fitReopen && !h.line?.pending;
@@ -2671,6 +2699,7 @@ async function rescueRoom() {
             else toastr.success(RESCUE_TEXT.done, 'SavePoint');
         }
         else if (h.status === 'linked') toastr.warning(RESCUE_TEXT.other, 'SavePoint', { timeOut: 10000 });
+        else if (h.status === 'readFail' && h.rescueLost) toastr.warning(RESCUE_TEXT.lost, 'SavePoint', { timeOut: 15000 });
         else if (h.status === 'held' && h.why === 'sameIntegrity') toastr.warning(RESCUE_TEXT.changed, 'SavePoint', { timeOut: 10000 });
         else toastr.warning(homeMessage() || RESCUE_TEXT.changed, 'SavePoint', { timeOut: 10000 });
     } finally { rescueJob = false; }

@@ -156,6 +156,54 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     q = await reopen('rsF imported', 'rsFx2');
     ok(q.status === 'linked' && !q.stop && q.id === r.own && !q.ups.some(n => n.startsWith('savepoint-mem-')) && q.saves === 0, `7. 다시 열면 이름표만 마저 써서 연결 (${JSON.stringify(q)})`);
 
+    // v0.7.0-c4a (review of c4, P2): the copy is checked against the chat file read after it was written. `saving`: JS run on the copy's
+    // server file (`f`) right after the copy's memory upload is answered (another device changing it while the copy is saved); `fail`: the
+    // next chat file read after that upload (the final check) answers 500.
+    await ev(() => {
+        const g = window.fetch;
+        window.__rsHook = null;
+        window.fetch = async (u, o = {}) => {
+            const k = window.__rsHook;
+            // The room as the final check's chat read starts: the copy is attached, the room must still be shut (nothing resumes on it).
+            if (k?.armed && !('during' in k) && String(u) === '/api/chats/get') k.during = __savePoint.autoBlocked() ?? null;
+            if (k?.armed && k.fail && String(u) === '/api/chats/get') { k.armed = false; k.failed = true; return new Response('{}', { status: 500 }); }
+            const res = await g(u, o);
+            if (k && !k.armed && !k.failed && String(u) === '/api/files/upload' && JSON.parse(o.body).name.startsWith('savepoint-mem-')) {
+                k.armed = true;
+                if (k.saving) (0, eval)(`(f => { ${k.saving} })`)(M.serverFiles[k.room]);
+            }
+            return res;
+        };
+    });
+    const pressSaving = (room, saving, fail = false) => ev(([room, saving, fail]) => { window.__rsHook = { room, saving, fail, armed: false, failed: false }; }, [room, saving, fail])
+        .then(() => press()).then(async p => { const k = await ev(() => { const k = window.__rsHook; window.__rsHook = null; return { armed: k.armed, failed: k.failed, during: k.during ?? null }; }); return { ...p, hook: k }; });
+
+    // 8. A recorded original changed elsewhere while the copy was saved → the copy stays, the room stops (H2 source), no done notice.
+    r = await held('rsG', 'rsG imported');
+    p = await pressSaving('rsG imported', "f[4].mes = 'changed while saving';");
+    after = await ev(([id, A]) => __files(id, A), [r.id, r.A]);
+    ok(r.btn === 1 && p.hook.armed && p.status === 'linked' && p.id === r.own && p.h2 === 'source' && !/연결했어요\./.test(p.toast) && p.saves === 0 && after === r.orig,
+        `8. 사본 저장 중 기록 범위 원문 변경 → 사본은 남고 멈춤(원문), 완료 안내 없음, 원래 기억 그대로 (${JSON.stringify([r.btn, p, after === r.orig])})`);
+    q = await ev(() => ({ open: __savePoint.home().status === 'linked' && !__savePoint.home().h2 }));
+    ok(!q.open && p.hook.during === 'room', `8. 마지막 확인 읽기 동안에도, 멈춘 뒤에도 자동 기록 안 열림 (${JSON.stringify([q, p.hook.during])})`);
+
+    // 9. A SavePoint hide outside the recorded range put in elsewhere while the copy was saved → stops (H2 hides) with the fit button.
+    r = await held('rsH', 'rsH imported', { more: 2 });
+    p = await pressSaving('rsH imported', "f[12].is_system = true; f[12].extra = { ...(f[12].extra || {}), savepointHidden: 1 };");
+    ok(r.btn === 1 && p.hook.armed && p.status === 'linked' && p.id === r.own && p.h2 === 'hides' && p.fit === 1 && !/연결했어요\./.test(p.toast) && p.saves === 0,
+        `9. 사본 저장 중 기록 밖 SavePoint 숨김 → 멈춤(숨김), 맞추기 버튼, 완료 안내 없음 (${JSON.stringify([r.btn, p])})`);
+
+    // 10. The final check's chat read fails → readFail with the copy kept (no done notice); `다시 확인` links this room's own copy, writing
+    //     no memory file (the other room's memory is never copied again).
+    r = await held('rsJ', 'rsJ imported');
+    p = await pressSaving('rsJ imported', '', true);
+    q = await ev(id => !!M.files.get(M.H.memName(id)), r.own);
+    ok(p.hook.failed && p.status === 'readFail' && q && /사본을 만들었지만.*다시 확인하지 못해서/.test(p.toast) && !/연결했어요\./.test(p.toast) && p.again === 1 && p.saves === 0,
+        `10. 마지막 채팅 읽기 실패 → 읽기 실패로 멈춤, 사본은 남음, 사본 안내 (${JSON.stringify([p, q])})`);
+    q = await recheck();
+    ok(q.status === 'linked' && q.id === r.own && !q.h2 && !q.stop && q.last === r.last && !q.ups.some(n => n.startsWith('savepoint-mem-')) && q.saves === 0,
+        `10. 다시 확인 → 이 방의 사본에 연결, 기억 파일 쓰기 0·원래 기억 다시 복사 안 함 (${JSON.stringify(q)})`);
+
     await page.close();
     await browser.close(); srv.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASSED');
