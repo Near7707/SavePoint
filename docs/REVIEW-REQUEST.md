@@ -1,21 +1,25 @@
-# 코드 리뷰 요청 · v0.7.0-c1e (c1d 리뷰 반영, 브랜치 `v0.7-b`)
+# 코드 리뷰 요청 · v0.7.0-c2a (1:1 `답변 만들기`, 브랜치 `v0.7-b`)
 
-- 범위: `git diff 964efd9 1db269d`, 커밋 하나예요.
-  - `1db269d`에 들어간 것: `index.js`(`sendTold` 한 함수), `manifest.json`(버전만), `README.md`, `docs/PLAN-v0.7.md`, `docs/REVIEW.md`, 검사(`send-guard.cjs` 18 새로).
-- c1d 리뷰(P2 1·P3 1)와 2차 의견대로 고쳤어요. 자세한 내용은 [REVIEW.md](REVIEW.md) 맨 위 v0.7.0-c1e에 있어요.
+- 범위: `git diff 7b738cd 40164c9`, 커밋 하나예요.
+  - `40164c9`에 들어간 것: `index.js`(send guard 구역에 c2a 묶음, `sendGuard` 입구·`stop`, `onGenerationStarted`, `sendEnd`, 창 맨 위 안내, `handle('send-retry')`), `manifest.json`(버전만), `README.md`, `docs/PLAN-v0.7.md`, `docs/REVIEW.md`, 검사(`mock.js`, `send-guard.cjs` 3 기대 바뀜 · 19~25 새로).
+- c2 설계 GPT 1·2차 의견대로 c2a만 만들었어요(확인창 안 `답변 멈추고 다시 확인`은 c2b). 자세한 내용은 [REVIEW.md](REVIEW.md) 맨 위 v0.7.0-c2a에 있어요.
 - 결과는 P1/P2/P3로 주세요. 브라우저 묶음은 우리 쪽에서 돌렸어요.
-  - 62묶음 한꺼번에 모두 통과. 검사 모드 오류 0(`send-guard` 67줄).
-  - 고치기 전 코드(`6bdd4a9`)에서 18 첫 줄 FAIL(확인창·중단).
-  - 망가뜨리기: 화면 그룹 조건 되돌림 → 잡힘, 방 키 비교 되돌림 → 잡힘. 회차 비교 빼기와 `sendEnd`의 `sendGroup` 지우기 빼기는 하나씩은 안 잡히고, 함께 빼면 18 셋째 줄이 잡아요(겹 장치).
+  - 62묶음 한꺼번에 모두 통과. 검사 모드 오류 0(`send-guard` 83줄).
+  - 고치기 전 코드(`7b738cd`)에서 3 FAIL, 19에서 멈춤.
+  - 망가뜨리기 9개 중 8개 잡힘(REVIEW.md). 안 잡힌 1개는 겹 장치(멈춘 글을 늦게 잡기 — 방 이동은 `moved`가 먼저 막음).
   - Node 513 통과 / 0 실패 / 3 건너뜀.
 
 ## 바뀐 것
-- **P2 `sendTold(type)`:** `sendTypeAsked(type) && !!sendGroup?.tell && sendGroup.epoch === roomEpoch`예요.
-  - 화면의 그룹 여부(`ctx().groupId`)와 방 키 비교(`sendGroup.key === roomKey()`)를 뺐어요. 실리태번이 묶음 시작 전에 캐릭터 선택값을 비웠다가 멤버마다 다시 넣어서, 1:1 화면에서 이어진 재생성 묶음은 방 키가 달라요.
-  - 그대로 둔 것: 방 이동(`sendEnd`)·묶음 끝(`onGroupFinished`)이 `sendGroup`을 지우는 처리, `sendGuard`의 `here()`(들어올 때 방 키·회차 비교), 알림 문구.
-  - `sendAsked`는 안 바꿨어요. `sendGuard`가 `told`를 먼저 보고, 기억 연결 전 알림은 `!sendAsked && !sendTold`라서 `told`면 어차피 안 떠요.
-- **P3:** 코드는 그대로이고 README 알려진 한계(v0.7.0-c1e)에만 적었어요.
+- **버튼:** 1:1 확인 단계가 답변을 멈추면(취소·바뀜·오류, 방 이동 아님) SavePoint 창 맨 위에 `답변 만들기`. 대상은 확인 단계 입구에서 잡은 마지막 사용자 글(같은 방·회차·같은 객체가 마지막·원문 그대로, 보일 때·누를 때 확인).
+- **누를 때 거절:** 보호 중 · 대상 바뀜 · 답변 중(`mainBusy()`·실리태번 생성 표시) · 입력칸에 무엇이든(공백·줄바꿈 포함) · 대기 첨부(`#file_form_input`) · `generate`/`Popup` 없음.
+- **보호:** 실리태번 `Popup`(버튼 없음, `allowEscapeClose: false`, `onClosing`은 풀기 전엔 거짓)으로 덮고 `generate('normal', { automatic_trigger: true })`. 푸는 곳은 두 곳뿐: 호출 중 처음 시작한 자동 일반 생성이 확인 단계 입구에 왔을 때(묻든 통과하든), 호출이 끝났을 때(조기 반환·오류 포함). 시간으로는 안 풂(10초 뒤 문구만).
+- 끝났는데 답변이 없으면(다시 취소·조기 반환·오류) 같은 글로 버튼 다시. 버튼 답변도 확인 단계가 평소처럼 봄.
+- **만들다 찾은 것(🟡):** 실리태번은 interceptor가 멈추면 끝 이벤트 없이 돌아가요. 그래서 c1부터 1:1 취소 뒤 SavePoint가 다음 답변 끝까지 "답변 중"으로 봤어요(자동 기록·🔖 복구·맞추기가 밀림). 멈춘 자리에서 `mainGenerating`을 끄고, 버튼 호출이 끝났을 때도 이 생성이면 꺼요.
+- 취소 알림 `onclick`이 창을 열어요.
 
 ## 특히 봐 줄 곳
-1. **회차만으로 묶음을 이 방 것으로 봐요.** 방을 옮기면 `sendEnd`가 묶음을 지우고 회차도 올라가서 두 겹이에요. 같은 회차에서 알림 묶음이 끝나기 전에 이 화면에서 보낸 다른 일반 전송도 알림만이 되는데, 그룹 생성 중이라 보내기를 못 누르는 동안이라고 봤어요.
-2. **모의 환경에서 캐릭터 선택값 비우기는 `M.characters = []`로 흉내 냈어요.** 실제 실리태번은 `this_chid`를 비워요. 실제 확인은 합치기 전 목록에 넣었어요.
+1. "이 버튼의 생성"은 호출 중 처음 시작한 `normal` + `automatic_trigger` 생성이에요. 그사이 다른 확장이 같은 종류로 시작하면 보호가 먼저 풀릴 수 있어요.
+2. `generate()`가 스트리밍 끝까지 기다리고 돌아오는지 확인 못 했어요(일찍 돌아와도 입력칸은 이미 비운 뒤라고 봤어요).
+3. Esc 두 번 + 확인으로 강제로 닫는 길도 `onClosing`을 거치는지 확인 못 했어요.
+4. 멈춘 자리에서 `mainGenerating`을 끄는 게 안전한지(1:1만, `genCount === n`일 때).
+5. 입력칸 비었는지는 `#send_textarea` 값, 첨부는 `#file_form_input`로만 봐요.
