@@ -533,16 +533,21 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     ok(p.gens.length === 1 && p.pop === 0 && p.afterGuard?.prep && p.afterGuard?.modal && L.last === 'ai' && !L.modal && !L.prep, `21. 빠지는 구간 없음 → 묻지 않고 통과, 확인 단계에서도 보호 유지·끝나면 풀림 (${JSON.stringify([p, L])})`);
 
     // 22. the box focused when pressed, typed into while the server check is slow: nothing reaches the box (the modal has the keys);
-    //     the box emptied at the end held nothing.
+    //     the box emptied at the end held nothing. v0.7.0-c2a2: the window opens focused on its text, so spaces and Enter typed on
+    //     do not reach `중지 요청`.
     await stopped('sgD3');
     await ev(() => { M.confirm = 1; M.genPing = () => new Promise(z => setTimeout(z, 1500)); document.getElementById('send_textarea').focus(); window.__rr = __savePoint.handle('send-retry'); });
     await wait(400);
     const mid = await look();
+    const st0 = await ev(() => ({ stops: M.stops || 0, focus: document.activeElement?.id || document.activeElement?.className || '' }));
     await page.keyboard.type('typed meanwhile');
+    await page.keyboard.press('Enter');
+    const st1 = await ev(() => M.stops || 0);
     await ev(() => window.__rr);
     p = await ev(() => ({ boxAtClear: M.boxAtClear, box: document.getElementById('send_textarea').value }));
     L = await look();
-    ok(mid.prep && mid.modal && p.boxAtClear === '' && p.box === '' && !L.modal && L.last === 'ai', `22. 준비 중 입력칸에 친 글은 들어가지 않음 (${JSON.stringify([mid, p, L])})`);
+    ok(mid.prep && mid.modal && p.boxAtClear === '' && p.box === '' && !L.modal && L.last === 'ai' && st0.focus === 'sp_prep_text' && st1 === st0.stops,
+        `22. 준비 중 입력칸에 친 글(공백·Enter 포함)은 들어가지 않고 중지도 안 됨, 창은 글에 포커스 (${JSON.stringify([mid, st0, st1, p, L])})`);
 
     // 23. a server check over 10 s: the modal stays (its text says it takes long); Escape and a close asked by hand keep it.
     await stopped('sgD4');
@@ -685,6 +690,26 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     p = await press({ before: 'M.genEarly = true;' });
     const again2 = await press({ before: 'M.genEarly = true;' });
     ok(p.gens.length === 1 && again2.gens.length === 1 && !/만드는 중/.test(again2.toast), `28. 끝 신호 없이 일찍 끝난 버튼 생성 → 답변 중으로 남지 않음 (${JSON.stringify([p, again2])})`);
+
+    // 29. (c2a1 review P2) `중지 요청` from the keyboard: focused, Enter and then Space each ask SillyTavern to stop once (the
+    //     window's own Enter does not run), the text changes, the window stays; it closes only when Generate is over.
+    await stopped('sgE7');
+    await ev(() => { M.confirm = 1; M.genStream = 3000; M.genPre = () => new Promise(z => setTimeout(z, 800)); M.popupEnter = 0; window.__rr = __savePoint.handle('send-retry'); });
+    await wait(300);
+    await ev(() => document.querySelector('dialog.popup[open] .popup-button-custom')?.focus());
+    const k0 = await ev(() => M.stops || 0);
+    await page.keyboard.press('Enter');
+    const k1 = await ev(() => ({ stops: M.stops || 0, enter: M.popupEnter, ...{ modal: !!document.querySelector('dialog.popup[open]'), prep: !!__savePoint.sendPrep(), text: document.querySelector('#sp_prep_text')?.textContent || '' } }));
+    await wait(1500);   // the stop asked before the controller did not take: the reply goes on
+    await ev(() => document.querySelector('dialog.popup[open] .popup-button-custom')?.focus());
+    await page.keyboard.press('Space');
+    const k2 = await ev(() => ({ stops: M.stops || 0, modal: !!document.querySelector('dialog.popup[open]'), prep: !!__savePoint.sendPrep() }));
+    await ev(() => window.__rr);
+    await ev(() => { M.genPre = null; M.genStream = 0; });
+    L = await look();
+    lastMes = await ev(() => M.chat.at(-1).mes);
+    ok(k1.stops - k0 === 1 && k1.enter === 0 && k1.modal && k1.prep && STOPPED.test(k1.text) && k2.stops - k0 === 2 && k2.modal && k2.prep && !L.modal && !L.prep && L.last === 'ai' && lastMes === 'A reply ',
+        `29. 키보드로 중지 요청(Enter·Space) → 클릭과 같이 중지·문구·창 유지, 끝나면 닫힘 (${JSON.stringify([k0, k1, k2, L, lastMes])})`);
 
     await page.close();
     await browser.close(); srv.close();

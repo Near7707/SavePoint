@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-c2a1';
+const VERSION = '0.7.0-c2a2';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -7985,7 +7985,8 @@ function retryHtml() {
     return `<div class="sp-alert sp-retry-alert">${esc(RETRY_TEXT.note)}<div class="sp-row">${btn('send-retry', '', '답변 만들기', '입력칸이 비어 있을 때, 마지막 글에 대한 답변을 만들어요(새 글은 추가하지 않아요)')}</div></div>`;
 }
 // SillyTavern's modal window over the page while the button's call to Generate goes; released only by `release()` (when that
-// call is over). `중지 요청` (a button without a result: SillyTavern's Popup keeps the window open) only asks to stop.
+// call is over). `중지 요청` (a button without a result: SillyTavern's Popup keeps the window open) only asks to stop (a click,
+// Enter or Space).
 function sendPrepOpen() {
     const c = ctx();
     if (typeof c.Popup !== 'function' || !c.POPUP_TYPE) return null;
@@ -8005,11 +8006,25 @@ function sendPrepOpen() {
         },
     };
     try {
-        popup = new c.Popup(`<div class="sp-prep" id="sp_prep_text">${esc(RETRY_TEXT.prep)}</div>`, c.POPUP_TYPE.TEXT, '',
+        popup = new c.Popup(`<div class="sp-prep" id="sp_prep_text" tabindex="-1" autofocus>${esc(RETRY_TEXT.prep)}</div>`, c.POPUP_TYPE.TEXT, '',
             { okButton: false, cancelButton: false, allowEscapeClose: false, onClosing: () => done,
                 customButtons: [{ text: '중지 요청', action: stopAsk, appendAtEnd: true }] });
         Promise.resolve(popup.show()).catch(e => console.error('[SavePoint] prep window', e));
     } catch (e) { console.error('[SavePoint] prep window', e); return null; }
+    // v0.7.0-c2a2 (review P2): SillyTavern's custom button is a focusable <div>; its Popup's Enter (on the window, bubbling) only
+    // tries to close with the button's result (refused here), and Space does nothing. So Enter and Space on `중지 요청` run the
+    // same stopAsk as a click, and go no further (the window's Enter does not run as well). The window opens with the focus on its
+    // text (autofocus; SillyTavern's own pick is its hidden OK, so the browser would take the first focusable, this button): keys
+    // typed on as if in the box do nothing; the button is reached by Tab.
+    for (const b of popup.dlg?.querySelectorAll?.('.popup-button-custom') || []) {
+        if (b.textContent.trim() !== '중지 요청') continue;
+        setTimeout(() => { if (!done && document.activeElement === b) document.getElementById('sp_prep_text')?.focus(); }, 0);
+        b.addEventListener('keydown', e => {
+            if (e.key !== 'Enter' && e.key !== ' ') return;
+            e.preventDefault(); e.stopPropagation();
+            if (!e.repeat) stopAsk();
+        });
+    }
     sendPrep = prep;
     slow = setTimeout(() => { if (!done && !stopped) $('#sp_prep_text').text(RETRY_TEXT.slow); }, SEND_PREP_SLOW_MS);
     return prep;

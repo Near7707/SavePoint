@@ -155,18 +155,32 @@ window.SillyTavern = {
 // onClosing first (false keeps it open), Escape goes through complete(null) when allowEscapeClose is not false (as SillyTavern's
 // cancel listener; with it false SillyTavern wants a double Escape and a confirmation, so here it just stays open).
 // v0.7.0-c2a1: customButtons (`.popup-button-custom`): one with a result closes with it (complete), one without only runs its action.
+// v0.7.0-c2a2: focusable (tabIndex 0), data-result as SillyTavern sets it ("undefined" without a result); the window's Enter as below.
 class MockPopup {
     constructor(content, type, _v, opts = {}) {
         this.opts = opts; this.type = type; this.closed = false;
         this.dlg = document.createElement('dialog'); this.dlg.className = 'popup';
         this.dlg.innerHTML = `<div class="popup-content">${typeof content === 'string' ? content : ''}</div><div class="popup-controls"></div>`;
         for (const b of opts.customButtons || []) {
-            const el = document.createElement('div'); el.className = 'menu_button popup-button-custom result-control';
+            const el = document.createElement('div'); el.className = 'menu_button popup-button-custom result-control'; el.tabIndex = 0;
+            el.dataset.result = String(typeof b === 'object' ? b.result : undefined);
             el.textContent = typeof b === 'string' ? b : b.text;
             if (typeof b === 'object' && typeof b.action === 'function') el.addEventListener('click', b.action);
             if (typeof b === 'object' && b.result !== undefined) el.addEventListener('click', () => this.complete(b.result));
             this.dlg.querySelector('.popup-controls').append(el);
         }
+        // v0.7.0-c2a2: SillyTavern's Enter (on the window, bubbling): the focused result control's data-result (as a number; a
+        // custom button without a result gives NaN) goes to complete, which asks onClosing. Space is not handled.
+        this.dlg.addEventListener('keydown', e => {
+            if (e.key !== 'Enter' || e.altKey || e.shiftKey) return;
+            const a = document.activeElement;
+            if (this.dlg !== a?.closest('.popup')) return;
+            if (!a.closest('.result-control')) return;
+            const r = Number(a.getAttribute('data-result') ?? 1);
+            e.preventDefault(); e.stopPropagation();
+            M.popupEnter = (M.popupEnter || 0) + 1;
+            this.complete(r);
+        });
         this.dlg.addEventListener('cancel', e => { e.preventDefault(); if (opts.allowEscapeClose !== false) this.complete(null); });
     }
     show() { document.body.append(this.dlg); this.dlg.showModal(); (M.modals ||= []).push(this); return new Promise(r => { this.resolve = r; }); }
