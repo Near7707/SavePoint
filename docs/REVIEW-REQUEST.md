@@ -1,30 +1,28 @@
-# 코드 리뷰 요청 · v0.7.0-c1c (c1b 리뷰 반영, 브랜치 `v0.7-b`)
+# 코드 리뷰 요청 · v0.7.0-c1d (c1c 리뷰 반영, 브랜치 `v0.7-b`)
 
-- 범위: `git diff b42b187 0672f18`, 커밋 하나예요.
-  - `0672f18`에 들어간 것: `index.js`("send guard (v0.7.0-c1)" 구역의 `sendCuts`·`sendHasOf`·`extraCounts`·`extraShared`·`startHeld`·`sendAsked`·`sendTold`·`sendToldText`·`onGroupStarted`·`onSendDeleted`·`sendGuard`, `onGenerationStarted`의 `shared`·알림 조건), `manifest.json`(버전만), `README.md`, `docs/PLAN-v0.7.md`, `docs/REVIEW.md`, 검사(`send-guard.cjs` 9 순서, 12 기대 바뀜·새 줄, 14·15 새로).
-- c1b 리뷰(P1 1·P2 1·P3 1)와 2차 의견대로 고쳤어요. 자세한 내용은 [REVIEW.md](REVIEW.md) 맨 위 v0.7.0-c1c에 있어요.
+- 범위: `git diff 9976df3 6bdd4a9`, 커밋 하나예요.
+  - `6bdd4a9`에 들어간 것: `index.js`("send guard (v0.7.0-c1)" 구역의 `sendCut`·`sendHasOf`·`startHeld`·`sendToldText`·`onGroupStarted`·`onSendDeleted`·`sendGuard`), `manifest.json`(버전만), `README.md`, `docs/PLAN-v0.7.md`, `docs/REVIEW.md`, 검사(`send-guard.cjs` 16·17 새로, 새 페이지에서).
+- c1c 리뷰(P1 1·P2 1)와 2차 의견대로 고쳤어요. 자세한 내용은 [REVIEW.md](REVIEW.md) 맨 위 v0.7.0-c1d에 있어요.
 - 결과는 P1/P2/P3로 주세요. 브라우저 묶음은 우리 쪽에서 돌렸어요.
-  - 62묶음 한꺼번에: 60 통과 + `keys`·`status`(한꺼번에 돌릴 때 가끔 실패하던 묶음) → 따로 둘 다 첫 번째에 통과. 검사 모드 오류 0(`send-guard` 56줄).
-  - 고치기 전 코드(`a04bef8`)에서 새 줄 8개 FAIL. 15는 `extra` 읽기 7,929,900회·147ms → 고친 뒤 17,860회·4ms.
-  - 망가뜨리기 7개 중 6개 잡힘. 안 잡힌 하나는 아래 5예요.
+  - 62묶음 한꺼번에 모두 통과. 검사 모드 오류 0(`send-guard` 64줄).
+  - 고치기 전 코드(`0672f18`)에서 새 줄 6개 FAIL.
+  - 망가뜨리기 4개 모두 잡힘(1:1 삭제가 표시를 끔 · 기다린 뒤 대조 빼기 · 기다린 뒤 전역 `sendStart` 사용 · 방 키 표시로 되돌림).
   - Node 513 통과 / 0 실패 / 3 건너뜀.
 
 ## 바뀐 것
-- **P1 삭제한 그룹 방은 새로고침까지 알림만:** 그룹 방의 `MESSAGE_DELETED`가 방 키를 `sendCuts`(Set)에 더해요. 이 표시는 어디서도 지우지 않아요(방 이동·다시 열기·묶음 끝 모두 그대로). 그래서 페이지 새로고침까지 유지돼요.
-  - `onGroupStarted`: 지금 방에 표시가 있으면 후보를 버리고, 그 묶음을 `sendGroup = { key, epoch, tell: true, told: false }`로 둬요. 묶음 종류는 가리지 않아요.
-  - `sendAsked`는 `tell` 묶음이면 거짓이에요. 새 `sendTold(type)`가 일반 전송 종류(`'normal'`·없음)의 그 묶음 답변을 골라요.
-  - `sendGuard`의 `told` 길: `abort`·`stopGeneration`을 절대 부르지 않아요.
-    - 시작 숨김이 풀렸으면(예전 `changed`) "빠졌을 수 있어요" 알림을 띄워요.
-    - 아니면 빠진 숨김을 계산하고, 방을 찾는 중이면 기다려요. 방이 바뀌었으면 조용히 끝나요. 그다음 `sendGap` → `refreshInjection()` → 구간이 있을 때만 알림을 띄워요.
-    - 알림은 묶음 객체의 `told`로 묶음마다 한 번이에요. `catch`도 기록만 해요.
-  - 기억 연결 전 알림(`onGenerationStarted`, `ui.sendWarned`)에 `!sendTold(type)`를 넣어, 같은 답변에 두 알림이 겹치지 않게 했어요.
-- **P2·P3 한 번 세기:** `sendHasOf(copy, n, key, epoch)`가 지금 채팅과 사본의 `extra`별 개수를 한 번씩 세어 판정 함수를 돌려줘요.
-  - 생성 시작 때 둘 이상이 가진 `extra`(`sendStart.shared`)는 근거로 쓰지 않아요. 같은 생성의 시작 기록일 때만 적용돼요.
-  - 시작 숨김 확인, 빠진 숨김 계산, 기다린 뒤 비교, 확인창 뒤 비교가 각 시점에 새로 만들어 써요.
+- **P1 탭 전체 삭제 표시:** `sendCuts`(방 키 Set) 대신 `sendCut`(불린) 하나예요.
+  - 그룹 방의 `MESSAGE_DELETED`만 켜요. 1:1 삭제·방 이동·이름 변경·`sendEnd`는 끄지 않아요. 그래서 페이지 새로고침까지 유지돼요.
+  - `onGroupStarted`: `sendCut`이면 어느 그룹 방이든 그 묶음을 `tell`로 둬요(묻지도 멈추지도 않고 알림만).
+  - 알림 문구 첫 문장을 "이 탭의 그룹 방에서 메시지를 삭제한 뒤라, 그룹 답변은 확인창 대신 알림으로 바꿨어요."로 바꿨어요.
+- **시작 기록 고정(2차 의견):** `sendGuard`가 들어올 때 `start = sendStart`(같은 `n`·방·회차일 때만, 아니면 `null`)를 잡아 끝까지 써요.
+  - `sendHasOf(copy, start)`(`shared`도 이 기록에서), `startHeld(start, has)`가 인자로 받아요.
+  - 알림 묶음에서 `start`가 없으면 곧바로 "빠졌을 수 있어요" 알림이에요.
+- **P2 기다린 뒤 대조(알림 묶음):** `if (!here()) return;` 다음에 `has = sendHasOf(copy, start)` → `!startHeld(start, has)`면 "빠졌을 수 있어요" → 아니면 예전처럼 `sendGap` → `refreshInjection()` → 구간 있으면 알림.
+  - 알림 직전의 추가 대조는 넣지 않았어요(그 뒤는 모두 동기 실행).
+- 확인창 묶음(1:1·삭제 없는 그룹)은 판정이 그대로예요. 고정한 시작 기록을 쓸 뿐이고, 기다린 뒤 숨김이 바뀌면 예전처럼 `changed`로 멈춰요.
 
 ## 특히 봐 줄 곳
-1. **표시가 방 키라서 방 이름을 바꾸면 새 이름엔 안 이어져요.** 재생성이 멤버를 기다리는 바로 그 순간 이름을 바꿔야 문제가 돼서 README 한계에 적었어요. 더 넓게 "그룹 삭제가 한 번이라도 있으면 모든 그룹 방을 알림만"으로 할지 봐 주세요.
-2. **`tell` 묶음은 종류를 가리지 않지만, 확인 단계는 일반 전송 종류만 봐요.** 그룹 스와이프 등은 예전처럼 기억 연결 전 알림만 떠요.
-3. **`told` 묶음에서 방이 바뀌면 조용히 끝나요**(예전 `moved` 멈춤 대신). 멈추지 않는 게 맞는지 봐 주세요.
-4. **시작 공유 제외는 같은 생성의 `sendStart`일 때만이에요.** 시작 기록이 없거나 다른 생성이면 예전처럼 지금 채팅·사본만으로 세요.
-5. **검사 없는 곳:** 기억 연결 전 알림의 `!sendTold`를 빼도 안 잡혀요. 그 알림이 방마다 한 번이라 겹치는 장면이 검사에서 안 생겨요.
+1. **탭 전체 표시의 범위:** 그룹 삭제 한 번이면 새로고침까지 모든 그룹 방이 알림만이에요. 1:1 삭제는 켜지도 끄지도 않아요.
+2. **알림 묶음에 시작 기록이 없으면 처음부터 "빠졌을 수 있어요":** `onGenerationStarted`가 바로 앞에서 기록을 만들어 실제로는 거의 안 생겨요. 숨김이 하나도 없을 때도 알림이 뜰 수 있는데, 불명이라 그렇게 뒀어요.
+3. **확인창 묶음에 시작 기록이 없으면 예전처럼 통과(`startHeld` 참):** 그 길은 기다린 뒤 숨김 목록 비교가 따로 있어서 그대로 뒀어요.
+4. **검사 17은 모의 환경의 방 여는 중 기다림으로 만들었어요.** 실제 실리태번에서 묶음 시작이 방 열기와 겹치는 순서가 이와 같은지 봐 주세요.
