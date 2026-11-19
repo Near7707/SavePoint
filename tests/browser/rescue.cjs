@@ -204,6 +204,17 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     ok(q.status === 'linked' && q.id === r.own && !q.h2 && !q.stop && q.last === r.last && !q.ups.some(n => n.startsWith('savepoint-mem-')) && q.saves === 0,
         `10. 다시 확인 → 이 방의 사본에 연결, 기억 파일 쓰기 0·원래 기억 다시 복사 안 함 (${JSON.stringify(q)})`);
 
+    // 11. (v0.7.0-c4b, review of c4a, P2) Only the old in-chat memory copy changed while the copy was saved (an old SavePoint elsewhere):
+    //     originals and hides the same → still stopped (readFail, the copy kept, no done notice); `다시 확인` writes no memory file.
+    r = await held('rsK', 'rsK imported');
+    p = await pressSaving('rsK imported', "f[0].chat_metadata = { ...(f[0].chat_metadata || {}), savePoint: { v: 1, lastIndex: 2, note: 'old elsewhere' } };");
+    q = await ev(id => !!M.files.get(M.H.memName(id)), r.own);
+    ok(r.btn === 1 && p.hook.armed && p.status === 'readFail' && q && /사본을 만들었지만.*다시 확인하지 못해서/.test(p.toast) && !/연결했어요\./.test(p.toast) && p.saves === 0,
+        `11. 사본 저장 중 채팅 속 예전 기억 사본만 바뀜 → 완료 안내 없이 멈춤, 사본 남음 (${JSON.stringify([r.btn, p, q])})`);
+    q = await recheck();
+    ok(!q.ups.some(n => n.startsWith('savepoint-mem-')) && q.saves === 0 && !/연결했어요\./.test(q.toast),
+        `11. 다시 확인 → 기억 파일 쓰기 0, 원래 기억 다시 복사 안 함 (${JSON.stringify([q.status, q.why, q.ups, q.saves])})`);
+
     await page.close();
     await browser.close(); srv.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASSED');

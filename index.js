@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-c4a';
+const VERSION = '0.7.0-c4b';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -2247,7 +2247,9 @@ async function linkRounds(h, r0, owned) {
                 try { last = await readServerChat(); } catch { last = { ok: false }; }
                 if (!mine()) { h.rescueCheck = false; return; }
                 const now = last.ok ? homeInput(last) : null;
-                if (!now || now.addr !== input.addr || now.integrity !== input.integrity || now.mainChat !== input.mainChat) {
+                if (!now || now.addr !== input.addr || now.integrity !== input.integrity || now.mainChat !== input.mainChat
+                    // v0.7.0-c4b (review of c4a, P2): the old in-chat copy bound to the consent (an old SavePoint elsewhere may rewrite it).
+                    || (now.copy?.hash ?? null) !== (input.copy?.hash ?? null)) {
                     h.rescueCheck = false; h.rescueLost = true;
                     console.warn('[SavePoint] rescue copy not checked: chat file', last.ok ? 'changed' : 'unread');
                     setHome(h, 'readFail'); return;
