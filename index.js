@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-c1d';
+const VERSION = '0.7.0-c1e';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -7909,8 +7909,12 @@ function sendAsked(type) {
     return !!sendGroup && !sendGroup.tell && sendGroup.key === roomKey() && sendGroup.epoch === roomEpoch;
 }
 // v0.7.0-c1c: a reply of a group run in a room where a message was deleted: never asked, told once per run if it leaves a gap.
+// v0.7.0-c1e (review of c1d, P2): a regenerate waiting for its members may go on after the page moved to a 1:1 chat (SillyTavern
+// shows it as generating only later). Its run is then told too: SillyTavern clears the selected character before the run starts
+// and sets it again before each member, so the run's room key (and whether the page shows a group) is no proof; a told run
+// registered in this opening of the room (same roomEpoch) is. A room change still ends it (sendEnd), as does the run's end.
 function sendTold(type) {
-    return sendTypeAsked(type) && !!ctx().groupId && !!sendGroup?.tell && sendGroup.key === roomKey() && sendGroup.epoch === roomEpoch;
+    return sendTypeAsked(type) && !!sendGroup?.tell && sendGroup.epoch === roomEpoch;
 }
 function sendToldText(gap) {
     return '이 탭의 그룹 방에서 메시지를 삭제한 뒤라, 그룹 답변은 확인창 대신 알림으로 바꿨어요. '

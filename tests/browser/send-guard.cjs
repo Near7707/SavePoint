@@ -428,6 +428,30 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     await wrapEnd();
     ok(r.aborted === null && TOLD.test(r.toast) && /#0–#3\(4개\)/.test(r.toast) && !/빠졌을 수 있어요/.test(r.toast), `17. 그대로면 예전처럼 빠지는 구간 알림 (${JSON.stringify(r)})`);
     await ev(() => { M.fileDelay = {}; });
+
+    // ───── v0.7.0-c1e: review of c1d ─────
+    // 18. (P2) a regenerate waiting for its members goes on after the page moved to a 1:1 chat (the tab is marked from 16).
+    //     SillyTavern clears the selected character before the run starts (the run's room key is then null) and sets it again
+    //     before each member: the reply on the 1:1 page is told, not asked or stopped.
+    const RUN_1V1 = "const keep = M.characters; M.characters = []; await M.eventSource.emit('group_wrapper_started', { selected_group: 'g1', type: 'normal' }); M.characters = keep;";
+    await ev(() => { M.groupId = null; M.confirm = 0; });
+    await openRoom('sgR1');
+    r = await send('normal', { pre: RUN_1V1 });
+    const r18 = await send();
+    await wrapEnd();
+    ok(!r.pop.length && r.aborted === null && r.stops === 0 && TOLD.test(r.toast) && !r18.pop.length && r18.aborted === null, `18. 1:1 화면에서 이어진 그룹 재생성 묶음 → 묻지 않고 알림만 (${JSON.stringify([r, r18])})`);
+    //     the run over: a plain 1:1 send is asked again.
+    r = await send();
+    ok(r.pop.length === 1 && r.aborted === true, `18. 묶음이 끝난 뒤 1:1 전송은 다시 물음 (${JSON.stringify(r)})`);
+    //     a told run left in another room: the room change ends it (a later 1:1 send there is asked).
+    await ev(() => { M.groupId = 'g1'; M.groups[0].chat_id = 'sgR2'; });
+    await openRoom('sgR2');
+    await wrapStart();
+    await ev(() => { M.groupId = null; });
+    await openRoom('sgR1');
+    r = await send();
+    await wrapEnd();
+    ok(r.pop.length === 1 && r.aborted === true, `18. 다른 방에서 시작한 알림 묶음은 방을 옮기면 끝 → 1:1 전송은 물음 (${JSON.stringify(r)})`);
     await page.close();
     page = page1;
 
