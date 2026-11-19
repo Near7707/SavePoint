@@ -1,28 +1,21 @@
-# 코드 리뷰 요청 · v0.7.0-c1d (c1c 리뷰 반영, 브랜치 `v0.7-b`)
+# 코드 리뷰 요청 · v0.7.0-c1e (c1d 리뷰 반영, 브랜치 `v0.7-b`)
 
-- 범위: `git diff 9976df3 6bdd4a9`, 커밋 하나예요.
-  - `6bdd4a9`에 들어간 것: `index.js`("send guard (v0.7.0-c1)" 구역의 `sendCut`·`sendHasOf`·`startHeld`·`sendToldText`·`onGroupStarted`·`onSendDeleted`·`sendGuard`), `manifest.json`(버전만), `README.md`, `docs/PLAN-v0.7.md`, `docs/REVIEW.md`, 검사(`send-guard.cjs` 16·17 새로, 새 페이지에서).
-- c1c 리뷰(P1 1·P2 1)와 2차 의견대로 고쳤어요. 자세한 내용은 [REVIEW.md](REVIEW.md) 맨 위 v0.7.0-c1d에 있어요.
+- 범위: `git diff 964efd9 1db269d`, 커밋 하나예요.
+  - `1db269d`에 들어간 것: `index.js`(`sendTold` 한 함수), `manifest.json`(버전만), `README.md`, `docs/PLAN-v0.7.md`, `docs/REVIEW.md`, 검사(`send-guard.cjs` 18 새로).
+- c1d 리뷰(P2 1·P3 1)와 2차 의견대로 고쳤어요. 자세한 내용은 [REVIEW.md](REVIEW.md) 맨 위 v0.7.0-c1e에 있어요.
 - 결과는 P1/P2/P3로 주세요. 브라우저 묶음은 우리 쪽에서 돌렸어요.
-  - 62묶음 한꺼번에 모두 통과. 검사 모드 오류 0(`send-guard` 64줄).
-  - 고치기 전 코드(`0672f18`)에서 새 줄 6개 FAIL.
-  - 망가뜨리기 4개 모두 잡힘(1:1 삭제가 표시를 끔 · 기다린 뒤 대조 빼기 · 기다린 뒤 전역 `sendStart` 사용 · 방 키 표시로 되돌림).
+  - 62묶음 한꺼번에 모두 통과. 검사 모드 오류 0(`send-guard` 67줄).
+  - 고치기 전 코드(`6bdd4a9`)에서 18 첫 줄 FAIL(확인창·중단).
+  - 망가뜨리기: 화면 그룹 조건 되돌림 → 잡힘, 방 키 비교 되돌림 → 잡힘. 회차 비교 빼기와 `sendEnd`의 `sendGroup` 지우기 빼기는 하나씩은 안 잡히고, 함께 빼면 18 셋째 줄이 잡아요(겹 장치).
   - Node 513 통과 / 0 실패 / 3 건너뜀.
 
 ## 바뀐 것
-- **P1 탭 전체 삭제 표시:** `sendCuts`(방 키 Set) 대신 `sendCut`(불린) 하나예요.
-  - 그룹 방의 `MESSAGE_DELETED`만 켜요. 1:1 삭제·방 이동·이름 변경·`sendEnd`는 끄지 않아요. 그래서 페이지 새로고침까지 유지돼요.
-  - `onGroupStarted`: `sendCut`이면 어느 그룹 방이든 그 묶음을 `tell`로 둬요(묻지도 멈추지도 않고 알림만).
-  - 알림 문구 첫 문장을 "이 탭의 그룹 방에서 메시지를 삭제한 뒤라, 그룹 답변은 확인창 대신 알림으로 바꿨어요."로 바꿨어요.
-- **시작 기록 고정(2차 의견):** `sendGuard`가 들어올 때 `start = sendStart`(같은 `n`·방·회차일 때만, 아니면 `null`)를 잡아 끝까지 써요.
-  - `sendHasOf(copy, start)`(`shared`도 이 기록에서), `startHeld(start, has)`가 인자로 받아요.
-  - 알림 묶음에서 `start`가 없으면 곧바로 "빠졌을 수 있어요" 알림이에요.
-- **P2 기다린 뒤 대조(알림 묶음):** `if (!here()) return;` 다음에 `has = sendHasOf(copy, start)` → `!startHeld(start, has)`면 "빠졌을 수 있어요" → 아니면 예전처럼 `sendGap` → `refreshInjection()` → 구간 있으면 알림.
-  - 알림 직전의 추가 대조는 넣지 않았어요(그 뒤는 모두 동기 실행).
-- 확인창 묶음(1:1·삭제 없는 그룹)은 판정이 그대로예요. 고정한 시작 기록을 쓸 뿐이고, 기다린 뒤 숨김이 바뀌면 예전처럼 `changed`로 멈춰요.
+- **P2 `sendTold(type)`:** `sendTypeAsked(type) && !!sendGroup?.tell && sendGroup.epoch === roomEpoch`예요.
+  - 화면의 그룹 여부(`ctx().groupId`)와 방 키 비교(`sendGroup.key === roomKey()`)를 뺐어요. 실리태번이 묶음 시작 전에 캐릭터 선택값을 비웠다가 멤버마다 다시 넣어서, 1:1 화면에서 이어진 재생성 묶음은 방 키가 달라요.
+  - 그대로 둔 것: 방 이동(`sendEnd`)·묶음 끝(`onGroupFinished`)이 `sendGroup`을 지우는 처리, `sendGuard`의 `here()`(들어올 때 방 키·회차 비교), 알림 문구.
+  - `sendAsked`는 안 바꿨어요. `sendGuard`가 `told`를 먼저 보고, 기억 연결 전 알림은 `!sendAsked && !sendTold`라서 `told`면 어차피 안 떠요.
+- **P3:** 코드는 그대로이고 README 알려진 한계(v0.7.0-c1e)에만 적었어요.
 
 ## 특히 봐 줄 곳
-1. **탭 전체 표시의 범위:** 그룹 삭제 한 번이면 새로고침까지 모든 그룹 방이 알림만이에요. 1:1 삭제는 켜지도 끄지도 않아요.
-2. **알림 묶음에 시작 기록이 없으면 처음부터 "빠졌을 수 있어요":** `onGenerationStarted`가 바로 앞에서 기록을 만들어 실제로는 거의 안 생겨요. 숨김이 하나도 없을 때도 알림이 뜰 수 있는데, 불명이라 그렇게 뒀어요.
-3. **확인창 묶음에 시작 기록이 없으면 예전처럼 통과(`startHeld` 참):** 그 길은 기다린 뒤 숨김 목록 비교가 따로 있어서 그대로 뒀어요.
-4. **검사 17은 모의 환경의 방 여는 중 기다림으로 만들었어요.** 실제 실리태번에서 묶음 시작이 방 열기와 겹치는 순서가 이와 같은지 봐 주세요.
+1. **회차만으로 묶음을 이 방 것으로 봐요.** 방을 옮기면 `sendEnd`가 묶음을 지우고 회차도 올라가서 두 겹이에요. 같은 회차에서 알림 묶음이 끝나기 전에 이 화면에서 보낸 다른 일반 전송도 알림만이 되는데, 그룹 생성 중이라 보내기를 못 누르는 동안이라고 봤어요.
+2. **모의 환경에서 캐릭터 선택값 비우기는 `M.characters = []`로 흉내 냈어요.** 실제 실리태번은 `this_chid`를 비워요. 실제 확인은 합치기 전 목록에 넣었어요.
