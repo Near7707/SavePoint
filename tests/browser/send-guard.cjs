@@ -711,6 +711,16 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     ok(k1.stops - k0 === 1 && k1.enter === 0 && k1.modal && k1.prep && STOPPED.test(k1.text) && k2.stops - k0 === 2 && k2.modal && k2.prep && !L.modal && !L.prep && L.last === 'ai' && lastMes === 'A reply ',
         `29. 키보드로 중지 요청(Enter·Space) → 클릭과 같이 중지·문구·창 유지, 끝나면 닫힘 (${JSON.stringify([k0, k1, k2, L, lastMes])})`);
 
+    // ───── v0.7.0-c2b ─────
+    // 30. the question points to the window's notice after cancelling; the window's `답변 만들기` says the reply is checked again.
+    r = await stopped('sgE8');
+    L = await look();
+    const note30 = await ev(() => $('#sp_overlay .sp-retry-alert').text());
+    ok(r.aborted === true && r.pop.length === 1 && /취소한 뒤 SavePoint 창에서 원인을 확인하고, 안내에 따라 정리해 주세요\./.test(r.pop[0]) && !/원문과 기억 맞추기|다시 확인/.test(r.pop[0]),
+        `30. 확인창: 취소 뒤 SavePoint 창 안내를 보라는 한 문장, 원인별 버튼 나열 없음 (${JSON.stringify(r.pop)})`);
+    ok(L.btn === 1 && /다시 시도할 때도 상태를 확인해요\. 확인이 필요한 구간이 남아 있으면 확인창이 다시 떠요\./.test(note30) && !/#\d/.test(note30),
+        `30. 답변 만들기 안내: 다시 확인한다는 고정 문구, 구간 예고 없음 (${note30})`);
+
     await page.close();
     await browser.close(); srv.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASSED');

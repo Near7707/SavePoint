@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-c2a2';
+const VERSION = '0.7.0-c2b';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -7866,7 +7866,9 @@ function sendWhy() {
 }
 function sendAskText(gap) {
     return `이번 답변에는 숨긴 원문 ${sendRanges(gap)}(${gap.length}개)이 빠지고, 그 부분의 기억 브리핑도 들어가지 않아요. 이유: ${sendWhy()}\n\n`
-        + '그래도 이번만 그대로 답변을 만들까요? 취소하면 보낸 글은 채팅에 남고 답변만 만들지 않아요.';
+        + '그래도 이번만 그대로 답변을 만들까요? 취소하면 보낸 글은 채팅에 남고 답변만 만들지 않아요.\n'
+        // v0.7.0-c2b: where to go after cancelling — the window's own notice for the reason (no fix listed here).
+        + '취소한 뒤 SavePoint 창에서 원인을 확인하고, 안내에 따라 정리해 주세요.';
 }
 // The question, answered false when the room changes (the window may stay open: its answer is then ignored).
 function sendConfirm(text, key, epoch) {
@@ -7959,7 +7961,8 @@ let sendPrep = null;                // the button's call to Generate going: { re
 const SEND_PREP_SLOW_MS = 10000;
 const RETRY_TAIL = ' SavePoint 창 맨 위의 `답변 만들기`로 이 글에 대한 답변을 다시 만들 수 있어요(새 글은 추가되지 않아요). 이 알림을 누르면 SavePoint 창이 열려요.';
 const RETRY_TEXT = {
-    note: '확인창에서 멈춘 답변이 있어요. 마지막 글은 채팅에 그대로 있어요.',
+    // v0.7.0-c2b: a fixed line on what happens when pressed (no gap is foretold: the reply is checked as any other).
+    note: '확인창에서 멈춘 답변이 있어요. 마지막 글은 채팅에 그대로 있어요. 다시 시도할 때도 상태를 확인해요. 확인이 필요한 구간이 남아 있으면 확인창이 다시 떠요.',
     gone: '답변을 만들 글이 바뀌었거나 더는 마지막 글이 아니라서 `답변 만들기`를 지웠어요.',
     busy: '지금 답변을 만드는 중이에요. 끝난 뒤 다시 눌러 주세요.',
     typed: '입력칸에 쓰던 글이 있어요(공백·줄바꿈만 있어도 같아요). `답변 만들기`는 입력칸을 비우고 답변을 만들어서 그 글이 지워져요. 입력칸을 비운 뒤 다시 눌러 주세요.',
