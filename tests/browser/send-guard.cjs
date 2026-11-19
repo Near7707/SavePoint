@@ -113,7 +113,7 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     await ev(() => { M.confirm = 0; });
     r = await send();
     ok(r.aborted === true && r.pop.length === 1 && /#0–#3\(4개\)/.test(r.pop[0]) && /보류했어요/.test(r.pop[0]) && r.status === 'held' && r.ok === '이번만 그대로 답변 만들기'
-        && /이번 답변은 만들지 않았어요/.test(r.toast) && /빈 전송 문구/.test(r.toast) && !/캐릭터 답하기/.test(r.toast) && r.stops === 0, `3. 취소 → 이 답변만 멈춤·안내, 1:1은 전체 중단 안 부름 (${JSON.stringify(r)})`);
+        && /이번 답변은 만들지 않았어요/.test(r.toast) && /`답변 만들기`/.test(r.toast) && !/빈 전송 문구/.test(r.toast) && !/캐릭터 답하기/.test(r.toast) && r.stops === 0, `3. 취소 → 이 답변만 멈춤·안내(c2a: 답변 만들기 안내), 1:1은 전체 중단 안 부름 (${JSON.stringify(r)})`);
     await ev(() => { M.confirm = 1; });
     r = await send();
     ok(r.aborted === null && r.pop.length === 1 && !r.toast, `3. 이번만 그대로 → 진행 (${JSON.stringify(r)})`);
@@ -454,6 +454,143 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     ok(r.pop.length === 1 && r.aborted === true, `18. 다른 방에서 시작한 알림 묶음은 방을 옮기면 끝 → 1:1 전송은 물음 (${JSON.stringify(r)})`);
     await page.close();
     page = page1;
+    await page.close();
+
+    // ───── v0.7.0-c2a: `답변 만들기` ─────
+    // A 1:1 send the guard stopped leaves its message without a reply: the window's top offers `답변 만들기` (SillyTavern's
+    // Generate('normal', { automatic_trigger: true }): no user message, no "send if empty" text; it empties the box after the server
+    // check). Refused while a reply goes, while the box holds anything or a file waits. A modal window covers the page from the
+    // press until this generation reaches the guard or Generate is over (never by time). The guard checks its reply as any send.
+    page = await session({ settings: SETTINGS });
+    await ev(() => {
+        const t = document.createElement('textarea'); t.id = 'send_textarea'; document.body.append(t);
+        const f = document.createElement('input'); f.type = 'file'; f.id = 'file_form_input'; document.body.append(f);
+    });
+    const RETRY = /`답변 만들기`로 이 글에 대한 답변을 다시 만들 수 있어요/;
+    // the window open on the page, the button's count there; the state kept.
+    const look = () => ev(() => {
+        if (!__savePoint.ui.open) $('#sp_wand').trigger('click'); else __savePoint.render(true);
+        const t = __savePoint.sendRetry();
+        return { btn: $('#sp_overlay [data-act="send-retry"]').length, retry: !!t, prep: !!__savePoint.sendPrep(), modal: !!document.querySelector('dialog.popup[open]'),
+            gens: (M.gens || []).length, users: M.chat.filter(m => m.is_user).length, last: M.chat.at(-1)?.is_user ? 'user' : 'ai', n: M.chat.length };
+    });
+    // press the button (handle), returning when it is done; `c` from before: new toasts, Generate calls.
+    const press = (opts = {}) => ev(async ({ before }) => {
+        const c = { t: toastr.log.length, g: (M.gens || []).length, p: (M.popups || []).length };
+        if (before) await new Function(`return (async () => { ${before} })()`)();
+        await __savePoint.handle('send-retry');
+        return { toast: toastr.log.slice(c.t).map(x => x[1]).join(' | '), gens: (M.gens || []).slice(c.g), pop: (M.popups || []).slice(c.p).length,
+            afterGuard: M.afterGuard || null, boxAtClear: M.boxAtClear ?? null, box: document.getElementById('send_textarea').value };
+    }, opts);
+    const stopped = async id => {
+        await openRoom(id, copied(id));
+        await ev(() => { M.confirm = 0; M.gens = []; M.afterGuard = null; M.boxAtClear = undefined; });
+        return send();
+    };
+
+    // 19. 취소 → the button at the top of the window; the toast says so and opens the window when clicked.
+    r = await stopped('sgD1');
+    let L = await look();
+    const opened = await ev(() => { $('#sp_overlay').hide(); __savePoint.ui.open = false; const e = toastr.log.findLast(x => /만들지 않았어요/.test(x[1])); e?.opts?.onclick?.(); return { onclick: typeof e?.opts?.onclick, open: __savePoint.ui.open }; });
+    ok(r.aborted === true && RETRY.test(r.toast) && L.retry && L.btn === 1 && L.last === 'user' && opened.onclick === 'function' && opened.open, `19. 1:1 취소 → 창 맨 위 답변 만들기·알림이 창을 엶 (${JSON.stringify([r, L, opened])})`);
+
+    //     a send stopped as SillyTavern stops it (the interceptor aborts, Generate returns with no end event): the reply is over,
+    //     so the button is not refused as "a reply going".
+    await openRoom('sgDa', copied('sgDa'));
+    await ev(() => { M.confirm = 0; return M.generate(undefined, {}); });
+    await ev(() => { M.confirm = 1; });
+    let p = await press();
+    L = await look();
+    ok(p.gens.length === 1 && !/만드는 중/.test(p.toast) && L.last === 'ai', `19. 실리태번식 중단(끝 신호 없음) 뒤에도 답변 중으로 남지 않음 (${JSON.stringify([p, L])})`);
+    await stopped('sgD1b');
+
+    // 20. refused: anything in the box (spaces and line breaks too), a file waiting, a reply going. Nothing called, the button stays.
+    p = await press({ before: "document.getElementById('send_textarea').value = ' \\n';" });
+    L = await look();
+    ok(/입력칸에 쓰던 글이 있어요/.test(p.toast) && !p.gens.length && L.btn === 1 && !L.modal && p.box === ' \n', `20. 입력칸에 공백·줄바꿈만 있어도 거절 (${JSON.stringify([p, L])})`);
+    p = await press({ before: "document.getElementById('send_textarea').value = ''; const dt = new DataTransfer(); dt.items.add(new File(['x'], 'a.txt')); document.getElementById('file_form_input').files = dt.files;" });
+    L = await look();
+    ok(/보내지 않은 첨부 파일/.test(p.toast) && !p.gens.length && L.btn === 1 && !L.modal, `20. 대기 중 첨부 → 거절 (${JSON.stringify([p, L])})`);
+    p = await press({ before: "document.getElementById('file_form_input').value = ''; await M.eventSource.emit('generation_started', 'quiet', {}, false);" });
+    await ev(() => M.eventSource.emit('generation_ended'));
+    L = await look();
+    ok(/지금 답변을 만드는 중/.test(p.toast) && !p.gens.length && L.btn === 1, `20. 다른 생성 중(조용한 생성) → 거절 (${JSON.stringify([p, L])})`);
+
+    // 21. pressed, still a gap: Generate('normal', automatic) once, the modal gone by the time the guard runs, asked again;
+    //     이번만 → a reply, no new user message; the button gone.
+    await ev(() => { M.confirm = 1; });
+    const users0 = L.users;
+    p = await press();
+    L = await look();
+    ok(p.gens.length === 1 && p.gens[0].type === 'normal' && p.gens[0].opts?.automatic_trigger === true && p.pop === 1 && p.afterGuard && !p.afterGuard.prep && !p.afterGuard.modal
+        && L.users === users0 && L.last === 'ai' && !L.btn && !L.retry && !L.prep && !L.modal, `21. 누름 → 생성 한 번·확인 단계 전에 보호 풀림·다시 물음·새 사용자 글 없음·버튼 사라짐 (${JSON.stringify([p, L])})`);
+    //     no gap any more (the hides taken off the page): the guard passes without asking; the modal is gone at its entry.
+    await stopped('sgD2');
+    await ev(UNHIDE_ALL => new Function(UNHIDE_ALL)(), UNHIDE);
+    p = await press();
+    L = await look();
+    ok(p.gens.length === 1 && p.pop === 0 && p.afterGuard && !p.afterGuard.prep && !p.afterGuard.modal && L.last === 'ai' && !L.modal, `21. 빠지는 구간 없음 → 묻지 않고 통과, 그때도 보호 풀림 (${JSON.stringify([p, L])})`);
+
+    // 22. the box focused when pressed, typed into while the server check is slow: nothing reaches the box (the modal has the keys);
+    //     the box emptied at the end held nothing.
+    await stopped('sgD3');
+    await ev(() => { M.confirm = 1; M.genPing = () => new Promise(z => setTimeout(z, 1500)); document.getElementById('send_textarea').focus(); window.__rr = __savePoint.handle('send-retry'); });
+    await wait(400);
+    const mid = await look();
+    await page.keyboard.type('typed meanwhile');
+    await ev(() => window.__rr);
+    p = await ev(() => ({ boxAtClear: M.boxAtClear, box: document.getElementById('send_textarea').value }));
+    L = await look();
+    ok(mid.prep && mid.modal && p.boxAtClear === '' && p.box === '' && !L.modal && L.last === 'ai', `22. 준비 중 입력칸에 친 글은 들어가지 않음 (${JSON.stringify([mid, p, L])})`);
+
+    // 23. a server check over 10 s: the modal stays (its text says it takes long); Escape and a close asked by hand keep it.
+    await stopped('sgD4');
+    await ev(() => { M.confirm = 1; M.genPing = () => new Promise(z => setTimeout(z, 11500)); window.__rr = __savePoint.handle('send-retry'); });
+    await wait(10600);
+    await page.keyboard.press('Escape');
+    const kept = await ev(async () => { const x = await M.modals.at(-1).complete(null); return { x: x ?? null, text: document.querySelector('#sp_prep_text')?.textContent || '' }; });
+    const slowL = await look();
+    await ev(() => window.__rr);
+    await ev(() => { M.genPing = null; });
+    L = await look();
+    ok(slowL.prep && slowL.modal && kept.x === null && /오래 걸리고 있어요/.test(kept.text) && !L.modal && !L.prep && L.last === 'ai', `23. 10초 넘게 걸려도 보호 유지·Esc·닫기로 안 풀림 → 준비 끝나면 풀림 (${JSON.stringify([slowL, kept, L])})`);
+
+    // 24. Generate returning early (before the box) or throwing: the modal gone, the button back for the same message.
+    await stopped('sgD5');
+    p = await press({ before: 'M.genEarly = true;' });
+    L = await look();
+    ok(p.gens.length === 1 && !L.modal && !L.prep && L.retry && L.btn === 1 && L.last === 'user', `24. 일찍 끝남 → 보호 풀림·버튼 다시 (${JSON.stringify([p, L])})`);
+    p = await press({ before: "M.genThrow = new Error('no server');" });
+    L = await look();
+    ok(p.gens.length === 1 && /답변을 만들지 못했어요: no server/.test(p.toast) && !L.modal && !L.prep && L.retry && L.btn === 1, `24. 오류 → 보호 풀림·안내·버튼 다시 (${JSON.stringify([p, L])})`);
+    //     stopped again by the guard (취소): the button back, and the reply is over (no end event from SillyTavern): pressed again,
+    //     not refused as "a reply going".
+    await ev(() => { M.confirm = 0; });
+    p = await press();
+    L = await look();
+    const again = await press();
+    ok(p.gens.length === 1 && RETRY.test(p.toast) && L.retry && L.btn === 1 && !L.modal && again.gens.length === 1 && !/만드는 중/.test(again.toast), `24. 다시 취소 → 버튼 다시·답변 중으로 남지 않음 (${JSON.stringify([p, L, again])})`);
+
+    // 25. the message it is for: its text changed, or deleted and the same text put back → no button, a press says so;
+    //     another room → none; a window answered after the room changed → nothing for the new room.
+    await stopped('sgD6');
+    await ev(() => { M.chat.at(-1).mes += ' edited'; });
+    L = await look();
+    p = await press();
+    ok(!L.btn && /더는 마지막 글이 아니라서|바뀌었거나/.test(p.toast) && !p.gens.length, `25. 글이 고쳐짐 → 버튼 없음·누르면 안내 (${JSON.stringify([L, p])})`);
+    await stopped('sgD7');
+    await ev(() => { const m = M.chat.pop(); M.chat.push(JSON.parse(JSON.stringify(m))); });
+    L = await look();
+    ok(!L.btn, `25. 지우고 같은 글을 다시 넣음 → 버튼 없음 (${JSON.stringify(L)})`);
+    await stopped('sgD8');
+    await openRoom('sgD9', copied('sgD9'));
+    L = await look();
+    ok(!L.btn && !L.retry, `25. 다른 방으로 → 버튼 없음 (${JSON.stringify(L)})`);
+    await ev(() => { M.confirm = 0; M.onPopup = async () => { await M.openFile('sgD8'); await M.opened(); }; });
+    r = await send();
+    await ev(() => { M.onPopup = null; });
+    L = await look();
+    ok(r.aborted === true && !L.btn && !L.retry, `25. 확인창 중 방을 옮김 → 새 방에 버튼 없음 (${JSON.stringify([r, L])})`);
 
     await page.close();
     await browser.close(); srv.close();

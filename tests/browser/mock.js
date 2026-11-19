@@ -1,6 +1,7 @@
 // Mock SillyTavern context for SavePoint.
 window.toastr = { log: [] };
-for (const k of ['info', 'success', 'warning', 'error']) window.toastr[k] = m => window.toastr.log.push([k, String(m)]);
+// v0.7.0-c2a: the options given (onclick…) kept on the entry as `opts` (not an array item: joins and JSON of entries unchanged).
+for (const k of ['info', 'success', 'warning', 'error']) window.toastr[k] = (m, _t, o) => { const e = [k, String(m)]; e.opts = o || null; window.toastr.log.push(e); };
 const listeners = {};
 // SillyTavern saves the chat before it tells extensions a message came, changed or went.
 const SAVED_EVENTS = ['message_sent', 'message_received', 'message_edited', 'message_deleted', 'message_swiped', 'message_updated', 'message_swipe_deleted'];
@@ -142,7 +143,52 @@ window.SillyTavern = {
         POPUP_TYPE: { TEXT: 1, CONFIRM: 2, INPUT: 3 },
         // v0.7.0-c1: SillyTavern's stop of the generation going now (a group's loop too); counted.
         stopGeneration() { M.stops = (M.stops || 0) + 1; return true; },
+        // v0.7.0-c2a: SillyTavern's Popup (a real <dialog> shown modal: the page outside takes no keys or taps), and Generate as
+        // `답변 만들기` calls it (see M.generate).
+        Popup: MockPopup, POPUP_RESULT: { AFFIRMATIVE: 1, NEGATIVE: 0, CANCELLED: null },
+        generate: (...a) => M.generate(...a),
     }),
+};
+// v0.7.0-c2a: SillyTavern's Popup, as far as SavePoint uses it: show() opens a modal <dialog> (M.modals), complete(v) asks
+// onClosing first (false keeps it open), Escape goes through complete(null) when allowEscapeClose is not false (as SillyTavern's
+// cancel listener; with it false SillyTavern wants a double Escape and a confirmation, so here it just stays open).
+class MockPopup {
+    constructor(content, type, _v, opts = {}) {
+        this.opts = opts; this.type = type; this.closed = false;
+        this.dlg = document.createElement('dialog'); this.dlg.className = 'popup';
+        this.dlg.innerHTML = `<div class="popup-content">${typeof content === 'string' ? content : ''}</div>`;
+        this.dlg.addEventListener('cancel', e => { e.preventDefault(); if (opts.allowEscapeClose !== false) this.complete(null); });
+    }
+    show() { document.body.append(this.dlg); this.dlg.showModal(); (M.modals ||= []).push(this); return new Promise(r => { this.resolve = r; }); }
+    async complete(v) {
+        if (this.opts.onClosing && !(await this.opts.onClosing(this))) return undefined;
+        if (this.closed) return v;
+        this.closed = true; this.dlg.close(); this.dlg.remove(); this.resolve?.(v); return v;
+    }
+}
+// v0.7.0-c2a: Generate as SillyTavern 1.19.0 runs it for `답변 만들기` (type 'normal', automatic_trigger): GENERATION_STARTED, after
+// commands, the server check (M.genPing: a function the test gives, awaited), then the box (#send_textarea) is emptied (its text at
+// that moment: M.boxAtClear), no user message added (automatic_trigger), the copy and the interceptor; stopped there → returns at
+// once with no end event (as SillyTavern does). Else a reply is added (message_received) and the generation ends.
+// M.genEarly: returns before the box (no connection); M.genThrow: throws there. Calls are kept in M.gens.
+M.generate = async (type, opts = {}) => {
+    (M.gens ||= []).push({ type, opts });
+    await eventSource.emit('generation_started', type, opts, false);
+    await eventSource.emit('generation_after_commands', type, opts, false);
+    if (M.genPing) await M.genPing();
+    if (M.genEarly) { M.genEarly = false; return; }
+    if (M.genThrow) { const e = M.genThrow; M.genThrow = null; throw e; }
+    const box = document.getElementById('send_textarea');
+    M.boxAtClear = box ? box.value : null;
+    if (box) box.value = '';
+    const made = M.chat.filter(m => !m.is_system).map((m, index) => ({ ...m, index }));
+    let aborted = false;
+    await globalThis.savePointSendGuard?.(made, 4096, () => { aborted = true; }, type);
+    M.afterGuard = { prep: !!globalThis.__savePoint?.sendPrep?.(), modal: !!document.querySelector('dialog.popup[open]') };
+    if (aborted) return;
+    M.chat.push({ name: 'Ari', is_user: false, is_system: false, mes: `A reply ${M.chat.length} ${'and more '.repeat(6)}.`, swipe_id: 0, swipes: [], extra: {} });
+    await eventSource.emit('message_received', M.chat.length - 1);
+    await eventSource.emit('generation_ended', M.chat.length - 1);
 };
 // v0.6.58: the character card (its greetings decide whether a one-message room may get a carried #0).
 M.characters = [{ avatar: 'ari.png', name: 'Ari', description: 'Ari is a courier with green hair.', first_mes: 'Hello! This is the very first greeting.',

@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-c1e';
+const VERSION = '0.7.0-c2a';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -6864,6 +6864,7 @@ function hudHtml(st) {
         <div class="sp-scene-now">${open ? `<span class="sp-cursor">▶</span> <b>${esc(T(open.title, open.koTitle))}</b>${open.where ? ` <span class="sp-dim">@ ${esc(open.where)}</span>` : ''}` : '<span class="sp-dim">▷ 진행 중인 장면 없음</span>'}</div>
         <div class="sp-barline"><div class="sp-bar" title="저장된 메시지 비율"><div class="sp-bar-fill" style="width:${pct}%"></div><span>저장 ${covered} / ${total}</span></div></div>
         <button type="button" class="sp-hud-chip ${alerting ? 'sp-alerting' : ''}" data-act="hud-toggle" aria-expanded="${openHud}" title="${openHud ? '자세한 상태 접기' : '자세한 상태 펼치기'}"><span>${esc(chip)}</span><span class="sp-hud-caret">${openHud ? '▴' : '▾'}</span></button>
+        ${retryHtml()}
         ${review}
         ${homeAlert()}
         <div class="sp-hud-more">
@@ -7184,6 +7185,7 @@ async function handle(act, id) {
         case 'home-recheck': if (homeHere() && home.fitReopen) { toastr.warning(homeMessage(), 'SavePoint', { timeOut: 10000 }); return; } return recheckHome();
         case 'home-fit': return fitRoom();
         case 'home-carry': return carryRoom();
+        case 'send-retry': return sendRetryRun();
         case 'edit-cancel': ui.edit = null; backToChecks(); return render(true);
         case 'edit-save': return saveEdit();
         case 'edit-scene': return startEdit('scene', id);
@@ -7879,7 +7881,7 @@ function sendConfirm(text, key, epoch) {
         Promise.resolve(shown).then(v => ask.end(v === true || v === 1), () => ask.end(false));
     });
 }
-function sendEnd() { sendAsk?.end(false); sendAsk = null; sendAllow = null; sendCand = null; sendGroup = null; sendStart = null; }
+function sendEnd() { sendAsk?.end(false); sendAsk = null; sendAllow = null; sendCand = null; sendGroup = null; sendStart = null; sendRetry = null; }
 function sendHides() { return chat().map((m, i) => (m?.is_system && m.extra?.[HIDE_KEY] ? [i, m, m.extra] : null)).filter(Boolean); }
 function extraCounts(list) {
     const n = new Map();
@@ -7938,8 +7940,102 @@ function onSendDeleted() {
     if (ctx().groupId) sendCut = true;   // v0.7.0-c1b·c1c·c1d: kept through 1:1 deletes and room changes
 }
 function onGroupFinished() { groupOn = false; sendGroup = null; sendAllow = null; }
+// ───── v0.7.0-c2a: `답변 만들기` (a 1:1 reply stopped by the guard, made again) ─────
+// A 1:1 send the guard stopped (취소, a change while it asked, an error) leaves the user's message without a reply. Sending again
+// with an empty box could add SillyTavern's "send if empty" text as a new message, so the window's top offers `답변 만들기`:
+// SillyTavern's Generate('normal', { automatic_trigger: true }) adds no user message and no such text, but it still empties the box
+// (after the server check, so later than the press) and leaves a waiting attachment unsent. So the button is refused while a reply
+// is going, while the box holds anything (spaces and line breaks too) or a file waits, and it covers the page with SillyTavern's own
+// modal window (outside keys and taps go nowhere; it cannot be closed by hand) until this button's generation reaches the guard
+// (the box is emptied by then) or the call to Generate is over (an early return or an error too). Nothing else lifts it: not time
+// (the server's answer may come later and still empty the box), not another generation's end. Its reply is checked by the guard as
+// any send (no pass given). The message it is for is the one the guard saw last when it began (taken before it waits or asks): the
+// same room and opening, the same message object still last, its text unchanged; checked when shown and when pressed.
+let sendRetry = null;               // { key, epoch, m, i, mes }
+let sendPrep = null;                // the button's generation getting ready: { n, calling, release }
+const SEND_PREP_SLOW_MS = 10000;
+const RETRY_TAIL = ' SavePoint 창 맨 위의 `답변 만들기`로 이 글에 대한 답변을 다시 만들 수 있어요(새 글은 추가되지 않아요). 이 알림을 누르면 SavePoint 창이 열려요.';
+const RETRY_TEXT = {
+    note: '확인창에서 멈춘 답변이 있어요. 마지막 글은 채팅에 그대로 있어요.',
+    gone: '답변을 만들 글이 바뀌었거나 더는 마지막 글이 아니라서 `답변 만들기`를 지웠어요.',
+    busy: '지금 답변을 만드는 중이에요. 끝난 뒤 다시 눌러 주세요.',
+    typed: '입력칸에 쓰던 글이 있어요(공백·줄바꿈만 있어도 같아요). `답변 만들기`는 입력칸을 비우고 답변을 만들어서 그 글이 지워져요. 입력칸을 비운 뒤 다시 눌러 주세요.',
+    file: '보내지 않은 첨부 파일이 있어요. `답변 만들기`로는 첨부가 보내지지 않아요. 첨부를 보내거나 취소한 뒤 다시 눌러 주세요.',
+    none: '이 실리태번에서는 `답변 만들기`를 쓸 수 없어요. 입력칸을 비우고 보내기를 눌러 주세요(빈 전송 문구 설정이 켜져 있으면 그 문구가 새 글로 추가돼요).',
+    failed: '답변을 만들지 못했어요: ',
+    prep: '답변을 준비하고 있어요. 준비가 끝나면 이 창은 저절로 닫혀요.',
+    slow: '답변 준비가 오래 걸리고 있어요(서버 응답을 기다리는 중). 준비가 끝나면 이 창은 저절로 닫혀요. 계속 닫히지 않으면 새로고침해 주세요. 새로고침하면 이번 답변은 만들어지지 않을 수 있어요.',
+};
+function sendTarget() {
+    if (ctx().groupId || !hasChat()) return null;
+    const list = chat(), i = list.length - 1, m = list[i];
+    return m && m.is_user && !m.is_system ? { key: roomKey(), epoch: roomEpoch, m, i, mes: String(m.mes ?? '') } : null;
+}
+function retryOk(t) {
+    if (!t || ctx().groupId || !hasChat() || roomKey() !== t.key || roomEpoch !== t.epoch) return false;
+    const list = chat();
+    return list.length - 1 === t.i && list[t.i] === t.m && !!t.m.is_user && !t.m.is_system && String(t.m.mes ?? '') === t.mes;
+}
+function retryHtml() {
+    if (!retryOk(sendRetry)) return '';
+    return `<div class="sp-alert sp-retry-alert">${esc(RETRY_TEXT.note)}<div class="sp-row">${btn('send-retry', '', '답변 만들기', '입력칸이 비어 있을 때, 마지막 글에 대한 답변을 만들어요(새 글은 추가하지 않아요)')}</div></div>`;
+}
+// SillyTavern's modal window over the page while the button's generation gets ready; released only by `release()`.
+function sendPrepOpen() {
+    const c = ctx();
+    if (typeof c.Popup !== 'function' || !c.POPUP_TYPE) return null;
+    let done = false, popup = null, slow = 0;
+    const prep = {
+        n: null, calling: false,
+        release() {
+            if (done) return;
+            done = true; clearTimeout(slow);
+            if (sendPrep === prep) sendPrep = null;
+            try { Promise.resolve(popup?.complete?.(c.POPUP_RESULT?.AFFIRMATIVE ?? 1)).catch(e => console.error('[SavePoint] prep close', e)); } catch (e) { console.error('[SavePoint] prep close', e); }
+        },
+    };
+    try {
+        popup = new c.Popup(`<div class="sp-prep" id="sp_prep_text">${esc(RETRY_TEXT.prep)}</div>`, c.POPUP_TYPE.TEXT, '',
+            { okButton: false, cancelButton: false, allowEscapeClose: false, onClosing: () => done });
+        Promise.resolve(popup.show()).catch(e => console.error('[SavePoint] prep window', e));
+    } catch (e) { console.error('[SavePoint] prep window', e); return null; }
+    sendPrep = prep;
+    slow = setTimeout(() => { if (!done) $('#sp_prep_text').text(RETRY_TEXT.slow); }, SEND_PREP_SLOW_MS);
+    return prep;
+}
+async function sendRetryRun() {
+    const t = sendRetry, warn = text => toastr.warning(text, 'SavePoint', { timeOut: 10000 });
+    if (sendPrep) return void toastr.info(RETRY_TEXT.prep, 'SavePoint');
+    if (!retryOk(t)) { sendRetry = null; render(); return void warn(RETRY_TEXT.gone); }
+    if (mainBusy() || document.body?.dataset?.generating !== undefined) return void warn(RETRY_TEXT.busy);
+    const box = document.getElementById('send_textarea');
+    if (box && String(box.value ?? '') !== '') return void warn(RETRY_TEXT.typed);
+    if (document.getElementById('file_form_input')?.files?.length) return void warn(RETRY_TEXT.file);
+    const c = ctx();
+    if (typeof c.generate !== 'function') return void warn(RETRY_TEXT.none);
+    const prep = sendPrepOpen();
+    if (!prep) return void warn(RETRY_TEXT.none);
+    sendRetry = null;
+    render();
+    let err = null;
+    prep.calling = true;
+    try { await c.generate('normal', { automatic_trigger: true }); } catch (e) { err = e; console.error('[SavePoint] retry generate', e); } finally {
+        prep.calling = false;
+        prep.release();
+        // Generate is over: a generation of its own that SillyTavern ended without an end event (an early return, an error) is over.
+        if (prep.n !== null && genCount === prep.n && mainGenerating) { mainGenerating = false; scheduleAuto(); }
+        // Nothing made for it (stopped again, an early return, an error): the button again, for the same message.
+        if (!sendRetry && retryOk(t)) sendRetry = t;
+        render();
+    }
+    if (err) toastr.error(RETRY_TEXT.failed + (err?.message || String(err)), 'SavePoint', { timeOut: 12000 });
+}
 async function sendGuard(copy, _size, abort, type) {
     const n = genCount, key = roomKey(), epoch = roomEpoch, group = !!ctx().groupId;
+    // v0.7.0-c2a: this button's generation reached the guard: the box is emptied by now, the page may be used again.
+    if (sendPrep && sendPrep.calling && sendPrep.n === n) sendPrep.release();
+    // v0.7.0-c2a: the message this 1:1 send is for, taken before it waits or asks (a window closed late leaves nothing behind).
+    const target = group ? null : sendTarget();
     const here = () => roomKey() === key && roomEpoch === epoch;
     const stop = why => {
         try { abort(true); } catch (e) { console.error('[SavePoint] send guard abort', e); }
@@ -7947,7 +8043,13 @@ async function sendGuard(copy, _size, abort, type) {
         // (a question left in another room, closed late, must not stop a reply started since).
         if (group && genCount === n) { try { ctx().stopGeneration?.(); } catch (e) { console.error('[SavePoint] send guard stop', e); } }
         if (group) sendAllow = null;
-        toastr.warning(SEND_TEXT[why] + (why === 'moved' ? '' : SEND_TAIL + (group ? SEND_GROUP_TAIL : '')), 'SavePoint', { timeOut: 15000 });
+        // v0.7.0-c2a: a 1:1 reply stopped here: SillyTavern returns at once without a generation's end, so it is over now; its
+        // message can be answered from the window (`답변 만들기`).
+        let retry = false;
+        if (!group && genCount === n) { mainGenerating = false; setTimeout(() => { render(); scheduleAuto(); }, 0); }
+        if (!group && why !== 'moved' && here() && retryOk(target)) { sendRetry = target; retry = true; render(); }
+        toastr.warning(SEND_TEXT[why] + (why === 'moved' ? '' : retry ? RETRY_TAIL : SEND_TAIL + (group ? SEND_GROUP_TAIL : '')), 'SavePoint',
+            retry ? { timeOut: 15000, onclick: () => openWindow() } : { timeOut: 15000 });
     };
     const told = sendTold(type) ? sendGroup : null;
     // v0.7.0-c1c: a told run goes on whatever happens; the first reply of the run that leaves a gap tells it.
@@ -8005,6 +8107,9 @@ function onGenerationStarted(type, options, dryRun) {
     if (dryRun) return;
     genCount++;
     sendCand = null;   // v0.7.0-c1a: a send's candidate not taken by a group run is over
+    // v0.7.0-c2a: the first normal, automatic generation while `답변 만들기` calls Generate is that button's (released at the guard).
+    if (sendPrep && sendPrep.calling && sendPrep.n === null && type === 'normal' && options?.automatic_trigger === true) sendPrep.n = genCount;
+    if (type !== 'quiet' && type !== 'impersonate') sendRetry = null;   // v0.7.0-c2a: a reply going (the guard puts it back if it stops it)
     mainGenerating = true;
     if (ui.run?.viaMain) cancelRun();
     // Recall depends on the newest message, so rebuild right before the prompt is assembled.
@@ -8077,4 +8182,4 @@ jQuery(() => {
 
 // Exposed for regression checks only.
 // v0.7.0-a: `adoptPage` — tests only: a memory a test wrote on the page itself (setup, not SavePoint's change) is taken as the queue's.
-globalThis.__savePoint = { adoptPage: () => trustQueue(), home: () => home, sameRoom, linkHome, recheckHome, lootShown, persistSoon, transact, commitEdit, toggleKeep, paintKeep, repairKeep, state, settings, summarize, listSaves, vault, migrateLocal, autoCollect, autoBlocked, autoCount, scheduleAuto, undo, loadSave, reconcile, syncHide, refreshInjection, handle, ui, render, estTokens, recordLine, reportText, addLoot, queueHtml, installLootBar, openLootDialog, fillSettings, fitRoom };
+globalThis.__savePoint = { adoptPage: () => trustQueue(), home: () => home, sameRoom, linkHome, recheckHome, lootShown, persistSoon, transact, commitEdit, toggleKeep, paintKeep, repairKeep, state, settings, summarize, listSaves, vault, migrateLocal, autoCollect, autoBlocked, autoCount, scheduleAuto, undo, loadSave, reconcile, syncHide, refreshInjection, handle, ui, render, estTokens, recordLine, reportText, addLoot, queueHtml, installLootBar, openLootDialog, fillSettings, fitRoom, sendRetry: () => sendRetry, sendPrep: () => sendPrep };

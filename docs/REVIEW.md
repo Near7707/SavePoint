@@ -1,3 +1,50 @@
+# v0.7.0-c2a · 1:1 `답변 만들기` + 누른 뒤 준비 보호 + 취소 알림이 창을 엶 (브랜치 `v0.7-b`)
+
+기준: `7b738cd`(c1e 리뷰 깨끗 기록, 코드 `1db269d`). c2 설계: 내 정리 → GPT 1차(버튼은 창 맨 위 별도 안내 · 대기 첨부 거절 · 멈춘 글을 확인창 전에 정확히 기억 · 누른 뒤 생성 준비가 끝날 때까지 입력·방 이동 보호 · 재확인은 실제 완료 뒤 안내) → 내 2차 정리(c2a/c2b 나눔, 투명 덮개 + 10초 해제) → GPT 2차(덮개 대신 실리태번 모달, **시간 해제는 🔴 빼기** — 서버 확인이 늦으면 해제 뒤 쓴 글을 늦은 응답이 지움, `stopGeneration`도 이 구간을 못 끝냄 · 해제는 이 버튼 생성의 확인 단계 입구 또는 `generate()` 반환·오류만 · 10초는 안내만) + 사용자 동의.
+
+## 설계 처리
+| 항목 | 분류 | 처리 |
+|---|---|---|
+| 1:1 `답변 만들기`(빈 전송 문구 없이 다시 만들기, 합격 기준 8) | 🔴 | 창 맨 위 `retryHtml` + `sendRetryRun` |
+| 누른 뒤 실리태번이 입력칸을 늦게 비워 그사이 쓴 글이 지워짐 | 🔴 | 실리태번 `Popup` 모달, 이 생성의 확인 단계 입구·`generate()` 끝에서만 풂, 시간 해제 없음 |
+| 대기 중 첨부가 안 보내짐 | 🔴 | 거절 + 안내 |
+| 멈춘 글을 정확히(삭제 뒤 같은 글·늦게 닫힌 창) | 🔴 | 확인 단계 입구에서 잡음, 같은 방·회차·같은 객체가 마지막·원문 그대로 |
+| 취소 알림을 누르면 창 열기 | 🟡 | `onclick: openWindow` |
+| (만들다 찾음) 확인 단계가 1:1 답변을 멈추면 실리태번은 끝 신호 없이 돌아감 → `mainGenerating`이 다음 답변 끝까지 참 | 🟡 | 멈출 때 그 자리에서 끔, 버튼 호출이 끝났을 때도 이 생성이면 끔 |
+| 확인창 안 `답변 멈추고 다시 확인` | 🟡 | c2b(이번엔 안 함) |
+| 취소 알림 안의 직접 `답변 만들기`, 그룹 전용 버튼, 버튼 답변 통과 권한, 입력칸 글 빼 두기 | ⚪ | 안 함 |
+
+## 바뀐 것
+- **실리태번 1.19.0에서 확인한 것(원본 `0a85854`):** `Generate`는 `GENERATION_STARTED` → 슬래시 명령 → `GENERATION_AFTER_COMMANDS` → 서버 확인(`pingServer`) → 그 뒤에 입력칸을 읽고 비움(`automatic_trigger`여도) → 사용자 글 추가·빈 전송 문구는 `!automatic_trigger`일 때만 → 생성용 사본 → interceptor. interceptor가 멈추면 `unblockGeneration` 후 곧바로 돌아가고 끝 이벤트가 없음. `getContext()`에 `generate`·`Popup`·`POPUP_RESULT`가 있음. `Popup`: `okButton: false`·`cancelButton: false`면 버튼 숨김, Esc는 `allowEscapeClose`가 거짓이면 두 번 + 확인, 닫기는 모두 `complete()` → `onClosing`이 거짓이면 다시 `showModal()`. 대기 첨부 = `#file_form_input`의 파일.
+- **`sendGuard` 입구:** ① `sendPrep.calling && sendPrep.n === n`이면 보호 풂(다른 판정보다 먼저 — 설정 꺼짐·통과·묻기 어느 쪽이든). ② 1:1이면 `target = sendTarget()`(마지막 글이 사용자 글이면 방·회차·객체·위치·원문).
+- **`stop(why)` 1:1:** `genCount === n`이면 `mainGenerating = false` + 다음 틱 `render`·`scheduleAuto`. `why !== 'moved' && here() && retryOk(target)`이면 `sendRetry = target`, 알림 꼬리 `RETRY_TAIL` + `onclick: openWindow`. 그렇지 않으면 예전 꼬리(`SEND_TAIL`).
+- **`retryOk(t)`:** 1:1 · 같은 방 키·회차 · 채팅 길이 − 1 = 위치 · 그 자리가 같은 객체 · 사용자 글·숨김 아님 · 원문 같음. 보일 때(`retryHtml`)·누를 때 둘 다.
+- **`sendRetryRun`(버튼 `send-retry`):** 보호 중이면 안내 → `retryOk` 아니면 지우고 안내 → `mainBusy()`·`body.dataset.generating` → 입력칸 값이 빈 문자열이 아니면(공백 포함) → 대기 첨부 → `generate` 없음 → `sendPrepOpen()` 실패 → 거절. 통과하면 `sendRetry = null` → `prep.calling = true` → `await generate('normal', { automatic_trigger: true })` → `finally`: 보호 풂, 이 생성(`prep.n === genCount`)이 아직 `mainGenerating`이면 끔, 버튼이 다시 안 생겼고 그 글이 그대로면 `sendRetry = t`. 오류면 안내.
+- **`sendPrepOpen`:** `new Popup(문구, TEXT, '', { okButton: false, cancelButton: false, allowEscapeClose: false, onClosing: () => done })` + `show()`. `release()`만 `done = true` 후 `complete()`. 10초 뒤 문구만 `RETRY_TEXT.slow`. `Popup`이 없거나 만들 때 오류면 `null` → 버튼 거절(보호 없이 부르지 않음).
+- **`onGenerationStarted`:** `sendPrep.calling`이고 아직 `n`이 없고 `type === 'normal'`·`options.automatic_trigger === true`면 `sendPrep.n = genCount`. `quiet`·`impersonate`가 아니면 `sendRetry = null`(멈추면 확인 단계가 다시 넣음).
+- `sendEnd`(방 이동)가 `sendRetry`도 지움. `__savePoint.sendRetry()`·`sendPrep()`(검사용).
+- 그대로: 확인 단계 판정·문구, 그룹 처리 전부.
+
+## ★ 특히 봐 줄 곳
+1. **"이 버튼의 생성" 알아보기:** 호출 중(`calling`) 처음 시작한 `normal` + `automatic_trigger` 생성. 다른 확장이 그사이 같은 종류로 생성을 시작하면 그 생성의 확인 단계에서 보호가 먼저 풀릴 수 있음(그 전에 실리태번이 이 버튼 생성의 입력칸 비우기를 끝냈는지 모름). 거의 없다고 봤음.
+2. **`generate()`가 끝나는 때:** 실리태번이 답변 스트리밍을 끝까지 기다린 뒤 돌아오는지 확인 못 함. 일찍 돌아오면 보호는 그때 풀림(입력칸은 이미 비운 뒤라 괜찮다고 봄). `finally`의 `mainGenerating = false`는 스트리밍 중이어도 `mainBusy()`가 스트리밍 처리기를 따로 봄.
+3. **Esc 두 번 + 확인으로 강제 닫기:** 실리태번 코드에서 그 길도 `complete()` → `onClosing`을 거치는지 확인 못 함. 거치지 않으면 보호가 풀릴 수 있음(모의 환경은 Esc를 무시).
+4. **`mainGenerating`을 멈춤 자리에서 끔:** 실리태번은 interceptor가 멈추면 끝 이벤트 없이 돌아감(원본 확인). 이전엔 다음 답변 끝까지 SavePoint가 "답변 중"으로 봐서 자동 기록·🔖 복구·맞추기가 밀렸음(c1부터). 그룹은 `stopGeneration()`이 `GENERATION_STOPPED`를 보내서 그대로.
+5. **멈춘 글을 입구에서 잡음:** 확인 단계가 기다리거나 묻는 사이 바뀌면 `retryOk`가 막고, 방 이동은 `moved`·`here()`가 막음(두 겹이라 "늦게 잡기" 망가뜨리기는 안 잡힘).
+6. **입력칸은 `#send_textarea` 값, 대기 첨부는 `#file_form_input`.** 이미 채팅에 붙은 첨부는 상관없음.
+
+## 바뀐 기대(기존 검사)
+- `send-guard` 3: 1:1 취소 알림 꼬리가 `답변 만들기` 안내로(빈 전송 문구 문장 없음).
+
+## 검사 준비
+- `mock.js`: `toastr` 항목에 `opts`(배열 칸 아님 — `join`·JSON 그대로), `MockPopup`(진짜 `<dialog>`를 `showModal()`: 바깥은 키·누름을 못 받음, `complete`가 `onClosing` 먼저, Esc는 `allowEscapeClose`가 거짓이면 무시), `M.generate`(실리태번 순서: 시작 → 명령 뒤 → `M.genPing` 기다림 → `M.genEarly`면 돌아감 · `M.genThrow`면 던짐 → 입력칸 비움(그때 값 `M.boxAtClear`) → 사본 → interceptor → 멈췄으면 끝 이벤트 없이 돌아감 → 아니면 답변 추가 + `message_received`·`generation_ended`, `M.afterGuard` = interceptor 직후 보호·모달 상태, `M.gens`). `getContext()`에 `Popup`·`POPUP_RESULT`·`generate`.
+- `send-guard.cjs` 19~25는 **세 번째 새 페이지**(19 앞에서 `#send_textarea`·`#file_form_input`을 만듦). 도우미 `look()`(창 열고 버튼 수·상태), `press({ before })`(`handle('send-retry')`), `stopped(id)`(숨김이 복사된 방에서 취소).
+
+## 검사와 망가뜨리기 결과
+- 고치기 전 코드(`7b738cd`, 새 검사·`mock.js` 복사): 3 FAIL, 19에서 `__savePoint.sendRetry`가 없어 멈춤.
+- 망가뜨리기 9개 중 8개 잡힘: 확인 단계 입구 해제 빼기 → 21 두 줄 · `onClosing` 늘 참 → 23 · 10초에 해제 → 23 · 모달 안 띄움 → 22(친 글이 입력칸에 들어감) · 메시지 객체 비교 빼기 → 25 지우고 같은 글 · 멈춤 자리 `mainGenerating` 끄기 빼기 → 19 둘째 줄(처음엔 안 잡혀서 실리태번식 중단 장면을 더함) · `finally` 버튼 되살리기 빼기 → 24 세 줄 · 입력칸 `trim` → 20 공백. 안 잡힘(겹 장치): 멈춘 글을 멈출 때 잡기 + `here()` 빼기(`moved`가 먼저 막음).
+- Node 513 통과 / 0 실패 / 3 건너뜀. 브라우저 62묶음 한꺼번에 모두 통과, 검사 모드 오류 0(`send-guard` 83줄).
+
 # v0.7.0-c1e · c1d 리뷰 반영 (1:1 화면에서 이어진 그룹 재생성도 알림만) (브랜치 `v0.7-b`)
 
 > **c1e GPT 리뷰(`964efd9..1db269d`, 요청서 `59ca399`): P1·P2·P3 없음 → c1 리뷰 반복 끝.** 1:1 화면에서 이어진 그룹 묶음은 확인창 없이 진행, 묶음 끝·방 이동 뒤 일반 1:1 전송은 다시 확인창. 실리태번의 실제 캐릭터 선택 함수와 연결한 모의 검사 8건 통과(c1d에선 실패). 실제 실리태번 1.19.0 확인은 합치기 전 목록대로.
