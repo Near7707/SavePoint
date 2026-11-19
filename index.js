@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-c2b';
+const VERSION = '0.7.0-c4';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -1974,7 +1974,7 @@ function homeMessage() {
     if (home.status === 'new' && !home.id) return '이 방의 채팅 파일에 아직 고유값이 없어서 기억 파일을 만들 수 없어요. 메시지를 하나 보내거나 방을 다시 열어 주세요.';
     if (home.status === 'readFail') return '이 방의 기억 파일을 읽지 못했어요. 그래서 아무것도 저장하지 않고 자동 기록도 멈췄어요. 잠시 뒤 `다시 확인`을 눌러 주세요.';
     if (home.status === 'stopped') return `이 방의 기억 파일을 만드는 중에 멈췄어요(${home.why}). 그래서 아무것도 저장하지 않았어요. \`다시 확인\`을 눌러 이어서 해 주세요.`;
-    if (home.status === 'held') return `이 방의 기억을 정하지 못해서 보류했어요: ${HOLD_TEXT[home.why] || home.why}. 그동안 아무것도 저장하지 않고 자동 기록도 멈춰요.${home.carry ? ' 채팅 목록에서 이름만 바꾼 같은 채팅이면 `이름 변경 이어서 연결`로 이어서 연결할 수 있어요.' : ''}`;
+    if (home.status === 'held') return `이 방의 기억을 정하지 못해서 보류했어요: ${HOLD_TEXT[home.why] || home.why}. 그동안 아무것도 저장하지 않고 자동 기록도 멈춰요.${home.carry ? ' 채팅 목록에서 이름만 바꾼 같은 채팅이면 `이름 변경 이어서 연결`로 이어서 연결할 수 있어요.' : ''}${home.rescue && home.why === 'sameIntegrity' ? ' 다른 방의 기억이 기록한 원문이 이 방과 모두 같아요. 같은 이야기의 복제본이면 `이 방에 기억 복사해 복구`로 이 방에서 따로 쓰는 사본을 만들 수 있어요(다른 방의 기억은 그대로 둬요).' : ''}`;
     if (home.status === 'linked' && home.fitReopen) return FIT_TEXT.reopen + (chat().length > home.fitReopen.n ? FIT_TEXT.copy : '');
     // v0.7.0-b3c2: a changed original's fit wrote the memory file and could not read it back: the old H2 note would be out of date.
     if (home.status === 'linked' && home.fitCheck?.mem && home.h2?.why === 'source') return FIT_TEXT.checkMem + (chat().length > home.fitCheck.n ? FIT_TEXT.copy : '');
@@ -2194,11 +2194,13 @@ async function linkRounds(h, r0, owned) {
     // v0.7.0-b4a (b4 design): the user's consent to carry a rename on (carryRoom) is for this one decision only; the offer is made again
     // only by a decision that holds the room for it.
     const agreed = h.agree || null; h.agree = null; h.carry = null;
+    // v0.7.0-c4 (c4 design): the same for the consent to a rescue copy (rescueRoom), given in this opening of the room only.
+    const rescued = h.rescueAgree?.epoch === roomEpoch ? h.rescueAgree : null; h.rescueAgree = null; h.rescue = null;
     let r = r0;
     for (let round = 0; round < 3; round++) {
         if (h.line?.pending) { setHome(h, 'pending'); return; }
         if (!r?.ok) { r = await readServerChat(); if (!mine()) return; if (!r.ok) { setHome(h, 'readFail'); return; } }
-        const input = { ...homeInput(r), agreed }, files = new Map();
+        const input = { ...homeInput(r), agreed, rescued }, files = new Map();
         const read = async name => {
             if (files.has(name)) return files.get(name);
             const res = await readUserFile(fetch, name, { headers: serverHeaders() });
@@ -2223,6 +2225,8 @@ async function linkRounds(h, r0, owned) {
         // v0.7.0-b4a: a room held for a rename made in the chat list that may be carried on: the chat list is read (reads only) to see the old
         // name gone and this one there before the offer is shown.
         if (h.status === 'held' && h.why === 'renameUnproven' && d.carry) carryLook(h, d);
+        // v0.7.0-c4: a room held for another room of its integrity whose memory may be copied here: the offer (bound to this opening).
+        if (h.status === 'held' && h.why === 'sameIntegrity' && d.rescue) { h.rescue = { ...d.rescue, epoch: roomEpoch }; refreshView(); }
         // v0.7.0-b3b1 (b3 design, H2): a link confirmed (no stop of its own: those notices come first) is checked against the chat file
         // read last (`again`: the first read can miss a hide changed in between, sameInput compares originals only), before anything
         // may be written in the room. `다시 확인` comes through here every time, so a room put right goes on.
@@ -2621,6 +2625,55 @@ async function carryRoom() {
         else if (h.status === 'held' && h.why === 'renameUnproven') toastr.warning(CARRY_TEXT.changed, 'SavePoint', { timeOut: 10000 });
         else toastr.warning(homeMessage() || CARRY_TEXT.changed, 'SavePoint', { timeOut: 10000 });
     } finally { carryJob = false; }
+}
+// ───────── a copy of another room's memory, made by hand (v0.7.0-c4) ─────────
+// c4 design (GPT 1·2차 + 사용자): a room held because another room of its integrity holds the memory (that room deleted, or renamed
+// elsewhere: not told apart, no chat list read) may get its own copy of it, asked here. The other room's memory and tag are never touched;
+// the copy is a branch (row 7's writes and their resume: a body written and its links cut off is found as this room's own memory, row 6,
+// and only its links are written again — the original is never copied again). The offer (decideRoom row 8, `rescueOf`) and the consent
+// (`sameRescue`) are bound to the other room, its memory's id, rev, receipt and the fingerprints of all it recorded, and to this room's
+// address, integrity, old in-chat copy and opening (`epoch`). The decision made again after the consent reads both files and this room's
+// chat file again: every recorded original must still be this room's, or nothing is written.
+const RESCUE_TEXT = {
+    moved: '확인하는 사이 다른 방으로 옮겨서 기억 사본을 만들지 않았어요.',
+    changed: '확인하는 사이 이 방이나 원래 기억이 바뀌어서 기억 사본을 만들지 않았어요. 기억 파일은 그대로 있어요. `다시 확인`을 눌러 주세요.',
+    done: '이 방에 기억 사본을 만들어 연결했어요. 원래 기억 파일은 그대로 있고, 이제부터 두 방의 기억은 따로 저장돼요.',
+    hides: '이 방에 기억 사본을 만들어 연결했지만, 기억이 기록하지 않은 메시지에 SavePoint 숨김이 남아 있어서 저장과 자동 기록을 멈췄어요. `원문과 기억 맞추기`로 숨김을 정리해 주세요.',
+    other: '확인하는 사이 이 방에 다른 기억이 이미 연결돼 있어서 기억 사본을 만들지 않았어요. 지금 연결된 기억을 확인해 주세요.',
+};
+const rescueReady = h => homeHere() && home === h && h.status === 'held' && h.why === 'sameIntegrity' && !!h.rescue && h.rescue.epoch === roomEpoch
+    && h.d?.rescue?.mem === h.rescue.mem && !h.linking && !h.writing && !h.fitReopen && !h.line?.pending;
+function rescueAskText(c) {
+    return ['이 방에 기억 사본을 만들어 복구할까요?', '',
+        `기억을 가진 다른 방: ${carryName(c.from)}`, `지금 방: ${carryName(c.to)}`, `기록된 범위: #0–#${c.last}`,
+        ...(c.at ? [`마지막 대화 기록: ${fmtDate(c.at)}`] : []), '',
+        '다른 방의 기억은 그대로 두고, 이 방에서 따로 쓰는 사본을 만들어요. 그 뒤로 두 방의 기억은 각자 저장돼요. 다른 방은 지운 방일 수도, 다른 곳에서 이름을 바꾼 방일 수도 있어요. 같은 이야기의 복제본이 맞을 때만 확인을 눌러 주세요.'].join('\n');
+}
+let rescueJob = false;
+async function rescueRoom() {
+    const h = home;
+    if (rescueJob || !rescueReady(h)) return;
+    rescueJob = true;
+    try {
+        const c = h.rescue, epoch = roomEpoch;
+        const here = () => homeHere() && home === h && roomEpoch === epoch;
+        const ok = await confirmBox(rescueAskText(c));
+        if (!ok) return;
+        if (!here()) { toastr.warning(RESCUE_TEXT.moved, 'SavePoint'); return; }
+        if (h.rescue !== c || !rescueReady(h)) { toastr.warning(RESCUE_TEXT.changed, 'SavePoint', { timeOut: 10000 }); return; }
+        h.rescueAgree = { ...c, epoch };
+        await recheckHome('user');
+        if (!here()) return;
+        h.rescueAgree = null;
+        if (h.status === 'linked' && h.id === homeId(c.to, c.integrity)) {
+            if (h.h2?.why === 'hides') toastr.warning(RESCUE_TEXT.hides, 'SavePoint', { timeOut: 15000 });
+            else if (h.h2 || h.line?.stop) toastr.warning(homeMessage() || RESCUE_TEXT.changed, 'SavePoint', { timeOut: 15000 });
+            else toastr.success(RESCUE_TEXT.done, 'SavePoint');
+        }
+        else if (h.status === 'linked') toastr.warning(RESCUE_TEXT.other, 'SavePoint', { timeOut: 10000 });
+        else if (h.status === 'held' && h.why === 'sameIntegrity') toastr.warning(RESCUE_TEXT.changed, 'SavePoint', { timeOut: 10000 });
+        else toastr.warning(homeMessage() || RESCUE_TEXT.changed, 'SavePoint', { timeOut: 10000 });
+    } finally { rescueJob = false; }
 }
 // `다시 확인`: the chat file is read again and the room decided again. Reads only for a line whose write got no answer
 // (P1-2: that room waits to be opened again).
@@ -3293,7 +3346,9 @@ function homeAlert() {
             : '바뀐 원문부터 기억을 되감거나 검토로 바꿀지 먼저 물어보고, 그 뒤 SavePoint 숨김 풀기와 기억 저장을 차례로 해요') : '';
     // v0.7.0-b4a: a room held for a rename made in the chat list, when it may be carried on (carryLook).
     const carry = homeHere() && home.carry && carryReady(home) ? btn('home-carry', '', '이름 변경 이어서 연결', '채팅 목록에서 바꾼 이름을 확인하고, 예전 이름의 기억을 이 방에 연결해요') : '';
-    return `<div class="sp-alert sp-home-alert">${esc(text)}${again ? `<div class="sp-row">${fit}${carry}${btn('home-recheck', '', '다시 확인', '채팅 파일과 기억 파일을 다시 읽어 이 방의 기억을 다시 찾아요')}</div>` : ''}</div>`;
+    // v0.7.0-c4: a room held for another room of its integrity whose memory may be copied here (rescueRoom).
+    const rescue = homeHere() && home.rescue && rescueReady(home) ? btn('home-rescue', '', '이 방에 기억 복사해 복구', '다른 방의 기억은 그대로 두고, 확인을 받은 뒤 이 방에서 따로 쓰는 기억 사본을 만들어요') : '';
+    return `<div class="sp-alert sp-home-alert">${esc(text)}${again ? `<div class="sp-row">${fit}${carry}${rescue}${btn('home-recheck', '', '다시 확인', '채팅 파일과 기억 파일을 다시 읽어 이 방의 기억을 다시 찾아요')}</div>` : ''}</div>`;
 }
 
 // ───────── source fingerprints ─────────
@@ -7185,6 +7240,7 @@ async function handle(act, id) {
         case 'home-recheck': if (homeHere() && home.fitReopen) { toastr.warning(homeMessage(), 'SavePoint', { timeOut: 10000 }); return; } return recheckHome();
         case 'home-fit': return fitRoom();
         case 'home-carry': return carryRoom();
+        case 'home-rescue': return rescueRoom();
         case 'send-retry': return sendRetryRun();
         case 'edit-cancel': ui.edit = null; backToChecks(); return render(true);
         case 'edit-save': return saveEdit();
@@ -7972,7 +8028,16 @@ const RETRY_TEXT = {
     prep: '답변을 만들고 있어요. 답변이 끝나면 이 창은 저절로 닫혀요. 멈추려면 `중지 요청`을 눌러 주세요.',
     slow: '답변이 오래 걸리고 있어요(서버 응답을 기다리는 중일 수 있어요). 끝나면 이 창은 저절로 닫혀요. 계속 닫히지 않으면 새로고침해 주세요. 새로고침하면 이번 답변은 만들어지지 않을 수 있어요.',
     stop: '중지를 요청했어요. 준비 중에는 요청이 적용되지 않을 수 있어요. 작업이 끝나면 이 창이 닫혀요.',
+    // v0.7.0-c4: the reply was stopped (`중지 요청`, SillyTavern's stop button or its Esc key) and the error is the stop's own.
+    stopped: '답변을 멈췄어요.',
+    again: ' 다시 받으려면 SavePoint 창의 `답변 만들기`를 눌러 주세요.',
 };
+// v0.7.0-c4: SillyTavern's stop (its stop button, and its Esc key through it) aborts with this reason (stopGeneration, 1.19.0); a request
+// aborted so fails with it. Taken for a stop only together with a stop asked during the call (GENERATION_STOPPED or `중지 요청`):
+// SillyTavern sends GENERATION_STOPPED even when nothing was stopped, so the signal alone hides no other error.
+const ST_STOP_REASON = 'Clicked stop button';
+const stopError = e => e === ST_STOP_REASON || e?.message === ST_STOP_REASON || e?.name === 'AbortError';
+let genStops = 0;
 function sendTarget() {
     if (ctx().groupId || !hasChat()) return null;
     const list = chat(), i = list.length - 1, m = list[i];
@@ -8001,6 +8066,7 @@ function sendPrepOpen() {
         $('#sp_prep_text').text(RETRY_TEXT.stop);
     };
     const prep = {
+        get stopped() { return stopped; },
         release() {
             if (done) return;
             done = true; clearTimeout(slow);
@@ -8047,7 +8113,7 @@ async function sendRetryRun() {
     sendRetry = null;
     render();
     let err = null;
-    const n0 = genCount;
+    const n0 = genCount, s0 = genStops;
     try { await c.generate('normal', { automatic_trigger: true }); } catch (e) { err = e; console.error('[SavePoint] retry generate', e); } finally {
         prep.release();
         // Generate is over. SillyTavern sends no end event when it returns before its send buttons go busy (no connection, a failed
@@ -8057,7 +8123,8 @@ async function sendRetryRun() {
         if (!sendRetry && retryOk(t)) sendRetry = t;
         render();
     }
-    if (err) toastr.error(RETRY_TEXT.failed + (err?.message || String(err)), 'SavePoint', { timeOut: 12000 });
+    if (err && (prep.stopped || genStops !== s0) && stopError(err)) toastr.info(RETRY_TEXT.stopped + (sendRetry ? RETRY_TEXT.again : ''), 'SavePoint', { timeOut: 10000 });
+    else if (err) toastr.error(RETRY_TEXT.failed + (err?.message || String(err)), 'SavePoint', { timeOut: 12000 });
 }
 async function sendGuard(copy, _size, abort, type) {
     const n = genCount, key = roomKey(), epoch = roomEpoch, group = !!ctx().groupId;
@@ -8194,6 +8261,7 @@ jQuery(() => {
     installLootBar();
     on('GENERATION_STARTED', onGenerationStarted);
     for (const t of ['GENERATION_ENDED', 'GENERATION_STOPPED']) on(t, onGenerationEnded);
+    on('GENERATION_STOPPED', () => { genStops++; });
     // v0.7.0-c1: a group's "이번만" holds for the replies of one send.
     on('GENERATION_AFTER_COMMANDS', onAfterCommands);
     on('GROUP_WRAPPER_STARTED', onGroupStarted);

@@ -721,6 +721,22 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     ok(L.btn === 1 && /다시 시도할 때도 상태를 확인해요\. 확인이 필요한 구간이 남아 있으면 확인창이 다시 떠요\./.test(note30) && !/#\d/.test(note30),
         `30. 답변 만들기 안내: 다시 확인한다는 고정 문구, 구간 예고 없음 (${note30})`);
 
+    // ───── v0.7.0-c4 ─────
+    // 31. `답변 만들기` stopped by SillyTavern's stop (its Esc key goes through it: GENERATION_STOPPED, then Generate fails with the abort
+    //     reason) or by `중지 요청` → "멈췄어요", not a failure. The stop reason without a stop asked, or another error after one → the
+    //     failure as before.
+    r = await stopped('sgE9');
+    const STOP31 = "M.genPre = async () => { M.genPre = null; await M.eventSource.emit('generation_stopped'); };";
+    const p31a = await press({ before: STOP31 + " M.genThrow = 'Clicked stop button';" });
+    const p31b = await press({ before: "M.genThrow = 'Clicked stop button';" });
+    const p31c = await press({ before: STOP31 + " M.genThrow = new Error('network down');" });
+    const p31d = await press({ before: "M.genPre = async () => { M.genPre = null; document.querySelector('dialog.popup .popup-button-custom').click(); }; M.genThrow = Object.assign(new Error('aborted'), { name: 'AbortError' });" });
+    L = await look();
+    ok(/답변을 멈췄어요\. 다시 받으려면/.test(p31a.toast) && !/만들지 못했어요/.test(p31a.toast), `31. 실리태번 멈춤(Esc) + 멈춤 오류 → 멈췄어요 안내 (${p31a.toast})`);
+    ok(/만들지 못했어요: Clicked stop button/.test(p31b.toast) && !/멈췄어요/.test(p31b.toast), `31. 멈춤 신호 없이 같은 오류 → 예전처럼 실패 안내 (${p31b.toast})`);
+    ok(/만들지 못했어요: network down/.test(p31c.toast) && !/답변을 멈췄어요/.test(p31c.toast), `31. 멈춤 신호 뒤 다른 오류 → 실패 안내 그대로 (${p31c.toast})`);
+    ok(/답변을 멈췄어요/.test(p31d.toast) && !/만들지 못했어요/.test(p31d.toast) && L.btn === 1, `31. 중지 요청 + 중단 오류 → 멈췄어요, 버튼 다시 보임 (${JSON.stringify([p31d.toast, L.btn])})`);
+
     await page.close();
     await browser.close(); srv.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASSED');

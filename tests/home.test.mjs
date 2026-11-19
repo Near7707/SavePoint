@@ -1452,3 +1452,77 @@ test('a linked tag of a name its room was seen leaving → hold (a copy took the
     r = await decideRoom(room(), world(files).read);
     assert.equal(r.verdict, 'link');
 });
+
+test('v0.7.0-c4 row 8: another room of this integrity holding the memory → a rescue copy offered, made by hand as a branch, the original untouched', async () => {
+    const f = folder();
+    const id = homeId(A, 'i-A'), own = homeId(A2, 'i-A');
+    const args = { id, from: { kind: 'new', addr: A, integrity: 'i-A' }, addr: A, integrity: 'i-A', state: recorded(P80, 19), wid: 'wa' };
+    assert.equal((await placeMemory(f.io('A'), args)).done, true);
+    const orig = JSON.stringify(asFiles(f));
+    const at = (extra = {}) => room({ addr: A2, ...extra });
+    let d = await decideRoom(at(), readOf(f));
+    assert.deepEqual([d.verdict, d.row, d.why, d.candidates], ['hold', 8, 'sameIntegrity', [A]]);
+    const offer = d.rescue;
+    assert.deepEqual([offer.from, offer.to, offer.mem, offer.rev, offer.wid, offer.integrity, offer.copy, offer.prints, offer.last],
+        [A, A2, id, 0, 'wa', 'i-A', null, digest(P80.slice(0, 20)), 19]);
+    // The consent made for another memory receipt, room, copy or recorded originals → held, with the offer again.
+    for (const bad of [{ ...offer, wid: 'w9' }, { ...offer, rev: 1 }, { ...offer, to: B }, { ...offer, copy: 'c1' }, { ...offer, prints: 'x' }, { ...offer, from: B }]) {
+        d = await decideRoom(at({ rescued: bad }), readOf(f));
+        assert.deepEqual([d.verdict, d.why, !!d.rescue], ['hold', 'sameIntegrity', true]);
+    }
+    // With it: a branch of the other room, this room's own id, the memory as the other room has it (its room key this one).
+    d = await decideRoom(at({ rescued: { ...offer, epoch: 3 } }), readOf(f));
+    assert.deepEqual([d.verdict, d.row, d.parent, d.parentMem, d.mem, d.rescued, d.state.roomKey, d.state.lastIndex], ['branch', 8, A, id, own, true, A2, 19]);
+    // Placed with this room's old in-chat copy (not the other room's), and a tag that names it.
+    const place = io => placeMemory(io, { id: own, from: { kind: 'branch', addr: A2, integrity: 'i-A', parent: A }, addr: A2, integrity: 'i-A', copy: null, state: d.state, wid: 'wb' });
+    // Cut off before its tag: the next opening finds this room's own memory (row 6) and writes only its links; the original is never
+    // copied again, even changed meanwhile.
+    assert.equal((await place(f.io('B', { failWrite: tagName(A2) }))).stop, 'write');
+    f.store.set(memName(id), JSON.stringify(nextMem(f.get(memName(id)), recorded(P80, 24), 'wa2')));
+    d = await decideRoom(at(), readOf(f));
+    assert.deepEqual([d.verdict, d.row, d.mem], ['relink', 6, own]);
+    assert.equal((await relinkMemory(f.io('B'), d, { addr: A2, integrity: 'i-A', wid: 'wb2', closes: [] })).done, true);
+    assert.equal(f.get(memName(own)).state.lastIndex, 19);
+    d = await decideRoom(at(), readOf(f));
+    assert.deepEqual([d.verdict, d.mem], ['link', own]);
+    // The other room's tag and memory: only the change made to it here; its room still opens on it.
+    assert.equal(f.get(tagName(A)).state, 'linked');
+    assert.equal(f.get(memName(id)).home.addr, A);
+    assert.deepEqual(JSON.parse(orig)[tagName(A)], f.get(tagName(A)));
+    d = await decideRoom(room(), readOf(f));
+    assert.deepEqual([d.verdict, d.mem], ['link', id]);
+    // A third copy: two rooms hold this integrity now → held, no offer (choosing one: later).
+    d = await decideRoom(room({ addr: roomAddr('ari.png', 'Ari - third') }), readOf(f));
+    assert.deepEqual([d.verdict, d.why, d.candidates?.length, d.rescue], ['hold', 'sameIntegrity', 2, undefined]);
+});
+
+test('v0.7.0-c4 row 8: no rescue offer unless every recorded original is this room\'s and nothing else links it', async () => {
+    const f = folder();
+    const id = homeId(A, 'i-A');
+    const place = (state, addr = A) => placeMemory(f.io('A'), { id: homeId(addr, 'i-A'), from: { kind: 'new', addr, integrity: 'i-A' }, addr, integrity: 'i-A', state, wid: 'wa' });
+    assert.equal((await place(recorded(P80, 19))).done, true);
+    const no = async (input, read = readOf(f)) => { const d = await decideRoom(input, read); assert.deepEqual([d.verdict, d.why, d.rescue], ['hold', 'sameIntegrity', undefined]); };
+    const at = (extra = {}) => room({ addr: A2, ...extra });
+    // One recorded original differs (the last one too), or fewer messages than recorded.
+    for (const k of [0, 7, 19]) { const p = P80.slice(0, 30); p[k] = 'x'; await no(at({ prints: p })); }
+    await no(at({ prints: P80.slice(0, 19) }));
+    // Another character, a room seen leaving this name, no integrity match in the tag, this room's start mark or clue entry.
+    const other = roomAddr('bob.png', 'Ari - 2026-01-01 imported');
+    await no(room({ addr: other }));
+    await no(at({ left: B }));
+    const files = asFiles(f);
+    const w = (more, gone = []) => { const x = { ...files, ...more }; for (const n of gone) delete x[n]; return world(x).read; };
+    // (A start mark here is held before row 8, as moveStarted.)
+    assert.equal((await decideRoom(at(), w({ [startName(A2)]: startBody({ addr: A2, copy: 'c1', mem: 'm2', wid: 'w0' }) }))).rescue, undefined);
+    // Under review, nothing recorded.
+    const st = recorded(P80, 19);
+    await no(at(), w({ [memName(id)]: memFile(id, { state: { ...st, review: { at: 3 } } }) }));
+    await no(at(), w({ [memName(id)]: memFile(id, { state: { ...st, lastIndex: -1, hashes: [] } }) }));
+    // A memory with no tag (only its body, at home there) counts as holding it, but is not offered.
+    await no(at(), w({}, [tagName(A)]));
+    // The memory unreadable → a read failure, not an offer.
+    const d = await decideRoom(at(), world(files, { [memName(id)]: 'error' }).read);
+    assert.equal(d.verdict, 'readFail');
+    // The plain case still offers.
+    assert.equal((await decideRoom(at(), readOf(f))).rescue?.mem, id);
+});

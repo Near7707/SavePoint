@@ -1,3 +1,37 @@
+# v0.7.0-c4 · 복사 복구(`이 방에 기억 복사해 복구`) · `답변 만들기` Esc 안내 (브랜치 `v0.7-b`)
+
+기준 커밋: `078430e`(c3). 실제 실리태번 확인 1차(2026-11-19, PC)에서 찾은 것. 설계: GPT 1·2·3차 + 사용자 동의(PLAN "v0.7.0-c4" 줄).
+
+## 설계 처리 표
+| 항목 | 분류 | 처리 |
+|---|---|---|
+| 기억이 연결된 방을 지우면 같은 고유값의 복제본이 모두 8행 보류(푸는 길 없음) | 🔴 | 독립 사본 복구(아래). 삭제 추정·기억 옮기기는 안 함(GPT: 목록에 없어도 다른 기기에서 이름만 바뀌었을 수 있음) |
+| `답변 만들기` 중 Esc → 빨간 "Clicked stop button" | 🟡 | 멈춤 신호 + 멈춤 오류일 때만 "멈췄어요" |
+| 처음 연 복제본이 기억을 가져감 | ⚪ | README 한계 한 줄(고르는 화면 v0.7.1) |
+| 복구 뒤 후보 둘 → 세 번째 복제본 보류 | ⚪ | README 한계(이번 범위는 복제본 하나 살리기) |
+| 이름표 없이 본체만 남은 후보 | ⚪ | 제안 안 함(보류 그대로) |
+
+## 바뀐 것
+- **`home.js decideRoom` 8행:** 후보 목록을 만들 때 이름표로 센 후보의 이름표를 보관(`tags`). 새 `rescueOf(from, tag)`(같은 함수 안, 8행 앞): 이 방 고유값 · 후보 이름표 `linked`·같은 고유값·기억 ID · 같은 범위(`scopeOf`, 1:1은 캐릭터·그룹은 `group:`) · 이 방 떠난 기록·이름표·시작 표시·단서 항목·자기 기억(`homeId`) 없음 · 후보 본체가 그 방·같은 고유값 · `validState` · 검토 아님 · `lastIndex >= 0`·`hashes` 길이 = `lastIndex + 1` · **`hashes` 전부 = 이 방 `prints`** → `{ from, to, mem, rev, wid, integrity, copy(이 방 사본 지문), prints(기록 범위 지문 digest), last, at, state }`, 본체 읽기 실패 = `ERROR`(→ `readFail`). 후보가 하나이고 이름표로 센 것일 때만. `input.rescued`가 `sameRescue`(위 8개 키 전부)면 `out('branch', 8, { parent, parentMem, mem: homeId(이 방), state: branchState(후보 state, 이 방), via: 'rescue', rescued: true })`, 아니면 `hold(8, 'sameIntegrity', { candidates, rescue: rescueOffer(...) })`.
+- **`index.js`:** `linkRounds` 처음 `rescued = h.rescueAgree`(같은 `roomEpoch`일 때만, 한 번 쓰고 지움), `h.rescue = null`, `input.rescued`. `actHome` 뒤 `held`·`sameIntegrity`·`d.rescue`면 `h.rescue = { ...d.rescue, epoch }`. 새 구역 "a copy of another room's memory, made by hand": `RESCUE_TEXT`, `rescueReady`, `rescueAskText`, `rescueRoom`(확인창 → 같은 방·회차·같은 제안 → `h.rescueAgree` → `recheckHome('user')` → 결과: 새 기억 `homeId(to, integrity)`로 연결 = 완료 / H2 `hides` = 사본은 만들었지만 숨김 정리 안내 / 다른 멈춤 = `homeMessage` / 다른 기억 = `other` / 여전히 보류 = `changed`). `homeMessage` 보류 문구에 한 문장, `homeAlert` 버튼 `home-rescue`, `handle`.
+- 쓰기는 기존 `branch` 그대로(`placeMemory`, 출처 `{ kind: 'branch', parent }`, `copy: input.copy?.hash` = 이 방 것, `closes: input.closes`). 재개도 그대로: 본체 뒤 끊김 → 6행 `relink`(이 방 자기 기억, 원래 기억 다시 안 읽음), 이름표 거절 → `stopped` + `다시 확인`, 응답 없음 → `linkLate`(다시 열기).
+- **Esc:** `RETRY_TEXT.stopped`·`again`, `ST_STOP_REASON = 'Clicked stop button'`(1.19.0 `stopGeneration`의 `abort` 이유), `stopError`(그 문자열·`message`·`AbortError`), `genStops`(`GENERATION_STOPPED` 셈), `sendPrepOpen`의 `prep.stopped`. `sendRetryRun`: 오류가 있고 (`prep.stopped` 또는 호출 중 `genStops` 증가) 그리고 `stopError`면 정보 알림 "답변을 멈췄어요."(+ 버튼이 다시 생겼으면 `답변 만들기` 안내), 아니면 예전 실패 알림.
+- 버전 `0.7.0-c4`.
+
+## ★ 특히 봐 줄 곳
+1. 동의 뒤 쓰기 전 확인: `다시 확인`의 판정이 두 파일과 이 방 채팅을 새로 읽어 `rescueOf`를 다시 돌리고 `sameRescue`로 비교 → 그 뒤 `placeMemory`의 읽기·쓰기 사이 이 방 원문이 바뀌는 틈은 남음(갈래와 같음). 연결 뒤 `linkRounds` 끝 H2 판정(`again`)이 기록 범위 원문 차이를 `source`로 잡아 멈춤.
+2. 후보 쪽 `rev`·`wid`가 동의 뒤 바뀌면(다른 기기가 원래 방 저장) 쓰기 0·제안 다시. 사본을 쓴 뒤 재개 때는 원래 기억을 안 봄.
+3. 채팅 속 예전 사본이 있는 복제본: 새 본체·이름표의 `copy`는 이 방 것. 원래 방이 그 사본에서 이전된 방이어도(`moved`·사본 힌트) 갈래 쓰기는 사본 힌트를 안 봄 — 다시 열 때 6행이 자기 기억(`homeId`)을 먼저 찾음.
+4. Esc 구분: 멈춤 신호만으로 다른 오류를 감추지 않음(검사 31 셋째 줄). `AbortError`도 멈춤으로 봄(우리 `중지 요청` + 일반 요청 중단) — 너무 넓은지.
+5. 망가뜨리기로 못 지킨 곳: `rescueReady`의 `h.d?.rescue?.mem` 비교, `linkRounds`의 회차 비교(동의가 다른 열기로 넘어가는 장면) — 둘 다 방을 옮기면 `home`이 새로 만들어지는 겹 장치.
+
+## 검사와 망가뜨리기 결과
+- 새 묶음 `tests/browser/rescue.cjs` 1~7(13줄), `send-guard` 31(4줄), `home.test` 2개(제안·동의 키별 거절·갈래 배치·끊긴 뒤 6행 재개(원래 기억이 바뀌어도 다시 복사 안 함)·원래 파일 그대로·세 번째 복제본 / 제안 안 함: 원문 하나 다름(처음·중간·끝)·짧음·다른 캐릭터·떠난 기록·시작 표시(6행 `moveStarted`가 먼저)·검토·기록 없음·이름표 없는 후보·본체 읽기 실패 = `readFail`).
+- 고치기 전 코드(`078430e`): `rescue` 11줄 FAIL(지키는 줄 2개는 통과: 3 원문 다름, 2 세 번째 복제본), `send-guard` 31 두 줄 FAIL(멈춤 안내 두 줄; 지키는 줄 두 줄은 통과).
+- 망가뜨리기 7개 모두 잡힘: 동의 키에서 `rev`·`wid` 빼기 → `rescue` 4 · 기록 범위 비교 빼기 → `rescue` 3 + `home.test` · 후보 하나 조건 빼기 → `rescue` 2(세 번째) · 동의 비교 없이 통과 → `rescue` 4 · 멈춤 신호 조건 빼기 → `send-guard` 31 둘째 · `stopError` 늘 참 → 31 셋째 · `GENERATION_STOPPED` 셈 빼기 → 31 첫째.
+- Node 518개: 515 통과 / 0 실패 / 3 건너뜀(#0 이어하기).
+- 브라우저 63묶음 한꺼번에 모두 통과, 검사 모드 오류 0(`rescue` 14줄, `send-guard` 96줄).
+
 # v0.7.0-c3 · 문서·합격 기준 8 점검·실제 확인 목록 (브랜치 `v0.7-b`, 문서만)
 
 기준: `e1601f0`(c2b). 코드·버전(`0.7.0-c2b`)·검사 그대로라 검사는 안 돌림. GPT 리뷰 안 받음(사용자 선택, b4b와 같음).

@@ -376,6 +376,28 @@ export async function decideRoom(input, read, { readMem = id => read(memName(id)
         if (own !== body.id && (await mem(own)).kind !== MISSING) return false;
         return true;
     };
+    // v0.7.0-c4 (c4 design): the one other room holding this integrity's memory (row 8), when its memory may be copied here: its tag
+    // linked with this integrity, in the same character (or group) as this room; its memory read fine, at home there with this
+    // integrity, not under review, something recorded, and every recorded original the same as this room's (`prints`: all of them, not
+    // a few). This room: an integrity, no tag, no start mark, no clue entry, no memory of its own, no room seen leaving its name.
+    // ERROR: the memory could not be read. null: no offer.
+    const rescueOf = async (from, tag) => {
+        if (!str(integrity) || tag.state !== 'linked' || tag.integrity !== integrity || !str(tag.mem)) return null;
+        if (scopeOf(from) == null || scopeOf(from) !== scopeOf(addr) || input.left || tagRes.kind !== MISSING) return null;
+        if (files.get(startName(addr))?.kind !== MISSING) return null;
+        const clue = files.get(clueName(integrity));
+        if (clue?.kind !== OK || clue.data.rooms.some(x => x.addr === addr)) return null;
+        const m = await mem(tag.mem);
+        if (bad(m)) return ERROR;
+        if (m.kind !== OK || !homeOk(m.data.home, from, integrity) || m.data.home.integrity !== integrity) return null;
+        const own = homeId(addr, integrity);
+        if (own === tag.mem || (await mem(own)).kind !== MISSING) return null;
+        const st = m.data.state;
+        if (!validState(st) || st.review || !int(st.lastIndex) || st.lastIndex < 0 || !Array.isArray(st.hashes) || st.hashes.length !== st.lastIndex + 1) return null;
+        if (prints.length <= st.lastIndex || !st.hashes.every((h, i) => prints[i] === h)) return null;
+        return { from, to: addr, mem: tag.mem, rev: m.data.rev, wid: m.data.wid, integrity, copy: copy?.hash ?? null, prints: digest(st.hashes),
+            last: st.lastIndex, at: Number.isFinite(st.lastRecord?.at) ? st.lastRecord.at : null, state: st };
+    };
     // 5: renamed on this device, same integrity.
     for (const r of input.renames || []) {
         if (r?.to !== addr || !str(r.from) || r.from === addr) continue;
@@ -478,17 +500,27 @@ export async function decideRoom(input, read, { readMem = id => read(memName(id)
     // be another room's), or when it has no tag but its memory file is there, at home in that room with this
     // integrity (only the tag was lost: the parent's memory must not be copied again).
     const clueRooms = clue?.kind === OK ? clue.data.rooms : [];
-    const linked = [];
+    const linked = [], tags = new Map();
     for (const x of clueRooms) {
         if (x.addr === addr || linked.includes(x.addr)) continue;
         const t = files.get(tagName(x.addr));
-        if (t?.kind === OK) { if (t.data.state === 'linked' && t.data.integrity === integrity) linked.push(x.addr); continue; }
+        if (t?.kind === OK) { if (t.data.state === 'linked' && t.data.integrity === integrity) { linked.push(x.addr); tags.set(x.addr, t.data); } continue; }
         if (t?.kind !== MISSING) continue;
         const m = await mem(x.mem);
         if (bad(m)) return fail(8, [memName(x.mem)]);
         if (m.kind === OK && m.data.home.addr === x.addr && m.data.home.integrity === integrity) linked.push(x.addr);
     }
-    if (linked.length) return hold(8, 'sameIntegrity', { candidates: linked });
+    // v0.7.0-c4 (c4 design): a copy of a room whose memory is held by another room of this integrity (that room deleted, or renamed
+    // elsewhere: not told apart) may get its own copy of that memory, made by hand (`rescue`, see rescueOf). The other room's memory and
+    // tag are never touched; from then on the two memories go their own ways. With the user's consent for this very offer
+    // (`input.rescued`) it is placed as a branch at once (row 7's writes); otherwise the room stays held, with the offer.
+    if (linked.length) {
+        const rescue = linked.length === 1 && tags.has(linked[0]) ? await rescueOf(linked[0], tags.get(linked[0])) : null;
+        if (rescue === ERROR) return fail(8, [memName(tags.get(linked[0]).mem)]);
+        if (rescue && sameRescue(input.rescued, rescue))
+            return out('branch', 8, { parent: rescue.from, parentMem: rescue.mem, mem: homeId(addr, integrity), state: branchState(rescue.state, addr), via: 'rescue', at: -1, rescued: true });
+        return hold(8, 'sameIntegrity', { candidates: linked, ...(rescue ? { rescue: rescueOffer(rescue) } : {}) });
+    }
 
     // 7: a branch of a linked room.
     let parent = null;
@@ -582,6 +614,11 @@ export function branchRestore(parent, prints, slots = []) {
     }
     return { ok: false, why, at: k };
 }
+// v0.7.0-c4: what the user is asked about for a rescue copy (row 8), and what that consent is bound to: the other room and its memory
+// (id, rev, receipt, the fingerprints of all it recorded) and this room (address, integrity, old in-chat copy). Opening round: index.js.
+const RESCUE_KEYS = ['from', 'to', 'mem', 'rev', 'wid', 'integrity', 'copy', 'prints'];
+export const rescueOffer = r => ({ ...Object.fromEntries(RESCUE_KEYS.map(k => [k, r[k]])), last: r.last, at: r.at });
+export const sameRescue = (a, r) => plainObj(a) && RESCUE_KEYS.every(k => (a[k] ?? null) === (r[k] ?? null));
 // What a branch does not carry over: the rewind point, check results, the linked slot, failure records,
 // the last-save note and the auto-save marks (they count the parent's messages).
 export function branchState(st, addr) {
