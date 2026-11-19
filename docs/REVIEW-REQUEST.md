@@ -1,15 +1,13 @@
-# 코드 리뷰 요청 · v0.7.0-c2a2 (c2a1 리뷰 반영: `중지 요청`을 키보드로도, 브랜치 `v0.7-b`)
+# 코드 리뷰 요청 · v0.7.0-c4 (복사 복구 `이 방에 기억 복사해 복구` · `답변 만들기` Esc 안내, 브랜치 `v0.7-b`)
 
-- 범위: `git diff 4ae2b68 20f4972`, 커밋 하나예요. `index.js`(`sendPrepOpen`만, 버전), `manifest.json`(버전), `README.md`, `docs/PLAN-v0.7.md`, `docs/REVIEW.md`, 검사(`mock.js`, `send-guard.cjs` 22 기대 늘어남 · 29 새로).
-- 자세한 내용은 [REVIEW.md](REVIEW.md) 맨 위 v0.7.0-c2a2에 있어요. 결과는 P1/P2/P3로 주세요.
-  - 고치기 전 코드(`859f5c5`)에서 2줄 FAIL(22·29). 망가뜨리기 5개 중 4개 잡힘(안 잡힌 1개는 겹 장치).
-  - Node 513 통과 / 0 실패 / 3 건너뜀. 브라우저 62묶음 중 61 통과, `status`가 가끔 실패하는데 고치기 전 코드도 같은 자리에서 실패해요(REVIEW.md).
-
-## 바뀐 것
-- **키보드(P2):** `중지 요청` 버튼에 `keydown` 처리기. Enter·Space면 `preventDefault`·`stopPropagation` 후 클릭과 같은 `stopAsk()`(누르고 있을 때 반복은 무시). 창의 Enter 처리기(버블)는 안 돌아요.
-- **처음 포커스(만들다 찾음):** 실리태번 `setAutoFocus`는 숨긴 OK를 고르고, 숨긴 요소는 포커스를 못 받아 브라우저가 첫 포커스 가능한 요소인 `중지 요청`으로 가요. 그러면 이어서 치던 공백·Enter가 중지를 부를 수 있어서, 창 글에 `tabindex="-1" autofocus`를 줬어요. 겹 장치로 다음 틱에 버튼에 포커스가 있으면 글로 옮겨요. 버튼은 Tab으로 가요.
+- 범위: `git diff 078430e 87a946c`, 커밋 하나예요. `home.js`(`decideRoom` 8행 + `rescueOffer`·`sameRescue`), `index.js`(`linkRounds` 동의 전달·제안, 새 구역 "a copy of another room's memory, made by hand", `homeMessage`·`homeAlert`·`handle`, `sendRetryRun`·`sendPrepOpen`의 Esc 구분, 버전), `manifest.json`(버전), `README.md`, `docs/PLAN-v0.7.md`, `docs/REVIEW.md`, `docs/CHECKLIST-v0.7.0.md`, 검사(`tests/browser/rescue.cjs` 새로, `send-guard.cjs` 31, `tests/home.test.mjs` 2개).
+- 설계는 GPT 1·2·3차 의견대로예요(독립 사본, 원래 기억·이름표 보존, 후보 하나·같은 범위·고유값·기록 범위 원문 전체 일치, 동의는 후보와 대상 방 모두에 묶음, 갈래 쓰기·재개 재사용, 이름표 응답 없음은 `linkLate`대로, Esc는 멈춤 신호 + 멈춤 오류일 때만).
+- 자세한 내용은 [REVIEW.md](REVIEW.md) 맨 위 v0.7.0-c4에 있어요. 결과는 P1/P2/P3로 주세요.
+  - 고치기 전 코드(`078430e`)에서 `rescue` 11줄·`send-guard` 31 두 줄 FAIL. 망가뜨리기 7개 모두 잡힘.
+  - Node 518개: 515 통과 / 0 실패 / 3 건너뜀. 브라우저 63묶음 한꺼번에 모두 통과, 검사 모드 오류 0.
 
 ## 특히 봐 줄 곳
-1. 실리태번 `setAutoFocus`가 내용 안의 `[autofocus]`(우리 글)를 먼저 고르는지.
-2. 실제 Chrome의 `<dialog>` 포커스 순서에서 겹 장치가 필요한 경우가 있는지(모의 환경에선 `autofocus`로 해결).
-3. 창 글이 `setAutoFocus`로 `tabIndex = 0`이 되면 Tab 순서가 글 → 버튼이 되는데, 문제없는지.
+1. 동의 뒤 판정은 `다시 확인`이 두 파일과 이 방 채팅을 새로 읽어 다시 함 → 그 뒤 `placeMemory` 쓰기까지의 짧은 틈은 갈래와 같음. 연결 뒤 H2 판정이 기록 범위 원문 차이를 잡는 것으로 충분한지.
+2. 채팅 속 예전 사본이 있는 복제본에서, 원래 방이 그 사본에서 이전된 방이어도(`moved` 표시·사본 힌트가 원래 방을 가리킴) 갈래 쓰기·다시 열기(6행이 자기 기억을 먼저 찾음)에 문제가 없는지.
+3. `AbortError`도 멈춤 오류로 보는 것(우리 `중지 요청`·일반 요청 중단)이 너무 넓은지.
+4. 망가뜨리기로 못 지킨 곳: `rescueReady`의 제안 ID 비교, 동의의 열기 회차 비교(방을 옮기면 `home`이 새로 만들어지는 겹 장치).
