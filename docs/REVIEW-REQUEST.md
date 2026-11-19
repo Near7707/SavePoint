@@ -1,6 +1,6 @@
 # 코드 리뷰 요청 · v0.7.0-c2a2 (c2a1 리뷰 반영: `중지 요청`을 키보드로도, 브랜치 `v0.7-b`)
 
-- 범위: `git diff 4ae2b68 <코드 커밋>`, 커밋 하나예요. `index.js`(`sendPrepOpen`만, 버전), `manifest.json`(버전), `README.md`, `docs/PLAN-v0.7.md`, `docs/REVIEW.md`, 검사(`mock.js`, `send-guard.cjs` 22 기대 늘어남 · 29 새로).
+- 범위: `git diff 4ae2b68 20f4972`, 커밋 하나예요. `index.js`(`sendPrepOpen`만, 버전), `manifest.json`(버전), `README.md`, `docs/PLAN-v0.7.md`, `docs/REVIEW.md`, 검사(`mock.js`, `send-guard.cjs` 22 기대 늘어남 · 29 새로).
 - 자세한 내용은 [REVIEW.md](REVIEW.md) 맨 위 v0.7.0-c2a2에 있어요. 결과는 P1/P2/P3로 주세요.
   - 고치기 전 코드(`859f5c5`)에서 2줄 FAIL(22·29). 망가뜨리기 5개 중 4개 잡힘(안 잡힌 1개는 겹 장치).
   - Node 513 통과 / 0 실패 / 3 건너뜀. 브라우저 62묶음 중 61 통과, `status`가 가끔 실패하는데 고치기 전 코드도 같은 자리에서 실패해요(REVIEW.md).
