@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0';
+const VERSION = '0.7.1-a1';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -1808,6 +1808,7 @@ async function verifyRoom() {
     if (r.ok) { if (before === 'bad' || before === 'unread' || before === 'unknown') resumed(); gate.status = 'ready'; gate.why = ''; gate.at = null; if (gate.held) { gate.held = false; persistSoon(); } } else blockRoom(r.why, r.at);
     // v0.7.0-b1 (P2-3): the memory is linked on the chat file just checked, before anything else is done in the room.
     if (r.ok && !gate.readied) { gate.readied = true; await linkHome(r); if (gate.key !== key || gate.epoch !== epoch || !gateHere()) return false; roomOpened(); }
+    paintRoomLine();
     return r.ok;
 }
 // true when this room is confirmed and nothing is unconfirmed (checks again when needed).
@@ -1827,6 +1828,7 @@ let unsureTimer = null;
 function markUnsure(info) {
     clearTimeout(unsureTimer);
     gate.unsure = { ...info, at: Date.now(), tries: 0 };
+    paintRoomLine();
     scheduleUnsureCheck();
     render();
 }
@@ -3380,6 +3382,77 @@ function homeAlert() {
     // v0.7.0-c4: a room held for another room of its integrity whose memory may be copied here (rescueRoom).
     const rescue = homeHere() && home.rescue && rescueReady(home) ? btn('home-rescue', '', '이 방에 기억 복사해 복구', '다른 방의 기억은 그대로 두고, 확인을 받은 뒤 이 방에서 따로 쓰는 기억 사본을 만들어요') : '';
     return `<div class="sp-alert sp-home-alert">${esc(text)}${again ? `<div class="sp-row">${fit}${carry}${rescue}${btn('home-recheck', '', '다시 확인', '채팅 파일과 기억 파일을 다시 읽어 이 방의 기억을 다시 찾아요')}</div>` : ''}</div>`;
+}
+// v0.7.1-a1: one line at the top of the window for where this room stands, and a short reason (what is going on, what to do).
+// Read only: the same states and the same order as gateMessage and homeMessage, nothing is checked or written here. A problem
+// found on the chat file side comes before the memory side (as gateMessage does), a found problem before "checking", a reply
+// being made (gate.status 'busy') after every problem. { kind, label, why } or null (no chat open).
+const ROOM_LABEL = { check: '확인 필요', held: '연결 보류', wait: '확인 대기', checking: '확인 중…', empty: '아직 저장된 기억 없음', linked: '기억 연결됨' };
+const ROOM_WHY = {
+    reopen: '방을 다시 열거나 새로고침해 주세요.',
+    copy: ' 최근 메시지가 아직 채팅 파일에 없을 수 있으니 그 전에 복사해 두세요.',
+};
+function roomStatus() {
+    if (!hasChat()) return null;
+    const at = (kind, why = '') => ({ kind, label: ROOM_LABEL[kind], why });
+    const vague = () => gateHere() && gate.vague !== null ? ROOM_WHY.copy : '';
+    if (gateHere()) {
+        if (gate.pending) return at('check', `응답을 받지 못한 저장이 아직 채팅 파일에 도착할 수 있어서 저장을 멈췄어요. ${ROOM_WHY.reopen}${vague()}`);
+        if (gate.unsure) return at('check', gate.unsure.missing
+            ? '직전 저장이 채팅 파일에 들어가지 않았어요. 새로고침하면 그 저장 전 상태로 돌아가요.'
+            : '직전 저장이 채팅 파일에 들어갔는지 확인하는 중이라 저장을 멈췄어요. 잠시 뒤 다시 해 보고, 계속되면 새로고침해 주세요.');
+        if (gate.status === 'unknown') return at('check', `서버에서 이 방의 채팅 파일을 찾지 못했어요. 방을 다시 열어 주세요.${vague()}`);
+        if (gate.status === 'unread') return at('check', `서버에서 채팅 파일을 읽지 못했어요. 잠시 뒤 다시 하거나 방을 다시 열어 주세요.${vague()}`);
+        if (gate.status === 'bad') {
+            if (gate.vague !== null) return at('check', '채팅 파일과 이 화면이 맞지 않아요. 새로고침하기 전에 최근 메시지를 복사해 두세요. 저장을 다시 누르면 채팅 파일을 다시 확인해요.');
+            if (gate.why === 'gone') return at('check', `다른 곳에서 지운 메시지가 이 화면에 남아 있어요. ${ROOM_WHY.reopen}`);
+            if (gate.why === 'integrity') return at('check', `서버의 채팅 파일이 이 방과 다른 파일이에요. ${ROOM_WHY.reopen}`);
+            if (gate.why === 'mem') return at('check', `다른 기기에서 이 방의 기억을 저장했어요. ${ROOM_WHY.reopen}`);
+            return at('check', `서버의 채팅 파일에 이 화면에 없는 내용이 있어요. ${ROOM_WHY.reopen}`);
+        }
+    }
+    if (homeHere() && home.status !== 'opening' && home.status !== 'idle' && !home.rescueCheck) {
+        const stop = home.line?.stop;
+        if (home.status === 'pending' || home.line?.pending) return at('check', `응답을 받지 못한 기억 저장이 아직 기억 파일에 도착할 수 있어서 저장을 멈췄어요. ${ROOM_WHY.reopen}`);
+        if (stop === FIRST_UNSURE) return at('check', '저장한 기억을 다시 읽어 확인하지 못했어요. `다시 확인`을 눌러 주세요.');
+        if (stop === LINK_PART) return at('check', home.linkLate
+            ? '이 방과 기억 파일을 잇는 표시를 저장하는 요청에 응답이 없었어요. `다시 확인`으로 보고, 안 되면 방을 다시 열어 주세요.'
+            : '이 방과 기억 파일을 잇는 표시를 저장하지 못했어요. `다시 확인`을 눌러 주세요.');
+        if (stop === MF_OVERWRITTEN && home.line.quiet) return at('check', `기억 파일이 저장되지 않아 화면의 기억이 앞서 있어요. ${ROOM_WHY.reopen}`);
+        if (stop === MF_CONFLICT || stop === MF_OVERWRITTEN) return at('check', `다른 곳에서 이 방의 기억을 저장했어요. ${ROOM_WHY.reopen}`);
+        if (home.status === 'readFail') return at('check', '기억 파일을 읽지 못했어요. 잠시 뒤 `다시 확인`을 눌러 주세요.');
+        if (home.status === 'stopped') return at('check', '기억 파일을 만들다 멈췄어요. `다시 확인`을 눌러 이어서 해 주세요.');
+        if (home.status === 'held') return at('held', `${HOLD_TEXT[home.why] || home.why}. 저장과 자동 기록을 멈췄어요.`);
+        if (home.status === 'linked') {
+            const copy = n => chat().length > n ? ROOM_WHY.copy : '';
+            if (home.fitReopen) return at('check', `숨김 상태나 🔖가 다른 곳에서 바뀌었어요. 방을 다시 열어 주세요.${copy(home.fitReopen.n)}`);
+            if (home.h2 && !(home.fitCheck?.mem && home.h2.why === 'source')) return at('check', home.h2.why === 'source'
+                ? `기록한 원문 #${home.h2.at}이(가) 기억과 달라졌어요. \`원문과 기억 맞추기\`나 \`다시 확인\`을 눌러 주세요.`
+                : `기억이 기록하지 않은 메시지 #${home.h2.at}에 SavePoint 숨김이 남아 있어요. \`원문과 기억 맞추기\`나 \`다시 확인\`을 눌러 주세요.`);
+            if (home.fitCheck) return at('check', `원문과 기억을 맞춘 결과를 아직 확인하지 못했어요. \`다시 확인\`을 눌러 주세요.${copy(home.fitCheck.n)}`);
+        }
+    }
+    if (gateHere() && gate.status === 'busy') return at('wait', '답변이 끝나면 채팅 파일을 다시 확인해요.');
+    if (!gateHere() || gate.status !== 'ready' || !homeHere() || home.status === 'opening' || home.status === 'idle' || home.rescueCheck) return at('checking');
+    if (home.status === 'new') return at('empty', home.id ? '첫 저장 때 기억 파일을 만들어요.' : '채팅 파일에 아직 고유값이 없어요. 메시지를 하나 보내거나 방을 다시 열면 기억 파일을 만들 수 있어요.');
+    if (homeOpen()) return at('linked');
+    // Not reached by the states above; whatever homeMessage says stands (never "linked" for a room that may not save).
+    return at('check', homeMessage());
+}
+function roomLineHtml() {
+    const s = roomStatus();
+    if (!s) return '';
+    return `<div class="sp-roomline" data-kind="${s.kind}" role="status"><b class="sp-roomline-label">${esc(s.label)}</b>${s.why ? `<span class="sp-roomline-why">${esc(s.why)}</span>` : ''}</div>`;
+}
+// The line alone, in place: also while an edit is open (render keeps the rest of the window then) and when a room check ends
+// without a render. Changes nothing but the line.
+function paintRoomLine() {
+    if (typeof document === 'undefined' || !ui.open) return;
+    const win = $('#sp_overlay .sp-window');
+    if (!win.length || !win.find('.sp-top').length) return;
+    const html = roomLineHtml(), cur = win.find('.sp-roomline');
+    if (cur.length) { if (cur[0].outerHTML !== html) { if (html) cur.replaceWith(html); else cur.remove(); } }
+    else if (html) win.find('.sp-top').first().after(html);
 }
 
 // ───────── source fingerprints ─────────
@@ -7047,7 +7120,7 @@ function render(force = false) {
     if (hasChat()) { if (ui.tabRoom !== roomKey()) restoreRoomTab(); else ui.roomTabs.set(roomKey(), ui.tab); }
     const win = $('#sp_overlay .sp-window');
     if (!win.length) return;
-    if (!force && ui.edit && win.find('.sp-edit').length) return; // keep half-typed edits
+    if (!force && ui.edit && win.find('.sp-edit').length) { paintRoomLine(); return; } // keep half-typed edits (the status line still moves on)
     const st = state();
     const s = settings();
     win.attr('data-theme', s.theme in THEMES ? s.theme : 'jrpg');
@@ -7090,6 +7163,7 @@ function render(force = false) {
             <div class="sp-top-r"><span class="sp-room">${esc(charInfo()?.name || '')}</span>
                 <button class="sp-btn sp-mini ${ui.qs ? 'sp-on' : ''}" data-act="qs" title="빠른 설정">⚙</button>
                 <button class="sp-btn sp-mini" data-act="close" title="닫기">✕</button></div></div>
+        ${roomLineHtml()}
         ${ui.qs ? quickSettingsHtml() : ''}
         ${hasChat() ? hudHtml(st) : ''}
         <div class="sp-tab-nav"><button type="button" class="sp-tab-arrow" data-tab-scroll="prev" aria-label="이전 탭 보기" title="이전 탭 보기">‹</button><div class="sp-tabs">${tabs}</div><button type="button" class="sp-tab-arrow" data-tab-scroll="next" aria-label="다음 탭 보기" title="다음 탭 보기">›</button></div>
@@ -8309,4 +8383,4 @@ jQuery(() => {
 
 // Exposed for regression checks only.
 // v0.7.0-a: `adoptPage` — tests only: a memory a test wrote on the page itself (setup, not SavePoint's change) is taken as the queue's.
-globalThis.__savePoint = { adoptPage: () => trustQueue(), home: () => home, sameRoom, linkHome, recheckHome, lootShown, persistSoon, transact, commitEdit, toggleKeep, paintKeep, repairKeep, state, settings, summarize, listSaves, vault, migrateLocal, autoCollect, autoBlocked, autoCount, scheduleAuto, undo, loadSave, reconcile, syncHide, refreshInjection, handle, ui, render, estTokens, recordLine, reportText, addLoot, queueHtml, installLootBar, openLootDialog, fillSettings, fitRoom, sendRetry: () => sendRetry, sendPrep: () => sendPrep };
+globalThis.__savePoint = { adoptPage: () => trustQueue(), home: () => home, gate: () => gate, roomStatus, sameRoom, linkHome, recheckHome, lootShown, persistSoon, transact, commitEdit, toggleKeep, paintKeep, repairKeep, state, settings, summarize, listSaves, vault, migrateLocal, autoCollect, autoBlocked, autoCount, scheduleAuto, undo, loadSave, reconcile, syncHide, refreshInjection, handle, ui, render, estTokens, recordLine, reportText, addLoot, queueHtml, installLootBar, openLootDialog, fillSettings, fitRoom, sendRetry: () => sendRetry, sendPrep: () => sendPrep };

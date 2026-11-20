@@ -55,6 +55,16 @@
 .sp-top-r { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .sp-room { color: var(--sp-dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40vw; }
 
+/* v0.7.1-a1: where this room stands (one line under the top bar; a short reason beside it) */
+.sp-roomline { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; padding: 5px 14px; border-bottom: 2px solid var(--sp-line); font-size: 12px; color: var(--sp-dim); }
+.sp-roomline-label { font-weight: 700; white-space: nowrap; }
+.sp-roomline-label::before { content: '●'; margin-right: 5px; font-size: 9px; vertical-align: 1px; }
+.sp-roomline-why { min-width: 0; overflow-wrap: anywhere; }
+.sp-roomline[data-kind=linked] .sp-roomline-label { color: var(--sp-ok); }
+.sp-roomline[data-kind=check], .sp-roomline[data-kind=held] { color: var(--sp-fg); }
+.sp-roomline[data-kind=check] .sp-roomline-label { color: var(--sp-danger); }
+.sp-roomline[data-kind=held] .sp-roomline-label { color: var(--sp-accent); }
+
 /* HUD */
 .sp-hud { padding: 10px 14px; border-bottom: 2px solid var(--sp-line); background: var(--sp-panel2); }
 .sp-scene-now { font-size: 15px; margin-bottom: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
