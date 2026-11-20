@@ -11,7 +11,7 @@ import { foldLegacyOutline,
 } from './core.js';
 import { lootStatus, lootWarning, lootInChunk, lootBlock, attachLoot, settleLoot, failLoot, lootTarget, applyLootSupplement, restoreLostLoot } from './loot.js';
 import { Vault, roomHash, quickId } from './vault.js';
-import { decideRoom, placeMemory, relinkMemory, memName, tagName, clueName, validMem, validTag, validClue, tagBody, renamedTag, renameId, withCloses, clueWith, nextMem, renameNotice, cleanName, copyHash, hasTraces, readUserFile, checked, pickPrints, validState, sameLink, homeId, startName, validStart, MISSING, OK } from './home.js';
+import { decideRoom, placeMemory, relinkMemory, memName, tagName, clueName, validMem, validTag, validClue, tagBody, renamedTag, renameId, withCloses, clueWith, nextMem, renameNotice, cleanName, copyHash, hasTraces, readUserFile, checked, pickPrints, validState, sameLink, homeId, startName, validStart, migrateId, movedName, validMoved, MISSING, OK } from './home.js';
 import { memLine, writeMem, serverMemIO, MEM_OK, PENDING, REFUSED, UNREAD, CONFLICT, OVERWRITTEN, READ_ERROR, HELD } from './memfile.js';
 import { snapshot, splitFile, covers, writeResult, samePage, canon, PAGE_KEYS } from './guard.js';
 import { upgradeEvidence, segmentPrior, evidenceNumbers } from './provenance.js';
@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.1-a2';
+const VERSION = '0.7.1-a3';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -5772,14 +5772,59 @@ async function importFile(file) {
     else toastr[local ? 'warning' : 'success'](`세이브 슬롯 ${n}개를 가져왔어요.${local ? ` (${local}개는 서버 백업 실패로 설정에만 저장)` : ''}`);
 }
 const FOUND_SOURCE = { index: '목록', prev: '이전 목록', room: '이 방 오토세이브·QUICK 이름' };
+// v0.7.1-a3: the search belongs to the room it was started in (its key and opening): a room left while it runs drops its result,
+// and a result is never drawn in another room (onChatChanged also closes it). A second search started meanwhile wins.
 async function findBackups() {
     if (!vault.online) { toastr.warning('서버 저장소에 연결할 수 없어요.'); return; }
-    ui.found = { loading: true, list: [] }; ui.tab = 'saves'; render(true);
+    const key = hasChat() ? roomKey() : null, epoch = roomEpoch;
+    const f = ui.found = { loading: true, list: [], mem: null, key, epoch }; ui.tab = 'saves'; render(true);
+    const mine = () => ui.found === f && roomEpoch === epoch && (hasChat() ? roomKey() : null) === key;
     try {
-        const list = await vault.find(hasChat() ? roomHash(roomKey()) : null);
-        ui.found = { loading: false, list, at: Date.now() };
-    } catch (e) { ui.found = null; reportError(e); }
+        const list = await vault.find(key ? roomHash(key) : null);
+        if (!mine()) return;
+        const mem = key ? await findMemFiles(key) : null;
+        if (!mine()) return;
+        ui.found = { loading: false, list, mem, key, epoch, at: Date.now() };
+    } catch (e) { if (!mine()) return; ui.found = null; reportError(e); }
     render(true);
+}
+const foundHere = f => !!f && f.epoch === roomEpoch && f.key === (hasChat() ? roomKey() : null);
+// v0.7.1-a3 (v0.7.1 step 2): this room's memory files, found by this room's own clues only: the memory linked now, its name tag,
+// its entry in the integrity hint, its moved and move-start marks, and the ids its own rules give (a missing one of those is not
+// shown: most rooms never had it). Reads only: nothing is written, decided or linked, and nothing here can be put back.
+// Each file: 'now' (the memory linked now), 'ok', 'missing' (a clue names it, the server has none), 'fail' (could not be read).
+const MEM_SOURCE = { now: '지금 연결', tag: '이 방 이름표', clue: '고유값 단서', moved: '옮긴 표시', start: '옮기기 시작 표시', rule: '이 방 이름 규칙' };
+const CLUE_LABEL = { tag: '이 방 이름표', clue: '고유값 단서', moved: '옮긴 표시', start: '옮기기 시작 표시' };
+async function findMemFiles(addr) {
+    const meta = ctx().chatMetadata || {}, here = homeHere() && home.key === addr;
+    const integrity = here && home.integrity ? home.integrity : typeof meta.integrity === 'string' && meta.integrity ? meta.integrity : null;
+    const old = meta[MODULE], copy = old !== undefined && old !== null ? copyHash(old) : null;
+    const read = async (name, valid) => { try { return checked(await readUserFile(fetch, name, { headers: serverHeaders() }), valid); } catch { return { kind: 'error' }; } };
+    const ids = new Map(), failed = [];
+    const add = (id, src) => { if (typeof id !== 'string' || !id) return; if (!ids.has(id)) ids.set(id, new Set()); ids.get(id).add(src); };
+    const clue = async (src, name, valid, pick) => {
+        const res = await read(name, valid);
+        if (res.kind === OK) pick(res.data); else if (res.kind !== MISSING) failed.push(src);
+    };
+    const linked = here && home.status === 'linked' && home.id ? home.id : null;
+    add(linked, 'now');
+    await clue('tag', tagName(addr), validTag(addr), d => add(d.mem, 'tag'));
+    if (integrity) await clue('clue', clueName(integrity), validClue(integrity), d => d.rooms.forEach(x => { if (x?.addr === addr) add(x.mem, 'clue'); }));
+    if (copy) await clue('moved', movedName(addr, copy), validMoved(addr, copy), d => add(d.mem, 'moved'));
+    await clue('start', startName(addr), validStart(addr), d => add(d.mem, 'start'));
+    if (integrity) add(homeId(addr, integrity), 'rule');
+    if (copy) add(migrateId(addr, copy), 'rule');
+    const files = [];
+    for (const [id, srcs] of ids) {
+        const res = await read(memName(id), validMem(id));
+        const only = [...srcs].every(x => x === 'rule');
+        if (res.kind === MISSING) { if (!only) files.push({ id, srcs: [...srcs], kind: 'missing' }); continue; }
+        if (res.kind !== OK) { files.push({ id, srcs: [...srcs], kind: 'fail' }); continue; }
+        const d = res.data, st = d.state, stats = memStats(st.mem);
+        files.push({ id, srcs: [...srcs], kind: id === linked ? 'now' : 'ok', rev: d.rev, scenes: stats.scenes, title: stats.lastTitle,
+            last: Number.isFinite(st.lastRecord?.at) ? st.lastRecord.at : null, msgs: st.lastIndex + 1, other: d.home.addr !== addr ? d.home.addr : null });
+    }
+    return { files, failed };
 }
 async function restoreBackup(file) {
     const item = ui.found?.list.find(x => x.file === file);
@@ -6827,14 +6872,33 @@ function vaultLine() {
 }
 function foundHtml() {
     const f = ui.found;
-    if (!f) return '';
+    if (!foundHere(f)) return '';
     if (f.loading) return '<div class="sp-card"><span class="sp-spin">◐</span> 백업 찾는 중…</div>';
     const rows = f.list.map(x => `<div class="sp-rec"><span class="sp-rec-t"><span class="sp-slot ${x.auto ? 'sp-slot-auto' : ''}">${x.auto ? 'AUTO' : 'FILE'}</span> <b>${esc(x.name)}</b>
         <span class="sp-dim">${esc(x.char || '')} · ${fmtDate(x.updated)} · 장면 ${x.stats?.scenes ?? 0} · ${FOUND_SOURCE[x.source]}에서 찾음${x.exists ? '' : ' · 파일 없음'}</span></span>
         ${x.listed ? '<span class="sp-badge">목록에 있음</span>' : x.exists ? btn('restore', x.file, '↩ 복구', '이 백업을 세이브 목록에 되살려요', 'sp-primary') : ''}</div>`).join('');
     return `<div class="sp-card sp-found"><div class="sp-group-h">🔍 찾은 백업 <span>${f.list.length}</span> ${btn('found-close', '', '닫기')}</div>
         ${rows || '<div class="sp-dim">찾은 백업이 없어요.</div>'}
-        <div class="sp-dim">목록 파일 두 개가 모두 없으면 직접 만든 슬롯은 자동으로 찾을 수 없어요. 서버 폴더(data/사용자/user/files)에서 savepoint-slot-….json을 내 기기로 옮긴 뒤 📥 세이브 가져오기로 불러와 주세요.</div></div>`;
+        <div class="sp-dim">목록 파일 두 개가 모두 없으면 직접 만든 슬롯은 자동으로 찾을 수 없어요. 서버 폴더(data/사용자/user/files)에서 savepoint-slot-….json을 내 기기로 옮긴 뒤 📥 세이브 가져오기로 불러와 주세요.</div>${foundMemHtml(f.mem)}</div>`;
+}
+// v0.7.1-a3: the room's memory files under the backups, shown only (no button).
+function foundMemHtml(m) {
+    if (!m) return '';
+    const badge = x => x.kind === 'now' ? '<span class="sp-badge sp-badge-on">현재 연결된 기억</span>'
+        : x.kind === 'missing' ? '<span class="sp-badge sp-badge-warn">파일 없음</span>'
+        : x.kind === 'fail' ? '<span class="sp-badge sp-badge-warn">읽지 못함</span>' : '';
+    const src = x => `${x.srcs.map(s => MEM_SOURCE[s]).join('·')}에서 찾음`;
+    const rows = m.files.map(x => {
+        const info = x.kind === 'now' || x.kind === 'ok'
+            ? `저장 번호 ${x.rev} · 장면 ${x.scenes} · 메시지 ${x.msgs}개 기록${x.last ? ` · 마지막 기록 ${fmtDate(x.last)}` : ''} · ${src(x)}`
+            : x.kind === 'missing' ? `${src(x)} · 단서는 있지만 서버에 이 파일이 없어요` : `${src(x)} · 잠시 뒤 다시 찾아 주세요`;
+        return `<div class="sp-rec sp-found-mem" data-kind="${x.kind}"><span class="sp-rec-t"><span class="sp-slot">MEM</span> <b>${esc(x.title || `기억 ${x.id.slice(0, 6)}`)}</b>
+        <span class="sp-dim">${esc(info)}</span>${x.other ? `<span class="sp-dim sp-warn">다른 방(${esc(roomLabel(x.other))})의 기억으로 기록됨</span>` : ''}</span>${badge(x)}</div>`;
+    }).join('');
+    const fail = m.failed.length ? `<div class="sp-warn">${m.failed.map(s => CLUE_LABEL[s]).join('·')}을(를) 읽지 못해서 그 단서로는 찾지 못했어요. 잠시 뒤 다시 찾아 주세요.</div>` : '';
+    return `<div class="sp-group-h">🧠 이 방의 기억 파일 <span>${m.files.length}</span></div>
+        ${rows || '<div class="sp-dim">이 방의 단서로 찾은 기억 파일이 없어요.</div>'}${fail}
+        <div class="sp-dim">기억 파일은 보여 주기만 해요. 여기서 바꾸거나 되살리지 않아요.</div>`;
 }
 // "Theo - 2026-10-12@20h10m27s159ms" -> "2026-10-12 20:10 채팅"
 function roomLabel(room) {
@@ -7874,7 +7938,7 @@ function onChatChanged() {
     home = newHome();
     noteLeftDuringRun(leaving);
     clearTimeout(persistTimer); clearTimeout(chatSaveTimer); clearTimeout(sourceTimer);
-    ui.edit = null; ui.checkEdit = null; ui.lastError = null; ui.lastFix = null; mainGenerating = false;
+    ui.edit = null; ui.checkEdit = null; ui.lastError = null; ui.lastFix = null; ui.found = null; mainGenerating = false;
     document.querySelector?.('#sp_loot_dialog')?.close();
     hideResume(); clearTimeout(resumeTimer);
     // v0.6.58: the event only starts the check. SillyTavern can send it after a room failed to load;
