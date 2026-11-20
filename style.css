@@ -64,6 +64,11 @@
 .sp-roomline[data-kind=check], .sp-roomline[data-kind=held] { color: var(--sp-fg); }
 .sp-roomline[data-kind=check] .sp-roomline-label { color: var(--sp-danger); }
 .sp-roomline[data-kind=held] .sp-roomline-label { color: var(--sp-accent); }
+/* v0.7.1-a5: held room detail */
+.sp-hold-detail { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--sp-line); display: flex; flex-direction: column; gap: 6px; }
+.sp-hold-detail .sp-hold-h { font-weight: 700; }
+.sp-hold-detail .sp-hold-row { overflow-wrap: anywhere; }
+.sp-hold-detail .sp-hold-note { color: var(--sp-dim); font-size: 12px; }
 
 /* HUD */
 .sp-hud { padding: 10px 14px; border-bottom: 2px solid var(--sp-line); background: var(--sp-panel2); }

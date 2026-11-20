@@ -11,7 +11,7 @@ import { foldLegacyOutline,
 } from './core.js';
 import { lootStatus, lootWarning, lootInChunk, lootBlock, attachLoot, settleLoot, failLoot, lootTarget, applyLootSupplement, restoreLostLoot } from './loot.js';
 import { Vault, roomHash, quickId } from './vault.js';
-import { decideRoom, placeMemory, relinkMemory, memName, tagName, clueName, validMem, validTag, validClue, tagBody, renamedTag, renameId, withCloses, clueWith, nextMem, renameNotice, cleanName, copyHash, hasTraces, readUserFile, checked, pickPrints, validState, sameLink, homeId, startName, validStart, migrateId, movedName, validMoved, MISSING, OK } from './home.js';
+import { decideRoom, placeMemory, relinkMemory, memName, tagName, clueName, validMem, validTag, validClue, tagBody, renamedTag, renameId, withCloses, clueWith, nextMem, renameNotice, cleanName, copyHash, hasTraces, readUserFile, checked, pickPrints, holdFacts, validState, sameLink, homeId, startName, validStart, migrateId, movedName, validMoved, MISSING, OK } from './home.js';
 import { memLine, writeMem, serverMemIO, MEM_OK, PENDING, REFUSED, UNREAD, CONFLICT, OVERWRITTEN, READ_ERROR, HELD } from './memfile.js';
 import { snapshot, splitFile, covers, writeResult, samePage, canon, PAGE_KEYS } from './guard.js';
 import { upgradeEvidence, segmentPrior, evidenceNumbers } from './provenance.js';
@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.1-a4';
+const VERSION = '0.7.1-a5';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -70,7 +70,7 @@ const KIND_KO = {
 };
 const QUEST_ICON = { promise: '🤝', goal: '🎯', debt: '💰', mystery: '❓' };
 
-const ui = { open: false, tab: 'journal', run: null, progress: '', edit: null, inj: null, lastError: null, found: null, savesOpen: new Map(), scrollPositions: new Map() };
+const ui = { open: false, tab: 'journal', run: null, progress: '', edit: null, inj: null, lastError: null, found: null, holdOpen: null, savesOpen: new Map(), scrollPositions: new Map() };
 let roomEpoch = 0;
 let mainGenerating = false;
 let persistTimer = null;
@@ -3381,7 +3381,40 @@ function homeAlert() {
     const carry = homeHere() && home.carry && carryReady(home) ? btn('home-carry', '', '이름 변경 이어서 연결', '채팅 목록에서 바꾼 이름을 확인하고, 예전 이름의 기억을 이 방에 연결해요') : '';
     // v0.7.0-c4: a room held for another room of its integrity whose memory may be copied here (rescueRoom).
     const rescue = homeHere() && home.rescue && rescueReady(home) ? btn('home-rescue', '', '이 방에 기억 복사해 복구', '다른 방의 기억은 그대로 두고, 확인을 받은 뒤 이 방에서 따로 쓰는 기억 사본을 만들어요') : '';
-    return `<div class="sp-alert sp-home-alert">${esc(text)}${again ? `<div class="sp-row">${fit}${carry}${rescue}${btn('home-recheck', '', '다시 확인', '채팅 파일과 기억 파일을 다시 읽어 이 방의 기억을 다시 찾아요')}</div>` : ''}</div>`;
+    // v0.7.1-a5 (step 4): a held room can show what its decision kept (holdDetail); opening it reads and writes nothing.
+    const held = homeHere() && home.status === 'held';
+    const open = held && holdOpenHere();
+    const more = held ? btn('home-detail', '', open ? '자세히 접기' : '자세히 보기', '보류된 이유와 후보, 원문 비교 결과를 보여 줘요(아무것도 저장하지 않아요)') : '';
+    return `<div class="sp-alert sp-home-alert">${esc(text)}${again ? `<div class="sp-row">${fit}${carry}${rescue}${btn('home-recheck', '', '다시 확인', '채팅 파일과 기억 파일을 다시 읽어 이 방의 기억을 다시 찾아요')}${more}</div>` : ''}${open ? holdDetail({ carry: !!carry, rescue: !!rescue }) : ''}</div>`;
+}
+// v0.7.1-a5 (step 4): the held room's detail, open for this opening of the room only (a room changed or opened again closes it).
+const holdOpenHere = () => !!ui.holdOpen && ui.holdOpen.key === roomKey() && ui.holdOpen.epoch === roomEpoch;
+function toggleHoldDetail() {
+    ui.holdOpen = holdOpenHere() || !(homeHere() && home.status === 'held') ? null : { key: roomKey(), epoch: roomEpoch };
+    render();
+}
+const HOLD_ROLE = { same: '같은 고유값으로 기억이 연결된 방', moved: '이 방의 예전 기억을 옮겨 간 방', parent: '갈래의 원래 방', to: '이 이름에서 바뀐 이름', from: '이름을 바꾸기 전 방' };
+const HOLD_MEM = { missing: '파일 없음', other: '다른 방의 기억으로 기록됨' };
+// Only what the decision kept (holdFacts): nothing is read or compared again here. `shown`: the buttons the alert box shows now.
+function holdDetail(shown) {
+    const f = holdFacts(home.d, home.why);
+    const row = html => `<div class="sp-hold-row">${html}</div>`;
+    const parts = [`<div class="sp-hold-h">보류된 이유</div>`, row(esc(HOLD_TEXT[home.why] || home.why))];
+    parts.push(`<div class="sp-hold-h">후보</div>`);
+    if (!f.rooms.length && !f.mems.length) parts.push(row('연결할 기억 파일을 확인하지 못했어요.'));
+    for (const r of f.rooms) parts.push(`<div class="sp-hold-row sp-hold-room" data-role="${r.role}">${esc(HOLD_ROLE[r.role] || r.role)}: <b>${esc(roomLabel(r.addr))}</b>${roomChar(r.addr) ? ` <span class="sp-dim">(${esc(roomChar(r.addr))})</span>` : ''}${r.role === 'parent' && f.parentMissing ? ' · 기억 파일 없음' : ''}</div>`);
+    for (const m of f.mems) parts.push(`<div class="sp-hold-row sp-hold-mem" data-state="${m.state}">기억 파일: <b>기억 ${esc(m.id.slice(0, 6))}</b>${m.state ? ` · ${HOLD_MEM[m.state]}` : ''}</div>`);
+    parts.push(`<div class="sp-hold-h">원문 비교</div>`);
+    const c = f.cmp;
+    if (c.kind === 'sample' && c.total === 0) parts.push(row('비교할 표본이 없었어요.'));
+    else if (c.kind === 'sample') parts.push(row(`확인한 표본 ${c.total}곳 중 ${c.matched}곳 일치`), `<div class="sp-hold-row sp-hold-caveat">일부 메시지만 비교한 결과예요. 이것만으로 같은 방인지 확인할 수는 없어요.</div>`);
+    else if (c.kind === 'all') parts.push(row(`기억에 기록된 원문 ${c.n}개가 모두 일치해요.`));
+    else if (c.kind === 'diff') parts.push(row(`처음 확인된 차이: ${c.at + 1}번째 메시지 <span class="sp-dim">(갈래의 원래 방 기억과 비교)</span>`));
+    else parts.push(row('이번 확인에서는 원문 비교 결과가 없어요.'));
+    const can = [shown.carry && '`이름 변경 이어서 연결`', shown.rescue && '`이 방에 기억 복사해 복구`', '`다시 확인`'].filter(Boolean).join(', ');
+    parts.push(`<div class="sp-hold-h">할 수 있는 일</div>`, row(`위 버튼: ${esc(can)}.`),
+        `<div class="sp-hold-note">이 화면은 보여 주기만 해요. 아무것도 저장하거나 바꾸지 않아요. 다른 설치에서 채팅만 가져왔다면 README의 "다른 설치로 옮길 때"를 봐 주세요.</div>`);
+    return `<div class="sp-hold-detail" data-why="${esc(home.why)}" data-own="${f.own}" data-cmp="${c.kind === 'sample' && c.total === 0 ? 'empty' : c.kind}">${parts.join('')}</div>`;
 }
 // v0.7.1-a1: one line at the top of the window for where this room stands, and a short reason (what is going on, what to do).
 // Read only: the same states and the same order as gateMessage and homeMessage, nothing is checked or written here. A problem
@@ -7420,6 +7453,7 @@ async function handle(act, id) {
         case 'home-fit': return fitRoom();
         case 'home-carry': return carryRoom();
         case 'home-rescue': return rescueRoom();
+        case 'home-detail': return toggleHoldDetail();
         case 'send-retry': return sendRetryRun();
         case 'edit-cancel': ui.edit = null; backToChecks(); return render(true);
         case 'edit-save': return saveEdit();

@@ -619,6 +619,31 @@ export function branchRestore(parent, prints, slots = []) {
 const RESCUE_KEYS = ['from', 'to', 'mem', 'rev', 'wid', 'integrity', 'copy', 'prints'];
 export const rescueOffer = r => ({ ...Object.fromEntries(RESCUE_KEYS.map(k => [k, r[k]])), last: r.last, at: r.at });
 export const sameRescue = (a, r) => plainObj(a) && RESCUE_KEYS.every(k => (a[k] ?? null) === (r[k] ?? null));
+// v0.7.1-a5 (step 4): what a held room's decision kept, for the detail view only — nothing is read, compared or worked out again.
+// The decision must be the one that held the room for this very reason (a hold made later, while writing, keeps only its reason).
+// rooms: [{ addr, role }] · mems: [{ id, state }] (state: 'missing' · 'other' · '') · cmp: what was compared, as kept:
+//  sample { total, matched } (a few recorded places: no proof of the same room) · all { n } (every recorded original) ·
+//  diff { at } (the first difference found over every recorded original of the parent) · none (nothing kept).
+export function holdFacts(d, why) {
+    const out = { why, own: false, rooms: [], mems: [], cmp: { kind: 'none' } };
+    if (!plainObj(d) || d.verdict !== 'hold' || d.why !== why) return out;
+    out.own = true;
+    const room = (addr, role) => { if (str(addr) && !out.rooms.some(r => r.addr === addr)) out.rooms.push({ addr, role }); };
+    const memOf = (id, state = '') => { if (str(id) && !out.mems.some(m => m.id === id)) out.mems.push({ id, state }); };
+    if (why === 'sameIntegrity') for (const a of Array.isArray(d.candidates) ? d.candidates : []) room(a, 'same');
+    if (why === 'copyMoved') { room(d.from, 'moved'); for (const a of Array.isArray(d.rooms) ? d.rooms : []) room(a, 'moved'); }
+    if (why === 'parentGone' || why === 'branchUnproven') room(d.parent, 'parent');
+    if (why === 'renamedAway') room(d.to, 'to');
+    if (why === 'renameUnproven' || why === 'memGone') room(d.from, 'from');
+    const memState = { memGone: 'missing', movedNoBody: 'missing', homeDiff: 'other' }[why] || '';
+    memOf(d.mem, memState);
+    if (why === 'sameIntegrity' && plainObj(d.rescue)) memOf(d.rescue.mem);
+    if (why === 'parentGone') out.parentMissing = true;
+    if (why === 'unproven' && plainObj(d.prints) && int(d.prints.total) && int(d.prints.matched)) out.cmp = { kind: 'sample', total: d.prints.total, matched: d.prints.matched };
+    else if (why === 'sameIntegrity' && plainObj(d.rescue) && int(d.rescue.last) && d.rescue.last >= 0) out.cmp = { kind: 'all', n: d.rescue.last + 1 };
+    else if (why === 'branchUnproven' && int(d.at) && d.at >= 0) out.cmp = { kind: 'diff', at: d.at };
+    return out;
+}
 // What a branch does not carry over: the rewind point, check results, the linked slot, failure records,
 // the last-save note and the auto-save marks (they count the parent's messages).
 export function branchState(st, addr) {
