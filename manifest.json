@@ -1,12 +1,12 @@
 {
     "display_name": "SavePoint",
-    "loading_order": 100,
+    "loading_order": 1,
     "requires": [],
     "optional": [],
     "js": "index.js",
     "css": "style.css",
     "author": "Near7707",
-    "version": "0.7.1-a6",
+    "version": "0.7.1-a7",
     "generate_interceptor": "savePointSendGuard",
     "homePage": "https://github.com/Near7707/SavePoint"
 }

@@ -1,3 +1,27 @@
+# v0.7.1-a7 · `main`의 설정 칸 위치 수정 가져오기 (브랜치 `v0.7.1`)
+
+기준 커밋: `203df04`(a6 리뷰 요청서). `main`에 바로 올라간 `4324bb6`(v0.7.1: 설정 칸을 왼쪽 칸에, `loading_order` 1)을 브랜치로 합침. 사용자: 합칠 때 버전은 `0.7.2`(main이 이미 `0.7.1`), a6 리뷰를 기다리는 동안 먼저 가져오기("시작해").
+
+| 항목 | 처리 |
+|---|---|
+| 🔴 `main` 변경을 브랜치로 | 반영(병합 커밋). 겹친 곳은 버전 두 줄(`index.js` `VERSION`, `manifest.json` `version`)뿐 → `0.7.1-a7` |
+| 🟡 `loading_order` 1의 영향 | 문서로만. 실리태번은 interceptor를 `loading_order` → 이름 순으로 부름(원본 `0a85854` `extensions.js`: `runGenerationInterceptors`·`sortManifestsByOrder`). 기본 Vector Storage(100, `vectors_rearrangeChat`)는 예전에도 SavePoint 뒤(같은 100 → 이름 순)라 그대로. 100 미만 다른 확장과는 이제 SavePoint가 먼저 → 앞 확장이 사본을 바꿔 짝을 못 찾고 멈추던 경우(a 아래 c1 리뷰 줄 "앞 interceptor가 사본에서 메시지를 빼거나 깊게 복사하면")는 줄고, 뒤 확장이 SavePoint 숨김 원문을 사본에 되살리지는 않아서 묻지 않고 빠지는 경우는 생기지 않는다고 봄 |
+| ⚪ `main` 되돌리기 | 안 함(이미 낸 판, 내용 문제없음) |
+| (우리 쪽) README 변경 기록 | `main` 커밋엔 기록이 없어서 `v0.7.1`(main)·`v0.7.1-a7` 두 줄 |
+
+## 바뀐 것
+- `index.js`(main에서): `settingsColumn()`(왼쪽 칸, 없으면 오른쪽), 파일을 불러올 때 `#sp_settings_slot`을 만드는 즉시 실행 함수, `addSettingsUI()`가 그 자리에 붙임. `manifest.json`(main에서): `loading_order` 1.
+- 검사: `page.html`에 왼쪽 칸(실리태번처럼 두 칸), 새 묶음 `settings-column.cjs`(67번째).
+
+## ★ 특히 봐 줄 곳
+1. `loading_order` 1로 답변 전 확인이 다른 확장보다 먼저 도는 것에 대한 위 판단.
+2. 자리를 파일을 불러올 때 잡는 즉시 실행 함수가 Node 검사 상자(문서 없음)에서 조용히 넘어가는지(`typeof document` 확인).
+
+## 검사와 망가뜨리기 결과
+- 고치기 전(`aef9910`, a6)에서 `settings-column` 1·2 FAIL(오른쪽 칸, 자리 없음). 3(왼쪽 칸 없음)은 통과.
+- 망가뜨리기: 즉시 실행 함수가 자리를 안 만들게 → 1·2 FAIL(왼쪽 칸이지만 자리 밖, 나중 확장보다 아래).
+- Node 523개: 520 통과 / 0 실패 / 3 건너뜀. 브라우저 67묶음 한꺼번에 모두 통과(이번엔 `inject-wait`도 한 번에), 검사 모드 오류 0.
+
 # v0.7.1-a6 · 실제 확인 뒤 다듬기: 상태 표시를 제목 줄로 · 보류 후보 문구 (브랜치 `v0.7.1`)
 
 기준 커밋: `2d32cf1`(4번 끝 기록). 실제 실리태번 확인(보류 상세)에서 사용자가 찾은 두 가지 → 구체안(🟡/⚪) → 사용자 "시작해". 문구·배치만 바뀌고 판정·버튼·저장은 그대로라 GPT 설계는 건너뛰고 리뷰만 받아요. 리뷰 요청서: [REVIEW-REQUEST.md](REVIEW-REQUEST.md).
