@@ -11,7 +11,7 @@ import { foldLegacyOutline,
 } from './core.js';
 import { lootStatus, lootWarning, lootInChunk, lootBlock, attachLoot, settleLoot, failLoot, lootTarget, applyLootSupplement, restoreLostLoot } from './loot.js';
 import { Vault, roomHash, quickId } from './vault.js';
-import { decideRoom, placeMemory, relinkMemory, memName, tagName, clueName, validMem, validTag, validClue, tagBody, renamedTag, renameId, withCloses, clueWith, nextMem, renameNotice, cleanName, copyHash, hasTraces, readUserFile, checked, pickPrints, holdFacts, validState, sameLink, homeId, startName, validStart, migrateId, movedName, validMoved, strayAutos, MISSING, OK } from './home.js';
+import { decideRoom, placeMemory, relinkMemory, memName, tagName, clueName, validMem, validTag, validClue, tagBody, renamedTag, renameId, withCloses, clueWith, nextMem, renameNotice, cleanName, copyHash, hasTraces, readUserFile, checked, pickPrints, holdFacts, validState, sameLink, homeId, startName, validStart, migrateId, movedName, validMoved, strayAutos, SLOT_HOLDS, slotPrint, slotFits, MISSING, OK } from './home.js';
 import { memLine, writeMem, serverMemIO, MEM_OK, PENDING, REFUSED, UNREAD, CONFLICT, OVERWRITTEN, READ_ERROR, HELD } from './memfile.js';
 import { snapshot, splitFile, covers, writeResult, samePage, canon, PAGE_KEYS } from './guard.js';
 import { upgradeEvidence, segmentPrior, evidenceNumbers } from './provenance.js';
@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.3';
+const VERSION = '0.7.4-a1';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -2200,11 +2200,16 @@ async function linkRounds(h, r0, owned) {
     const agreed = h.agree || null; h.agree = null; h.carry = null;
     // v0.7.0-c4 (c4 design): the same for the consent to a rescue copy (rescueRoom), given in this opening of the room only.
     const rescued = h.rescueAgree?.epoch === roomEpoch ? h.rescueAgree : null; h.rescueAgree = null; h.rescue = null;
+    // v0.7.4-a1 (step ②): the same for the consent to link a save slot (slotLinkRoom); its body is read again for every decision.
+    const slotPick = h.slotAgree?.epoch === roomEpoch ? h.slotAgree : null; h.slotAgree = null;
     let r = r0;
     for (let round = 0; round < 3; round++) {
         if (h.line?.pending) { setHome(h, 'pending'); return; }
         if (!r?.ok) { r = await readServerChat(); if (!mine()) return; if (!r.ok) { setHome(h, 'readFail'); return; } }
-        const input = { ...homeInput(r), agreed, rescued }, files = new Map();
+        // v0.7.4-a1 (GPT): never what the question was shown from — the slot read again now; decideRoom compares it with the copy agreed to.
+        const slotted = slotPick ? await slotFresh(slotPick) : null;
+        if (!mine()) return;
+        const input = { ...homeInput(r), agreed, rescued, slotted }, files = new Map();
         const read = async name => {
             if (files.has(name)) return files.get(name);
             const res = await readUserFile(fetch, name, { headers: serverHeaders() });
@@ -2220,10 +2225,11 @@ async function linkRounds(h, r0, owned) {
         if (!mine()) return;
         if (!again.ok) { setHome(h, 'readFail'); return; }
         if (!sameInput(input, homeInput(again))) { r = again; continue; }
-        h.d = d; h.integrity = input.integrity;
+        h.d = d; h.integrity = input.integrity; h.prints = input.prints;
         // v0.7.0-c4a (review of c4, P2): a rescue copy is checked against the chat file read after it was written (below); until then the
         // room stays shut (`rescueCheck`: homeOpen false), so nothing resumes on the copy before that check.
-        h.rescueCheck = d.rescued === true; h.rescueLost = false;
+        // v0.7.4-a1: a memory made from a picked slot is checked the same way.
+        h.rescueCheck = d.rescued === true || d.slotted === true; h.rescueLost = false;
         try { await actHome(h, d, input, files); }
         catch (e) { console.warn('[SavePoint] room link', e); if (mine()) setHome(h, 'readFail'); }
         if (!mine()) { h.rescueCheck = false; return; }
@@ -2375,7 +2381,9 @@ async function actHome(h, d, input, files) {
     // v0.7.0-b1i (review of b1h, P1): a move out or a branch puts a new tag at this name: it names the renames seen away from it
     // (`closes`), which are settled once the memory read back is the one placed. (relink: b3, with the tag's own `closes`.)
     else if (d.verdict === 'migrate') res = await placeMemory(placeIO(h), { id: d.mem, from: { kind: 'migrate', addr, copy: input.copy.hash }, addr, integrity, copy: input.copy.hash, state: movedState(input.old), wid: newId(), closes: input.closes });
-    else if (d.verdict === 'branch') res = await placeMemory(placeIO(h), { id: d.mem, from: { kind: 'branch', addr, integrity, parent: d.parent }, addr, integrity, copy: input.copy?.hash ?? null, state: d.state, wid: newId(), closes: input.closes });
+    // v0.7.4-a1 (step ②, GPT P2-2): a memory made from a picked slot says which saved copy it came from (the slot id and its slotPrint):
+    // two devices that agreed to different copies of the same slot are told apart (checkMem: otherOrigin), never taken as one.
+    else if (d.verdict === 'branch') res = await placeMemory(placeIO(h), { id: d.mem, from: d.via === 'slotPick' ? { kind: 'branch', addr, integrity, slot: d.slot.id, print: d.slot.print } : { kind: 'branch', addr, integrity, parent: d.parent }, addr, integrity, copy: input.copy?.hash ?? null, state: d.state, wid: newId(), closes: input.closes });
     else { setHome(h, 'held', d.why || d.verdict); return; }
     if (!mine()) return;
     // v0.7.0-b3a1a (review of b3a1, P2-1): the link finished again on the body seen (relinkMemory checked it) and only a hint or the
@@ -2710,6 +2718,87 @@ async function rescueRoom() {
         else if (h.status === 'held' && h.why === 'sameIntegrity') toastr.warning(RESCUE_TEXT.changed, 'SavePoint', { timeOut: 10000 });
         else toastr.warning(homeMessage() || RESCUE_TEXT.changed, 'SavePoint', { timeOut: 10000 });
     } finally { rescueJob = false; }
+}
+// ───────── a held room linked to a save slot (v0.7.4-a1, step ②) ─────────
+// Design (Claude draft + GPT): a room held for SLOT_HOLDS, with no tag, no memory of its own and an integrity (decideRoom: `slotOk`), may get
+// its own memory from a save slot whose recorded originals are exactly this room's first messages (slotFits: at least one). The user picks
+// the slot and agrees; the consent is bound to the slot id, its saved copy (slotPrint over the body read for the question), the reason
+// held and this opening. The decision made again reads the slot again and links only that very copy, as a branch of this room alone
+// (placeMemory: nothing written over; the chat file read again after it, as a rescue copy). No other room's memory, tag or slot is touched.
+const SLOT_TEXT = {
+    moved: '확인하는 사이 다른 방으로 옮겨서 슬롯을 연결하지 않았어요.',
+    changed: '확인하는 사이 이 방이나 슬롯이 바뀌어서 연결하지 않았어요. 슬롯은 그대로 있어요. 세이브 탭에서 다시 해 주세요.',
+    gone: '이 슬롯을 읽지 못했거나 이 방의 원문과 기록이 맞지 않아서 연결하지 않았어요.',
+    done: '이 슬롯의 기억으로 이 방의 새 기억을 만들어 연결했어요. 슬롯과 다른 방의 기억은 그대로 있어요.',
+    hides: '이 슬롯의 기억으로 이 방의 새 기억을 만들어 연결했지만, 슬롯이 기록하지 않은 메시지에 SavePoint 숨김이 남아 있어서 저장과 자동 기록을 멈췄어요. `원문과 기억 맞추기`로 숨김을 정리해 주세요.',
+    // GPT P2-3: every slot of this room makes the same memory id: linked to another copy means someone else linked first.
+    other: '다른 곳에서 먼저 이 방에 기억을 연결했어요. 고른 슬롯은 연결하지 않았어요. 지금 연결된 기억을 확인해 주세요.',
+    lost: '이 슬롯으로 기억을 만들었지만, 만든 뒤 채팅 파일을 다시 확인하지 못해서 저장과 자동 기록을 멈췄어요. 만든 기억과 슬롯은 그대로 있어요. 잠시 뒤 `다시 확인`을 눌러 주세요.',
+};
+const slotReady = h => homeHere() && home === h && h.status === 'held' && SLOT_HOLDS.includes(h.why) && h.d?.verdict === 'hold' && h.d.why === h.why
+    && h.d.slotOk === true && Array.isArray(h.prints) && !!h.integrity && !h.linking && !h.writing && !h.fitReopen && !h.line?.pending;
+// The slots listed whose recorded place fits this room's originals (from the list: no file is read). Shown only; the decision checks the body.
+function slotMatches() {
+    if (!slotReady(home)) return [];
+    return listSaves().filter(sv => slotFits(sv.pos, home.prints));
+}
+const slotLinkable = sv => slotReady(home) && slotFits(sv.pos, home.prints);
+// The slot body read again (for a decision): its place and memory, or null (gone, unreadable).
+async function slotFresh(p) {
+    try {
+        const sv = findSave(p.id);
+        if (!sv) return null;
+        const body = await readSave(sv);
+        const mem = cleanMem(body?.mem);
+        if (!mem || !body?.pos) return null;
+        return { id: p.id, agreed: p.print, why: p.why, pos: { lastIndex: body.pos.lastIndex, digest: body.pos.digest }, mem };
+    } catch { return null; }
+}
+function slotAskText(sv, pos) {
+    return ['이 슬롯의 기억을 이 방에 연결할까요?', '',
+        `슬롯: ${slotKind(sv)} ${sv.name}`, `저장 시각: ${fmtDate(sv.updated)}`, `기록된 범위: #0–#${pos.lastIndex} (이 방의 원문과 같아요)`, '',
+        '이 방에 새 기억을 만들어 연결해요. 슬롯과 다른 방의 기억은 그대로 둬요.',
+        '이 지점 이전으로는 ⏪ 되돌릴 수 없어요.',
+        '슬롯이 기록한 곳 뒤에 SavePoint 숨김이 남아 있으면, 연결한 뒤 `원문과 기억 맞추기`로 정리해야 해요.'].join('\n');
+}
+let slotJob = false;
+async function slotLinkRoom(id) {
+    const h = home;
+    if (slotJob || rescueJob || carryJob || !slotReady(h)) return;
+    const sv = findSave(id);
+    if (!sv || !slotFits(sv.pos, h.prints)) return;
+    slotJob = true;
+    try {
+        const epoch = roomEpoch, why = h.why, key = h.key, integrity = h.integrity;
+        const here = () => homeHere() && home === h && roomEpoch === epoch;
+        let pos, print;
+        try {
+            const body = await readSave(sv);
+            const mem = cleanMem(body?.mem);
+            pos = body?.pos && { lastIndex: body.pos.lastIndex, digest: body.pos.digest };
+            if (!mem || !slotFits(pos, h.prints)) pos = null;
+            else print = slotPrint(pos, mem);
+        } catch { pos = null; }
+        if (!here()) { toastr.warning(SLOT_TEXT.moved, 'SavePoint'); return; }
+        if (!pos) { toastr.warning(SLOT_TEXT.gone, 'SavePoint', { timeOut: 10000 }); return; }
+        const ok = await confirmBox(slotAskText(sv, pos));
+        if (!ok) return;
+        if (!here()) { toastr.warning(SLOT_TEXT.moved, 'SavePoint'); return; }
+        if (!slotReady(h) || h.why !== why) { toastr.warning(SLOT_TEXT.changed, 'SavePoint', { timeOut: 10000 }); return; }
+        h.slotAgree = { id, print, why, epoch };
+        await recheckHome('user');
+        if (!here()) return;
+        h.slotAgree = null;
+        if (h.status === 'linked' && h.id === homeId(key, integrity) && h.from?.slot === id && h.from?.print === print) {
+            if (h.h2?.why === 'hides') toastr.warning(SLOT_TEXT.hides, 'SavePoint', { timeOut: 15000 });
+            else if (h.h2 || h.line?.stop) toastr.warning(homeMessage() || SLOT_TEXT.changed, 'SavePoint', { timeOut: 15000 });
+            else toastr.success(SLOT_TEXT.done, 'SavePoint');
+        }
+        else if (h.status === 'linked' || ((h.status === 'held' || h.status === 'stopped') && h.why === 'otherOrigin')) toastr.warning(SLOT_TEXT.other, 'SavePoint', { timeOut: 12000 });
+        else if (h.status === 'readFail' && h.rescueLost) toastr.warning(SLOT_TEXT.lost, 'SavePoint', { timeOut: 15000 });
+        else if (h.status === 'held' && h.why === why) toastr.warning(SLOT_TEXT.changed, 'SavePoint', { timeOut: 10000 });
+        else toastr.warning(homeMessage() || SLOT_TEXT.changed, 'SavePoint', { timeOut: 10000 });
+    } finally { slotJob = false; }
 }
 // `다시 확인`: the chat file is read again and the room decided again. Reads only for a line whose write got no answer
 // (P1-2: that room waits to be opened again).
@@ -3383,12 +3472,14 @@ function homeAlert() {
     // v0.7.0-b4a: a room held for a rename made in the chat list, when it may be carried on (carryLook).
     const carry = homeHere() && home.carry && carryReady(home) ? btn('home-carry', '', '이름 변경 이어서 연결', '채팅 목록에서 바꾼 이름을 확인하고, 예전 이름의 기억을 이 방에 연결해요') : '';
     // v0.7.0-c4: a room held for another room of its integrity whose memory may be copied here (rescueRoom).
+    const slots = slotReady(home) ? slotMatches().length : 0;
     const rescue = homeHere() && home.rescue && rescueReady(home) ? btn('home-rescue', '', '이 방에 기억 복사해 복구', '다른 방의 기억은 그대로 두고, 확인을 받은 뒤 이 방에서 따로 쓰는 기억 사본을 만들어요') : '';
     // v0.7.1-a5 (step 4): a held room can show what its decision kept (holdDetail); opening it reads and writes nothing.
     const held = homeHere() && home.status === 'held';
     const open = held && holdOpenHere();
     const more = held ? btn('home-detail', '', open ? '자세히 접기' : '자세히 보기', '보류된 이유와 후보, 원문 비교 결과를 보여 줘요(아무것도 저장하지 않아요)') : '';
-    return `<div class="sp-alert sp-home-alert">${esc(text)}${again ? `<div class="sp-row">${fit}${carry}${rescue}${btn('home-recheck', '', '다시 확인', '채팅 파일과 기억 파일을 다시 읽어 이 방의 기억을 다시 찾아요')}${more}</div>` : ''}${open ? holdDetail({ carry: !!carry, rescue: !!rescue }) : ''}</div>`;
+    const slotNote = slots ? `<div class="sp-slot-note">이 방의 원문과 기록이 맞는 세이브 슬롯이 ${slots}개 있어요. 세이브 탭에서 \`이 방에 연결\`로 그 슬롯의 기억을 이 방의 새 기억으로 붙일 수 있어요.</div>` : '';
+    return `<div class="sp-alert sp-home-alert">${esc(text)}${slotNote}${again ? `<div class="sp-row">${fit}${carry}${rescue}${btn('home-recheck', '', '다시 확인', '채팅 파일과 기억 파일을 다시 읽어 이 방의 기억을 다시 찾아요')}${more}</div>` : ''}${open ? holdDetail({ carry: !!carry, rescue: !!rescue, slots }) : ''}</div>`;
 }
 // v0.7.1-a5 (step 4): the held room's detail, open for this opening of the room only (a room changed or opened again closes it).
 const holdOpenHere = () => !!ui.holdOpen && ui.holdOpen.key === roomKey() && ui.holdOpen.epoch === roomEpoch;
@@ -3419,6 +3510,7 @@ function holdDetail(shown) {
     else parts.push(row('이번 확인에서는 원문 비교 결과가 없어요.'));
     const can = [shown.carry && '`이름 변경 이어서 연결`', shown.rescue && '`이 방에 기억 복사해 복구`', '`다시 확인`'].filter(Boolean).join(', ');
     parts.push(`<div class="sp-hold-h">할 수 있는 일</div>`, row(`위 버튼: ${esc(can)}.`),
+        ...(shown.slots ? [`<div class="sp-hold-row sp-hold-slot">세이브 탭: 원문과 기록이 맞는 슬롯 ${shown.slots}개의 \`이 방에 연결\`.</div>`] : []),
         `<div class="sp-hold-note">이 화면은 보여 주기만 해요. 아무것도 저장하거나 바꾸지 않아요. 다른 설치에서 채팅만 가져왔다면 README의 "다른 설치로 옮길 때"를 봐 주세요.</div>`);
     return `<div class="sp-hold-detail" data-why="${esc(home.why)}" data-own="${f.own}" data-cmp="${c.kind === 'sample' && c.total === 0 ? 'empty' : c.kind}">${parts.join('')}</div>`;
 }
@@ -7019,7 +7111,7 @@ function saveCard(sv, st, { showRoom = false, autoRank = 0 } = {}) {
         ${title ? `<div class="sp-save-title" title="저장 당시 장면">🎬 ${esc(title)}</div>` : ''}
         <div class="sp-save-meta">${showRoom ? `🗝️ ${esc(roomLabel(sv.room))} · ` : ''}${esc(sv.char || '')} · ${fmtDate(sv.updated)}</div>
         <div class="sp-save-stats"><span>장면 ${s.scenes ?? 0}</span><span>메시지 ${sv.msgCount ?? 0}</span><span>❗ ${s.openQuests ?? 0}</span>${s.place ? `<span>📍 ${esc(s.place)}</span>` : ''}</div>
-        <div class="sp-row">${btn('load', sv.id, '불러오기', '이 방의 기억을 이 슬롯으로 바꿔요. 슬롯은 저장을 누를 때만 덮어써요', 'sp-primary')}
+        <div class="sp-row">${slotLinkable(sv) ? btn('slot-link', sv.id, '이 방에 연결', '연결 보류된 이 방에, 확인을 받은 뒤 이 슬롯의 기억으로 새 기억을 만들어 붙여요(슬롯과 다른 방의 기억은 그대로)', 'sp-primary') : ''}${btn('load', sv.id, '불러오기', '이 방의 기억을 이 슬롯으로 바꿔요. 슬롯은 저장을 누를 때만 덮어써요', 'sp-primary')}
             ${copy ? btn('save-rename', sv.id, '사본 저장', '이 시점을 이름 붙인 FILE 슬롯으로 따로 저장해요. 이 카드는 그대로예요')
                 : btn('save-over', sv.id, '저장', '이 슬롯을 지금 기억으로 덮어써요') + btn('save-rename', sv.id, '이름', '이 슬롯의 이름을 바꿔요')}${btn('save-export', sv.id, '📤', '이 슬롯을 .json 파일로 내보내기')}${btn('save-del', sv.id, '삭제', '', 'sp-danger')}</div></div>`;
 }
@@ -7511,6 +7603,7 @@ async function handle(act, id) {
         case 'home-fit': return fitRoom();
         case 'home-carry': return carryRoom();
         case 'home-rescue': return rescueRoom();
+        case 'slot-link': return slotLinkRoom(id);
         case 'home-detail': return toggleHoldDetail();
         case 'send-retry': return sendRetryRun();
         case 'edit-cancel': ui.edit = null; backToChecks(); return render(true);

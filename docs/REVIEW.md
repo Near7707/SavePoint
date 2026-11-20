@@ -1,3 +1,36 @@
+# v0.7.4-a1 · 떼어 둔 작업 ②: 보류된 방에 세이브 슬롯으로 기억 연결 (브랜치 `v0.7.4`)
+
+기준 커밋: `983b726`(main, v0.7.3). 설계: Claude 초안(요청서 `0fdf1cf`) + GPT 설계 의견(P2 세 건 + 질문별 의견, 모두 코드로 확인해 반영) → 사용자 "시작해".
+
+| 항목 | 처리 |
+|---|---|
+| 범위(A1·A2) | 반영. `SLOT_HOLDS` = `traces`(11행)·`sameIntegrity`(8행)·`parentGone`·`branchUnproven`(7행). `decideRoom`을 감싸서(안은 `decideCore` 그대로) 이 보류일 때만, 판정할 때마다 다시: 고유값 있음 · 이 이름을 떠난 방 없음(`left`) · 이 이름의 이름표·시작 표시 없음 · 고유값 단서에 이 방 없음 · 이 방 몫 기억 파일(`homeId`) 없음 → `slotOk`. `memGone` 등 이름표가 있는 보류는 뺌(GPT 동의, 별도 설계) |
+| 슬롯 조건(B1, GPT P2-1) | 반영. `slotFits(pos, prints)`: `lastIndex` 정수 · **0 이상** · 이 방 메시지 수 미만 · 앞쪽 원문 지문 묶음이 `pos.digest`와 같음. 화면(목록의 `pos`)과 최종 판정(새로 읽은 슬롯 본문의 `pos`)이 같은 함수. 안 맞는 슬롯·`pos` 없는 슬롯은 ⚪ |
+| 저장본 구별(C1, GPT P2-2) | 반영. `slotPrint(pos, mem)` = 기록 위치 + 기억 내용의 지문. 기억 파일 `from` = `{ kind: 'branch', addr, integrity, slot: <id>, print }`(부모 없음, `kind`가 그대로라 v0.7.3 이하도 읽힘). 같은 슬롯의 다른 저장본으로 만든 본체는 `checkMem`·`writePlan`에서 `otherOrigin` |
+| 동의와 다시 판정(C·GPT) | 반영. 동의 = 슬롯 id + 확인창용으로 읽은 본문의 `slotPrint` + 보류 이유 + 열기(`epoch`). `linkRounds`가 판정마다 슬롯 본문을 **새로 읽어**(`slotFresh`) `input.slotted`로 넘기고, `decideRoom`이 지문이 동의와 같고 이유가 같을 때만 `branch`(`via: 'slotPick'`, 상태는 7행 슬롯 경로와 같은 모양 + `branchState`). 쓰기는 기존 `placeMemory` 그대로. 쓴 뒤 채팅 파일 다시 읽기는 복사 복구와 같은 `rescueCheck` |
+| 완료 안내(GPT P2-3) | 반영. 연결된 기억의 `from.slot`·`from.print`가 동의한 것과 같을 때만 완료. 다른 기억으로 연결됐거나 `otherOrigin`으로 멈추면 "다른 곳에서 먼저 이 방에 기억을 연결했어요", 쓴 뒤 다시 읽기 실패는 따로 안내, 그 밖엔 바뀌었다는 안내. 먼저 연결된 기억은 덮지 않음 |
+| 뒤쪽 숨김(B2) | 기존 `h2Of` → `hides` 멈춤 + `원문과 기억 맞추기`. 확인창에 안내 한 줄 + "이 지점 이전으로는 ⏪ 되돌릴 수 없어요". 정확한 개수 미리보기는 🟡(안 함) |
+| 동시 선택(C3) | 잠금 파일 없음(GPT 동의). 남는 틈은 LIMITS에 |
+| 화면(D) | 보류 안내 상자에 맞는 슬롯 수 한 줄(`.sp-slot-note`), 맞는 슬롯 카드에 `이 방에 연결`(`data-act="slot-link"`), 보류 상세 "할 수 있는 일"에 한 줄(`.sp-hold-slot`). 목록의 `pos`로만 계산(파일 읽기 0). `loadSave`의 보류 거절은 그대로 |
+
+바뀐 것:
+- `home.js`: `SLOT_HOLDS`·`slotPrint`·`slotFits`·`slotState`, `decideRoom`(감싸기) → `decideCore`(그대로).
+- `index.js`: `actHome`의 갈래 `from`, `linkRounds`(`h.slotAgree` → `slotFresh` → `input.slotted`, `h.prints`, `rescueCheck`), `slotReady`·`slotMatches`·`slotLinkable`·`slotFresh`·`slotAskText`·`slotLinkRoom`·`SLOT_TEXT`, 보류 안내·보류 상세·세이브 카드.
+
+★ 특히 봐 줄 곳:
+1. `decideRoom` 감싸기가 보류 이유 네 가지 밖으로 새지 않는지(0~6행 결과는 그대로 나감), 다시 확인하는 "없음" 조건이 충분한지.
+2. 동의한 저장본만 쓰이는지: 확인창 뒤 슬롯 덮어쓰기, 확인창 중 다른 기기가 먼저 연결(3행 `link`·6행 `relink`로 빠짐), 두 기기가 같은 슬롯의 다른 저장본.
+3. 슬롯에서 만든 상태(`slotState`): `history: []`, `floor = lastIndex`, `branchState`로 되감기·검사 결과·연결 슬롯·자동 저장 표시를 비움.
+4. 쓴 뒤 채팅 파일 다시 읽기(`rescueCheck` 재사용)와 실패 안내(`h.rescueLost`).
+
+검사와 망가뜨리기 결과:
+- Node `home.test` 4개 추가(`slotFits`·빈 슬롯 거절·저장본 지문 / 보류에서 `slotOk`·동의 일치만 `branch` / 같은 슬롯의 다른 저장본 → `otherOrigin`·먼저 만든 본체는 6행 `relink`·옛 형식 검사 통과 / `sameIntegrity`에서 다른 방 그대로·세 번째 복제본도 `slotOk`·제 몫 기억 파일 있으면 `relink`).
+- 브라우저 새 묶음 `slot-link.cjs`(8개): 보류 + 버튼·안내 / 취소 쓰기 0·확인창 문구 / 연결(출처·기록 범위·완료 안내), 원래 방·슬롯 그대로, 다시 열기 / 확인창 중 슬롯 덮어씀 / 확인창 중 다른 기기 먼저 연결 / 슬롯 뒤 숨김 → `hides` / 원문 다름 → 버튼 없음 / 보류 아닌 방 / 쓴 뒤 채팅 다시 읽기 실패 → `다시 확인`으로 연결.
+- 고치기 전 코드(`983b726`)에서 `slot-link` 10개 중 8개 FAIL.
+- 망가뜨리기(`/tmp/brk`): 저장본 지문 비교 빼기 → Node 1 FAIL · 브라우저 3 FAIL / `lastIndex >= 0` 빼기 → Node 2 FAIL / 완료 안내의 출처 비교 빼기 → 4 FAIL / 슬롯을 새로 읽지 않기 → 2·5 FAIL / `from`에서 `print` 빼기 → 2·5 FAIL / 쓴 뒤 채팅 다시 읽기(`rescueCheck`) 빼기 → 8 FAIL. **감싸기 안의 "제 몫 기억 파일 없음" 빼기 → 통과**(`decideCore` 6행이 같은 ID를 먼저 찾아 `relink`: 두 겹, 방어용으로 둠).
+- Node 528개: 525 통과 / 0 실패 / 3 건너뜀. 브라우저 69묶음 한꺼번에 모두 통과, 검사 모드 오류 0.
+- 휴대폰 폭(390) 캡처: 카드 버튼 줄에 `이 방에 연결`·`불러오기`·`사본 저장`·📤·`삭제`가 한 줄, 보류 안내 상자 안 슬롯 안내 줄 넘침 없음.
+
 # v0.7.3 · 브랜치 `v0.7.3`을 `main`에 합침
 
 기준: `560cb62`(a1 실제 확인 기록). 사용자 "합치자". 버전 이름만 `0.7.3-a1` → `0.7.3`. 코드는 a1과 같음. 실제 확인: 평소 사용(한 기기, 기존 방 이어서 진행·저장)에서 노란 알림·`⚠ 다른 저장본` 표시 없음. 두 기기 동시 저장은 자동 검사로만. Node 524개: 521 통과 / 0 실패 / 3 건너뜀. 브라우저 68묶음 한꺼번에 모두 통과, 검사 모드 오류 0.

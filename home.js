@@ -308,7 +308,49 @@ export const homeOk = (home, addr, ...ints) => home.addr === addr && (home.integ
 // a memory file that cannot be read stops at the row that needs it (still readFail).
 // readMem(id) → { kind, data } of savepoint-mem-<id>.json; slotsOf(addr) → that room's AUTO/QUICK records.
 // Nothing here writes. While holding nothing is written or deleted.
-export async function decideRoom(input, read, { readMem = id => read(memName(id)), slotsOf = async () => [] } = {}) {
+// v0.7.4-a1 (step ②, design + GPT): a held room may get its own memory from a save slot the user picks. Only for these holds, and only
+// where this room has no tag, no memory file of its own, no start mark, no clue entry and an integrity (checked again on every decision):
+// the memory is placed as a branch of this room alone (no parent); no other room's memory, tag or slot is touched.
+export const SLOT_HOLDS = ['traces', 'sameIntegrity', 'parentGone', 'branchUnproven'];
+// Which saved copy a slot body is (its id stays the same when it is written over): its recorded place and its memory.
+export const slotPrint = (pos, mem) => hashString(canon([pos?.lastIndex ?? null, pos?.digest ?? null, mem ?? null]));
+// A slot whose recorded originals are exactly this room's first messages: at least one recorded (GPT P2-1: -1 matches any room).
+export const slotFits = (pos, prints) => plainObj(pos) && int(pos.lastIndex) && pos.lastIndex >= 0 && Array.isArray(prints)
+    && pos.lastIndex < prints.length && str(pos.digest) && digest(prints.slice(0, pos.lastIndex + 1)) === pos.digest;
+// The state a picked slot gives this room (the same shape as row 7's slot path), or null.
+export function slotState(slot, prints, addr) {
+    if (!plainObj(slot) || !slotFits(slot.pos, prints) || !plainObj(slot.mem)) return null;
+    const last = slot.pos.lastIndex;
+    const st = { v: 1, mem: clone(slot.mem), lastIndex: last, hashes: prints.slice(0, last + 1), history: [], floor: last, lootQueue: [] };
+    return validState(st) ? branchState(st, addr) : null;
+}
+// readMem, slotsOf: as decideCore. input.slotted: { id, agreed, why, pos, mem } — the slot the user agreed to (agreed: its slotPrint
+// then) with its body read again for this decision. A hold of SLOT_HOLDS gets `slotOk` when this room could take a slot.
+export async function decideRoom(input, read, opts = {}) {
+    const d = await decideCore(input, read, opts);
+    if (d.verdict !== 'hold' || !SLOT_HOLDS.includes(d.why)) return d;
+    const { addr, integrity = null } = input;
+    const readMem = opts.readMem || (id => read(memName(id)));
+    if (!str(integrity) || input.left) return d;
+    const get = async (name, valid) => { try { return checked(await read(name), valid); } catch { return { kind: ERROR }; } };
+    if ((await get(tagName(addr), validTag(addr))).kind !== MISSING) return d;
+    if ((await get(startName(addr), validStart(addr))).kind !== MISSING) return d;
+    const clue = await get(clueName(integrity), validClue(integrity));
+    if (clue.kind !== OK && clue.kind !== MISSING) return d;
+    if (clue.kind === OK && clue.data.rooms.some(x => x.addr === addr)) return d;
+    const own = homeId(addr, integrity);
+    let m;
+    try { m = checked(await readMem(own), validMem(own)); } catch { m = { kind: ERROR }; }
+    if (m.kind !== MISSING) return d;
+    const s = input.slotted;
+    if (plainObj(s) && str(s.id) && s.why === d.why && str(s.agreed) && slotPrint(s.pos, s.mem) === s.agreed) {
+        const prints = Array.isArray(input.prints) ? input.prints : [];
+        const state = slotState(s, prints, addr);
+        if (state) return { verdict: 'branch', row: d.row, parent: null, parentMem: null, mem: own, state, via: 'slotPick', at: -1, slotted: true, slot: { id: s.id, print: s.agreed } };
+    }
+    return { ...d, slotOk: true };
+}
+async function decideCore(input, read, { readMem = id => read(memName(id)), slotsOf = async () => [] } = {}) {
     const { addr, integrity = null, mainChat = null, copy = null, traces = false } = input;
     const prints = Array.isArray(input.prints) ? input.prints : [];
     const out = (verdict, row, extra = {}) => ({ verdict, row, ...extra });

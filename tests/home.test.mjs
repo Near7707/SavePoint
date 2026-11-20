@@ -8,7 +8,7 @@ import { cleanName,
     classifyRead, readUserFile, checked, validMem, validTag, memBody, tagBody, renamedTag, clueBody, clueWith, movedBody,
     pickPrints, firstDiff, printCheck, decideRoom, branchRestore, branchState, writePlan, canWrite, nextMem, wroteMine, maybeOverwritten, strayAutos, validMark,
     MISSING, BROKEN, ERROR, OK, startName, copyName, startBody, copyHintBody, validState, homeOk, checkStart, checkMem, placeMemory,
-    relinkMemory, sameLink,
+    relinkMemory, sameLink, slotPrint, slotFits, slotState, SLOT_HOLDS,
 } from '../home.js';
 import { emptyMem, pushHistory } from '../core.js';
 
@@ -1549,4 +1549,110 @@ test('v0.7.0-c4 row 8: no rescue offer unless every recorded original is this ro
     assert.equal(d.verdict, 'readFail');
     // The plain case still offers.
     assert.equal((await decideRoom(at(), readOf(f))).rescue?.mem, id);
+});
+
+// ───────── v0.7.4-a1 (step ②): a held room linked to a save slot ─────────
+
+const slotOf = (upto, prints = P80, mem = recorded(prints, upto).mem) => ({ pos: { lastIndex: upto, digest: digest(prints.slice(0, upto + 1)) }, mem });
+const agreeTo = (s, why, id = 'slot1') => ({ id, agreed: slotPrint(s.pos, s.mem), why, pos: s.pos, mem: s.mem });
+
+test('v0.7.4-a1 slotFits: at least one recorded original, all of them this room\'s first messages (GPT P2-1: -1 never fits)', () => {
+    const prints = P80.slice(0, 30);
+    assert.equal(slotFits(slotOf(19).pos, prints), true);
+    assert.equal(slotFits(slotOf(29).pos, prints), true);
+    assert.equal(slotFits({ lastIndex: -1, digest: digest([]) }, prints), false);
+    assert.equal(slotFits({ lastIndex: -1, digest: digest([]) }, []), false);
+    assert.equal(slotFits(slotOf(30).pos, prints), false);
+    const p = prints.slice(); p[3] = 'x';
+    assert.equal(slotFits(slotOf(19).pos, p), false);
+    for (const bad of [null, {}, { lastIndex: 1.5, digest: 'd' }, { lastIndex: 3 }]) assert.equal(slotFits(bad, prints), false);
+    // The saved copy: the same id written over is another print (its place or its memory).
+    const a = slotOf(19), b = slotOf(24);
+    assert.notEqual(slotPrint(a.pos, a.mem), slotPrint(b.pos, b.mem));
+    assert.notEqual(slotPrint(a.pos, a.mem), slotPrint(a.pos, recorded(P80, 14).mem));
+    assert.equal(slotPrint(a.pos, a.mem), slotPrint(structuredClone(a.pos), structuredClone(a.mem)));
+    const st = slotState(a, prints, A);
+    assert.deepEqual([st.lastIndex, st.floor, st.history.length, st.roomKey, st.hashes.length, st.linkedSave], [19, 19, 0, A, 20, null]);
+    assert.equal(slotState(slotOf(19), p, A), null);
+});
+
+test('v0.7.4-a1: a room held for SLOT_HOLDS with nothing of its own gets slotOk; with the consent to that very copy, a branch of this room alone', async () => {
+    assert.deepEqual(SLOT_HOLDS, ['traces', 'sameIntegrity', 'parentGone', 'branchUnproven']);
+    const f = folder();
+    const at = (extra = {}) => room({ traces: true, ...extra });
+    let d = await decideRoom(at(), readOf(f));
+    assert.deepEqual([d.verdict, d.row, d.why, d.slotOk], ['hold', 11, 'traces', true]);
+    const s = slotOf(19);
+    d = await decideRoom(at({ slotted: agreeTo(s, 'traces') }), readOf(f));
+    assert.deepEqual([d.verdict, d.row, d.via, d.parent, d.mem, d.slotted, d.slot, d.state.lastIndex, d.state.roomKey],
+        ['branch', 11, 'slotPick', null, homeId(A, 'i-A'), true, { id: 'slot1', print: slotPrint(s.pos, s.mem) }, 19, A]);
+    // Another copy than the one agreed to (the slot written over), another reason, a slot of nothing recorded, one that does not fit → held.
+    const no = async extra => { const r = await decideRoom(at(extra), readOf(f)); assert.deepEqual([r.verdict, r.why, r.slotOk], ['hold', 'traces', true]); };
+    await no({ slotted: { ...agreeTo(s, 'traces'), mem: recorded(P80, 14).mem } });
+    await no({ slotted: { ...agreeTo(s, 'traces'), pos: slotOf(24).pos } });
+    await no({ slotted: agreeTo(s, 'sameIntegrity') });
+    const empty = { pos: { lastIndex: -1, digest: digest([]) }, mem: recorded(P80, 3).mem };
+    await no({ slotted: agreeTo(empty, 'traces') });
+    await no({ slotted: agreeTo(slotOf(40), 'traces') });
+    const p = P80.slice(0, 30); p[5] = 'x';
+    const r = await decideRoom(at({ prints: p, slotted: agreeTo(s, 'traces') }), readOf(f));
+    assert.deepEqual([r.verdict, r.why], ['hold', 'traces']);
+    // No integrity, a room seen leaving this name → no slot at all.
+    d = await decideRoom(at({ integrity: null }), readOf(f));
+    assert.equal(d.slotOk, undefined);
+    d = await decideRoom(at({ left: B, slotted: agreeTo(s, 'traces') }), readOf(f));
+    assert.deepEqual([d.verdict, d.slotOk], ['hold', undefined]);
+});
+
+test('v0.7.4-a1: placed from a slot → the next opening links it; a body of another copy of the same slot is another origin (GPT P2-2)', async () => {
+    const f = folder();
+    const own = homeId(A, 'i-A');
+    const s = slotOf(19);
+    const d = await decideRoom(room({ traces: true, slotted: agreeTo(s, 'traces') }), readOf(f));
+    const from = print => ({ kind: 'branch', addr: A, integrity: 'i-A', slot: 'slot1', print });
+    const args = (print, wid) => ({ id: own, from: from(print), addr: A, integrity: 'i-A', state: d.state, wid });
+    // Another device agreed to the slot's other copy and placed it first (cut off before its tag): this one never takes it as its own.
+    const other = slotOf(24);
+    const theirs = slotPrint(other.pos, other.mem);
+    assert.equal((await placeMemory(f.io('B', { failWrite: tagName(A) }), args(theirs, 'wB'))).stop, 'write');
+    const mine = await placeMemory(f.io('A'), args(d.slot.print, 'wA'));
+    assert.equal(mine.stop, 'otherOrigin');
+    assert.equal(checkMem({ kind: OK, data: f.get(memName(own)) }, { ...args(d.slot.print, 'wA') }), 'otherOrigin');
+    // The next decision finds that memory (row 6) and links it: its origin is the other copy (index.js tells the user someone linked first).
+    let r = await decideRoom(room({ traces: true, slotted: agreeTo(s, 'traces') }), readOf(f));
+    assert.deepEqual([r.verdict, r.row, r.mem, r.from.print], ['relink', 6, own, theirs]);
+    // On a clean folder: placed, then linked; the body names the slot and its copy and reads fine as before (validMem: kind branch).
+    const g = folder();
+    assert.equal((await placeMemory(g.io('A'), args(d.slot.print, 'wA'))).done, true);
+    assert.equal(validMem(own)(g.get(memName(own))), true);
+    assert.deepEqual(g.get(memName(own)).from, from(d.slot.print));
+    r = await decideRoom(room({ traces: true }), readOf(g));
+    assert.deepEqual([r.verdict, r.mem, r.slotOk], ['link', own, undefined]);
+});
+
+test('v0.7.4-a1 sameIntegrity: a slot makes this room its own memory, the other room untouched; an own memory or tag here → no slotOk', async () => {
+    const f = folder();
+    const id = homeId(A, 'i-A'), own = homeId(A2, 'i-A');
+    assert.equal((await placeMemory(f.io('A'), { id, from: { kind: 'new', addr: A, integrity: 'i-A' }, addr: A, integrity: 'i-A', state: recorded(P80, 19), wid: 'wa' })).done, true);
+    const orig = JSON.stringify(asFiles(f));
+    const at = (extra = {}) => room({ addr: A2, ...extra });
+    let d = await decideRoom(at(), readOf(f));
+    assert.deepEqual([d.verdict, d.row, d.why, d.slotOk, !!d.rescue], ['hold', 8, 'sameIntegrity', true, true]);
+    const s = slotOf(9);
+    d = await decideRoom(at({ slotted: agreeTo(s, 'sameIntegrity') }), readOf(f));
+    assert.deepEqual([d.verdict, d.row, d.via, d.mem, d.state.lastIndex, d.state.roomKey], ['branch', 8, 'slotPick', own, 9, A2]);
+    assert.equal(JSON.stringify(asFiles(f)), orig);
+    assert.equal((await placeMemory(f.io('B'), { id: own, from: { kind: 'branch', addr: A2, integrity: 'i-A', slot: 'slot1', print: d.slot.print }, addr: A2, integrity: 'i-A', state: d.state, wid: 'wb' })).done, true);
+    d = await decideRoom(at(), readOf(f));
+    assert.deepEqual([d.verdict, d.mem, d.state ?? null], ['link', own, null]);
+    assert.deepEqual(JSON.parse(orig)[memName(id)], f.get(memName(id)));
+    assert.deepEqual(JSON.parse(orig)[tagName(A)], f.get(tagName(A)));
+    // A third copy: held as before (two rooms), but it may take a slot too.
+    d = await decideRoom(room({ addr: roomAddr('ari.png', 'Ari - third') }), readOf(f));
+    assert.deepEqual([d.verdict, d.why, d.slotOk], ['hold', 'sameIntegrity', true]);
+    // This room's own memory file there (no tag: a cut-off write) → relink, never a slot over it.
+    const g = folder();
+    g.store.set(memName(homeId(A, 'i-A')), JSON.stringify(memFile(homeId(A, 'i-A'))));
+    d = await decideRoom(room({ traces: true, slotted: agreeTo(slotOf(9), 'traces') }), readOf(g));
+    assert.equal(d.verdict, 'relink');
 });
