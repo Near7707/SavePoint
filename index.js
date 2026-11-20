@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.1-a5';
+const VERSION = '0.7.1-a6';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -3393,7 +3393,9 @@ function toggleHoldDetail() {
     ui.holdOpen = holdOpenHere() || !(homeHere() && home.status === 'held') ? null : { key: roomKey(), epoch: roomEpoch };
     render();
 }
-const HOLD_ROLE = { same: '같은 고유값으로 기억이 연결된 방', moved: '이 방의 예전 기억을 옮겨 간 방', parent: '갈래의 원래 방', to: '이 이름에서 바뀐 이름', from: '이름을 바꾸기 전 방' };
+// v0.7.1-a6: a room listed from the links SavePoint kept may have been deleted since (SavePoint can't tell), so 'same' and 'moved'
+// say what was recorded, with a note under the list.
+const HOLD_ROLE = { same: '같은 고유값으로 기억이 연결된 기록이 있는 방', moved: '이 방의 예전 기억을 옮겨 간 기록이 있는 방', parent: '갈래의 원래 방', to: '이 이름에서 바뀐 이름', from: '이름을 바꾸기 전 방' };
 const HOLD_MEM = { missing: '파일 없음', other: '다른 방의 기억으로 기록됨' };
 // Only what the decision kept (holdFacts): nothing is read or compared again here. `shown`: the buttons the alert box shows now.
 function holdDetail(shown) {
@@ -3403,6 +3405,7 @@ function holdDetail(shown) {
     parts.push(`<div class="sp-hold-h">후보</div>`);
     if (!f.rooms.length && !f.mems.length) parts.push(row('연결할 기억 파일을 확인하지 못했어요.'));
     for (const r of f.rooms) parts.push(`<div class="sp-hold-row sp-hold-room" data-role="${r.role}">${esc(HOLD_ROLE[r.role] || r.role)}: <b>${esc(roomLabel(r.addr))}</b>${roomChar(r.addr) ? ` <span class="sp-dim">(${esc(roomChar(r.addr))})</span>` : ''}${r.role === 'parent' && f.parentMissing ? ' · 기억 파일 없음' : ''}</div>`);
+    if (f.rooms.some(r => r.role === 'same' || r.role === 'moved')) parts.push('<div class="sp-hold-row sp-hold-gone">지운 방도 여기 남아 있을 수 있어요(SavePoint는 방이 지워졌는지 알 수 없어요).</div>');
     for (const m of f.mems) parts.push(`<div class="sp-hold-row sp-hold-mem" data-state="${m.state}">기억 파일: <b>기억 ${esc(m.id.slice(0, 6))}</b>${m.state ? ` · ${HOLD_MEM[m.state]}` : ''}</div>`);
     parts.push(`<div class="sp-hold-h">원문 비교</div>`);
     const c = f.cmp;
@@ -3475,10 +3478,24 @@ function roomStatus() {
     // Not reached by the states above; whatever homeMessage says stands (never "linked" for a room that may not save).
     return at('check', homeMessage());
 }
+// v0.7.1-a6: the quiet states (nothing to do) sit small in the top bar, before the room name, their reason as a tooltip; a state
+// with something to do keeps its own line under the top bar, with the reason beside it.
+const ROOM_QUIET = new Set(['linked', 'empty', 'checking']);
+const ROOM_TOP_LABEL = { empty: '아직 기억 없음' }; // short enough for the top bar at phone width; the full name stays in the tooltip
 function roomLineHtml() {
     const s = roomStatus();
     if (!s) return '';
+    if (ROOM_QUIET.has(s.kind)) {
+        const tip = [ROOM_TOP_LABEL[s.kind] ? s.label : '', s.why].filter(Boolean).join(' · ');
+        return `<span class="sp-roomline sp-roomline-top" data-kind="${s.kind}" role="status"${tip ? ` title="${esc(tip)}"` : ''}><b class="sp-roomline-label">${esc(ROOM_TOP_LABEL[s.kind] || s.label)}</b></span>`;
+    }
     return `<div class="sp-roomline" data-kind="${s.kind}" role="status"><b class="sp-roomline-label">${esc(s.label)}</b>${s.why ? `<span class="sp-roomline-why">${esc(s.why)}</span>` : ''}</div>`;
+}
+// Where the status goes: in the top bar (quiet) or on its own line right under it.
+function placeRoomLine(win, html) {
+    if (!html) return;
+    if (html.includes('sp-roomline-top')) win.find('.sp-top-r').first().prepend(html);
+    else win.find('.sp-top').first().after(html);
 }
 // The line alone, in place: also while an edit is open (render keeps the rest of the window then) and when a room check ends
 // without a render. Changes nothing but the line.
@@ -3487,8 +3504,9 @@ function paintRoomLine() {
     const win = $('#sp_overlay .sp-window');
     if (!win.length || !win.find('.sp-top').length) return;
     const html = roomLineHtml(), cur = win.find('.sp-roomline');
-    if (cur.length) { if (cur[0].outerHTML !== html) { if (html) cur.replaceWith(html); else cur.remove(); } }
-    else if (html) win.find('.sp-top').first().after(html);
+    if (cur.length === 1 && cur[0].outerHTML === html) return;
+    cur.remove();
+    placeRoomLine(win, html);
 }
 
 // ───────── source fingerprints ─────────
@@ -7265,12 +7283,13 @@ function render(force = false) {
         const view = st || { mem: emptyMem() };
         body = { main: mainHtml, queue: queueHtml, journal: journalHtml, timeline: timelineHtml, quests: questsHtml, party: partyHtml, items: itemsHtml, world: worldHtml, saves: savesHtml, inject: injectHtml }[ui.tab](view);
     }
+    const roomLine = roomLineHtml(), quiet = roomLine.includes('sp-roomline-top');
     win.html(`<div class="sp-top">
             <div class="sp-logo"><span class="sp-logo-icon">◆</span> SAVE POINT <span class="sp-ver">v${VERSION}</span></div>
-            <div class="sp-top-r"><span class="sp-room">${esc(charInfo()?.name || '')}</span>
+            <div class="sp-top-r">${quiet ? roomLine : ''}<span class="sp-room">${esc(charInfo()?.name || '')}</span>
                 <button class="sp-btn sp-mini ${ui.qs ? 'sp-on' : ''}" data-act="qs" title="빠른 설정">⚙</button>
                 <button class="sp-btn sp-mini" data-act="close" title="닫기">✕</button></div></div>
-        ${roomLineHtml()}
+        ${quiet ? '' : roomLine}
         ${ui.qs ? quickSettingsHtml() : ''}
         ${hasChat() ? hudHtml(st) : ''}
         <div class="sp-tab-nav"><button type="button" class="sp-tab-arrow" data-tab-scroll="prev" aria-label="이전 탭 보기" title="이전 탭 보기">‹</button><div class="sp-tabs">${tabs}</div><button type="button" class="sp-tab-arrow" data-tab-scroll="next" aria-label="다음 탭 보기" title="다음 탭 보기">›</button></div>

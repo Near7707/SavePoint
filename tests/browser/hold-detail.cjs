@@ -58,7 +58,7 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
             const h = __savePoint.home(), d = $('.sp-home-alert .sp-hold-detail');
             return { status: h.status, why: h.why, more: $('.sp-home-alert [data-act="home-detail"]').text(), open: d.length, own: d.attr('data-own') ?? null, cmp: d.attr('data-cmp') ?? null,
                 text: d.text(), rooms: d.find('.sp-hold-room').map((i, e) => e.dataset.role + ':' + $(e).find('b').text()).get(), mems: d.find('.sp-hold-mem').map((i, e) => e.dataset.state).get().join(','),
-                caveat: d.find('.sp-hold-caveat:visible').length, under: d.find('.sp-hold-caveat').prev().text(), line: $('#sp_overlay .sp-roomline').attr('data-kind') ?? null, rescueBtn: $('[data-act="home-rescue"]').length };
+                caveat: d.find('.sp-hold-caveat:visible').length, under: d.find('.sp-hold-caveat').prev().text(), line: $('#sp_overlay .sp-roomline').attr('data-kind') ?? null, gone: d.find('.sp-hold-gone').length, rescueBtn: $('[data-act="home-rescue"]').length };
         };
     });
     const held = (a, c, { edit = '' } = {}) => ev(async ([a, c, edit]) => {
@@ -85,6 +85,8 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     ok(p.open === 1 && p.own === 'true' && p.cmp === 'all' && p.text.includes('기억에 기록된 원문 10개가 모두 일치해요') && p.rooms.join() === 'same:hdA' && p.mems === ''
         && p.text.includes(`기억 ${r.id.slice(0, 6)}`) && p.text.includes('같은 고유값의 다른 방에 이미 기억이 있어요') && p.text.includes('이 방에 기억 복사해 복구') && p.more === '자세히 접기',
         `1. 상세: 이유·후보 방·기억 파일·전체 일치 10개·복사 복구 안내 (${JSON.stringify(p)})`);
+    ok(p.gone === 1 && p.text.includes('같은 고유값으로 기억이 연결된 기록이 있는 방: hdA') && p.text.includes('지운 방도 여기 남아 있을 수 있어요(SavePoint는 방이 지워졌는지 알 수 없어요).'),
+        `1. (a6) 후보는 "기록이 있는 방" + 지운 방도 남을 수 있다는 한 줄 (${JSON.stringify(p)})`);
     ok(p.ups === 0 && p.saves === 0 && p.reads === 0 && p.popups === 0 && p.status === 'held' && p.line === 'held', `1. 상세를 열어도 읽기·쓰기·확인창 0, 상태 그대로 (${JSON.stringify(p)})`);
     ok(!/같은 방(이에요|인지 확인했|확인 완료)/.test(p.text), `1. 전체 일치여도 "같은 방 확인" 표현 없음 (${p.text})`);
     p = await toggle();
@@ -116,9 +118,15 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     ok(p.cmp === 'diff' && p.text.includes('처음 확인된 차이: 8번째 메시지') && !/부터 다름|부터 달라/.test(p.text) && p.rooms.join() === 'parent:2026-10-01 10:05 채팅' && p.caveat === 0,
         `5. 갈래: 처음 확인된 차이 8번째, 원래 방 표시 (${JSON.stringify(p)})`);
     p = await as({ verdict: 'hold', why: 'parentGone', parent: P }, 'parentGone');
-    ok(p.cmp === 'none' && p.text.includes('기억 파일 없음') && p.rooms.join() === 'parent:2026-10-01 10:05 채팅', `5. 원래 방 기억 파일 없음 (${JSON.stringify(p)})`);
+    ok(p.cmp === 'none' && p.text.includes('기억 파일 없음') && p.rooms.join() === 'parent:2026-10-01 10:05 채팅' && p.gone === 0, `5. 원래 방 기억 파일 없음 (${JSON.stringify(p)})`);
     p = await as({ verdict: 'hold', why: 'memGone', mem: 'zzzzzz99', from: P }, 'memGone');
     ok(p.mems === 'missing' && p.text.includes('파일 없음') && p.rooms.join() === 'from:2026-10-01 10:05 채팅', `5. 이름표는 있는데 기억 파일 없음 → 파일 없음 (${JSON.stringify(p)})`);
+
+    // 5b. (a6) rooms an old copy was moved to: also "recorded", with the same note; a rename's rooms get no note.
+    p = await as({ verdict: 'hold', why: 'copyMoved', from: P }, 'copyMoved');
+    ok(p.rooms.join() === 'moved:2026-10-01 10:05 채팅' && p.text.includes('이 방의 예전 기억을 옮겨 간 기록이 있는 방') && p.gone === 1, `5b. 옮겨 간 방도 "기록이 있는 방" + 지운 방 한 줄 (${JSON.stringify(p)})`);
+    p = await as({ verdict: 'hold', why: 'renameUnproven', from: P }, 'renameUnproven');
+    ok(p.rooms.join() === 'from:2026-10-01 10:05 채팅' && p.gone === 0, `5b. 이름 변경 후보에는 그 한 줄 없음 (${JSON.stringify(p)})`);
 
     // 6. A hold made later for another reason (here, while writing): only that reason; nothing from the decision kept for the earlier one.
     p = await as({ verdict: 'hold', why: 'sameIntegrity', candidates: [P], rescue: { from: P, mem: 'abcdef123', last: 9 } }, 'tagChanged');
