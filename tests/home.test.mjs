@@ -6,7 +6,7 @@ import vm from 'node:vm';
 import { cleanName,
     roomAddr, scopeOf, migrateId, homeId, memName, tagName, clueName, movedName, copyHash, fingerprint, digest, renameNotice, hasTraces,
     classifyRead, readUserFile, checked, validMem, validTag, memBody, tagBody, renamedTag, clueBody, clueWith, movedBody,
-    pickPrints, firstDiff, printCheck, decideRoom, branchRestore, branchState, writePlan, canWrite, nextMem, wroteMine, maybeOverwritten,
+    pickPrints, firstDiff, printCheck, decideRoom, branchRestore, branchState, writePlan, canWrite, nextMem, wroteMine, maybeOverwritten, strayAutos, validMark,
     MISSING, BROKEN, ERROR, OK, startName, copyName, startBody, copyHintBody, validState, homeOk, checkStart, checkMem, placeMemory,
     relinkMemory, sameLink,
 } from '../home.js';
@@ -686,6 +686,30 @@ test('two devices: write only over what was seen (rev and receipt), ours only wi
     const known = n.recent.at(-2);
     assert.deepEqual(maybeOverwritten([known, { rev: n.recent.at(-2).rev, wid: 'other' }, { rev: 99, wid: 'z' }, { rev: 1, wid: 'old' }, { rev: 5 }], n).map(a => a.wid), ['other', 'z']);
     assert.deepEqual(maybeOverwritten([{ rev: 1, wid: 'a' }], null), []);
+});
+
+// v0.7.3-a1 (v0.7.1 step 5): AUTOs marked with a write of this memory that its file (as read on opening) does not show.
+test('strayAutos: marked AUTOs of the same memory the file does not show', () => {
+    let f = memBody({ id: 'm1', state: { v: 1, mem: { scenes: [], entities: [], records: [] }, lastIndex: -1, hashes: [] }, wid: 'w0', from: { kind: 'new', addr: 'a' }, home: { addr: 'a' } });
+    for (let i = 1; i <= 10; i++) f = nextMem(f, f.state, `w${i}`);
+    const file = { id: f.id, rev: f.rev, recent: f.recent };
+    const a = (id, memMark) => ({ id, auto: true, ...(memMark === undefined ? {} : { memMark }) });
+    const autos = [
+        a('now', { id: 'm1', rev: 10, wid: 'w10' }),          // the file now: not stray
+        a('known', { id: 'm1', rev: 9, wid: 'w9' }),          // in the recent list: not stray
+        a('higher', { id: 'm1', rev: 11, wid: 'late' }),      // past the file: stray
+        a('sameRev', { id: 'm1', rev: 8, wid: 'other' }),     // a write of rev 8 the file went on without: stray
+        a('old', { id: 'm1', rev: 1, wid: 'gone' }),          // older than the recent list: never
+        a('otherMem', { id: 'm2', rev: 99, wid: 'z' }),       // another memory: never
+        a('noMark'),                                          // made before v0.7.3: never
+        a('badMark', { id: 'm1', rev: -1, wid: 'x' }),        // not a mark: never
+    ];
+    assert.deepEqual(strayAutos(autos, file).map(x => x.id), ['higher', 'sameRev']);
+    assert.deepEqual(strayAutos(autos, null), []);
+    assert.deepEqual(strayAutos(autos, { id: '', rev: 10, recent: [] }), []);
+    assert.equal(validMark({ id: 'm1', rev: 0, wid: 'w' }), true);
+    assert.equal(validMark({ id: 'm1', rev: 1.5, wid: 'w' }), false);
+    assert.equal(validMark(null), false);
 });
 
 // ───────── v0.6.65: review of v0.6.64 (P2 × 4) ─────────

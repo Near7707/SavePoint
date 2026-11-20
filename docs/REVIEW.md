@@ -1,3 +1,33 @@
+# v0.7.3-a1 · 5번: 현재 기억 파일과 다른 저장본이 백업에 남은 경우 안내 (브랜치 `v0.7.3`)
+
+기준 커밋: `d48fc4e`(main, v0.7.2). 사용자 "시작해"(구체안 🔴 1~3 + 🟡 탭에서 한 번만). 저장 흐름은 그대로라 설계 의견 없이 리뷰만.
+
+| 항목 | 처리 |
+|---|---|
+| 🔴 AUTO에 표식 | 반영. `autoMarkOf(st)` → `record.memMark = { id, rev, wid }`. 이 방 기억 쓰기를 이 페이지가 서버에서 확인한 것만(연결됨, 줄의 `seen`이 있고 `missing`·`unread`·`pending`·`stop` 아님, 페이지 기억의 `wid`와 같음). `metaOf`가 그대로 목록(index)에도 남김 |
+| 🔴 방 열 때 비교 | 반영. `attachHome`에서 처음 읽은 파일 `{ id, rev, wid, recent }`를 `home.opened`로, `strayCheck()`가 `strayAutos`(home.js, 안은 v0.7.0의 `maybeOverwritten`)로 비교. 추가 읽기 0 |
+| 🔴 안내 | 반영. 알림 한 번(`toastr.warning`, 15초) + AUTO 카드 `⚠ 다른 저장본`(`.sp-stray`, 툴팁에 설명) |
+| 🟡 탭에서 한 번만 | 반영. `strayTold`에 (방·기억 ID·후보 AUTO 묶음). 카드 표시는 남음 |
+| ⚪ 자동 복구·저장 막기 / 상태 줄 새 상태 / QUICK 표식 / AUTO 파일 직접 읽기 | 안 함(정한 방향 · 상태 순서 그대로 · 실익 작음 · 방 열기가 느려짐) |
+
+## 바뀐 것
+- `home.js`: `validMark`, `strayAutos(autos, file)` — 같은 기억 표식만, 표식 없는 AUTO·다른 기억은 늘 제외.
+- `index.js`: `autoMarkOf`, `pageAutos`(이 페이지가 만든 AUTO와 그 시각), `strayCheck`(부르는 곳: `attachHome` 끝, `render` 맨 앞 — 서버 목록이 늦게 준비되는 첫 열기도 잡게), `autosave`에 표식, `saveCard`에 표시. 버전 `0.7.3-a1`.
+- 검사: Node `strayAutos` 한 개, 브라우저 새 묶음 `stray-auto.cjs`(68번째).
+- 문서: README(변경 기록·서버 백업 절 문단·두 기기 한계 한 문장·검사 목록), LIMITS-detail 맨 위 새 한계, PLAN v0.7.3 줄, TEST-NOTES.
+
+## ★ 특히 봐 줄 곳
+1. **오탐이 없는지.** 후보 조건은 같은 기억 ID의 AUTO가 (가) 열 때 파일보다 높은 번호, (나) 최근 목록(8개) 범위 안인데 그 (번호, 영수증)이 목록에 없음. 기억 본문을 쓰는 곳은 `nextMem`(목록 이어 붙임)과 `placeMemory`의 새 본문(rev 0, 파일이 없을 때만)뿐이라, 이 페이지가 쓰고 다시 읽어 확인한 저장은 그 뒤 쓰기들의 목록에 남는다고 봄. 다시 연결(`relinkMemory`)은 본문을 안 씀.
+2. **이 열기 뒤 이 페이지가 만든 AUTO 제외.** `updated`(다른 기기 시계일 수 있음) 대신 이 페이지가 기록한 시각(`pageAutos`)과 `home.at`으로 비교 — 다른 기기 AUTO는 시계가 어긋나도 빠지지 않음.
+3. **표식이 붙는 조건.** `autosave`는 기억 쓰기가 확인된 뒤에 불리지만, UNREAD로 끝난 차례에서도 불림(`writeEntry`) → `l.unread`로 뺌. `l.seen.wid !== st.wid` 검사는 지금 경로에선 늘 같아서 방어용(아래 망가뜨리기 참고).
+4. `strayCheck`가 `render`에서 매번 불리지만 `strayDone`이면 바로 끝남. 안에서 `render()`를 다시 불러도 `strayDone`이 먼저 서서 되돌아오지 않음.
+
+## 검사와 망가뜨리기 결과
+- 고치기 전 코드(`d48fc4e`)에서 `stray-auto` 0 FAIL(표식 없음), 이어서 1에서 `home().stray`가 없어 중단.
+- 망가뜨리기(`/tmp/brk`): 표식 안 붙이기 → 9줄 FAIL · 이 페이지 AUTO 제외 빼기 → 4 FAIL · 탭에서 한 번만 빼기 → 3 FAIL · `unread` 조건 빼기 → 6 FAIL · 카드 표시 빼기 → 2 FAIL. `attachHome` 쪽 호출만 빼기 / `render` 쪽만 빼기 → **둘 다 통과**(서로 가려 주는 두 겹) → 둘 다 뺀 복사본 → 2 이후 7줄 FAIL. `wid` 같음 검사 빼기 → 통과(지금 경로에선 늘 같아 잡을 수 없음, 방어용으로 둠).
+- 휴대폰 폭(390) 캡처: 카드 머리줄에 `AUTO` · 이름 · `최신` · `⚠ 다른 저장본`이 한 줄에 들어감, 넘침 없음.
+- Node 524개: 521 통과 / 0 실패 / 3 건너뜀. 브라우저 68묶음 한꺼번에 모두 통과, 검사 모드 오류 0.
+
 # v0.7.2 · 브랜치 `v0.7.1`을 `main`에 합침
 
 기준: `b1e4fd0`(a6 리뷰 기록). 사용자 "합치자". 버전 이름만 `0.7.1-a7` → `0.7.2`(main이 이미 `0.7.1`이라, 정한 방향). 코드는 a7과 같음. 실제 확인: 상태 줄·백업 찾기 기억 파일·보류 상세(PC), 제목 줄 상태(아이폰). a7(main 코드 가져오기)은 리뷰 생략.

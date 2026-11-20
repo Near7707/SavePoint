@@ -739,6 +739,16 @@ export function maybeOverwritten(autos, file) {
         return !recent.some(x => x.rev === a.rev && x.wid === a.wid);
     });
 }
+// v0.7.3-a1 (v0.7.1 step 5): an AUTO's mark of the memory write it backs up ({ id, rev, wid }); made only from a write read back.
+export const validMark = m => plainObj(m) && str(m.id) && int(m.rev) && m.rev >= 0 && str(m.wid);
+// The AUTOs (index entries) marked with a write of this memory that its file (`file`: { id, rev, recent } as read when the room
+// opened) does not show: maybeOverwritten over the marks of the same memory. AUTOs without a mark or of another memory: never.
+export function strayAutos(autos, file) {
+    if (!file || !str(file.id)) return [];
+    const mine = (autos || []).filter(a => validMark(a?.memMark) && a.memMark.id === file.id);
+    const flagged = new Set(maybeOverwritten(mine.map(a => a.memMark), file));
+    return mine.filter(a => flagged.has(a.memMark));
+}
 
 // ───────── putting a memory file in place, with read-backs (v0.6.65) ─────────
 

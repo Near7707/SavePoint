@@ -11,7 +11,7 @@ import { foldLegacyOutline,
 } from './core.js';
 import { lootStatus, lootWarning, lootInChunk, lootBlock, attachLoot, settleLoot, failLoot, lootTarget, applyLootSupplement, restoreLostLoot } from './loot.js';
 import { Vault, roomHash, quickId } from './vault.js';
-import { decideRoom, placeMemory, relinkMemory, memName, tagName, clueName, validMem, validTag, validClue, tagBody, renamedTag, renameId, withCloses, clueWith, nextMem, renameNotice, cleanName, copyHash, hasTraces, readUserFile, checked, pickPrints, holdFacts, validState, sameLink, homeId, startName, validStart, migrateId, movedName, validMoved, MISSING, OK } from './home.js';
+import { decideRoom, placeMemory, relinkMemory, memName, tagName, clueName, validMem, validTag, validClue, tagBody, renamedTag, renameId, withCloses, clueWith, nextMem, renameNotice, cleanName, copyHash, hasTraces, readUserFile, checked, pickPrints, holdFacts, validState, sameLink, homeId, startName, validStart, migrateId, movedName, validMoved, strayAutos, MISSING, OK } from './home.js';
 import { memLine, writeMem, serverMemIO, MEM_OK, PENDING, REFUSED, UNREAD, CONFLICT, OVERWRITTEN, READ_ERROR, HELD } from './memfile.js';
 import { snapshot, splitFile, covers, writeResult, samePage, canon, PAGE_KEYS } from './guard.js';
 import { upgradeEvidence, segmentPrior, evidenceNumbers } from './provenance.js';
@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.2';
+const VERSION = '0.7.3-a1';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -2282,7 +2282,10 @@ function attachHome(h, data) {
     h.id = data.id; h.from = data.from; h.was = Array.isArray(data.home?.was) ? data.home.was : [];
     lineFor(h, { rev: data.rev, wid: data.wid });
     h.status = 'linked'; h.why = '';
+    // v0.7.3-a1 (v0.7.1 step 5): the memory file as first read here, for the AUTO check (strayCheck); kept for this opening.
+    if (h.opened?.id !== data.id) { h.opened = { id: data.id, rev: data.rev, wid: data.wid, recent: clone(data.recent || []) }; h.strayDone = false; h.stray = []; }
     trustQueue();
+    strayCheck();
 }
 // v0.7.0-b1a (review P1-2): a new line for the room's memory keeps a write that got no answer (it may still land): such a
 // room writes nothing more and is never decided again on this page, whatever reopens its line.
@@ -5452,6 +5455,36 @@ async function migrateLocal() {
     render();
 }
 let autosaveTimer = null;
+// v0.7.3-a1 (v0.7.1 step 5): which memory write an AUTO backs up: only a write of this room's memory that this page saw on the server
+// (read when opened, or written and read back: not unread, no answer pending, the line not stopped) and that is the page's memory now.
+function autoMarkOf(st) {
+    const h = home, l = h.line;
+    if (!homeHere() || h.status !== 'linked' || !h.id || !l?.seen || l.seen.missing || l.unread || l.pending || l.stop) return null;
+    if (!st?.wid || l.seen.wid !== st.wid || !Number.isInteger(l.seen.rev)) return null;
+    return { id: h.id, rev: l.seen.rev, wid: l.seen.wid };
+}
+// AUTOs this page made, with when (an AUTO made after a room opened is not checked against that opening).
+const pageAutos = new Map();
+// v0.7.3-a1 (v0.7.1 step 5): when a room's memory file is read on opening, this room's AUTOs (as this page lists them) marked with a
+// write of that memory the file does not show: another device or a late request may have written over it. A hint only, once per
+// opening and told once per tab (same room, memory and AUTOs); nothing read, saved or blocked for it.
+const strayTold = new Set();
+function strayCheck() {
+    const h = home;
+    if (!h.opened || h.strayDone || !homeHere() || h.status !== 'linked' || h.id !== h.opened.id || !vault.ready || !vault.online) return;
+    h.strayDone = true;
+    const rh = roomHash(h.key);
+    const autos = vault.entries.filter(e => e.auto && e.roomHash === rh && !((pageAutos.get(e.id) ?? -Infinity) >= h.at));
+    const stray = strayAutos(autos, h.opened);
+    h.stray = stray.map(e => e.id);
+    if (!stray.length) return;
+    const told = JSON.stringify([h.key, h.opened.id, [...h.stray].sort()]);
+    if (!strayTold.has(told)) {
+        strayTold.add(told);
+        toastr.warning(`⚠ 현재 기억 파일과 다른 저장본이 백업에 남아 있어요(AUTO ${stray.length}개). 다른 기기에서 거의 같은 때 저장했거나, 늦게 도착한 저장이 기억을 덮었을 수 있어요(확실하지는 않아요). 💾 세이브 탭에서 '다른 저장본' 표시가 붙은 AUTO를 확인해 보세요. 자동으로 바꾸지는 않았어요.`, 'SavePoint', { timeOut: 15000 });
+    }
+    if (ui.open) render();
+}
 function autosave(st) {
     if (!st || !hasMemory(st.mem) || roomKey() !== st.roomKey || gate.unsure || (gateHere() && gate.pending)) return;
     clearTimeout(autosaveTimer);
@@ -5460,6 +5493,9 @@ function autosave(st) {
     // are in the file). The timer stores that one as it is: a later change still waiting for its answer (or one
     // taken back) is never backed up, and the confirmed one is kept even when a later write is in doubt.
     const record = saveRecord(st, `오토세이브 · ${charInfo()?.name || ''}`, `auto_${roomHash(key)}_${Date.now().toString(36)}`, true);
+    const mark = autoMarkOf(st);
+    if (mark) record.memMark = mark;
+    pageAutos.set(record.id, Date.now());
     // Bursts (several edits in a row) become one autosave: the last confirmed one.
     autosaveTimer = setTimeout(() => { storeSave(record); }, 1200);
 }
@@ -6976,8 +7012,10 @@ function saveCard(sv, st, { showRoom = false, autoRank = 0 } = {}) {
     const genLabel = sv.auto ? ['최신', '이전', '그 전'][autoRank] || '' : '';
     const title = saveTitle(sv);
     const copy = kind !== 'FILE';
+    // v0.7.3-a1 (v0.7.1 step 5): an AUTO of this room the memory file (as read on opening) does not show.
+    const stray = sv.auto && homeHere() && (home.stray || []).includes(sv.id);
     return `<div class="sp-card sp-save sp-save-${kind.toLowerCase()} ${sv.auto ? 'sp-auto' : ''} ${linked ? 'sp-linked' : ''}">
-        <div class="sp-save-h"><span class="sp-slot">${kind}</span><span class="sp-save-n">${esc(sv.name)}</span>${genLabel ? `<span class="sp-badge">${genLabel}</span>` : ''}${linked ? '<span class="sp-badge sp-badge-on" title="이 방에서 마지막으로 저장하거나 불러온 슬롯이에요">▶ 플레이 중</span>' : ''}${sv.local ? '<span class="sp-badge sp-badge-warn" title="서버에 쓰지 못해 설정에만 있어요">설정에만</span>' : ''}</div>
+        <div class="sp-save-h"><span class="sp-slot">${kind}</span><span class="sp-save-n">${esc(sv.name)}</span>${genLabel ? `<span class="sp-badge">${genLabel}</span>` : ''}${stray ? '<span class="sp-badge sp-badge-warn sp-stray" title="방을 열 때 읽은 기억 파일에는 없는 저장이에요. 다른 기기나 늦게 도착한 저장이 덮었을 수 있어요(확실하지는 않아요). 필요하면 불러오기나 사본 저장으로 살릴 수 있어요">⚠ 다른 저장본</span>' : ''}${linked ? '<span class="sp-badge sp-badge-on" title="이 방에서 마지막으로 저장하거나 불러온 슬롯이에요">▶ 플레이 중</span>' : ''}${sv.local ? '<span class="sp-badge sp-badge-warn" title="서버에 쓰지 못해 설정에만 있어요">설정에만</span>' : ''}</div>
         ${title ? `<div class="sp-save-title" title="저장 당시 장면">🎬 ${esc(title)}</div>` : ''}
         <div class="sp-save-meta">${showRoom ? `🗝️ ${esc(roomLabel(sv.room))} · ` : ''}${esc(sv.char || '')} · ${fmtDate(sv.updated)}</div>
         <div class="sp-save-stats"><span>장면 ${s.scenes ?? 0}</span><span>메시지 ${sv.msgCount ?? 0}</span><span>❗ ${s.openQuests ?? 0}</span>${s.place ? `<span>📍 ${esc(s.place)}</span>` : ''}</div>
@@ -7238,6 +7276,7 @@ function installTabNavigation(strip, previousScroll) {
 }
 function render(force = false) {
     updateSaveBanner();
+    strayCheck();
     // The new-chat question goes away once the room has memory (loaded, saved) or is no longer new.
     if (document.getElementById('sp_resume')?.hidden === false && !resumeChoices().length) hideResume();
     if (!ui.open) return;
