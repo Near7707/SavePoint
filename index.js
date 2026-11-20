@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0-c4b';
+const VERSION = '0.7.0-c5';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -8008,7 +8008,7 @@ function sendTold(type) {
     return sendTypeAsked(type) && !!sendGroup?.tell && sendGroup.epoch === roomEpoch;
 }
 function sendToldText(gap) {
-    return '이 탭의 그룹 방에서 메시지를 삭제한 뒤라, 그룹 답변은 확인창 대신 알림으로 바꿨어요. '
+    return '이 탭의 그룹 방에서 메시지를 삭제하거나 답변을 다시 만든 뒤라, 그룹 답변은 확인창 대신 알림으로 바꿨어요. '
         + (gap ? `이번 답변에는 숨긴 원문 ${sendRanges(gap)}(${gap.length}개)이 빠지고, 그 부분의 기억 브리핑도 들어가지 않아요. 이유: ${sendWhy()}`
             : '이번 답변에서는 확인하는 사이 숨김이 바뀐 원문이 빠졌을 수 있어요.')
         + ' 새로고침하면 확인창을 다시 사용해요.';
@@ -8244,7 +8244,10 @@ function onGenerationStarted(type, options, dryRun) {
     // v0.7.0-b1: a reply made before this room's memory is linked (or while it is held) gets no briefing and no hides from
     // SavePoint. A normal send is asked (v0.7.0-c1, sendGuard); regenerate, swipe, continue and impersonate are only told.
     // v0.7.0-c1: a normal send is asked about in the interceptor (sendGuard) instead.
-    if (hasChat() && !homeOpen() && homeHere() && home.status !== 'new' && !(type === 'quiet') && !sendAsked(type) && !sendTold(type)) {
+    // v0.7.0-c5: a group send's own start comes before SillyTavern's group run (GROUP_WRAPPER_STARTED), so whether it is asked or
+    // told is not known yet: no warning there; each member's start decides (the same test that makes a send candidate).
+    const groupSendStart = !!ctx().groupId && !groupOn && sendTypeAsked(type);
+    if (hasChat() && !homeOpen() && homeHere() && home.status !== 'new' && !(type === 'quiet') && !groupSendStart && !sendAsked(type) && !sendTold(type)) {
         const id = `${roomKey()}|${roomEpoch}`;
         if (ui.sendWarned !== id) { ui.sendWarned = id; toastr.warning(`SavePoint 기억이 아직 연결되지 않아서, 이번 답변에는 기억 브리핑과 원문 숨김이 들어가지 않을 수 있어요. ${homeMessage()}`, 'SavePoint', { timeOut: 12000 }); }
     }

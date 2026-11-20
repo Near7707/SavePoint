@@ -737,6 +737,28 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     ok(/만들지 못했어요: network down/.test(p31c.toast) && !/답변을 멈췄어요/.test(p31c.toast), `31. 멈춤 신호 뒤 다른 오류 → 실패 안내 그대로 (${p31c.toast})`);
     ok(/답변을 멈췄어요/.test(p31d.toast) && !/만들지 못했어요/.test(p31d.toast) && L.btn === 1, `31. 중지 요청 + 중단 오류 → 멈췄어요, 버튼 다시 보임 (${JSON.stringify([p31d.toast, L.btn])})`);
 
+    // ───── v0.7.0-c5 (real SillyTavern check 2) ─────
+    // 32. a group send in a room with no memory linked: its own start (before the group run) gives no "not linked yet" warning
+    //     next to the question or notice; a regenerate's start still warns (once per opening). The told notice names regenerating.
+    await ev(f => { M.groups = [{ id: 'g1', name: 'Team', chat_id: 'sgG9' }]; M.groupId = 'g1'; M.serverFiles.sgG9 = f; M.confirm = 1; M.onPopup = null; }, copied('sgG9'));
+    await openRoom('sgG9');
+    const WARN = /기억이 아직 연결되지 않아서/;
+    const t32 = await ev(() => toastr.log.length);
+    await groupSend(); r = await send(); await wrapEnd();
+    const s32 = await ev(t => toastr.log.slice(t).map(x => x[1]).join(' | '), t32);
+    ok(!WARN.test(s32) && r.pop.length === 1 && r.aborted === null, `32. 그룹 일반 전송 → 물음, 연결 전 경고 없음 (${JSON.stringify([s32, r.pop.length])})`);
+    //     after a deletion (a regenerate deletes first) the run is told: still no warning, and the notice names regenerating.
+    await ev(() => M.eventSource.emit('message_deleted', 0));
+    const t32a = await ev(() => toastr.log.length);
+    await groupSend(); r = await send(); await wrapEnd();
+    const s32a = await ev(t => toastr.log.slice(t).map(x => x[1]).join(' | '), t32a);
+    ok(!WARN.test(s32a) && !r.pop.length && /삭제하거나 답변을 다시 만든 뒤라/.test(s32a), `32. 삭제 뒤 알림 묶음 → 연결 전 경고 없음, 알림 문구에 다시 만들기 (${s32a})`);
+    const t32b = await ev(() => toastr.log.length);
+    await outer('regenerate');
+    const s32b = await ev(t => toastr.log.slice(t).map(x => x[1]).join(' | '), t32b);
+    await ev(() => M.eventSource.emit('generation_ended'));
+    ok(WARN.test(s32b), `32. 그룹 재생성 시작은 예전처럼 연결 전 경고 (${s32b})`);
+
     await page.close();
     await browser.close(); srv.close();
     console.log(failures ? `\n${failures} FAILED` : '\nALL PASSED');
