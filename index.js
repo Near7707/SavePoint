@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.1-a3';
+const VERSION = '0.7.1-a4';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -5782,7 +5782,9 @@ async function findBackups() {
     try {
         const list = await vault.find(key ? roomHash(key) : null);
         if (!mine()) return;
-        const mem = key ? await findMemFiles(key) : null;
+        // v0.7.1-a4 (review of a3, P2): the memory search failing never takes the slots found away (its part says it failed).
+        let mem = null;
+        if (key) { try { mem = await findMemFiles(key); } catch (e) { console.warn('[SavePoint] memory file search', e); mem = { files: [], failed: [], error: true }; } }
         if (!mine()) return;
         ui.found = { loading: false, list, mem, key, epoch, at: Date.now() };
     } catch (e) { if (!mine()) return; ui.found = null; reportError(e); }
@@ -5820,7 +5822,11 @@ async function findMemFiles(addr) {
         const only = [...srcs].every(x => x === 'rule');
         if (res.kind === MISSING) { if (!only) files.push({ id, srcs: [...srcs], kind: 'missing' }); continue; }
         if (res.kind !== OK) { files.push({ id, srcs: [...srcs], kind: 'fail' }); continue; }
-        const d = res.data, st = d.state, stats = memStats(st.mem);
+        // v0.7.1-a4 (review of a3, P2): a file that passes the shape check but breaks the numbers (a null in a list) is that one row's
+        // 읽지 못함; the other files are still looked at.
+        const d = res.data, st = d.state;
+        let stats;
+        try { stats = memStats(st.mem); } catch { files.push({ id, srcs: [...srcs], kind: 'fail' }); continue; }
         files.push({ id, srcs: [...srcs], kind: id === linked ? 'now' : 'ok', rev: d.rev, scenes: stats.scenes, title: stats.lastTitle,
             last: Number.isFinite(st.lastRecord?.at) ? st.lastRecord.at : null, msgs: st.lastIndex + 1, other: d.home.addr !== addr ? d.home.addr : null });
     }
@@ -6895,6 +6901,7 @@ function foundMemHtml(m) {
         return `<div class="sp-rec sp-found-mem" data-kind="${x.kind}"><span class="sp-rec-t"><span class="sp-slot">MEM</span> <b>${esc(x.title || `기억 ${x.id.slice(0, 6)}`)}</b>
         <span class="sp-dim">${esc(info)}</span>${x.other ? `<span class="sp-dim sp-warn">다른 방(${esc(roomLabel(x.other))})의 기억으로 기록됨</span>` : ''}</span>${badge(x)}</div>`;
     }).join('');
+    if (m.error) return `<div class="sp-group-h">🧠 이 방의 기억 파일</div><div class="sp-warn">기억 파일을 찾지 못했어요. 잠시 뒤 다시 찾아 주세요.</div>`;
     const fail = m.failed.length ? `<div class="sp-warn">${m.failed.map(s => CLUE_LABEL[s]).join('·')}을(를) 읽지 못해서 그 단서로는 찾지 못했어요. 잠시 뒤 다시 찾아 주세요.</div>` : '';
     return `<div class="sp-group-h">🧠 이 방의 기억 파일 <span>${m.files.length}</span></div>
         ${rows || '<div class="sp-dim">이 방의 단서로 찾은 기억 파일이 없어요.</div>'}${fail}

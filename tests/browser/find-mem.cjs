@@ -32,7 +32,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
 // · 4 the name tag not readable → a notice, the memory still found by the link · 5 a clue naming a memory recorded for another room
 // · 6 a room left after a search: its result goes; a new room shows no memory · 7 a room left while the search runs (during the slot
 // search, during the memory search): nothing of the old room is shown in the new one, or kept · 8 a second search in the same room
-// wins · 9 a result kept for another room is never drawn.
+// wins · 9 a result kept for another room is never drawn · 10 (a4) a broken memory file: that row only, the slots still shown.
 (async () => {
     const srv = await serve();
     const browser = await chromium.launch();
@@ -154,6 +154,23 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     // 9. a result kept for another room (as if every other guard missed it) is never drawn here
     r = await ev(() => { const f = __savePoint.ui.found; __savePoint.ui.found = { ...f, key: JSON.stringify(['x.png', 'fmElse']) }; __savePoint.render(true); const n = document.querySelectorAll('#sp_overlay .sp-found').length; __savePoint.ui.found = f; __savePoint.render(true); return { n, back: document.querySelectorAll('#sp_overlay .sp-found').length }; });
     ok(r.n === 0 && r.back === 1, `9. 다른 방 결과는 그리지 않음 (${JSON.stringify(r)})`);
+
+    // 10. (a4, review of a3 P2) a memory file that passes the shape check but breaks the numbers (a null in its records): that row
+    // 읽지 못함, the slots found and the memory linked now still shown
+    await ev(() => {
+        const addr = __savePoint.home().key, d = M.memDoc();
+        const state = JSON.parse(JSON.stringify(d.state)); state.mem.records = [null];
+        M.otherPut(M.H.memName('mem-fm10'), { ...d, id: 'mem-fm10', wid: 'other.fm10', recent: [{ rev: d.rev, wid: 'other.fm10' }], state });
+        M.otherPut(M.H.startName(addr), M.H.startBody({ addr, copy: 'c-fm10', mem: 'mem-fm10', wid: 'other.fm10s' }));
+    });
+    w0 = await writes();
+    await find(); await wait(300);
+    r = await shown();
+    const slots = await ev(() => document.querySelectorAll('#sp_overlay .sp-found .sp-rec:not(.sp-found-mem)').length);
+    await ev(() => { M.otherDel(M.H.startName(__savePoint.home().key)); M.otherDel(M.H.memName('mem-fm10')); });
+    ok(r.box && slots > 0, `10. 망가진 기억 파일이 있어도 슬롯 목록은 그대로 (${slots})`);
+    ok(r.rows.length === 2 && r.rows.some(x => x.kind === 'now') && r.rows.some(x => x.kind === 'fail' && x.text.includes('옮기기 시작 표시')), `10. 그 기억만 읽지 못함, 연결된 기억은 그대로 (${JSON.stringify(r.rows)})`);
+    ok((await writes()) === w0, '10. 쓰기 0');
 
     if (SHOTS) {
         await page.screenshot({ path: path.join(OUT, 'find-mem.png'), fullPage: false });
