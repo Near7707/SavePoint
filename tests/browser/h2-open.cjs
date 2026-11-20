@@ -66,9 +66,10 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
         const h = __savePoint.home(), hid = list => list.map((m, i) => (m?.is_system ? i : -1)).filter(i => i >= 0);
         $('#sp_wand').trigger('click'); await new Promise(z => setTimeout(z, 200));
         const alert = $('.sp-home-alert').text(), btn = $('.sp-home-alert [data-act="home-recheck"]').length;
+        const rl = document.querySelector('#sp_overlay .sp-roomline'), line = rl ? { kind: rl.dataset.kind, why: rl.querySelector('.sp-roomline-why')?.textContent || '' } : null;
         __savePoint.ui.open = false; $('#sp_overlay').hide();
         return { status: h.status, h2: h.h2 || null, stop: h.line?.stop ?? null, blocked: __savePoint.autoBlocked(), file: M.mem()?.lastIndex ?? null, page: hid(M.chat).join(), server: hid((M.serverFiles[M.chatId] || []).slice(1)).join(),
-            s: c ? (M.saveBodies || []).length - c.s : 0, puts: c ? M.fileLog.slice(c.n).filter(x => x[0] === 'put').map(x => x[1]) : [], t: c ? toastr.log.slice(c.t).map(x => x[1]).join(' | ') : '', alert, btn };
+            s: c ? (M.saveBodies || []).length - c.s : 0, puts: c ? M.fileLog.slice(c.n).filter(x => x[0] === 'put').map(x => x[1]) : [], t: c ? toastr.log.slice(c.t).map(x => x[1]).join(' | ') : '', alert, btn, line };
     }, c);
     // Another device changes the room's chat file, then the room is opened again (as SillyTavern loads it).
     const reopen = async (id, edit) => {
@@ -972,6 +973,13 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     await saveTry();
     r = await look(c);
     ok(r.server === '' && r.page === '' && r.file === 7, `39. 검토 중 세이브는 새로 숨기지 않음 (${JSON.stringify({ s: r.s, server: r.server, file: r.file })})`);
+    // v0.7.1-a2 (review of a1, P2): the status line says the room needs checking while under review, and is back once it is accepted.
+    ok(r.line?.kind === 'check' && r.line.why.includes('기억 검토가 필요해요'), `39. 검토 중 창 맨 위 상태 줄: 확인 필요 (${JSON.stringify(r.line)})`);
+    await ev(async () => { await __savePoint.handle('review-accept'); });
+    await wait(600);
+    r = await look();
+    x = await info();
+    ok(!x.review && r.line?.kind === 'linked', `39. 지금 원문 기준으로 인정하면 기억 연결됨으로 돌아옴 (${JSON.stringify({ review: x.review, line: r.line })})`);
 
     // 40. The agreement runs out. (a) #3 edited again on this page while the window is open; (b) edited again (page and file) before the
     //     turn reads the chat file; (c) the memory file saved elsewhere while the window is open; (d) a recorded message deleted elsewhere

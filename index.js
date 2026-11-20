@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.1-a1';
+const VERSION = '0.7.1-a2';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -3430,6 +3430,9 @@ function roomStatus() {
                 ? `기록한 원문 #${home.h2.at}이(가) 기억과 달라졌어요. \`원문과 기억 맞추기\`나 \`다시 확인\`을 눌러 주세요.`
                 : `기억이 기록하지 않은 메시지 #${home.h2.at}에 SavePoint 숨김이 남아 있어요. \`원문과 기억 맞추기\`나 \`다시 확인\`을 눌러 주세요.`);
             if (home.fitCheck) return at('check', `원문과 기억을 맞춘 결과를 아직 확인하지 못했어요. \`다시 확인\`을 눌러 주세요.${copy(home.fitCheck.n)}`);
+            // v0.7.1-a2 (review of a1, P2): a memory under review (an original changed below what can be rolled back) stops the
+            // briefing and the saves until the user deals with it in the window (the alert below the status). Read as it is.
+            if (home.st?.review) return at('check', '원문이 바뀌어 기억 검토가 필요해요. 아래 안내에서 처리해 주세요.');
         }
     }
     if (gateHere() && gate.status === 'busy') return at('wait', '답변이 끝나면 채팅 파일을 다시 확인해요.');
