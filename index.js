@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.0';
+const VERSION = '0.7.1';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -7593,9 +7593,22 @@ function fillSettings() {
     fillProfiles();
     updateSettingsSummaries();
 }
+// v0.7.1: the settings box goes in the left column (other extensions sit there too), and its place is
+// taken as soon as this file loads, so the loading_order in manifest.json decides where it shows.
+function settingsColumn() {
+    if (typeof document === 'undefined') return null;
+    return document.getElementById('extensions_settings') || document.getElementById('extensions_settings2');
+}
+(function takeSettingsSlot() {
+    const col = settingsColumn();
+    if (!col || document.getElementById('sp_settings_slot')) return;
+    const slot = document.createElement('div');
+    slot.id = 'sp_settings_slot';
+    col.appendChild(slot);
+})();
 function addSettingsUI() {
     if ($('#sp_settings').length) return;
-    $('#extensions_settings2').append(settingsHtml());
+    $(document.getElementById('sp_settings_slot') || settingsColumn()).append(settingsHtml());
     $('#sp_settings [data-set]').each(function () {
         const k = this.dataset.set;
         if (k === 'enabled' || !(k in DEFAULTS)) return;
