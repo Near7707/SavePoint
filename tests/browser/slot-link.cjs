@@ -232,6 +232,22 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     ok(q.status === 'held' && !q.popup && q.ups.length === 0 && q.saves === 0 && /연결 보류 중이라 아직 리셋할 기억이 없어요/.test(q.toast) && /연결 보류 중이라 아무것도 저장하지 않고/.test(q.text) && !/같은 고유값의 다른 방/.test(q.text),
         `14. 보류 방에서 리셋 → 안내만, 확인창·쓰기 0 · 경고 상자에 이유 반복 없음 (${JSON.stringify([q.status, q.popup, q.toast, q.text])})`);
 
+    // 15. (v0.7.4-a4, phone 390×844) The hold detail opened under the status: it scrolls in itself, its end reachable inside the screen.
+    r = await held('slM', 'slM imported');
+    q = await ev(async () => {
+        await __savePoint.handle('home-detail'); await new Promise(z => setTimeout(z, 200));
+        const d = document.querySelector('#sp_overlay .sp-home-alert .sp-hold-detail');
+        if (!d) return null;
+        const cs = getComputedStyle(d), last = d.lastElementChild;
+        d.scrollTop = 1e6; await new Promise(z => setTimeout(z, 50));
+        const db = d.getBoundingClientRect(), lb = last.getBoundingClientRect();
+        const out = { oy: cs.overflowY, max: parseFloat(cs.maxHeight), h: db.height, bottom: Math.round(db.bottom), last: Math.round(lb.bottom), inner: innerHeight, scroll: d.scrollHeight > d.clientHeight };
+        await __savePoint.handle('home-detail');
+        return out;
+    });
+    ok(q && q.oy === 'auto' && q.max <= 0.41 * q.inner && q.h <= q.max + 1 && q.bottom <= q.inner && q.last <= q.bottom + 1,
+        `15. 휴대폰 폭에서 보류 상세는 화면 안에서 끝까지 넘겨 볼 수 있음 (${JSON.stringify(q)})`);
+
     console.log(failures ? `\n${failures} FAIL` : '\nALL PASS');
     await browser.close(); srv.close();
     process.exit(failures ? 1 : 0);
