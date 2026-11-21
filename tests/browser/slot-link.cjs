@@ -55,7 +55,7 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
             if (!__savePoint.ui.open) $('#sp_wand').trigger('click');
             __savePoint.ui.tab = 'saves'; __savePoint.render(true);
             return { status: h.status, why: h.why, id: h.id ?? null, h2: h.h2?.why ?? null, slotOk: !!h.d?.slotOk, from: h.from ?? null, links: $('[data-act="slot-link"]').map((_, b) => $(b).attr('data-id')).get(),
-                note: $('.sp-slot-note').text(), fit: $('[data-act="home-fit"]').length, last: __savePoint.state()?.lastIndex ?? null, text: $('.sp-home-alert').text() };
+                note: $('.sp-slot-note').text(), pick: $('.sp-home-alert [data-act="slot-pick"]').length, fit: $('[data-act="home-fit"]').length, last: __savePoint.state()?.lastIndex ?? null, text: $('.sp-home-alert').text() };
         };
         window.__files = (id, A) => JSON.stringify([M.files.get(M.H.memName(id)) ?? null, M.files.get(M.H.tagName(A)) ?? null]);
     });
@@ -90,7 +90,7 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
 
     // 1. Held, the slot offered on its card and in the alert; cancelling writes nothing.
     let r = await held('slA', 'slA imported');
-    ok(r.status === 'held' && r.why === 'sameIntegrity' && r.slotOk && r.slot && r.links.includes(r.slot) && /원문과 기록이 맞는 세이브 슬롯이 \d+개/.test(r.note) && r.ups.length === 0 && r.saves === 0,
+    ok(r.status === 'held' && r.why === 'sameIntegrity' && r.slotOk && r.slot && r.links.includes(r.slot) && /원문과 기록이 맞는 세이브 슬롯 \d+개 · `슬롯 고르기`/.test(r.note) && r.pick === 1 && r.ups.length === 0 && r.saves === 0,
         `1. 보류 + 맞는 슬롯 카드에 \`이 방에 연결\`, 안내 한 줄, 쓰기 0 (${JSON.stringify({ ...r, orig: 0, slotBody: 0 })})`);
     let p = await press(r.slot, '', 0);
     ok(p.status === 'held' && p.ups.length === 0 && p.saves === 0 && /이 슬롯의 기억을 이 방에 연결할까요\?/.test(p.popup) && /#0–#9/.test(p.popup) && /⏪ 되돌릴 수 없어요/.test(p.popup) && /원문과 기억 맞추기/.test(p.popup),
@@ -186,6 +186,51 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     p = r.links.includes(r.slot) ? await press(r.slot) : null;
     ok(p && p.status === 'linked' && p.id === r.own && p.from?.slot === r.slot && /새 기억을 만들어 연결했어요/.test(p.toast),
         `10. 처음부터 예전 사본이 있는 보류 방 → 그 사본 그대로면 연결 (${JSON.stringify([r.status, r.why, r.links.length, p && [p.status, p.toast]])})`);
+
+    // 11~14. (v0.7.4-a3, phone) `슬롯 고르기` in the held box: a window of the fitting slots only, newest first; picking one goes on as the
+    //    card's `이 방에 연결` (its own confirm). The window reads and writes nothing; a room changed meanwhile ends it. `리셋` in a held
+    //    room says why nothing happens.
+    const pick = (room, { act = '', id = null, before = '' } = {}) => ev(async ([room, act, id, before]) => {
+        const m = __mark(), n0 = (M.modals || []).length;
+        M.confirm = 1;
+        const pr = __savePoint.handle('slot-pick');
+        await new Promise(z => setTimeout(z, 150));
+        const w = (M.modals || [])[n0];
+        const rows = w ? [...w.dlg.querySelectorAll('.sp-pick-link')].map(b => b.getAttribute('data-id')) : [];
+        const names = w ? [...w.dlg.querySelectorAll('.sp-pick-row b')].map(b => b.textContent) : [];
+        const mid = { ...__since(m), open: !!w && !w.closed };
+        if (before) await (0, eval)(`(async () => { ${before} })`)();
+        if (act === 'pick') w.dlg.querySelector(`.sp-pick-link[data-id="${id ?? rows[0]}"]`).click();
+        else if (w && !w.closed) await w.complete(1);
+        await pr;
+        await new Promise(z => setTimeout(z, 300));
+        return { ...__look(), ...__since(m), rows, names, mid, list: __savePoint.listSaves().map(sv => sv.id) };
+    }, [room, act, id, before]);
+    // A slot recording 14 messages (more than the copy below has): listed, never offered.
+    const longSlot = await ev(async () => {
+        await M.switchChat('slZ', [], {}); await M.opened(); M.add(14); await __savePoint.handle('run').catch(() => {});
+        for (let i = 0; i < 100 && !(__savePoint.state()?.lastIndex >= 13); i++) await new Promise(z => setTimeout(z, 50));
+        M.popupInput = 'Slot slZ'; await __savePoint.handle('save-new');
+        return __savePoint.listSaves().find(x => x.name === 'Slot slZ')?.id ?? null;
+    });
+    r = await held('slJ', 'slJ imported');
+    let w = await pick('slJ imported');
+    ok(!!longSlot && w.list.includes(longSlot) && !w.rows.includes(longSlot) && !r.links.includes(longSlot), `11. 기록 범위가 이 방보다 긴 슬롯은 팝업에 없음 (${JSON.stringify([longSlot, w.rows.length, w.list.length])})`);
+    ok(w.rows.includes(r.slot) && w.rows.length === new Set(r.links).size && w.rows.every(x => r.links.includes(x)) && w.rows[0] === w.list.filter(x => w.rows.includes(x))[0]
+        && w.mid.open && w.mid.ups.length === 0 && w.mid.saves === 0 && w.status === 'held' && w.ups.length === 0 && w.saves === 0,
+        `11. \`슬롯 고르기\` → 맞는 슬롯만(카드의 \`이 방에 연결\`과 같은 것), 최신 먼저, 열고 닫아도 쓰기 0 (${JSON.stringify({ rows: w.rows, links: [...new Set(r.links)], status: w.status, ups: w.ups, mid: w.mid })})`);
+    w = await pick('slJ imported', { act: 'pick', id: r.slot });
+    ok(w.status === 'linked' && w.id === r.own && w.from?.slot === r.slot && /이 슬롯의 기억을 이 방에 연결할까요\?/.test(w.popup) && /새 기억을 만들어 연결했어요/.test(w.toast),
+        `12. 팝업에서 고름 → 같은 확인창 → 연결 (${JSON.stringify([w.status, w.from, w.toast])})`);
+    r = await held('slK', 'slK imported');
+    w = await pick('slK imported', { act: 'pick', id: r.slot, before: "await M.switchChat('slKx2', [], {}); await M.opened();" });
+    after = await ev(own => M.files.get(M.H.memName(own)) ?? null, r.own);
+    ok(after === null && w.ups.length === 0 && !w.popup && /다른 방으로 옮겨서 슬롯을 연결하지 않았어요/.test(w.toast),
+        `13. 팝업 중 방을 옮김 → 확인창 없이 끝, 쓰기 0 (${JSON.stringify([w.ups, w.popup, w.toast, after])})`);
+    r = await held('slL', 'slL imported');
+    q = await ev(async () => { const m = __mark(); M.confirm = 1; await __savePoint.handle('clear-room'); await new Promise(z => setTimeout(z, 200)); return { ...__look(), ...__since(m) }; });
+    ok(q.status === 'held' && !q.popup && q.ups.length === 0 && q.saves === 0 && /연결 보류 중이라 아직 리셋할 기억이 없어요/.test(q.toast) && /연결 보류 중이라 아무것도 저장하지 않고/.test(q.text) && !/같은 고유값의 다른 방/.test(q.text),
+        `14. 보류 방에서 리셋 → 안내만, 확인창·쓰기 0 · 경고 상자에 이유 반복 없음 (${JSON.stringify([q.status, q.popup, q.toast, q.text])})`);
 
     console.log(failures ? `\n${failures} FAIL` : '\nALL PASS');
     await browser.close(); srv.close();

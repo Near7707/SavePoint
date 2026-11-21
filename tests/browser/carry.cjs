@@ -58,7 +58,7 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
         window.__look = () => {
             const h = __savePoint.home();
             $('#sp_wand').trigger('click');
-            return { status: h.status, why: h.why, d: h.d?.verdict, carry: !!h.carry, btn: $('[data-act="home-carry"]').length, text: $('.sp-home-alert').text() };
+            return { status: h.status, why: h.why, d: h.d?.verdict, carry: !!h.carry, btn: $('[data-act="home-carry"]').length, text: $('#sp_overlay .sp-roomline').text() + $('.sp-home-alert').text() }; // v0.7.4-a3: a held room's reason is on the status line
         };
     });
     // A room with a memory (10 recorded) at `a`, left for another room, renamed in the list to `b`, then `b` opened.

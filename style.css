@@ -1089,3 +1089,12 @@ details.sp-st-alert[open] > summary { margin-bottom: 6px; }
 .sp-power .sp-btn.sp-power-btn:hover { box-shadow: none; }
 .sp-power.sp-on .sp-btn.sp-power-btn { background: var(--sp-accent); color: var(--sp-accent-fg); }
 .sp-power.sp-off .sp-btn.sp-power-btn { background: var(--sp-panel); color: var(--sp-dim); border-color: var(--sp-line); }
+
+/* v0.7.4-a3: the window listing the save slots that fit a held room (SillyTavern's popup, outside #sp_overlay). */
+.sp-pick { text-align: left; }
+.sp-pick-head { margin-bottom: 8px; line-height: 1.5; }
+.sp-pick-list { display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow-y: auto; }
+.sp-pick-row { border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.4)); border-radius: 8px; padding: 8px 10px; }
+.sp-pick-kind { font-size: 0.8em; opacity: 0.8; font-weight: bold; }
+.sp-pick-meta { font-size: 0.85em; opacity: 0.8; margin: 2px 0 6px; overflow-wrap: anywhere; }
+.sp-pick-link { display: inline-flex; width: max-content; white-space: nowrap; margin: 0; padding: 4px 12px; }

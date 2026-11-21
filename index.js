@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.4-a2';
+const VERSION = '0.7.4-a3';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -2763,6 +2763,44 @@ function slotAskText(sv, pos) {
         '이 지점 이전으로는 ⏪ 되돌릴 수 없어요.',
         '슬롯이 기록한 곳 뒤에 SavePoint 숨김이 남아 있으면, 연결한 뒤 `원문과 기억 맞추기`로 정리해야 해요.'].join('\n');
 }
+// v0.7.4-a3 (phone): the slots that fit this held room, newest first, in a window of their own; picking one closes it and goes on as the
+// card's `이 방에 연결` (slotLinkRoom: the slot read again, its own confirm, the consent bound to that copy and this room). Nothing is
+// read or written by the window itself; a room changed meanwhile ends it.
+const SLOT_PICK_TEXT = {
+    head: '원문과 기록이 맞는 세이브 슬롯이에요. 고르면 확인을 받은 뒤 그 슬롯의 기억으로 이 방의 새 기억을 만들어 연결해요(슬롯과 다른 방의 기억은 그대로 둬요).',
+    none: '지금은 이 방의 원문과 기록이 맞는 세이브 슬롯이 없어요.',
+};
+let slotPicking = false;
+async function slotPickRoom() {
+    const h = home;
+    if (slotPicking || slotJob || rescueJob || carryJob || !slotReady(h)) return;
+    const list = slotMatches();
+    if (!list.length) { toastr.info(SLOT_PICK_TEXT.none, 'SavePoint'); return; }
+    const c = ctx();
+    // Without SillyTavern's window: the save tab, where every fitting card has the same button.
+    if (typeof c.Popup !== 'function' || !c.POPUP_TYPE) { ui.tab = 'saves'; return render(true); }
+    const epoch = roomEpoch;
+    const rows = list.map(sv => `<div class="sp-pick-row"><div class="sp-pick-h"><span class="sp-pick-kind">${slotKind(sv)}</span> <b>${esc(sv.name)}</b></div>
+        <div class="sp-pick-meta">${esc(fmtDate(sv.updated))} · 기록 #0–#${Number(sv.pos?.lastIndex)}${saveTitle(sv) ? ` · 🎬 ${esc(saveTitle(sv))}` : ''}</div>
+        <div class="menu_button sp-pick-link" tabindex="0" data-id="${esc(sv.id)}">이 방에 연결</div></div>`).join('');
+    let picked = null, popup = null;
+    slotPicking = true;
+    try {
+        popup = new c.Popup(`<div class="sp-pick"><div class="sp-pick-head">${esc(SLOT_PICK_TEXT.head)}</div><div class="sp-pick-list">${rows}</div></div>`, c.POPUP_TYPE.TEXT, '',
+            { okButton: '닫기', cancelButton: false, allowVerticalScrolling: true });
+        const shown = popup.show();
+        for (const b of popup.dlg?.querySelectorAll?.('.sp-pick-link') || []) {
+            const take = e => { e.preventDefault(); e.stopPropagation(); picked = b.getAttribute('data-id'); Promise.resolve(popup.complete(c.POPUP_RESULT?.AFFIRMATIVE ?? 1)).catch(() => {}); };
+            b.addEventListener('click', take);
+            b.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') take(e); });
+        }
+        await shown;
+    } catch (e) { console.error('[SavePoint] slot pick window', e); picked = null; }
+    finally { slotPicking = false; }
+    if (!picked) return;
+    if (!homeHere() || home !== h || roomEpoch !== epoch) { toastr.warning(SLOT_TEXT.moved, 'SavePoint'); return; }
+    return slotLinkRoom(picked);
+}
 let slotJob = false;
 async function slotLinkRoom(id) {
     const h = home;
@@ -3460,6 +3498,10 @@ async function homeStill(mine = null) {
     if (r.kind === OK || r.kind === MISSING) { h.line.stop = MF_CONFLICT; render(); return { ok: false, why: 'memFile' }; }
     return { ok: false, why: 'memRead' };
 }
+// v0.7.4-a3: the held room's box under the status line (which gives the reason): what holding means, and the offers made here.
+function heldAlertText() {
+    return `연결 보류 중이라 아무것도 저장하지 않고 자동 기록도 멈춰요.${home.carry ? ' 채팅 목록에서 이름만 바꾼 같은 채팅이면 `이름 변경 이어서 연결`로 이어서 연결할 수 있어요.' : ''}${home.rescue && home.why === 'sameIntegrity' ? ' 다른 방 기억의 원문이 이 방과 모두 같아서 `이 방에 기억 복사해 복구`도 할 수 있어요(다른 방 기억은 그대로).' : ''}`;
+}
 function homeAlert() {
     if (!hasChat() || homeOpen()) return '';
     const text = homeMessage();
@@ -3481,8 +3523,11 @@ function homeAlert() {
     const held = homeHere() && home.status === 'held';
     const open = held && holdOpenHere();
     const more = held ? btn('home-detail', '', open ? '자세히 접기' : '자세히 보기', '보류된 이유와 후보, 원문 비교 결과를 보여 줘요(아무것도 저장하지 않아요)') : '';
-    const slotNote = slots ? `<div class="sp-slot-note">이 방의 원문과 기록이 맞는 세이브 슬롯이 ${slots}개 있어요. 세이브 탭에서 \`이 방에 연결\`로 그 슬롯의 기억을 이 방의 새 기억으로 붙일 수 있어요.</div>` : '';
-    return `<div class="sp-alert sp-home-alert">${esc(text)}${slotNote}${again ? `<div class="sp-row">${fit}${carry}${rescue}${btn('home-recheck', '', '다시 확인', '채팅 파일과 기억 파일을 다시 읽어 이 방의 기억을 다시 찾아요')}${more}</div>` : ''}${open ? holdDetail({ carry: !!carry, rescue: !!rescue, slots }) : ''}</div>`;
+    // v0.7.4-a3 (phone): a held room's reason is on the status line right above, so the box keeps only what it means and what can be
+    // done; the slots that fit are picked in a window of their own (slotPickRoom), not looked for in the narrow list below.
+    const slotNote = slots ? `<div class="sp-slot-note">원문과 기록이 맞는 세이브 슬롯 ${slots}개 · \`슬롯 고르기\`로 골라 이 방에 연결할 수 있어요.</div>` : '';
+    const pick = slots ? btn('slot-pick', '', '슬롯 고르기', '원문과 기록이 맞는 세이브 슬롯만 모아 보여 줘요(고르면 확인을 받은 뒤 연결해요)', 'sp-primary') : '';
+    return `<div class="sp-alert sp-home-alert">${esc(held ? heldAlertText() : text)}${slotNote}${again ? `<div class="sp-row">${pick}${fit}${carry}${rescue}${btn('home-recheck', '', '다시 확인', '채팅 파일과 기억 파일을 다시 읽어 이 방의 기억을 다시 찾아요')}${more}</div>` : ''}${open ? holdDetail({ carry: !!carry, rescue: !!rescue, slots }) : ''}</div>`;
 }
 // v0.7.1-a5 (step 4): the held room's detail, open for this opening of the room only (a room changed or opened again closes it).
 const holdOpenHere = () => !!ui.holdOpen && ui.holdOpen.key === roomKey() && ui.holdOpen.epoch === roomEpoch;
@@ -3513,7 +3558,7 @@ function holdDetail(shown) {
     else parts.push(row('이번 확인에서는 원문 비교 결과가 없어요.'));
     const can = [shown.carry && '`이름 변경 이어서 연결`', shown.rescue && '`이 방에 기억 복사해 복구`', '`다시 확인`'].filter(Boolean).join(', ');
     parts.push(`<div class="sp-hold-h">할 수 있는 일</div>`, row(`위 버튼: ${esc(can)}.`),
-        ...(shown.slots ? [`<div class="sp-hold-row sp-hold-slot">세이브 탭: 원문과 기록이 맞는 슬롯 ${shown.slots}개의 \`이 방에 연결\`.</div>`] : []),
+        ...(shown.slots ? [`<div class="sp-hold-row sp-hold-slot">원문과 기록이 맞는 세이브 슬롯 ${shown.slots}개: \`슬롯 고르기\`나 세이브 탭의 \`이 방에 연결\`.</div>`] : []),
         `<div class="sp-hold-note">이 화면은 보여 주기만 해요. 아무것도 저장하거나 바꾸지 않아요. 다른 설치에서 채팅만 가져왔다면 README의 "다른 설치로 옮길 때"를 봐 주세요.</div>`);
     return `<div class="sp-hold-detail" data-why="${esc(home.why)}" data-own="${f.own}" data-cmp="${c.kind === 'sample' && c.total === 0 ? 'empty' : c.kind}">${parts.join('')}</div>`;
 }
@@ -5432,8 +5477,11 @@ async function undo() {
     if (!(await reconcileNow())) { render(); return; }
     toastr.info(`⏪ 리와인드: ${what} 전으로 돌아갔어요.`);
 }
+const RESET_HELD_TEXT = '이 방은 연결 보류 중이라 아직 리셋할 기억이 없어요. 원문과 기록이 맞는 세이브 슬롯이 있으면 `슬롯 고르기`로 연결한 뒤 리셋하면 새로 시작할 수 있어요.';
 async function clearRoom() {
     const st = state();
+    // v0.7.4-a3: a held room has no memory of its own to reset yet; say so instead of nothing happening.
+    if (!st && homeHere() && home.status === 'held') { toastr.warning(RESET_HELD_TEXT, 'SavePoint', { timeOut: 10000 }); return; }
     if (!st || !(await confirmHere('리셋: 이 방의 기억을 모두 지울까요? 세이브 슬롯은 남아요. (⏪ 리와인드로 되돌릴 수 있어요)', () => !ui.run))) return;
     // v0.6.61: the loot queue kept is the one there at its turn.
     await transact(() => { setPageMem(freshState({ autoMark: chat().length - 1, lootQueue: clone(state()?.lootQueue || []) })); }, { undoable: true, undoKind: 'reset', verify: true });
@@ -7607,6 +7655,7 @@ async function handle(act, id) {
         case 'home-carry': return carryRoom();
         case 'home-rescue': return rescueRoom();
         case 'slot-link': return slotLinkRoom(id);
+        case 'slot-pick': return slotPickRoom();
         case 'home-detail': return toggleHoldDetail();
         case 'send-retry': return sendRetryRun();
         case 'edit-cancel': ui.edit = null; backToChecks(); return render(true);
