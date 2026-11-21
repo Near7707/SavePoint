@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.4-a1';
+const VERSION = '0.7.4-a2';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -2226,6 +2226,8 @@ async function linkRounds(h, r0, owned) {
         if (!again.ok) { setHome(h, 'readFail'); return; }
         if (!sameInput(input, homeInput(again))) { r = again; continue; }
         h.d = d; h.integrity = input.integrity; h.prints = input.prints;
+        // v0.7.4-a2 (GPT P2): the old in-chat copy this decision was made on (a slot consent is bound to it).
+        h.copyHash = input.copy?.hash ?? null;
         // v0.7.0-c4a (review of c4, P2): a rescue copy is checked against the chat file read after it was written (below); until then the
         // room stays shut (`rescueCheck`: homeOpen false), so nothing resumes on the copy before that check.
         // v0.7.4-a1: a memory made from a picked slot is checked the same way.
@@ -2751,7 +2753,7 @@ async function slotFresh(p) {
         const body = await readSave(sv);
         const mem = cleanMem(body?.mem);
         if (!mem || !body?.pos) return null;
-        return { id: p.id, agreed: p.print, why: p.why, pos: { lastIndex: body.pos.lastIndex, digest: body.pos.digest }, mem };
+        return { id: p.id, agreed: p.print, why: p.why, room: p.room, pos: { lastIndex: body.pos.lastIndex, digest: body.pos.digest }, mem };
     } catch { return null; }
 }
 function slotAskText(sv, pos) {
@@ -2769,7 +2771,8 @@ async function slotLinkRoom(id) {
     if (!sv || !slotFits(sv.pos, h.prints)) return;
     slotJob = true;
     try {
-        const epoch = roomEpoch, why = h.why, key = h.key, integrity = h.integrity;
+        // v0.7.4-a2 (GPT P2): the room as shown when asked (address, integrity, old in-chat copy): the consent is for it only.
+        const epoch = roomEpoch, why = h.why, key = h.key, integrity = h.integrity, copy = h.copyHash ?? null;
         const here = () => homeHere() && home === h && roomEpoch === epoch;
         let pos, print;
         try {
@@ -2784,8 +2787,8 @@ async function slotLinkRoom(id) {
         const ok = await confirmBox(slotAskText(sv, pos));
         if (!ok) return;
         if (!here()) { toastr.warning(SLOT_TEXT.moved, 'SavePoint'); return; }
-        if (!slotReady(h) || h.why !== why) { toastr.warning(SLOT_TEXT.changed, 'SavePoint', { timeOut: 10000 }); return; }
-        h.slotAgree = { id, print, why, epoch };
+        if (!slotReady(h) || h.why !== why || h.integrity !== integrity || (h.copyHash ?? null) !== copy) { toastr.warning(SLOT_TEXT.changed, 'SavePoint', { timeOut: 10000 }); return; }
+        h.slotAgree = { id, print, why, epoch, room: { addr: key, integrity, copy } };
         await recheckHome('user');
         if (!here()) return;
         h.slotAgree = null;

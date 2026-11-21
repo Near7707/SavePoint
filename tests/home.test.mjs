@@ -1554,7 +1554,7 @@ test('v0.7.0-c4 row 8: no rescue offer unless every recorded original is this ro
 // ───────── v0.7.4-a1 (step ②): a held room linked to a save slot ─────────
 
 const slotOf = (upto, prints = P80, mem = recorded(prints, upto).mem) => ({ pos: { lastIndex: upto, digest: digest(prints.slice(0, upto + 1)) }, mem });
-const agreeTo = (s, why, id = 'slot1') => ({ id, agreed: slotPrint(s.pos, s.mem), why, pos: s.pos, mem: s.mem });
+const agreeTo = (s, why, id = 'slot1', on = {}) => ({ id, agreed: slotPrint(s.pos, s.mem), why, room: { addr: A, integrity: 'i-A', copy: null, ...on }, pos: s.pos, mem: s.mem });
 
 test('v0.7.4-a1 slotFits: at least one recorded original, all of them this room\'s first messages (GPT P2-1: -1 never fits)', () => {
     const prints = P80.slice(0, 30);
@@ -1597,6 +1597,17 @@ test('v0.7.4-a1: a room held for SLOT_HOLDS with nothing of its own gets slotOk;
     const p = P80.slice(0, 30); p[5] = 'x';
     const r = await decideRoom(at({ prints: p, slotted: agreeTo(s, 'traces') }), readOf(f));
     assert.deepEqual([r.verdict, r.why], ['hold', 'traces']);
+    // v0.7.4-a2 (review of a1, GPT P2): the consent is for the room as it was when the user agreed — its old in-chat copy changed (added,
+    // rewritten or taken away), or the consent given for another address or integrity → held, offered again; nothing placed.
+    const cp = { hash: 'c1' };
+    await no({ copy: cp, slotted: agreeTo(s, 'traces') });
+    await no({ copy: cp, slotted: agreeTo(s, 'traces', 'slot1', { copy: 'c0' }) });
+    await no({ slotted: agreeTo(s, 'traces', 'slot1', { copy: 'c1' }) });
+    await no({ slotted: agreeTo(s, 'traces', 'slot1', { addr: B }) });
+    await no({ slotted: agreeTo(s, 'traces', 'slot1', { integrity: 'i-B' }) });
+    await no({ slotted: { ...agreeTo(s, 'traces'), room: undefined } });
+    d = await decideRoom(at({ copy: cp, slotted: agreeTo(s, 'traces', 'slot1', { copy: 'c1' }) }), readOf(f));
+    assert.deepEqual([d.verdict, d.via], ['branch', 'slotPick']);
     // No integrity, a room seen leaving this name → no slot at all.
     d = await decideRoom(at({ integrity: null }), readOf(f));
     assert.equal(d.slotOk, undefined);
@@ -1639,7 +1650,7 @@ test('v0.7.4-a1 sameIntegrity: a slot makes this room its own memory, the other 
     let d = await decideRoom(at(), readOf(f));
     assert.deepEqual([d.verdict, d.row, d.why, d.slotOk, !!d.rescue], ['hold', 8, 'sameIntegrity', true, true]);
     const s = slotOf(9);
-    d = await decideRoom(at({ slotted: agreeTo(s, 'sameIntegrity') }), readOf(f));
+    d = await decideRoom(at({ slotted: agreeTo(s, 'sameIntegrity', 'slot1', { addr: A2 }) }), readOf(f));
     assert.deepEqual([d.verdict, d.row, d.via, d.mem, d.state.lastIndex, d.state.roomKey], ['branch', 8, 'slotPick', own, 9, A2]);
     assert.equal(JSON.stringify(asFiles(f)), orig);
     assert.equal((await placeMemory(f.io('B'), { id: own, from: { kind: 'branch', addr: A2, integrity: 'i-A', slot: 'slot1', print: d.slot.print }, addr: A2, integrity: 'i-A', state: d.state, wid: 'wb' })).done, true);

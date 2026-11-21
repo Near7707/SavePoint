@@ -158,6 +158,35 @@ const skip = (msg, why) => console.log(`SKIP  ${msg} — ${why}`);
     q = await ev(async () => { const m = __mark(); await __savePoint.handle('home-recheck'); await new Promise(z => setTimeout(z, 300)); return { ...__look(), ...__since(m) }; });
     ok(q.status === 'linked' && q.id === r.own && q.from?.slot === r.slot && q.last === 9, `8. \`다시 확인\` → 만든 기억에 연결 (${JSON.stringify(q)})`);
 
+    // 9. (v0.7.4-a2, review of a1, GPT P2) The old in-chat memory copy changes after the consent, while the room is decided again (an old
+    //    SavePoint elsewhere): the chat file read again differs (sameInput) and the next decision is made on it — the consent was for the
+    //    room as it was, so no memory is made in that decision either (nothing written), told it changed; `다시 확인` writes nothing.
+    await ev(() => {
+        const g = window.fetch;
+        window.__slCopy = null;
+        window.fetch = async (u, o = {}) => {
+            const res = await g(u, o);
+            const k = window.__slCopy;
+            if (k?.armed && !k.done && String(u).includes(k.file)) { k.done = true; const f = M.serverFiles[k.room]; f[0].chat_metadata = { ...(f[0].chat_metadata || {}), savePoint: { v: 1, lastIndex: 2, note: 'old elsewhere' } }; }
+            return res;
+        };
+    });
+    r = await held('slH', 'slH imported');
+    p = await press(r.slot, `window.__slCopy = { armed: true, done: false, file: ${JSON.stringify(r.slotFile)}, room: 'slH imported' };`);
+    const cp = await ev(() => { const k = window.__slCopy; window.__slCopy = null; return k; });
+    after = await ev(own => M.files.get(M.H.memName(own)) ?? null, r.own);
+    ok(r.links.includes(r.slot) && cp?.done && p.ups.length === 0 && after === null && p.status !== 'linked' && /바뀌어서 연결하지 않았어요/.test(p.toast) && !/새 기억을 만들어 연결했어요/.test(p.toast),
+        `9. 재판정 도중 채팅 속 예전 사본 바뀜 → 다음 판정에서도 쓰기 0, 바뀌었다는 안내 (${JSON.stringify([cp, p.status, p.why, p.ups, after, p.toast])})`);
+    q = await ev(async () => { const m = __mark(); await __savePoint.handle('home-recheck'); await new Promise(z => setTimeout(z, 300)); return { ...__look(), ...__since(m) }; });
+    after = await ev(own => M.files.get(M.H.memName(own)) ?? null, r.own);
+    ok(!q.ups.some(n => n.startsWith('savepoint-mem-')) && after === null && q.status !== 'linked', `9. 그 뒤 \`다시 확인\` → 기억 쓰기 0 (${JSON.stringify([q.status, q.why, q.ups])})`);
+
+    // 10. (v0.7.4-a2) A held room with an old in-chat copy already there when asked: the consent is bound to that copy → linked as before.
+    r = await held('slI', 'slI imported', { edit: "f[0].chat_metadata = { ...(f[0].chat_metadata || {}), savePoint: { v: 1, lastIndex: 2, note: 'old here' } };" });
+    p = r.links.includes(r.slot) ? await press(r.slot) : null;
+    ok(p && p.status === 'linked' && p.id === r.own && p.from?.slot === r.slot && /새 기억을 만들어 연결했어요/.test(p.toast),
+        `10. 처음부터 예전 사본이 있는 보류 방 → 그 사본 그대로면 연결 (${JSON.stringify([r.status, r.why, r.links.length, p && [p.status, p.toast]])})`);
+
     console.log(failures ? `\n${failures} FAIL` : '\nALL PASS');
     await browser.close(); srv.close();
     process.exit(failures ? 1 : 0);

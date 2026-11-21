@@ -313,6 +313,9 @@ export const homeOk = (home, addr, ...ints) => home.addr === addr && (home.integ
 // the memory is placed as a branch of this room alone (no parent); no other room's memory, tag or slot is touched.
 export const SLOT_HOLDS = ['traces', 'sameIntegrity', 'parentGone', 'branchUnproven'];
 // Which saved copy a slot body is (its id stays the same when it is written over): its recorded place and its memory.
+// v0.7.4-a2 (GPT P2): the room a slot consent was given in (address, integrity, old in-chat copy) is the room being decided.
+export const sameSlotRoom = (r, input) => plainObj(r) && plainObj(input) && str(r.addr) && r.addr === input.addr && str(r.integrity)
+    && r.integrity === (input.integrity ?? null) && (r.copy ?? null) === (input.copy?.hash ?? null);
 export const slotPrint = (pos, mem) => hashString(canon([pos?.lastIndex ?? null, pos?.digest ?? null, mem ?? null]));
 // A slot whose recorded originals are exactly this room's first messages: at least one recorded (GPT P2-1: -1 matches any room).
 export const slotFits = (pos, prints) => plainObj(pos) && int(pos.lastIndex) && pos.lastIndex >= 0 && Array.isArray(prints)
@@ -324,8 +327,10 @@ export function slotState(slot, prints, addr) {
     const st = { v: 1, mem: clone(slot.mem), lastIndex: last, hashes: prints.slice(0, last + 1), history: [], floor: last, lootQueue: [] };
     return validState(st) ? branchState(st, addr) : null;
 }
-// readMem, slotsOf: as decideCore. input.slotted: { id, agreed, why, pos, mem } — the slot the user agreed to (agreed: its slotPrint
+// readMem, slotsOf: as decideCore. input.slotted: { id, agreed, why, room, pos, mem } — the slot the user agreed to (agreed: its slotPrint
 // then) with its body read again for this decision. A hold of SLOT_HOLDS gets `slotOk` when this room could take a slot.
+// v0.7.4-a2 (review of a1, GPT P2): the consent is also bound to the room as it was when the user agreed (`room`: address, integrity and
+// the old in-chat copy's hash); a decision on a chat file read since with any of them changed takes no slot (held, offered again).
 export async function decideRoom(input, read, opts = {}) {
     const d = await decideCore(input, read, opts);
     if (d.verdict !== 'hold' || !SLOT_HOLDS.includes(d.why)) return d;
@@ -343,7 +348,7 @@ export async function decideRoom(input, read, opts = {}) {
     try { m = checked(await readMem(own), validMem(own)); } catch { m = { kind: ERROR }; }
     if (m.kind !== MISSING) return d;
     const s = input.slotted;
-    if (plainObj(s) && str(s.id) && s.why === d.why && str(s.agreed) && slotPrint(s.pos, s.mem) === s.agreed) {
+    if (plainObj(s) && str(s.id) && s.why === d.why && str(s.agreed) && slotPrint(s.pos, s.mem) === s.agreed && sameSlotRoom(s.room, input)) {
         const prints = Array.isArray(input.prints) ? input.prints : [];
         const state = slotState(s, prints, addr);
         if (state) return { verdict: 'branch', row: d.row, parent: null, parentMem: null, mem: own, state, via: 'slotPick', at: -1, slotted: true, slot: { id: s.id, print: s.agreed } };

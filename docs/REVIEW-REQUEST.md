@@ -1,14 +1,13 @@
-# 코드 리뷰 요청 · v0.7.4-a1 (떼어 둔 작업 ②: 보류된 방에 세이브 슬롯으로 기억 연결, 브랜치 `v0.7.4`)
+# 코드 리뷰 요청 · v0.7.4-a2 (a1 리뷰 P2 반영: 슬롯 연결 동의를 그때의 방에 묶기, 브랜치 `v0.7.4`)
 
-- 범위: `git diff 983b726 95afe06`. `home.js`(`SLOT_HOLDS`·`slotPrint`·`slotFits`·`slotState`, `decideRoom` 감싸기 → 안은 `decideCore` 그대로), `index.js`(`actHome` 갈래 `from`, `linkRounds`, `slotLinkRoom` 등, 보류 안내·상세·세이브 카드), 검사 `tests/home.test.mjs`·`tests/browser/slot-link.cjs`, 문서.
-- 하는 일: `연결 보류`된 방(채팅만 가져온 방 `traces`, 같은 고유값 `sameIntegrity`, 갈래 `parentGone`·`branchUnproven`)이 이 방 몫 이름표·기억 파일·이전 표시 없이 고유값이 있으면, 기록 위치가 이 방 원문과 정확히 맞는 슬롯(`lastIndex >= 0`)을 사용자가 골라 동의 → 다시 판정(슬롯 본문을 새로 읽어 동의한 저장본인지 확인) → 기존 갈래 쓰기(`placeMemory`)로 이 방의 새 기억. `from`에 슬롯 id + 저장본 지문.
-- 설계: 요청서 `0fdf1cf`에 대한 GPT 설계 의견(P2 세 건 등)을 모두 반영했어요. 처리 표는 [REVIEW.md](REVIEW.md) 맨 위 v0.7.4-a1.
+- 범위: `git diff 95afe06 CODE`. `home.js`(`sameSlotRoom`, `decideRoom` 슬롯 동의 조건), `index.js`(`linkRounds`의 `h.copyHash`, `slotFresh`, `slotLinkRoom`), 검사 `tests/home.test.mjs`·`tests/browser/slot-link.cjs`(9·10).
+- 하는 일: a1 리뷰 P2(동의가 방 정보에 묶여 있지 않아 재판정 도중 채팅 속 예전 사본이 바뀌어도 같은 동의로 연결됨)를 고침. 동의에 확인창을 띄운 판정의 방 주소·고유값·예전 사본 지문을 담고, 판정마다 지금 입력과 비교해 다르면 연결하지 않고 보류 그대로 둠("확인하는 사이 바뀌어서 연결하지 않았어요"). 쓴 뒤 채팅 다시 읽기 확인은 그대로.
+- 처리 표와 망가뜨리기 결과: [REVIEW.md](REVIEW.md) 맨 위 v0.7.4-a2.
 - 저장 쪽이라 결과는 P1/P2/P3로 주세요.
-  - 고치기 전 코드에서 `slot-link` 10개 중 8개 FAIL. 망가뜨리기 결과는 REVIEW에(두 겹이라 안 잡히는 방어용 조건 하나 포함).
-  - Node 528개: 525 통과 / 0 실패 / 3 건너뜀. 브라우저 69묶음 한꺼번에 모두 통과, 검사 모드 오류 0.
+  - 고치기 전 코드에서 새 검사 9의 두 줄 FAIL(GPT 재현과 같음).
+  - Node 528개: 525 통과 / 0 실패 / 3 건너뜀. 브라우저 69묶음 통과(`keys`는 한꺼번에 돌릴 때 타이밍 실패, 따로 통과), 검사 모드 오류 0.
 
 ## 특히 봐 줄 곳
-1. `decideRoom` 감싸기가 네 가지 보류 밖으로 새지 않는지, 판정마다 다시 보는 "없음" 조건(이름표·시작 표시·단서·제 몫 기억 파일·`left`·고유값)이 충분한지.
-2. 동의한 저장본만 쓰이는지: 확인창 뒤 슬롯 덮어쓰기, 확인창 중 다른 기기가 먼저 연결(3행·6행으로 빠짐), 같은 슬롯의 다른 저장본(`otherOrigin`), 완료 안내 조건(`from.slot`·`from.print`).
-3. `slotState`(`history: []`, `floor = lastIndex`, `branchState`)가 이후 저장·⏪·숨김(`h2Of`)과 맞는지.
-4. 쓴 뒤 채팅 파일 다시 읽기를 복사 복구의 `rescueCheck`·`rescueLost`로 함께 쓰는 것.
+1. `sameSlotRoom`(주소·고유값·`copy?.hash`)이 동의 범위로 충분한지. `mainChat`·`traces`는 넣지 않음(보류 이유·`sameInput`·쓴 뒤 확인이 봄).
+2. 동의와 다른 방으로 판정되면 쓰기 0·보류로만 남는지, 같은 열기 안에서 사본이 동의 때 값으로 돌아오면 연결되는 것이 괜찮은지.
+3. 처음부터 예전 사본이 있는 방에서 a1처럼 연결되는지(검사 10).
