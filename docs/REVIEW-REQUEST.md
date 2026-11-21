@@ -1,6 +1,6 @@
 # 코드 리뷰 요청 · v0.7.4-a2 (a1 리뷰 P2 반영: 슬롯 연결 동의를 그때의 방에 묶기, 브랜치 `v0.7.4`)
 
-- 범위: `git diff 95afe06 CODE`. `home.js`(`sameSlotRoom`, `decideRoom` 슬롯 동의 조건), `index.js`(`linkRounds`의 `h.copyHash`, `slotFresh`, `slotLinkRoom`), 검사 `tests/home.test.mjs`·`tests/browser/slot-link.cjs`(9·10).
+- 범위: `git diff 95afe06 9c079a4`. `home.js`(`sameSlotRoom`, `decideRoom` 슬롯 동의 조건), `index.js`(`linkRounds`의 `h.copyHash`, `slotFresh`, `slotLinkRoom`), 검사 `tests/home.test.mjs`·`tests/browser/slot-link.cjs`(9·10).
 - 하는 일: a1 리뷰 P2(동의가 방 정보에 묶여 있지 않아 재판정 도중 채팅 속 예전 사본이 바뀌어도 같은 동의로 연결됨)를 고침. 동의에 확인창을 띄운 판정의 방 주소·고유값·예전 사본 지문을 담고, 판정마다 지금 입력과 비교해 다르면 연결하지 않고 보류 그대로 둠("확인하는 사이 바뀌어서 연결하지 않았어요"). 쓴 뒤 채팅 다시 읽기 확인은 그대로.
 - 처리 표와 망가뜨리기 결과: [REVIEW.md](REVIEW.md) 맨 위 v0.7.4-a2.
 - 저장 쪽이라 결과는 P1/P2/P3로 주세요.
