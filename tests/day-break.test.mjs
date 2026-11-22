@@ -269,3 +269,24 @@ test('splitKeeps: a quoted advance must stay confirmed, and the present must sta
     assert.equal(splitKeeps(f2, back, { mem, chunk: c2 }), 'time stamps 1');
     assert.equal(save(back, c2).scenes.at(-1).segs.at(-1).time.mode, 'flashback', 'what the check prevents');
 });
+
+// v0.7.5-a6 (GPT review of a5): a "same" that quotes a new clock on the same day is saved with that clock, so it counts too.
+test('splitKeeps: a quoted same-day clock must stay, a bare inheriting "same" is not counted', () => {
+    const { mem } = day();
+    const c = chunkOf(2, [msg('1024-04-15', '09:00'), msg('1024-04-15', '17:00')]);
+    const make = scenes => { const d = { scenes, entities: [], changes: [] }; normalizeResult(d, { mem, chunk: c }); assert.deepEqual(validateResult(d, { mem, chunk: c }), []); return d; };
+    const late = { relation: 'same', date: '1024-04-15', clock: '17:00', period: 'evening', msg: 3, quote: line('1024-04-15', '17:00') };
+    const first = make([scene('continue', 2, { start: at(2, '1024-04-15', '09:00', 'morning'), end: late })]);
+    assert.equal(dayBreaks(first, { mem, chunk: c }).length, 1, 'asked to make it a new scene');
+    const second = end => make([scene('new', 2, { start: at(2, '1024-04-15', '09:00', 'morning'), end })]);
+    const endClock = d => applyResult(JSON.parse(JSON.stringify(mem)), d, c, { room: 'room-A' }).mem.scenes.at(-1).segs.at(-1).time.end.clock;
+    assert.equal(splitKeeps(first, second(late), { mem, chunk: c }), '');
+    assert.equal(endClock(second(late)), '17:00');
+    const bare = second({ relation: 'same' });
+    assert.equal(splitKeeps(first, bare), '', 'the values alone do not count a "same"');
+    assert.equal(splitKeeps(first, bare, { mem, chunk: c }), 'time stamps 1');
+    assert.equal(endClock(bare), '09:00', 'what the check prevents');
+    // A bare "same" in the first reply (no quote, only inherits) is not something the second one must carry.
+    const plainFirst = make([scene('continue', 2, { start: at(2, '1024-04-15', '09:00', 'morning'), end: { relation: 'same' } })]);
+    assert.equal(splitKeeps(plainFirst, second({ relation: 'same' }), { mem, chunk: c }), '');
+});

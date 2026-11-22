@@ -778,6 +778,9 @@ export function splitKeeps(first, second, { mem = null, chunk = null } = {}) {
 // own words ("explicit"; a "same" that only inherits says nothing new), as "#msg date-and-clock". Nothing is written.
 // v0.7.5-a5 (GPT review of a4): a quoted "two days later" ("advance") is kept as "linked" but rests on the message too (P2-1), and
 // present or flashback is part of the key (P2-2: the same date told as a flashback leaves the present behind).
+// v0.7.5-a6 (GPT review of a5): not by kind any more. Every stamp saved with its message's own words behind it (verified and not
+// unconfirmed: a dated or clocked "same", an "advance", an "explicit", a "jump") is compared; only a bare "same" that inherits
+// without a quote is left out. A quoted "same" that adds nothing new is counted too: dropping it saves the first reply, nothing lost.
 function confirmedTimes(data, mem, chunk) {
     const scenes = data?.scenes || [], n = v => Number(String(v).replace('#', ''));
     const starts = scenes.map((s, i) => (i === 0 ? chunk.from : n(s.start)));
@@ -791,7 +794,7 @@ function confirmedTimes(data, mem, chunk) {
         dry.segs.push(seg);
         if (!time) return;
         for (const t of [time.start, ...(time.via || []), time.end])
-            if (t && (t.certainty === 'explicit' || (t.certainty === 'linked' && t.op === 'advance' && t.verified)) && Number.isInteger(t.evidence?.msg) && tmp.timeAnchors[t.anchor])
+            if (t && t.certainty !== 'unconfirmed' && t.verified && Number.isInteger(t.evidence?.msg) && tmp.timeAnchors[t.anchor])
                 out.push(`${time.mode} #${t.evidence.msg} ${formatStoryStamp({ ...t, period: '' }, tmp.timeAnchors, 'en')}`);
     });
     return [...new Set(out)];
