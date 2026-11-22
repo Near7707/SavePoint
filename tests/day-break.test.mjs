@@ -182,3 +182,60 @@ test('splitKeeps: time stamps on messages and state changes of the first reply',
     assert.equal(splitKeeps({ scenes: [{ time: { start: { relation: 'same' } } }], changes: [] }, split), '');
     assert.equal(splitKeeps(first, null), 'unreadable');
 });
+
+// v0.7.5-a4 (GPT review of a3): a split reply that keeps the values but not what makes them hold when saved.
+function nextDays(variant = {}) {
+    const { mem } = day();
+    const words = '내일 성문에서 만나자고 약속했다.';
+    const c = chunkOf(2, [msg('1024-04-13', '11:30'), msg('1024-04-15', '09:00', words)]);
+    const promise = { op: 'add', type: 'quest', kind: 'promise', status: 'open', who: [], text: 'Promised to meet at the gate.', msgs: [3],
+        terms: { msg: 3, quote: '내일 성문에서 만나자고 약속했다' }, due: { expr: '내일', days: 1, msg: 3 } };
+    const late = variant.late || at(3, '1024-04-15', '09:00', 'morning');
+    const make = (scenes, changes) => {
+        const d = { scenes, entities: [], changes };
+        normalizeResult(d, { mem, chunk: c });
+        assert.deepEqual(validateResult(d, { mem, chunk: c }), []);
+        return d;
+    };
+    const first = make([scene('continue', 2, { start: at(2, '1024-04-13', '11:30', 'morning'), end: at(3, '1024-04-15', '09:00', 'morning') })], [promise]);
+    const second = make([scene('continue', 2, { start: at(2, '1024-04-13', '11:30', 'morning'), end: { relation: 'same' } }, { ended: true }),
+        scene('new', 3, { start: late, end: { relation: 'same' } }, { start: 3 })], [variant.promise || promise]);
+    return { mem, c, first, second, save: d => applyResult(JSON.parse(JSON.stringify(mem)), d, c, { room: 'room-A' }).mem };
+}
+
+test('splitKeeps: a stamp confirmed in the first reply must still be confirmed in the second (P2-1)', () => {
+    const ok = nextDays();
+    assert.equal(splitKeeps(ok.first, ok.second, { mem: ok.mem, chunk: ok.c }), '');
+    // Same date, clock and message, but no quote: by the values alone it looks kept, yet saved it is unconfirmed.
+    const { quote, ...bare } = at(3, '1024-04-15', '09:00', 'morning');
+    const r = nextDays({ late: bare });
+    assert.equal(splitKeeps(r.first, r.second), '', 'the values alone match');
+    assert.equal(splitKeeps(r.first, r.second, { mem: r.mem, chunk: r.c }), 'time stamps 1');
+    const last = m => m.scenes.at(-1).segs.at(-1).time.start.certainty;
+    assert.equal(last(r.save(r.first)), 'explicit');
+    assert.equal(last(r.save(r.second)), 'unconfirmed', 'what the check prevents');
+    // A quote that is not in that message is the same loss.
+    const w = nextDays({ late: { ...bare, quote: 'Not in the message at all' } });
+    assert.equal(splitKeeps(w.first, w.second, { mem: w.mem, chunk: w.c }), 'time stamps 1');
+});
+
+test('splitKeeps: a promise keeps its deadline and quoted terms (P2-2)', () => {
+    const ok = nextDays();
+    const p = ok.first.changes[0];
+    const { due, ...noDue } = p;
+    const lost = variant => { const r = nextDays({ promise: variant }); return splitKeeps(r.first, r.second, { mem: r.mem, chunk: r.c }); };
+    assert.equal(lost(noDue), 'changes 1');
+    assert.equal(lost({ ...p, due: { ...p.due, days: 2, expr: '내일' } }), 'changes 1');
+    assert.equal(lost({ ...p, due: { ...p.due, msg: 2 } }), 'changes 1');
+    // (No terms at all is already refused by validation: a promise needs them.)
+    assert.equal(lost({ ...p, terms: { msg: 3, quote: '성문에서 만나자고' } }), 'changes 1');
+    // The same deadline and terms written again (another wording of the text) still match.
+    assert.equal(lost({ ...p, text: 'They agreed to meet at the gate.', due: { ...p.due }, terms: { ...p.terms } }), '');
+    // A deadline the first reply did not give may be added.
+    const r = nextDays();
+    assert.equal(splitKeeps({ ...r.first, changes: [noDue] }, r.second, { mem: r.mem, chunk: r.c }), '');
+    // Saved without the deadline, it is gone: what the check prevents.
+    const saved = nextDays({ promise: noDue });
+    assert.ok(saved.save(saved.first).records.some(x => x.due));
+    assert.ok(!saved.save(saved.second).records.some(x => x.due));
+});

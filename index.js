@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.5-a3';
+const VERSION = '0.7.5-a4';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -4413,7 +4413,7 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
     // the first one was lost on the way ('lost': see splitKeeps). Anything else saves the first reply.
     const splitWhy = d => {
         if (dayBreaks(d, { mem, chunk, expectContinue }).length || !(d.scenes.length > kept.data.scenes.length || (kept.startOnly && d.scenes[0].scene === 'new'))) return 'split';
-        return splitKeeps(kept.data, d) ? 'lost' : '';
+        return splitKeeps(kept.data, d, { mem, chunk }) ? 'lost' : '';
     };
     for (let attempt = 0; attempt < 2; attempt++) {
         let raw;
@@ -4448,7 +4448,7 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
         // range: the scene keeps the place it had (a continued scene) or has none. Any other problem still fails.
         if (attempt === 1 && kept) {
             const done = !!data && !errors.length && !lang.length, why = done ? splitWhy(data) : 'bad';
-            const said = { '': '통과 (날이 바뀐 곳에서 나눔)', split: '나뉘지 않음 — 첫 응답을 저장', lost: `나눴지만 첫 응답의 기록이 빠짐(${splitKeeps(kept.data, data)}) — 첫 응답을 저장`, bad: '쓸 수 없는 답 — 첫 응답을 저장' }[why];
+            const said = { '': '통과 (날이 바뀐 곳에서 나눔)', split: '나뉘지 않음 — 첫 응답을 저장', lost: `나눴지만 첫 응답의 기록이 빠짐(${splitKeeps(kept.data, data, { mem, chunk })}) — 첫 응답을 저장`, bad: '쓸 수 없는 답 — 첫 응답을 저장' }[why];
             tries.push(`${took} · ${kind || said}`);
             if (!why) return accept(data, fixes, 0);
             return accept(kept.data, kept.fixes, 0, { split: DAY_KEPT, lost: DAY_LOST, bad: DAY_FAIL }[why]);

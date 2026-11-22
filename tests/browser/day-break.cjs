@@ -65,9 +65,13 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
             if (isRetry && M.retryNoTimes) data.scenes.forEach(sc => { delete sc.time; });
             if (isRetry && M.retrySwap) data.changes = data.changes.map(c => ({ ...c, text: 'Something else was agreed.', msgs: [c.msgs[0] - 1], terms: c.terms && { ...c.terms, msg: c.msgs[0] - 1, quote: msgs.find(m => m.n === c.msgs[0] - 1).text.slice(0, 24) } }));
             if (isRetry && M.retryReword) data.changes = data.changes.map(c => ({ ...c, text: 'A promise was given here.' }));
+            // (a4) A promise with a deadline (its words are in the message) / split, but the last stamp's quote or the deadline is gone.
+            if (M.withDue) data.changes.forEach(c => { c.due = { expr: 'tomorrow', days: 1, msg: c.msgs[0] }; });
+            if (isRetry && M.retryNoQuote) delete data.scenes.at(-1).time.end.quote;
+            if (isRetry && M.retryNoDue) data.changes.forEach(c => { delete c.due; });
             if (!isRetry && M.retryThrows) M.throwNext = new Error('Load failed');
         };
-        window.addDays = (n, a, b) => M.add(n, i => `[Date: ${M.chat.length - window.__base < 10 ? a : b} | Time: 09:${String(10 + (M.chat.length % 50)).padStart(2, '0')}] The courier waited by the gate ${'and waited '.repeat(8)}.${window.__promise && M.chat.length - window.__base === 4 ? ' PROMISE' : ''}`);
+        window.addDays = (n, a, b) => M.add(n, i => `[Date: ${M.chat.length - window.__base < 10 ? a : b} | Time: 09:${String(10 + (M.chat.length % 50)).padStart(2, '0')}] The courier waited by the gate ${'and waited '.repeat(8)}.${window.__promise && M.chat.length - window.__base === 4 ? ` PROMISE${window.__due ? ' to come back tomorrow' : ''}` : ''}`);
     });
     const add = (a, b) => ev(([a, b]) => { window.__base = M.chat.length; addDays(M.chat.length ? 20 : 21, a, b); }, [a, b]);
 
@@ -144,5 +148,24 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     q0 = q.n; c0 = r.calls; sc1 = r.scenes.length;
     await ev(() => { M.retrySwap = false; M.retryReword = true; __savePoint.ui.lastFix = null; }); await add('1024-05-04', '1024-05-06'); await run(); r = await snap(); q = await recs();
     ok(r.calls === c0 + 2 && r.st.lastIndex === 258 && r.scenes.length === sc1 + 1 && q.n === q0 + 1 && !r.fix, '13. (a3) 같은 메시지의 같은 변경을 말만 바꾼 재응답은 저장');
+
+    // 14. (a4, GPT review of a3, P2-1) Split, the same date, clock and message, but the last stamp's quote is gone: saved it would be
+    // unconfirmed → the first reply is saved, its last date kept.
+    q0 = q.n; c0 = r.calls; sc1 = r.scenes.length;
+    await ev(() => { M.retryReword = false; M.retryNoQuote = true; __savePoint.ui.lastFix = null; }); await add('1024-05-06', '1024-05-08'); await run(); r = await snap(); q = await recs();
+    let endSure = await ev(() => __savePoint.state().mem.scenes.at(-1).segs.at(-1).time?.end?.certainty);
+    ok(r.calls === c0 + 2 && r.st.lastIndex === 278 && r.scenes.length === sc1 && q.n === q0 + 1 && q.end === '1024-05-08' && endSure === 'explicit' && r.fix.includes('날짜나 상태 변경이 빠져'), '14. (a4) 날짜 값은 같아도 인용을 뺀 재응답은 쓰지 않고 첫 응답 저장(날짜 확정 그대로)');
+
+    // 15. (a4, P2-2) Split, the promise kept but its deadline gone: the first reply is saved, the deadline with it.
+    const dueOf = () => ev(() => __savePoint.state().mem.records.at(-1)?.due?.expr || '');
+    q0 = q.n; c0 = r.calls; sc1 = r.scenes.length;
+    await ev(() => { M.retryNoQuote = false; M.withDue = true; M.retryNoDue = true; window.__due = true; __savePoint.ui.lastFix = null; }); await add('1024-05-08', '1024-05-10'); await run(); r = await snap(); q = await recs();
+    ok(r.calls === c0 + 2 && r.st.lastIndex === 298 && r.scenes.length === sc1 && q.n === q0 + 1 && (await dueOf()) === 'tomorrow' && r.fix.includes('상태 변경이 빠져'), '15. (a4) 약속 기한을 뺀 재응답은 쓰지 않고 첫 응답 저장(기한 그대로)');
+
+    // 16. (a4) Split with the deadline kept: the second reply is saved.
+    q0 = q.n; c0 = r.calls; sc1 = r.scenes.length;
+    await ev(() => { M.retryNoDue = false; __savePoint.ui.lastFix = null; }); await add('1024-05-10', '1024-05-12'); await run(); r = await snap(); q = await recs();
+    endSure = await ev(() => __savePoint.state().mem.scenes.at(-1).segs.at(-1).time?.end?.certainty);
+    ok(r.calls === c0 + 2 && r.st.lastIndex === 318 && r.scenes.length === sc1 + 1 && q.n === q0 + 1 && (await dueOf()) === 'tomorrow' && endSure === 'explicit' && !r.fix, '16. (a4) 기한·인용을 다 갖춰 나눈 재응답은 저장');
     await browser.close(); srv.close(); console.log(failures ? failures + ' FAILED' : 'ALL PASS'); process.exit(failures ? 1 : 0);
 })();

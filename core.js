@@ -740,7 +740,7 @@ export function dayBreaks(data, { mem, chunk, expectContinue } = {}) {
 // a message (its relation, date, clock and days at that message) and every state change (same record shape, with the same text or
 // the same message numbers: a reworded text over the same messages is the same change). Points and notes are not compared.
 // Returns '' when nothing is missing.
-export function splitKeeps(first, second) {
+export function splitKeeps(first, second, { mem = null, chunk = null } = {}) {
     try {
         const stamps = d => {
             const out = [];
@@ -751,17 +751,48 @@ export function splitKeeps(first, second) {
         };
         const have = stamps(second);
         const lostTime = stamps(first).filter(k => !have.includes(k));
+        // v0.7.5-a4 (GPT review of a3, P2-1): the same values are not enough; a stamp that the first reply confirms at a message
+        // (its quote really there) must still be confirmed there when the second one is read the way it would be saved.
+        if (mem && chunk) {
+            const sure = confirmedTimes(second, mem, chunk);
+            for (const k of confirmedTimes(first, mem, chunk)) if (!sure.includes(k)) lostTime.push(k);
+        }
         const shape = c => ['op', 'type', 'id', 'entity', 'holder', 'aspect', 'kind', 'status'].map(f => JSON.stringify(c?.[f] ?? null)).join('|');
         const text = c => String(c?.text || '').toLowerCase().replace(/\s+/g, ' ').trim();
         const msgs = c => JSON.stringify([...new Set((c?.msgs || []).map(Number))].sort((a, b) => a - b));
+        // v0.7.5-a4 (GPT review of a3, P2-2): a deadline or the quoted terms the first reply gave must come back the same.
+        const due = c => plain(c?.due) ? [normQuote(c.due.expr), Number(String(c.due.msg).replace('#', '')), c.due.days ?? '', c.due.date || ''].join('|') : '';
+        const terms = c => plain(c?.terms) ? [Number(String(c.terms.msg).replace('#', '')), normQuote(c.terms.quote)].join('|') : '';
+        const kept = (c, x) => (!due(c) || due(x) === due(c)) && (!terms(c) || terms(x) === terms(c));
         const pool = [...(second.changes || [])];
         let lostChange = 0;
         for (const c of first.changes || []) {
-            const k = pool.findIndex(x => shape(x) === shape(c) && (text(x) === text(c) || (msgs(c) !== '[]' && msgs(x) === msgs(c))));
+            const k = pool.findIndex(x => shape(x) === shape(c) && (text(x) === text(c) || (msgs(c) !== '[]' && msgs(x) === msgs(c))) && kept(c, x));
             if (k < 0) lostChange++; else pool.splice(k, 1);
         }
         return [lostTime.length ? `time stamps ${lostTime.length}` : '', lostChange ? `changes ${lostChange}` : ''].filter(Boolean).join(', ');
     } catch { return 'unreadable'; }
+}
+
+// v0.7.5-a4: the times of a reply as they would be saved, on a throwaway copy (as in dayBreaks): each stamp confirmed from a message's
+// own words ("explicit"; a "same" that only inherits says nothing new), as "#msg date-and-clock". Nothing is written.
+function confirmedTimes(data, mem, chunk) {
+    const scenes = data?.scenes || [], n = v => Number(String(v).replace('#', ''));
+    const starts = scenes.map((s, i) => (i === 0 ? chunk.from : n(s.start)));
+    const dry = { segs: [] }, tmp = { scenes: [...(mem.scenes || []), dry], timeAnchors: JSON.parse(JSON.stringify(mem.timeAnchors || {})) };
+    const out = [];
+    scenes.forEach((s, i) => {
+        const from = starts[i], to = i + 1 < scenes.length ? chunk.indices.filter(m => m < starts[i + 1]).pop() ?? from : chunk.to;
+        const seg = { id: `dry${i}`, from, to };
+        const time = resolveResultTime(tmp, s._timeParts ? { mode: s.time?.mode || 'present', parts: s._timeParts } : s.time, { chunk, seg, quoteMatches: findQuote });
+        if (time) seg.time = time;
+        dry.segs.push(seg);
+        if (!time) return;
+        for (const t of [time.start, ...(time.via || []), time.end])
+            if (t && t.certainty === 'explicit' && Number.isInteger(t.evidence?.msg) && tmp.timeAnchors[t.anchor])
+                out.push(`#${t.evidence.msg} ${formatStoryStamp({ ...t, period: '' }, tmp.timeAnchors, 'en')}`);
+    });
+    return [...new Set(out)];
 }
 
 // ───────── scene boundaries (automatic collection, step 1) ─────────
