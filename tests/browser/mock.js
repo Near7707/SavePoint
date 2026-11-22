@@ -110,6 +110,8 @@ function fake(prompt) {
     // A one-off set of extra entities/changes for the next extraction (tests build items this way).
     if (M.addChanges) { const x = M.addChanges({ first, known, prompt }); M.addChanges = null; data.entities.push(...(x.entities || [])); data.changes.push(...(x.changes || [])); }
     if (M.itemPerson) data.changes.push({ op: 'add', type: 'item', entity: ariId || 'ari', text: 'Ari carries the key.', msgs: [first] });
+    // v0.7.5-a1: a last word on the reply for one suite (story times, a split on the second request).
+    if (M.tweak) M.tweak(data, { msgs, isRetry, prompt });
     return '<think>hmm</think>\n```json\n' + JSON.stringify(data) + '\n```';
 }
 window.SillyTavern = {

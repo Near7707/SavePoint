@@ -1,4 +1,4 @@
-import { cleanTimeAnchors, cleanStoryTime, resolveResultTime, formatSegmentTime, compactSceneTimes, storyTimeContext, cleanDue, resolveDueClaim, formatDue, dueStamp, isoDay } from './temporal.js';
+import { cleanTimeAnchors, cleanStoryTime, resolveResultTime, lastStoryTime, newStoryDay, formatStoryStamp, formatSegmentTime, compactSceneTimes, storyTimeContext, cleanDue, resolveDueClaim, formatDue, dueStamp, isoDay } from './temporal.js';
 import { cleanLootSources, restoreLostLoot } from './loot.js';
 import { upgradeEvidence, detachEvidence, cleanPrior, cleanSource, cleanQuestEvents } from './provenance.js';
 // SavePoint core: pure data logic (no SillyTavern, no DOM).
@@ -679,6 +679,45 @@ export function validateResult(data, { mem, chunk, expectContinue }) {
         } else errors.push(`${w}.op must be add, update or remove.`);
     }
     return errors;
+}
+
+// v0.7.5-a1 (user report: the scene never closes although the recorded dates move on): where a reply that passed validation keeps
+// one scene across a new story day by its OWN time stamps (see newStoryDay). The times are resolved on a throwaway copy exactly as
+// applyResult would; nothing is written. Returns notes for one more request, never a reason to lose the range (see extractChunk).
+export function dayBreaks(data, { mem, chunk, expectContinue } = {}) {
+    try {
+        const scenes = data.scenes, n = v => Number(String(v).replace('#', ''));
+        const starts = scenes.map((s, i) => (i === 0 ? chunk.from : n(s.start)));
+        const dry = { segs: [] }, tmp = { scenes: [...(mem.scenes || []), dry], timeAnchors: JSON.parse(JSON.stringify(mem.timeAnchors || {})) };
+        const open = openScene(mem), out = [];
+        const label = t => formatStoryStamp(t, tmp.timeAnchors, 'en');
+        scenes.forEach((s, i) => {
+            const from = starts[i], to = i + 1 < scenes.length ? chunk.indices.filter(m => m < starts[i + 1]).pop() ?? from : chunk.to;
+            const before = lastStoryTime(tmp);
+            const seg = { id: `dry${i}`, from, to };
+            const time = resolveResultTime(tmp, s._timeParts ? { mode: s.time?.mode || 'present', parts: s._timeParts } : s.time, { chunk, seg, quoteMatches: findQuote });
+            if (time) seg.time = time;
+            dry.segs.push(seg);
+            if (!time || time.mode !== 'present') return;
+            const inside = [time.start, ...(time.via || []), time.end];
+            if (i === 0 && s.scene === 'continue' && open && expectContinue !== true && before && open.segs.some(g => g.id === before.segment) && newStoryDay(before.stamp, time.start, tmp.timeAnchors)) {
+                out.push(`scenes[0] continues the OPEN SCENE, but by your own time stamps the story is already on a new day when these messages begin (${label(before.stamp)} → ${label(time.start)}). A new story day always ends the scene: make it "scene": "new" with its own title.`);
+                return;
+            }
+            for (let k = 1; k < inside.length; k++) if (newStoryDay(inside[k - 1], inside[k], tmp.timeAnchors)) {
+                const at = inside[k].evidence?.msg;
+                // The new day is shown at this scene's very first message: nothing before it to cut off. A continued scene becomes a new one.
+                if (Number.isInteger(at) && at <= from) {
+                    if (i === 0 && s.scene === 'continue' && open && expectContinue !== true)
+                        out.push(`scenes[0] continues the OPEN SCENE, but by your own time stamps a new story day begins at its first message #${from} (${label(inside[k - 1])} → ${label(inside[k])}). A new story day always ends the scene: make it "scene": "new" with its own title.`);
+                    return;
+                }
+                out.push(`scenes[${i}] (#${from}-#${to}) runs into a new story day by your own time stamps (${label(inside[k - 1])} → ${label(inside[k])}${Number.isInteger(at) ? `, shown at #${at}` : ''}). A new story day always ends the scene, even in the same place with the same people: end this scene ("ended": true) before the message where the new day begins, and start another scene there ("scene": "new", "start": <that message number>) with its own title, outline, points and time.`);
+                return;
+            }
+        });
+        return out;
+    } catch { return []; }
 }
 
 // ───────── scene boundaries (automatic collection, step 1) ─────────

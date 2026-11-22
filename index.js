@@ -5,7 +5,7 @@ import { foldLegacyOutline,
     emptyMem, cleanMem, detachMem, chunkMessages, promptContext, validateResult, resultLanguageIssues,
     applyResult, closeOpenScene, pushHistory, rollbackFrom, buildInjection, neededBudgetSteps, openScene, memStats,
     pointInjected, pointSymbol, rekeyItems, validateRekey, applyRekey, sceneOutlineText, sceneOutlineParts,
-    refreshProvisionalOutlines, normalizeResult, validateCheck, checkScope, dupState, pointId,
+    refreshProvisionalOutlines, normalizeResult, dayBreaks, validateCheck, checkScope, dupState, pointId,
     recordLine, normalizeRecordNames, entityName, estTokens, QUEST_KINDS, WORLD_KINDS, ENTITY_TYPES,
     groupErrors, findQuote, mostlyNonEnglish, setQuestStatus, newestParty,
 } from './core.js';
@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.4';
+const VERSION = '0.7.5-a1';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -4388,6 +4388,25 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
         ui.lastError.request = requestLines(run.requestRecord);
         return err;
     };
+    // v0.7.5-a1: a reply that passed every check but keeps one scene across a new story day (by its own time stamps) is asked once
+    // more to split there. It is kept: when the second request fails, times out or does not pass, the first reply is saved as before
+    // (the range is never lost to this check), and a second reply that still does not split is saved as it is.
+    let kept = null;
+    const accept = (data, fixes, dropped, extra = '') => {
+        const merged = fixes.filter(f => f.startsWith('merged:')).length;
+        const moved = fixes.filter(f => f.startsWith('start:')).map(f => f.split(':')[2].split('>')[1]);
+        const said = [merged ? `앞 장면에 이어지는 장면 ${merged}개를 앞 장면에 합쳤어요` : '', moved.length ? `장면 시작 번호가 맞지 않아 ${moved.map(n => '#' + n).join(', ')}부터로 고쳤어요` : ''].filter(Boolean);
+        const titles = fixes.filter(f => f.startsWith('title:')).length, outlines = fixes.filter(f => f.startsWith('outline:')).length;
+        if (titles) said.push(`제목 ${titles}개를 임시로 보완했어요`);
+        if (outlines) said.push(`개요 ${outlines}개를 포인트로 임시 보완했어요`);
+        if (dropped) said.push(`장소가 영어로 오지 않아 ${dropped}곳을 비워 두었어요`);
+        if (extra) said.push(extra);
+        if (said.length) ui.lastFix = { at: Date.now(), range: `#${chunk.from}–#${chunk.to}`, text: said.join(' · ') };
+        Object.defineProperty(data, 'lootWhy', { value: attachLoot(data, lootForChunk(chunk)).why, enumerable: false });
+        return data;
+    };
+    const DAY_KEPT = '날이 바뀐 곳에서 장면을 나누도록 다시 물었지만 나뉘지 않아, 받은 대로 저장했어요';
+    const DAY_FAIL = '날이 바뀐 곳에서 장면을 나누도록 다시 물었지만 그 요청이 실패해, 첫 응답을 저장했어요';
     for (let attempt = 0; attempt < 2; attempt++) {
         let raw;
         const start = Date.now();
@@ -4400,6 +4419,7 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
         }
         catch (e) {
             if (run.cancelled || e instanceof Cancelled) throw new Cancelled('중지했어요.');
+            if (kept) { tries.push(`${fmtSec(Date.now() - start)} · 요청 실패 — 첫 응답을 저장`); return accept(kept.data, kept.fixes, 0, DAY_FAIL); }
             if (e instanceof RequestTimeout) {
                 const r = ui.lastRequest;
                 tries.push(`${fmtSec(Date.now() - start)} · ${timeoutLabel(e)}${r ? ` · 수신 본문 ${r.textChars}자 / 사고 ${r.reasoningChars}자` : ''}`);
@@ -4423,21 +4443,15 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
             for (const w of lang) delete data.scenes[Number(/\d+/.exec(w)[0])].where;
             dropped = lang.length; lang = [];
         }
-        lastKind = kind || (!parsed ? 'JSON 해석 실패' : !data ? '응답 처리 오류' : errors.length ? `검사 실패 ${errors.length}건` : lang.length ? `영어 아님 ${lang.length}곳` : dropped ? `통과 (영어 아닌 장소 ${dropped}곳 비움)` : '통과');
+        // Only on the first try, and only for a reply with nothing else wrong.
+        const days = attempt === 0 && data && !errors.length && !lang.length ? dayBreaks(data, { mem, chunk, expectContinue }) : [];
+        if (days.length) { kept = { data, fixes }; errors = days; }
+        const still = attempt === 1 && kept && data && !errors.length && !lang.length && dayBreaks(data, { mem, chunk, expectContinue }).length > 0;
+        lastKind = kind || (days.length ? `날이 바뀐 장면 ${days.length}곳 · 나누기 재요청` : !parsed ? 'JSON 해석 실패' : !data ? '응답 처리 오류' : errors.length ? `검사 실패 ${errors.length}건` : lang.length ? `영어 아님 ${lang.length}곳` : dropped ? `통과 (영어 아닌 장소 ${dropped}곳 비움)` : '통과');
         tries.push(`${took} · ${lastKind}`);
-        if (!errors.length && !lang.length) {
-            const merged = fixes.filter(f => f.startsWith('merged:')).length;
-            const moved = fixes.filter(f => f.startsWith('start:')).map(f => f.split(':')[2].split('>')[1]);
-            const said = [merged ? `앞 장면에 이어지는 장면 ${merged}개를 앞 장면에 합쳤어요` : '', moved.length ? `장면 시작 번호가 맞지 않아 ${moved.map(n => '#' + n).join(', ')}부터로 고쳤어요` : ''].filter(Boolean);
-            const titles = fixes.filter(f => f.startsWith('title:')).length, outlines = fixes.filter(f => f.startsWith('outline:')).length;
-            if (titles) said.push(`제목 ${titles}개를 임시로 보완했어요`);
-            if (outlines) said.push(`개요 ${outlines}개를 포인트로 임시 보완했어요`);
-            if (dropped) said.push(`장소가 영어로 오지 않아 ${dropped}곳을 비워 두었어요`);
-            if (said.length) ui.lastFix = { at: Date.now(), range: `#${chunk.from}–#${chunk.to}`, text: said.join(' · ') };
-            Object.defineProperty(data, 'lootWhy', { value: attachLoot(data, lootForChunk(chunk)).why, enumerable: false });
-            return data;
-        }
+        if (!errors.length && !lang.length) return accept(data, fixes, dropped, still ? DAY_KEPT : '');
     }
+    if (kept) return accept(kept.data, kept.fixes, 0, DAY_FAIL);
     const detail = [...errors, ...(lang.length ? [`Not English: ${lang.join(', ')}`] : [])];
     return Promise.reject(fail(`요약 AI 응답이 검사를 통과하지 못했어요 (#${chunk.from}–#${chunk.to}). 이 구간은 저장하지 않았어요.`, detail));
 }

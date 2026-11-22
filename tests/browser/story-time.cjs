@@ -169,7 +169,9 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const beforeWeekCalls=await ev(()=>M.calls.length);
     await ev(()=>{M.timeCase='week';M.add(2,()=> '일주일 뒤, 다시 길을 나섰다.');});await ev(()=>__savePoint.handle('run'));
     r=await ev(()=>({t:__savePoint.state().mem.scenes.at(-1).segs.at(-1).time.end,calls:M.calls.length,injection:M.prompts.savepoint.v}));
-    ok(r.t.certainty==='linked'&&r.t.day===7&&r.calls===beforeWeekCalls+1&&r.injection.includes('Last recorded story time: 2026-11-04'),'15. 일주일 뒤를 요청 한 번으로 +7일 연결하고 화면 주입에 반영');
+    ok(r.t.certainty==='linked'&&r.t.day===7&&r.injection.includes('Last recorded story time: 2026-11-04'),'15. 일주일 뒤를 +7일로 연결하고 화면 주입에 반영');
+    // v0.7.5-a1: a week later inside a continued scene is a new story day → asked once more to make it a new scene (was: one request).
+    ok(r.calls===beforeWeekCalls+2&&await ev(()=>M.calls.at(-1).includes('A new story day always ends the scene: make it "scene": "new"')),'15. (v0.7.5-a1) 이어지는 장면에서 일주일이 지나면 새 장면으로 한 번 더 물음, 답이 그대로여도 저장');
     await ev(()=>{M.timeCase='bad-count';M.add(2,()=> '그날 밤 우리는 다음에 만나자고 했다.');});await ev(()=>__savePoint.handle('run'));
     r=await ev(()=>{const s=__savePoint.state().mem.scenes.at(-1);const gap=s.segs.find(g=>g.time&&(g.time.start.certainty==='unconfirmed'||g.time.end.certainty==='unconfirmed'));
         __savePoint.handle('tab','journal');const b=[...document.querySelectorAll('.sp-scene-time [data-act=edit-scenetime]')].find(x=>x.dataset.id===s.id);return {has:!!b,sid:s.id,gid:gap?.id,edge:gap?.time.start.certainty==='unconfirmed'?'start':'end'};});
