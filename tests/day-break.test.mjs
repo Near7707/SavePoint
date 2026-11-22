@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { emptyMem, applyResult, normalizeResult, validateResult, dayBreaks } from '../core.js';
+import { emptyMem, applyResult, normalizeResult, validateResult, dayBreaks, splitKeeps } from '../core.js';
 
 // v0.7.5-a1: a scene kept across a new story day by the reply's own time stamps is asked to be split. Invented text only.
 const line = (date, clock) => `📅 Date: ${date} | 🕒 Time: ${clock}`;
@@ -143,4 +143,42 @@ test('each scene of a reply is checked with the scenes before it; a split reply 
 test('a reply the check cannot read gives no notes instead of an error', () => {
     assert.deepEqual(dayBreaks(null, { mem: emptyMem(), chunk: chunkOf(0, ['x']) }), []);
     assert.deepEqual(dayBreaks({ scenes: [{}] }, {}), []);
+});
+
+// v0.7.5-a3 (GPT review of a2, P2-2): a scene that is already new does not inherit the night of the scene before it.
+test('a new scene from the small hours into the morning of one date is not asked to split again', () => {
+    const { mem } = day();
+    const c = chunkOf(2, [msg('1024-04-13', '23:00'), msg('1024-04-14', '06:00'), msg('1024-04-14', '08:00')]);
+    const two = [scene('continue', 2, { start: at(2, '1024-04-13', '23:00', 'night'), end: { relation: 'same' } }, { ended: true }),
+        scene('new', 3, { start: at(3, '1024-04-14', '06:00', 'dawn'), end: at(4, '1024-04-14', '08:00', 'morning') }, { start: 3 })];
+    assert.deepEqual(check(mem, c, two).out, []);
+    // One scene running through the same hours still is.
+    const one = [scene('continue', 2, { start: at(2, '1024-04-13', '23:00', 'night'), via: [at(3, '1024-04-14', '06:00', 'dawn')], end: at(4, '1024-04-14', '08:00', 'morning') })];
+    const out = check(mem, c, one).out;
+    assert.equal(out.length, 1);
+    assert.match(out[0], /1024-04-13 · night · 23:00 → 1024-04-14 · morning · 08:00, shown at #4/);
+});
+
+// v0.7.5-a3 (GPT review of a2, P2-1): what the split reply must still carry.
+test('splitKeeps: time stamps on messages and state changes of the first reply', () => {
+    const t = (n, date, clock) => ({ relation: 'explicit', date, clock, period: 'morning', msg: n, quote: 'q' });
+    const promise = { op: 'add', type: 'quest', kind: 'promise', status: 'open', who: ['ari'], text: 'Promise made at 3.', msgs: [3] };
+    const first = { scenes: [{ time: { start: t(2, '1024-04-13', '10:00'), end: t(4, '1024-04-15', '09:00') } }], changes: [promise] };
+    const split = { scenes: [{ time: { start: t(2, '1024-04-13', '10:00'), end: { relation: 'same' } } }, { time: { start: t(4, '1024-04-15', '09:00'), end: { relation: 'same' } } }], changes: [promise] };
+    assert.equal(splitKeeps(first, split), '');
+    // Merged parts count too.
+    assert.equal(splitKeeps(first, { scenes: [{ _timeParts: [{ start: t(2, '1024-04-13', '10:00') }, { end: t(4, '1024-04-15', '09:00') }] }], changes: [promise] }), '');
+    assert.equal(splitKeeps(first, { ...split, scenes: split.scenes.map(() => ({})) }), 'time stamps 2');
+    assert.equal(splitKeeps(first, { ...split, scenes: [split.scenes[0], { time: { start: t(4, '1024-04-16', '09:00') } }] }), 'time stamps 1');
+    // A change swapped for another (same count), or dropped.
+    assert.equal(splitKeeps(first, { ...split, changes: [{ ...promise, text: 'Something else.', msgs: [2] }] }), 'changes 1');
+    assert.equal(splitKeeps(first, { ...split, changes: [{ ...promise, status: 'done' }] }), 'changes 1');
+    assert.equal(splitKeeps(first, { ...split, changes: [] }), 'changes 1');
+    // Reworded over the same messages, or the same text on other messages: the same change. One second change answers one first change.
+    assert.equal(splitKeeps(first, { ...split, changes: [{ ...promise, text: 'A promise was given.' }] }), '');
+    assert.equal(splitKeeps(first, { ...split, changes: [{ ...promise, msgs: [3, 4] }] }), '');
+    assert.equal(splitKeeps({ ...first, changes: [promise, promise] }, split), 'changes 1');
+    // Extra stamps and changes in the second reply are fine; "same" stamps are not counted.
+    assert.equal(splitKeeps({ scenes: [{ time: { start: { relation: 'same' } } }], changes: [] }, split), '');
+    assert.equal(splitKeeps(first, null), 'unreadable');
 });

@@ -61,6 +61,10 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
             // (a2) Split as asked, but the state changes are gone / a place comes back in Korean.
             if (isRetry && M.retryNoChanges) data.changes = [];
             if (isRetry && M.retryKoreanPlace) data.scenes.at(-1).where = '낡은 역 앞 광장';
+            // (a3) Split, but every time stamp is gone / the promise is swapped for another change with the same count.
+            if (isRetry && M.retryNoTimes) data.scenes.forEach(sc => { delete sc.time; });
+            if (isRetry && M.retrySwap) data.changes = data.changes.map(c => ({ ...c, text: 'Something else was agreed.', msgs: [c.msgs[0] - 1], terms: c.terms && { ...c.terms, msg: c.msgs[0] - 1, quote: msgs.find(m => m.n === c.msgs[0] - 1).text.slice(0, 24) } }));
+            if (isRetry && M.retryReword) data.changes = data.changes.map(c => ({ ...c, text: 'A promise was given here.' }));
             if (!isRetry && M.retryThrows) M.throwNext = new Error('Load failed');
         };
         window.addDays = (n, a, b) => M.add(n, i => `[Date: ${M.chat.length - window.__base < 10 ? a : b} | Time: 09:${String(10 + (M.chat.length % 50)).padStart(2, '0')}] The courier waited by the gate ${'and waited '.repeat(8)}.${window.__promise && M.chat.length - window.__base === 4 ? ' PROMISE' : ''}`);
@@ -112,7 +116,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     // 8. (a2) Split, but the state change is left out: the first reply is saved.
     q0 = q.n; c0 = r.calls;
     await ev(() => { M.retryStrips = false; M.retrySplits = true; M.retryNoChanges = true; }); await add('1024-04-24', '1024-04-26'); await run(); r = await snap(); q = await recs();
-    ok(r.calls === c0 + 2 && r.st.lastIndex === 158 && q.n === q0 + 1 && r.fix.includes('나뉘지 않아'), '8. (a2) 나눴어도 상태 변경이 줄어든 재응답은 쓰지 않고 첫 응답 저장');
+    ok(r.calls === c0 + 2 && r.st.lastIndex === 158 && q.n === q0 + 1 && r.fix.includes('상태 변경이 빠져'), '8. (a2) 나눴어도 상태 변경이 줄어든 재응답은 쓰지 않고 첫 응답 저장 (a3) 알림은 "빠져"');
 
     // 9. (a2) Split, but a place is not in English: the first reply (its place is fine) is saved, nothing is blanked.
     q0 = q.n; c0 = r.calls; const sc0 = r.scenes.length;
@@ -124,5 +128,21 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     q0 = q.n; c0 = r.calls;
     await ev(() => { M.retryKoreanPlace = false; __savePoint.ui.lastFix = null; /* the line of the round before stays until the next one */ }); await add('1024-04-28', '1024-04-30'); await run(); r = await snap(); q = await recs();
     ok(r.calls === c0 + 2 && r.st.lastIndex === 198 && r.scenes.length === sc0 + 1 && q.n === q0 + 1 && !r.fix, '10. (a2) 다 갖춰 나눈 재응답은 저장');
+
+    // 11. (a3, GPT P2-1) Split at the right message, but the reply's time stamps are all gone: the first reply is saved.
+    q0 = q.n; c0 = r.calls; let sc1 = r.scenes.length;
+    await ev(() => { M.retryNoTimes = true; __savePoint.ui.lastFix = null; }); await add('1024-04-30', '1024-05-02'); await run(); r = await snap(); q = await recs();
+    ok(r.calls === c0 + 2 && r.st.lastIndex === 218 && r.scenes.length === sc1 && q.n === q0 + 1 && q.end === '1024-05-02' && r.fix.includes('날짜나 상태 변경이 빠져'), '11. (a3) 나눴지만 날짜를 모두 뺀 재응답은 쓰지 않고 첫 응답 저장(날짜 그대로)');
+
+    // 12. (a3) Split, the promise swapped for another change (same count): the first reply is saved, its promise kept.
+    q0 = q.n; c0 = r.calls; sc1 = r.scenes.length;
+    await ev(() => { M.retryNoTimes = false; M.retrySwap = true; __savePoint.ui.lastFix = null; }); await add('1024-05-02', '1024-05-04'); await run(); r = await snap(); q = await recs();
+    const lastRec = await ev(() => __savePoint.state().mem.records.at(-1)?.text || '');
+    ok(r.calls === c0 + 2 && r.st.lastIndex === 238 && r.scenes.length === sc1 && q.n === q0 + 1 && /Promise made at/.test(lastRec) && r.fix.includes('상태 변경이 빠져'), '12. (a3) 상태 변경을 다른 것으로 바꾼 재응답은 쓰지 않고 첫 응답 저장(약속 그대로)');
+
+    // 13. (a3) Split, the promise reworded over the same messages: the same change → the second reply is saved.
+    q0 = q.n; c0 = r.calls; sc1 = r.scenes.length;
+    await ev(() => { M.retrySwap = false; M.retryReword = true; __savePoint.ui.lastFix = null; }); await add('1024-05-04', '1024-05-06'); await run(); r = await snap(); q = await recs();
+    ok(r.calls === c0 + 2 && r.st.lastIndex === 258 && r.scenes.length === sc1 + 1 && q.n === q0 + 1 && !r.fix, '13. (a3) 같은 메시지의 같은 변경을 말만 바꾼 재응답은 저장');
     await browser.close(); srv.close(); console.log(failures ? failures + ' FAILED' : 'ALL PASS'); process.exit(failures ? 1 : 0);
 })();

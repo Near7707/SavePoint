@@ -5,7 +5,7 @@ import { foldLegacyOutline,
     emptyMem, cleanMem, detachMem, chunkMessages, promptContext, validateResult, resultLanguageIssues,
     applyResult, closeOpenScene, pushHistory, rollbackFrom, buildInjection, neededBudgetSteps, openScene, memStats,
     pointInjected, pointSymbol, rekeyItems, validateRekey, applyRekey, sceneOutlineText, sceneOutlineParts,
-    refreshProvisionalOutlines, normalizeResult, dayBreaks, validateCheck, checkScope, dupState, pointId,
+    refreshProvisionalOutlines, normalizeResult, dayBreaks, splitKeeps, validateCheck, checkScope, dupState, pointId,
     recordLine, normalizeRecordNames, entityName, estTokens, QUEST_KINDS, WORLD_KINDS, ENTITY_TYPES,
     groupErrors, findQuote, mostlyNonEnglish, setQuestStatus, newestParty,
 } from './core.js';
@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.5-a2';
+const VERSION = '0.7.5-a3';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -4406,12 +4406,15 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
         return data;
     };
     const DAY_KEPT = '날이 바뀐 곳에서 장면을 나누도록 다시 물었지만 나뉘지 않아, 첫 응답을 저장했어요';
+    const DAY_LOST = '날이 바뀐 곳에서 장면을 나눈 답이 왔지만 첫 응답의 날짜나 상태 변경이 빠져 있어, 첫 응답을 저장했어요';
     const DAY_FAIL = '날이 바뀐 곳에서 장면을 나누도록 다시 물었지만 그 답을 받지 못했거나 쓸 수 없어, 첫 응답을 저장했어요';
-    // v0.7.5-a2 (GPT review of a1, P2-1): the second reply is taken only when it really is the first one split: no new day left inside
-    // a scene, more scenes than before (or the continued scene made new, when that was all that was asked) and no fewer state changes.
-    // Anything else — still one scene, dates or changes left out to pass, a place not in English — saves the first reply.
-    const splitDone = d => !dayBreaks(d, { mem, chunk, expectContinue }).length && (d.changes?.length || 0) >= (kept.data.changes?.length || 0)
-        && (d.scenes.length > kept.data.scenes.length || (kept.startOnly && d.scenes[0].scene === 'new'));
+    // v0.7.5-a2/a3 (GPT reviews of a1 and a2): the second reply is taken only when it really is the first one split ('split': no new day
+    // left inside a scene, more scenes than before, or the continued scene made new when that was all that was asked) and nothing of
+    // the first one was lost on the way ('lost': see splitKeeps). Anything else saves the first reply.
+    const splitWhy = d => {
+        if (dayBreaks(d, { mem, chunk, expectContinue }).length || !(d.scenes.length > kept.data.scenes.length || (kept.startOnly && d.scenes[0].scene === 'new'))) return 'split';
+        return splitKeeps(kept.data, d) ? 'lost' : '';
+    };
     for (let attempt = 0; attempt < 2; attempt++) {
         let raw;
         const start = Date.now();
@@ -4444,10 +4447,11 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
         // v0.6.103: on the last try, a place label ("where") still not in English is left out instead of losing the whole
         // range: the scene keeps the place it had (a continued scene) or has none. Any other problem still fails.
         if (attempt === 1 && kept) {
-            const done = !!data && !errors.length && !lang.length;
-            tries.push(`${took} · ${kind || (!done ? '쓸 수 없는 답 — 첫 응답을 저장' : splitDone(data) ? '통과 (날이 바뀐 곳에서 나눔)' : '나뉘지 않음 — 첫 응답을 저장')}`);
-            if (done && splitDone(data)) return accept(data, fixes, 0);
-            return accept(kept.data, kept.fixes, 0, done ? DAY_KEPT : DAY_FAIL);
+            const done = !!data && !errors.length && !lang.length, why = done ? splitWhy(data) : 'bad';
+            const said = { '': '통과 (날이 바뀐 곳에서 나눔)', split: '나뉘지 않음 — 첫 응답을 저장', lost: `나눴지만 첫 응답의 기록이 빠짐(${splitKeeps(kept.data, data)}) — 첫 응답을 저장`, bad: '쓸 수 없는 답 — 첫 응답을 저장' }[why];
+            tries.push(`${took} · ${kind || said}`);
+            if (!why) return accept(data, fixes, 0);
+            return accept(kept.data, kept.fixes, 0, { split: DAY_KEPT, lost: DAY_LOST, bad: DAY_FAIL }[why]);
         }
         let dropped = 0;
         if (attempt === 1 && !errors.length && lang.length && lang.every(w => /^scenes\[\d+\]\.where$/.test(w))) {

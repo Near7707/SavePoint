@@ -707,6 +707,9 @@ export function dayBreaks(data, { mem, chunk, expectContinue } = {}) {
         const cont = scenes[0]?.scene === 'continue' && !!open;
         if (cont) for (const g of open.segs) if (g.time?.mode === 'present') edges(g.time).forEach(step);
         scenes.forEach((s, i) => {
+            // v0.7.5-a3 (GPT review of a2, P2-2): a scene that is already new starts its own day count; the night of the scene
+            // before it is not carried into it (a new scene from 06:00 to 08:00 on one date is not asked to split at 08:00).
+            if (s.scene !== 'continue') base = null;
             const from = starts[i], to = i + 1 < scenes.length ? chunk.indices.filter(m => m < starts[i + 1]).pop() ?? from : chunk.to;
             const seg = { id: `dry${i}`, from, to };
             const time = resolveResultTime(tmp, s._timeParts ? { mode: s.time?.mode || 'present', parts: s._timeParts } : s.time, { chunk, seg, quoteMatches: findQuote });
@@ -731,6 +734,34 @@ export function dayBreaks(data, { mem, chunk, expectContinue } = {}) {
         });
         return out;
     } catch { return []; }
+}
+
+// v0.7.5-a3 (GPT review of a2, P2-1): what a reply asked to split must still carry from the first one. Every time stamp that rests on
+// a message (its relation, date, clock and days at that message) and every state change (same record shape, with the same text or
+// the same message numbers: a reworded text over the same messages is the same change). Points and notes are not compared.
+// Returns '' when nothing is missing.
+export function splitKeeps(first, second) {
+    try {
+        const stamps = d => {
+            const out = [];
+            for (const sc of d.scenes || []) for (const t of sc._timeParts || [sc.time]) for (const x of [t?.start, ...(t?.via || []), t?.end])
+                if (plain(x) && Number.isInteger(Number(x.msg)) && x.relation && x.relation !== 'same')
+                    out.push([x.relation, x.date || '', x.clock || '', x.days ?? '', Number(x.msg)].join('|'));
+            return out;
+        };
+        const have = stamps(second);
+        const lostTime = stamps(first).filter(k => !have.includes(k));
+        const shape = c => ['op', 'type', 'id', 'entity', 'holder', 'aspect', 'kind', 'status'].map(f => JSON.stringify(c?.[f] ?? null)).join('|');
+        const text = c => String(c?.text || '').toLowerCase().replace(/\s+/g, ' ').trim();
+        const msgs = c => JSON.stringify([...new Set((c?.msgs || []).map(Number))].sort((a, b) => a - b));
+        const pool = [...(second.changes || [])];
+        let lostChange = 0;
+        for (const c of first.changes || []) {
+            const k = pool.findIndex(x => shape(x) === shape(c) && (text(x) === text(c) || (msgs(c) !== '[]' && msgs(x) === msgs(c))));
+            if (k < 0) lostChange++; else pool.splice(k, 1);
+        }
+        return [lostTime.length ? `time stamps ${lostTime.length}` : '', lostChange ? `changes ${lostChange}` : ''].filter(Boolean).join(', ');
+    } catch { return 'unreadable'; }
 }
 
 // ───────── scene boundaries (automatic collection, step 1) ─────────

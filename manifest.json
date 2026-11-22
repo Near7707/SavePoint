@@ -6,7 +6,7 @@
     "js": "index.js",
     "css": "style.css",
     "author": "Near7707",
-    "version": "0.7.5-a2",
+    "version": "0.7.5-a3",
     "generate_interceptor": "savePointSendGuard",
     "homePage": "https://github.com/Near7707/SavePoint"
 }
