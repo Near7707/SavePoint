@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.5-a1';
+const VERSION = '0.7.5-a2';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -4405,8 +4405,13 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
         Object.defineProperty(data, 'lootWhy', { value: attachLoot(data, lootForChunk(chunk)).why, enumerable: false });
         return data;
     };
-    const DAY_KEPT = '날이 바뀐 곳에서 장면을 나누도록 다시 물었지만 나뉘지 않아, 받은 대로 저장했어요';
-    const DAY_FAIL = '날이 바뀐 곳에서 장면을 나누도록 다시 물었지만 그 요청이 실패해, 첫 응답을 저장했어요';
+    const DAY_KEPT = '날이 바뀐 곳에서 장면을 나누도록 다시 물었지만 나뉘지 않아, 첫 응답을 저장했어요';
+    const DAY_FAIL = '날이 바뀐 곳에서 장면을 나누도록 다시 물었지만 그 답을 받지 못했거나 쓸 수 없어, 첫 응답을 저장했어요';
+    // v0.7.5-a2 (GPT review of a1, P2-1): the second reply is taken only when it really is the first one split: no new day left inside
+    // a scene, more scenes than before (or the continued scene made new, when that was all that was asked) and no fewer state changes.
+    // Anything else — still one scene, dates or changes left out to pass, a place not in English — saves the first reply.
+    const splitDone = d => !dayBreaks(d, { mem, chunk, expectContinue }).length && (d.changes?.length || 0) >= (kept.data.changes?.length || 0)
+        && (d.scenes.length > kept.data.scenes.length || (kept.startOnly && d.scenes[0].scene === 'new'));
     for (let attempt = 0; attempt < 2; attempt++) {
         let raw;
         const start = Date.now();
@@ -4438,6 +4443,12 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
         lang = data ? resultLanguageIssues(data) : [];
         // v0.6.103: on the last try, a place label ("where") still not in English is left out instead of losing the whole
         // range: the scene keeps the place it had (a continued scene) or has none. Any other problem still fails.
+        if (attempt === 1 && kept) {
+            const done = !!data && !errors.length && !lang.length;
+            tries.push(`${took} · ${kind || (!done ? '쓸 수 없는 답 — 첫 응답을 저장' : splitDone(data) ? '통과 (날이 바뀐 곳에서 나눔)' : '나뉘지 않음 — 첫 응답을 저장')}`);
+            if (done && splitDone(data)) return accept(data, fixes, 0);
+            return accept(kept.data, kept.fixes, 0, done ? DAY_KEPT : DAY_FAIL);
+        }
         let dropped = 0;
         if (attempt === 1 && !errors.length && lang.length && lang.every(w => /^scenes\[\d+\]\.where$/.test(w))) {
             for (const w of lang) delete data.scenes[Number(/\d+/.exec(w)[0])].where;
@@ -4445,13 +4456,11 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
         }
         // Only on the first try, and only for a reply with nothing else wrong.
         const days = attempt === 0 && data && !errors.length && !lang.length ? dayBreaks(data, { mem, chunk, expectContinue }) : [];
-        if (days.length) { kept = { data, fixes }; errors = days; }
-        const still = attempt === 1 && kept && data && !errors.length && !lang.length && dayBreaks(data, { mem, chunk, expectContinue }).length > 0;
+        if (days.length) { kept = { data, fixes, startOnly: days.every(d => d.startsWith('scenes[0] continues the OPEN SCENE')) }; errors = days; }
         lastKind = kind || (days.length ? `날이 바뀐 장면 ${days.length}곳 · 나누기 재요청` : !parsed ? 'JSON 해석 실패' : !data ? '응답 처리 오류' : errors.length ? `검사 실패 ${errors.length}건` : lang.length ? `영어 아님 ${lang.length}곳` : dropped ? `통과 (영어 아닌 장소 ${dropped}곳 비움)` : '통과');
         tries.push(`${took} · ${lastKind}`);
-        if (!errors.length && !lang.length) return accept(data, fixes, dropped, still ? DAY_KEPT : '');
+        if (!errors.length && !lang.length) return accept(data, fixes, dropped);
     }
-    if (kept) return accept(kept.data, kept.fixes, 0, DAY_FAIL);
     const detail = [...errors, ...(lang.length ? [`Not English: ${lang.join(', ')}`] : [])];
     return Promise.reject(fail(`요약 AI 응답이 검사를 통과하지 못했어요 (#${chunk.from}–#${chunk.to}). 이 구간은 저장하지 않았어요.`, detail));
 }

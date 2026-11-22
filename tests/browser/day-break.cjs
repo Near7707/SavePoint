@@ -46,6 +46,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
             M.seen = (M.seen || 0) + 1;
             if (isRetry && M.retryThrows) return;
             if (isRetry && M.retryBad) { data.scenes[0].points[0].msgs = [99999]; return; }
+            // (a2) A second reply that passes by leaving things out: no times and no state changes, still one scene.
+            if (isRetry && M.retryStrips) { data.changes = []; return; }
             if (isRetry && M.retrySplits) {
                 // One scene per story day, as asked.
                 const first = data.scenes[0], starts = msgs.filter((m, i) => i === 0 || day(m) !== day(msgs[i - 1]));
@@ -56,9 +58,12 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
                 const from = sc.start ?? msgs[0].n, to = (data.scenes[i + 1]?.start ?? msgs.at(-1).n + 1) - 1, mine = msgs.filter(m => m.n >= from && m.n <= to);
                 sc.time = { mode: 'present', start: stampOf(mine[0]), end: stampOf(mine.at(-1)) };
             });
+            // (a2) Split as asked, but the state changes are gone / a place comes back in Korean.
+            if (isRetry && M.retryNoChanges) data.changes = [];
+            if (isRetry && M.retryKoreanPlace) data.scenes.at(-1).where = '낡은 역 앞 광장';
             if (!isRetry && M.retryThrows) M.throwNext = new Error('Load failed');
         };
-        window.addDays = (n, a, b) => M.add(n, i => `[Date: ${M.chat.length - window.__base < 10 ? a : b} | Time: 09:${String(10 + (M.chat.length % 50)).padStart(2, '0')}] The courier waited by the gate ${'and waited '.repeat(8)}.`);
+        window.addDays = (n, a, b) => M.add(n, i => `[Date: ${M.chat.length - window.__base < 10 ? a : b} | Time: 09:${String(10 + (M.chat.length % 50)).padStart(2, '0')}] The courier waited by the gate ${'and waited '.repeat(8)}.${window.__promise && M.chat.length - window.__base === 4 ? ' PROMISE' : ''}`);
     });
     const add = (a, b) => ev(([a, b]) => { window.__base = M.chat.length; addDays(M.chat.length ? 20 : 21, a, b); }, [a, b]);
 
@@ -78,23 +83,46 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     // 3. The second reply still does not split: saved as received, said so.
     c0 = r.calls;
     await ev(() => { M.retrySplits = false; }); await add('1024-04-14', '1024-04-16'); await run(); r = await snap();
-    ok(r.calls === c0 + 2 && r.st.lastIndex === 58 && r.scenes.length === 2 && !r.st.autoFail, '3. 다시 물어도 안 나누면 받은 대로 저장(구간을 잃지 않음)');
+    ok(r.calls === c0 + 2 && r.st.lastIndex === 58 && r.scenes.length === 2 && !r.st.autoFail, '3. 다시 물어도 안 나누면 첫 응답을 저장(구간을 잃지 않음)');
     ok(r.fix.includes('나뉘지 않아'), '3. 자동 보정 줄에 나뉘지 않았다고 알림');
 
     // 4. The second reply does not pass the checks: the first reply is saved.
     c0 = r.calls;
     await ev(() => { M.retryBad = true; }); await add('1024-04-16', '1024-04-18'); await run(); r = await snap();
-    ok(r.calls === c0 + 2 && r.st.lastIndex === 78 && !r.st.autoFail && r.st.autoLast?.status !== 'failed' && r.fix.includes('그 요청이 실패해'), '4. 다시 물은 답이 검사를 못 넘으면 첫 응답을 저장');
+    ok(r.calls === c0 + 2 && r.st.lastIndex === 78 && !r.st.autoFail && r.st.autoLast?.status !== 'failed' && r.fix.includes('쓸 수 없어'), '4. 다시 물은 답이 검사를 못 넘으면 첫 응답을 저장');
 
     // 5. The second request itself fails: the first reply is saved.
     c0 = r.calls;
     await ev(() => { M.retryBad = false; M.retryThrows = true; }); await add('1024-04-18', '1024-04-20'); await run(); r = await snap();
-    ok(r.calls === c0 + 2 && r.st.lastIndex === 98 && !r.st.autoFail && r.st.autoLast?.status !== 'failed' && r.fix.includes('그 요청이 실패해'), '5. 다시 묻는 요청이 실패해도 첫 응답을 저장');
+    ok(r.calls === c0 + 2 && r.st.lastIndex === 98 && !r.st.autoFail && r.st.autoLast?.status !== 'failed' && r.fix.includes('쓸 수 없어'), '5. 다시 묻는 요청이 실패해도 첫 응답을 저장');
 
     // 6. A reply with another problem is asked again for that problem only, and its second reply is not asked a third time.
     c0 = r.calls;
     await ev(() => { M.retryThrows = false; M.throwNext = null; M.badOnce = true; }); await add('1024-04-20', '1024-04-22'); await run(); r = await snap();
     const last = await ev(() => M.calls.at(-1));
     ok(r.calls === c0 + 2 && r.st.lastIndex === 118 && !last.includes('new story day by your own') && r.fix.includes('나뉘지 않아') === false, '6. 다른 검사 실패의 재요청에는 끼지 않고, 요청은 두 번까지만');
+
+    // 7. (a2, GPT P2-1) The second reply drops its times and its state change and is still one scene: it would pass every check, and
+    // without a date nothing looks like a new day any more → the first reply is the one saved (its promise and its dates are there).
+    const recs = () => ev(() => ({ n: __savePoint.state().mem.records.length, end: __savePoint.state().mem.scenes.at(-1).segs.at(-1).time?.end?.date || '' }));
+    let q0 = (await recs()).n; c0 = r.calls;
+    await ev(() => { M.badOnce = false; M.retryStrips = true; window.__promise = true; }); await add('1024-04-22', '1024-04-24'); await run(); r = await snap(); let q = await recs();
+    ok(r.calls === c0 + 2 && r.st.lastIndex === 138 && q.n === q0 + 1 && q.end === '1024-04-24' && r.fix.includes('나뉘지 않아'), '7. (a2) 날짜·상태 변경을 빼고 안 나눈 재응답은 쓰지 않고 첫 응답 저장(약속·날짜 그대로)');
+
+    // 8. (a2) Split, but the state change is left out: the first reply is saved.
+    q0 = q.n; c0 = r.calls;
+    await ev(() => { M.retryStrips = false; M.retrySplits = true; M.retryNoChanges = true; }); await add('1024-04-24', '1024-04-26'); await run(); r = await snap(); q = await recs();
+    ok(r.calls === c0 + 2 && r.st.lastIndex === 158 && q.n === q0 + 1 && r.fix.includes('나뉘지 않아'), '8. (a2) 나눴어도 상태 변경이 줄어든 재응답은 쓰지 않고 첫 응답 저장');
+
+    // 9. (a2) Split, but a place is not in English: the first reply (its place is fine) is saved, nothing is blanked.
+    q0 = q.n; c0 = r.calls; const sc0 = r.scenes.length;
+    await ev(() => { M.retryNoChanges = false; M.retryKoreanPlace = true; }); await add('1024-04-26', '1024-04-28'); await run(); r = await snap(); q = await recs();
+    const where = await ev(() => __savePoint.state().mem.scenes.at(-1).where);
+    ok(r.calls === c0 + 2 && r.st.lastIndex === 178 && r.scenes.length === sc0 && where === 'Rail Street' && r.fix.includes('쓸 수 없어') && !r.fix.includes('비워'), '9. (a2) 장소가 영어가 아닌 재응답은 쓰지 않고 첫 응답 저장(장소를 비우지 않음)');
+
+    // 10. Split in full, with the change kept: the second reply is saved.
+    q0 = q.n; c0 = r.calls;
+    await ev(() => { M.retryKoreanPlace = false; __savePoint.ui.lastFix = null; /* the line of the round before stays until the next one */ }); await add('1024-04-28', '1024-04-30'); await run(); r = await snap(); q = await recs();
+    ok(r.calls === c0 + 2 && r.st.lastIndex === 198 && r.scenes.length === sc0 + 1 && q.n === q0 + 1 && !r.fix, '10. (a2) 다 갖춰 나눈 재응답은 저장');
     await browser.close(); srv.close(); console.log(failures ? failures + ' FAILED' : 'ALL PASS'); process.exit(failures ? 1 : 0);
 })();

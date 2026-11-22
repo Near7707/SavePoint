@@ -263,11 +263,14 @@ export function lastStoryTime(mem) {
 // v0.7.5-a1: has the story reached a new day between two resolved stamps, the way a night's sleep does? Only what both stamps
 // confirm: two or more days apart, or one day apart and the later one is not the small hours (a dated morning or later, a clock
 // from 07:00, or a quoted "the next day"). Midnight passing into dawn (an all-night scene) is not counted; unknown is not counted.
+export function storyDayGap(a, b, anchors = {}) {
+    if (!known(a) || !known(b) || !anchors[a.anchor] || !anchors[b.anchor]) return null;
+    if (a.anchor === b.anchor) { const x = a.day ?? anchors[a.anchor].baseDay, y = b.day ?? anchors[b.anchor].baseDay; return integer(x) && integer(y) ? y - x : null; }
+    const x = isoDay(dateAt(a, anchors)), y = isoDay(dateAt(b, anchors));
+    return x !== null && y !== null ? y - x : null;
+}
 export function newStoryDay(a, b, anchors = {}) {
-    if (!known(a) || !known(b) || !anchors[a.anchor] || !anchors[b.anchor]) return false;
-    let gap = null;
-    if (a.anchor === b.anchor) { const x = a.day ?? anchors[a.anchor].baseDay, y = b.day ?? anchors[b.anchor].baseDay; if (integer(x) && integer(y)) gap = y - x; }
-    else { const x = isoDay(dateAt(a, anchors)), y = isoDay(dateAt(b, anchors)); if (x !== null && y !== null) gap = y - x; }
+    const gap = storyDayGap(a, b, anchors);
     if (gap === null || gap < 1) return false;
     if (gap >= 2) return true;
     const hour = b.clock ? Number(b.clock.slice(0, 2)) : null;
