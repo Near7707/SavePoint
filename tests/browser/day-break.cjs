@@ -69,6 +69,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
             if (M.withDue) data.changes.forEach(c => { c.due = { expr: 'tomorrow', days: 1, msg: c.msgs[0] }; });
             if (isRetry && M.retryNoQuote) delete data.scenes.at(-1).time.end.quote;
             if (isRetry && M.retryNoDue) data.changes.forEach(c => { delete c.due; });
+            // (a5) Split, but the new day is told as a flashback (same date, clock and quote).
+            if (isRetry && M.retryFlashback) data.scenes.at(-1).time.mode = 'flashback';
             if (!isRetry && M.retryThrows) M.throwNext = new Error('Load failed');
         };
         window.addDays = (n, a, b) => M.add(n, i => `[Date: ${M.chat.length - window.__base < 10 ? a : b} | Time: 09:${String(10 + (M.chat.length % 50)).padStart(2, '0')}] The courier waited by the gate ${'and waited '.repeat(8)}.${window.__promise && M.chat.length - window.__base === 4 ? ` PROMISE${window.__due ? ' to come back tomorrow' : ''}` : ''}`);
@@ -167,5 +169,11 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => { M.retryNoDue = false; __savePoint.ui.lastFix = null; }); await add('1024-05-10', '1024-05-12'); await run(); r = await snap(); q = await recs();
     endSure = await ev(() => __savePoint.state().mem.scenes.at(-1).segs.at(-1).time?.end?.certainty);
     ok(r.calls === c0 + 2 && r.st.lastIndex === 318 && r.scenes.length === sc1 + 1 && q.n === q0 + 1 && (await dueOf()) === 'tomorrow' && endSure === 'explicit' && !r.fix, '16. (a4) 기한·인용을 다 갖춰 나눈 재응답은 저장');
+
+    // 17. (a5, GPT review of a4, P2-2) Split, but the new day's scene is a flashback: saved, the present would stay behind → the first reply.
+    q0 = q.n; c0 = r.calls; sc1 = r.scenes.length;
+    await ev(() => { M.retryFlashback = true; __savePoint.ui.lastFix = null; }); await add('1024-05-12', '1024-05-14'); await run(); r = await snap(); q = await recs();
+    const modeEnd = await ev(() => { const t = __savePoint.state().mem.scenes.at(-1).segs.at(-1).time; return `${t?.mode} ${t?.end?.date}`; });
+    ok(r.calls === c0 + 2 && r.st.lastIndex === 338 && r.scenes.length === sc1 && modeEnd === 'present 1024-05-14' && r.fix.includes('날짜나 상태 변경이 빠져'), '17. (a5) 새날 장면을 회상으로 바꾼 재응답은 쓰지 않고 첫 응답 저장(현재 시간 그대로)');
     await browser.close(); srv.close(); console.log(failures ? failures + ' FAILED' : 'ALL PASS'); process.exit(failures ? 1 : 0);
 })();

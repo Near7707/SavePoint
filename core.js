@@ -776,6 +776,8 @@ export function splitKeeps(first, second, { mem = null, chunk = null } = {}) {
 
 // v0.7.5-a4: the times of a reply as they would be saved, on a throwaway copy (as in dayBreaks): each stamp confirmed from a message's
 // own words ("explicit"; a "same" that only inherits says nothing new), as "#msg date-and-clock". Nothing is written.
+// v0.7.5-a5 (GPT review of a4): a quoted "two days later" ("advance") is kept as "linked" but rests on the message too (P2-1), and
+// present or flashback is part of the key (P2-2: the same date told as a flashback leaves the present behind).
 function confirmedTimes(data, mem, chunk) {
     const scenes = data?.scenes || [], n = v => Number(String(v).replace('#', ''));
     const starts = scenes.map((s, i) => (i === 0 ? chunk.from : n(s.start)));
@@ -789,8 +791,8 @@ function confirmedTimes(data, mem, chunk) {
         dry.segs.push(seg);
         if (!time) return;
         for (const t of [time.start, ...(time.via || []), time.end])
-            if (t && t.certainty === 'explicit' && Number.isInteger(t.evidence?.msg) && tmp.timeAnchors[t.anchor])
-                out.push(`#${t.evidence.msg} ${formatStoryStamp({ ...t, period: '' }, tmp.timeAnchors, 'en')}`);
+            if (t && (t.certainty === 'explicit' || (t.certainty === 'linked' && t.op === 'advance' && t.verified)) && Number.isInteger(t.evidence?.msg) && tmp.timeAnchors[t.anchor])
+                out.push(`${time.mode} #${t.evidence.msg} ${formatStoryStamp({ ...t, period: '' }, tmp.timeAnchors, 'en')}`);
     });
     return [...new Set(out)];
 }

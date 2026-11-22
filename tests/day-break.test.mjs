@@ -239,3 +239,33 @@ test('splitKeeps: a promise keeps its deadline and quoted terms (P2-2)', () => {
     assert.ok(saved.save(saved.first).records.some(x => x.due));
     assert.ok(!saved.save(saved.second).records.some(x => x.due));
 });
+
+// v0.7.5-a5 (GPT review of a4): a quoted "two days later" rests on its message too, and a flashback is not the present.
+test('splitKeeps: a quoted advance must stay confirmed, and the present must stay the present', () => {
+    const { mem } = day();
+    const save = (d, c) => applyResult(JSON.parse(JSON.stringify(mem)), d, c, { room: 'room-A' }).mem;
+    const make = (c, scenes) => { const d = { scenes, entities: [], changes: [] }; normalizeResult(d, { mem, chunk: c }); assert.deepEqual(validateResult(d, { mem, chunk: c }), []); return d; };
+    const split = (c, late, mode = 'present') => make(c, [scene('continue', 2, { start: { relation: 'same' }, end: { relation: 'same' } }, { ended: true }),
+        scene('new', 3, { mode, start: late, end: { relation: 'same' } }, { start: 3 })]);
+    // "Two days later" with its quote, then without it: the days alone are the same values, saved it is unconfirmed.
+    const c = chunkOf(2, ['The courier waited by the gate.', 'Two days later, the courier came back.']);
+    const adv = quote => ({ relation: 'advance', days: 2, period: 'morning', msg: 3, ...(quote ? { quote: 'Two days later' } : {}) });
+    const first = make(c, [scene('continue', 2, { start: { relation: 'same' }, end: adv(true) })]);
+    assert.equal(dayBreaks(first, { mem, chunk: c }).length, 1, 'asked to split');
+    assert.equal(splitKeeps(first, split(c, adv(true)), { mem, chunk: c }), '');
+    const bare = split(c, adv(false));
+    assert.equal(splitKeeps(first, bare), '', 'the values alone match');
+    assert.equal(splitKeeps(first, bare, { mem, chunk: c }), 'time stamps 1');
+    const start = m => m.scenes.at(-1).segs.at(-1).time.start.certainty;
+    assert.equal(start(save(split(c, adv(true)), c)), 'linked');
+    assert.equal(start(save(bare, c)), 'unconfirmed', 'what the check prevents');
+    // The same dated stamp, told as a flashback: saved, the present stays on the day before.
+    const c2 = chunkOf(2, ['The courier waited by the gate.', msg('1024-04-15', '09:00')]);
+    const f2 = make(c2, [scene('continue', 2, { start: { relation: 'same' }, end: at(3, '1024-04-15', '09:00', 'morning') })]);
+    const late = at(3, '1024-04-15', '09:00', 'morning');
+    assert.equal(splitKeeps(f2, split(c2, late), { mem, chunk: c2 }), '');
+    const back = split(c2, late, 'flashback');
+    assert.equal(splitKeeps(f2, back), '', 'the values alone match');
+    assert.equal(splitKeeps(f2, back, { mem, chunk: c2 }), 'time stamps 1');
+    assert.equal(save(back, c2).scenes.at(-1).segs.at(-1).time.mode, 'flashback', 'what the check prevents');
+});
