@@ -202,5 +202,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     rep = await ev(() => __savePoint.reportText(__savePoint.state()));
     ok(r.calls === c0 + 2 && r.st.lastIndex === 418 && r.scenes.length === sc1 && r.fix.includes('상태 변경 1개'), '19. (a11) 다른 메시지로 옮긴 변경은 여전히 빠짐 → 첫 응답 저장');
     ok(/\[날 바뀜 비교에서 빠진 것\] #\d+–#\d+ · changes 1/.test(rep) && rep.includes('first reply change not kept:') && rep.includes('Promise made at') && rep.includes('second reply change unmatched:') && rep.includes('in other words'), '19. (a11) 결과 복사에 안 맞은 변경 두 쪽이 나옴');
+    const copyBtn = await ev(() => { __savePoint.render(true); return !!document.querySelector('#sp_overlay [data-act="copy-report"]'); });
+    ok(copyBtn, '19. (a12) 비교에서 빠진 것이 있으면 결과 복사 버튼이 보임');
     await browser.close(); srv.close(); console.log(failures ? failures + ' FAILED' : 'ALL PASS'); process.exit(failures ? 1 : 0);
 })();
