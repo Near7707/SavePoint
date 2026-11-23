@@ -740,7 +740,11 @@ export function dayBreaks(data, { mem, chunk, expectContinue } = {}) {
 // a message (its relation, date, clock and days at that message) and every state change (same record shape, with the same text or
 // the same message numbers: a reworded text over the same messages is the same change). Points and notes are not compared.
 // Returns '' when nothing is missing.
-export function splitKeeps(first, second, { mem = null, chunk = null } = {}) {
+// v0.7.5-a11 (real use: all 18 changes of a first reply counted as lost by a second reply that split as asked; a real model writes
+// its reply anew, so neither the words nor the exact set of messages come back): a change of the same record shape is the same
+// change when the two share a supporting message (or have the same words). Exact pairs are taken first. `detail`, when given, gets
+// what was not matched (for the copy-result report), so a capture says what differed.
+export function splitKeeps(first, second, { mem = null, chunk = null, detail = null } = {}) {
     try {
         const stamps = d => {
             const out = [];
@@ -776,15 +780,26 @@ export function splitKeeps(first, second, { mem = null, chunk = null } = {}) {
         const terms = c => plain(c?.terms) ? [Number(String(c.terms.msg).replace('#', '')), normQuote(c.terms.quote)].join('|') : '';
         const kept = (c, x) => (!due(c) || due(x) === due(c)) && (!terms(c) || terms(x) === terms(c));
         const pool = [...(second.changes || [])];
-        let lostChange = 0;
-        for (const c of first.changes || []) {
-            // v0.7.5-a8 (GPT review of a7, P2-2): a change about a NEW entity is matched only when the two share a supporting message, so
-            // two different new things of the same type and name (a key in each wing) are not taken for one.
-            const isNew = (x, w) => ['entity', 'holder'].some(f => typeof x?.[f] === 'string' && named[w].has(x[f].trim()));
-            const nums = x => new Set((x?.msgs || []).map(ev));
-            const near = x => !(isNew(c, 0) || isNew(x, 1)) || [...nums(c)].some(m => nums(x).has(m));
-            const k = pool.findIndex(x => shapeIn(x, 1) === shapeIn(c, 0) && near(x) && (text(x) === text(c) || (msgs(c) !== '[]' && msgs(x) === msgs(c))) && kept(c, x));
-            if (k < 0) lostChange++; else pool.splice(k, 1);
+        const share = (c, x) => [...nums(c)].some(m => nums(x).has(m));
+        const nums = x => new Set((x?.msgs || []).map(ev));
+        const show = (c, w) => `${shapeIn(c, w)} | ${JSON.stringify(c?.msgs ?? null)} | ${String(c?.text ?? '').slice(0, 80)}`;
+        // v0.7.5-a8 (GPT review of a7, P2-2): a change about a NEW entity is matched only when the two share a supporting message, so
+        // two different new things of the same type and name (a key in each wing) are not taken for one.
+        const isNew = (x, w) => ['entity', 'holder'].some(f => typeof x?.[f] === 'string' && named[w].has(x[f].trim()));
+        const pairs = (c, x) => shapeIn(x, 1) === shapeIn(c, 0) && (!(isNew(c, 0) || isNew(x, 1)) || share(c, x)) && kept(c, x)
+            && (text(x) === text(c) || (msgs(c) !== '[]' && msgs(x) === msgs(c)) || share(c, x));
+        // v0.7.5-a11: as many changes as can be paired are paired (one second-reply change for each), so an early pick never takes
+        // the only partner of a later one.
+        const firsts = (first.changes || []), owner = new Array(pool.length).fill(-1);
+        const ok = firsts.map(c => pool.map(x => pairs(c, x)));
+        const take = (i, seen) => { for (let j = 0; j < pool.length; j++) if (ok[i][j] && !seen[j]) { seen[j] = true; if (owner[j] < 0 || take(owner[j], seen)) { owner[j] = i; return true; } } return false; };
+        const lostList = firsts.filter((c, i) => !take(i, new Array(pool.length).fill(false)));
+        const lostChange = lostList.length;
+        const unmatched = pool.filter((x, j) => owner[j] < 0);
+        if (Array.isArray(detail)) {
+            for (const k of lostTime) detail.push(`first reply time not kept: ${k}`);
+            for (const c of lostList) detail.push(`first reply change not kept: ${show(c, 0)}`);
+            for (const x of lostList.length ? unmatched : []) detail.push(`second reply change unmatched: ${show(x, 1)}`);
         }
         return [lostTime.length ? `time stamps ${lostTime.length}` : '', lostChange ? `changes ${lostChange}` : ''].filter(Boolean).join(', ');
     } catch { return 'unreadable'; }

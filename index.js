@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.5-a10';
+const VERSION = '0.7.5-a11';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -4424,7 +4424,10 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
     let lostNow = '';   // v0.7.5-a8 (GPT review of a7, P3): compared once, read by the verdict and the notice
     const splitWhy = d => {
         if (dayBreaks(d, { mem, chunk, expectContinue }).length || !(d.scenes.length > kept.data.scenes.length || (kept.startOnly && d.scenes[0].scene === 'new'))) return 'split';
-        lostNow = splitKeeps(kept.data, d, { mem, chunk });
+        const detail = [];
+        lostNow = splitKeeps(kept.data, d, { mem, chunk, detail });
+        // v0.7.5-a11: what did not match, for the copy-result report (this page only, until the next comparison).
+        ui.lastSplit = lostNow ? { at: Date.now(), range: `#${chunk.from}–#${chunk.to}`, lost: lostNow, detail: detail.slice(0, 60), more: Math.max(0, detail.length - 60) } : null;
         return lostNow ? 'lost' : '';
     };
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -5214,6 +5217,8 @@ function reportText(st) {
     if (r) { const [head, ...rest] = requestLines(r); out.push('', `[마지막 요청] ${head}`, ...rest); }
     if (hasChat()) out.push(`방: ${names().char || ''} · 기록 ${st ? st.lastIndex + 1 : 0} / ${chat().length}`);
     if (ui.lastFix) out.push('', `[자동 보정] ${ui.lastFix.range} · ${ui.lastFix.text}`);
+    if (ui.lastSplit) out.push('', `[날 바뀜 비교에서 빠진 것] ${ui.lastSplit.range} · ${ui.lastSplit.lost} · ${new Date(ui.lastSplit.at).toLocaleTimeString()}`,
+        ...ui.lastSplit.detail.map(l => `- ${l}`), ...(ui.lastSplit.more ? [`- … 그 밖에 ${ui.lastSplit.more}줄`] : []));
     if (st?.autoFail) out.push('', '[체크포인트 실패 · 수집]', ...autoFailLines(st.autoFail).map(l => `- ${l}`));
     if (ui.lastError) {
         out.push('', `[마지막 실패] ${ui.lastError.range} · ${new Date(ui.lastError.at).toLocaleString()}`);
@@ -8242,7 +8247,7 @@ function onChatChanged() {
     home = newHome();
     noteLeftDuringRun(leaving);
     clearTimeout(persistTimer); clearTimeout(chatSaveTimer); clearTimeout(sourceTimer);
-    ui.edit = null; ui.checkEdit = null; ui.lastError = null; ui.lastFix = null; ui.found = null; mainGenerating = false;
+    ui.edit = null; ui.checkEdit = null; ui.lastError = null; ui.lastFix = null; ui.lastSplit = null; ui.found = null; mainGenerating = false;
     document.querySelector?.('#sp_loot_dialog')?.close();
     hideResume(); clearTimeout(resumeTimer);
     // v0.6.58: the event only starts the check. SillyTavern can send it after a room failed to load;

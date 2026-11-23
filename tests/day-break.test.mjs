@@ -378,3 +378,24 @@ test('splitKeeps: segment ids as evidence are compared as they are, message numb
     const f2 = make([scene('continue', 3, { start: at(3, '1024-04-13', '20:00', 'night'), end: at(4, '1024-04-14', '09:00', 'morning') })], ent('new1'), add('new1', [3]));
     assert.equal(splitKeeps(f2, second(ent('new2'), add('new2', ['#3'])), { mem, chunk: k }), '');
 });
+
+// v0.7.5-a11 (real use: all 18 changes counted as lost by a second reply that split as asked): a real model writes the reply anew,
+// so a change of the same record shape is the same change when the two share a supporting message; as many as can be are paired.
+test('a change written anew over an overlapping message is kept; a different message, shape or pairing is not', () => {
+    const up = (id, msgs, text, extra = {}) => ({ op: 'update', id, status: 'done', text, msgs, ...extra });
+    const keeps = (a, b, detail) => splitKeeps({ scenes: [], changes: a }, { scenes: [], changes: b }, { detail });
+    assert.equal(keeps([up('q1', [5, 6], 'The courier delivered the parcel.')], [up('q1', ['#6'], 'Parcel handed over by the courier.')]), '');
+    const detail = [];
+    assert.equal(keeps([up('q1', [5], 'The courier delivered the parcel.')], [up('q1', [7], 'Parcel handed over.')], detail), 'changes 1');
+    assert.equal(detail.length, 2);
+    assert.match(detail[0], /^first reply change not kept: .*"q1".* \| \[5\] \| The courier delivered/);
+    assert.match(detail[1], /^second reply change unmatched: .*\| \[7\] \| Parcel handed over/);
+    // The same messages but another status is another change.
+    assert.equal(keeps([up('q1', [5], 'Done.')], [up('q1', [5], 'Failed.', { status: 'failed' })]), 'changes 1');
+    // Two changes of one shape: an early loose pick does not take the only partner of a later one.
+    const a = [up('q1', [1, 2], 'First thing.'), up('q1', [2], 'Second thing.')];
+    assert.equal(keeps(a, [up('q1', [2], 'Second thing, reworded.'), up('q1', [1], 'First thing, reworded.')]), '');
+    assert.equal(keeps(a, [up('q1', [2], 'Only one came back.')]), 'changes 1');
+    // No detail list given: nothing is collected, the answer is the same.
+    assert.equal(keeps([up('q1', [5], 'x')], [up('q1', [7], 'y')]), 'changes 1');
+});

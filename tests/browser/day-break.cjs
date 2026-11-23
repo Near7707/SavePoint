@@ -72,6 +72,10 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
             // (a5) Split, but the new day is told as a flashback (same date, clock and quote).
             if (isRetry && M.retryFlashback) data.scenes.at(-1).time.mode = 'flashback';
             if (!isRetry && M.retryThrows) M.throwNext = new Error('Load failed');
+            // (a11) The first reply cites the message before the promise too; the retry writes the change anew over the promise only /
+            // over the message after it.
+            if (!isRetry && M.widen) data.changes.forEach(c => { c.msgs = [c.msgs[0] - 1, c.msgs[0]]; });
+            if (isRetry && M.rewrite) data.changes.forEach(c => { c.text = 'A promise is given, in other words.'; if (M.rewrite === 'away') c.msgs = [c.msgs[0] + 1]; });
         };
         window.addDays = (n, a, b) => M.add(n, i => `[Date: ${M.chat.length - window.__base < 10 ? a : b} | Time: 09:${String(10 + (M.chat.length % 50)).padStart(2, '0')}] The courier waited by the gate ${'and waited '.repeat(8)}.${window.__promise && M.chat.length - window.__base === 4 ? ` PROMISE${window.__due ? ' to come back tomorrow' : ''}` : ''}`);
     });
@@ -185,5 +189,18 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok(r.calls === c0 + 2 && r.st.lastIndex === 358 && r.scenes.length === sc1 + 1 && !r.st.autoFail && r.fix.includes('장면도 나눴어요'), '18. (a10) 다른 검사 실패 + 날 바뀜: 한 번 더 물어 오류도 고치고 장면도 나눈 답을 저장');
     await ev(() => { M.badOnce = false; M.retrySplits = false; __savePoint.ui.lastFix = null; }); await add('1024-05-16', '1024-05-16'); await run(); r = await snap();
     ok(r.st.lastIndex === 378 && !r.fix, '18. (a10) 오류도 날 바뀜도 없으면 자동 보정 줄 없음');
+
+    // 19. (a11, real use: all 18 changes counted as lost) Split as asked, each change written anew over fewer messages (one shared):
+    // the same changes → the second reply is saved; the copy report has no comparison lines.
+    let q19 = await recs(); c0 = r.calls; sc1 = r.scenes.length;
+    await ev(() => { M.retrySplits = true; M.widen = true; M.rewrite = 'fewer'; __savePoint.ui.lastFix = null; }); await add('1024-05-16', '1024-05-18'); await run(); r = await snap(); q = await recs();
+    let rep = await ev(() => __savePoint.reportText(__savePoint.state()));
+    ok(r.calls === c0 + 2 && r.st.lastIndex === 398 && r.scenes.length === sc1 + 1 && q.n === q19.n + 1 && !r.fix && !rep.includes('날 바뀜 비교'), '19. (a11) 나눈 재응답이 변경을 새로 쓰고 근거를 줄여도(겹침 있음) 같은 변경으로 보고 저장');
+    // The change moved to another message: lost, the first reply is saved, and the copy report says what was not matched.
+    c0 = r.calls; sc1 = r.scenes.length;
+    await ev(() => { M.rewrite = 'away'; __savePoint.ui.lastFix = null; }); await add('1024-05-18', '1024-05-20'); await run(); r = await snap();
+    rep = await ev(() => __savePoint.reportText(__savePoint.state()));
+    ok(r.calls === c0 + 2 && r.st.lastIndex === 418 && r.scenes.length === sc1 && r.fix.includes('상태 변경 1개'), '19. (a11) 다른 메시지로 옮긴 변경은 여전히 빠짐 → 첫 응답 저장');
+    ok(/\[날 바뀜 비교에서 빠진 것\] #\d+–#\d+ · changes 1/.test(rep) && rep.includes('first reply change not kept:') && rep.includes('Promise made at') && rep.includes('second reply change unmatched:') && rep.includes('in other words'), '19. (a11) 결과 복사에 안 맞은 변경 두 쪽이 나옴');
     await browser.close(); srv.close(); console.log(failures ? failures + ' FAILED' : 'ALL PASS'); process.exit(failures ? 1 : 0);
 })();
