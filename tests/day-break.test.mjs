@@ -290,3 +290,27 @@ test('splitKeeps: a quoted same-day clock must stay, a bare inheriting "same" is
     const plainFirst = make([scene('continue', 2, { start: at(2, '1024-04-15', '09:00', 'morning'), end: { relation: 'same' } })]);
     assert.equal(splitKeeps(plainFirst, second({ relation: 'same' }), { mem, chunk: c }), '');
 });
+
+// v0.7.5-a7 (real use): the same time written another way, and a new entity under another invented ref, are not lost.
+test('splitKeeps: the same saved time written another way and a renumbered new entity are kept', () => {
+    const { mem } = day();
+    const c = chunkOf(2, [msg('1024-04-13', '20:00'), msg('1024-04-13', '23:10'), `The next day. ${line('1024-04-14', '07:39')}\nThe courier woke.`]);
+    const make = (scenes, entities = [], changes = []) => { const d = { scenes, entities, changes }; normalizeResult(d, { mem, chunk: c }); assert.deepEqual(validateResult(d, { mem, chunk: c }), []); return d; };
+    const ent = (ref, name = 'Brass key') => [{ ref, type: 'item', name, aliases: ['key'] }];
+    const add = ref => [{ op: 'add', type: 'item', entity: ref, text: 'A brass key was found.', msgs: [3] }];
+    const first = make([scene('continue', 2, { start: at(2, '1024-04-13', '20:00', 'night'), end: at(4, '1024-04-14', '07:39', 'morning') })], ent('new1'), add('new1'));
+    assert.equal(dayBreaks(first, { mem, chunk: c }).length, 1, 'asked to split');
+    const morning = { relation: 'advance', days: 1, clock: '07:39', period: 'morning', msg: 4, quote: 'The next day.' };
+    const second = (late, entities, changes) => make([scene('continue', 2, { start: at(2, '1024-04-13', '20:00', 'night'), end: at(3, '1024-04-13', '23:10', 'night') }, { ended: true }),
+        scene('new', 4, { start: late, end: { relation: 'same' } }, { start: 4 })], entities, changes);
+    // "The next day, 07:39" for "1024-04-14 07:39": the raw values differ, saved it is the same confirmed time.
+    const other = second(morning, ent('new1'), add('new1'));
+    assert.equal(splitKeeps(first, other), 'time stamps 1', 'the raw values differ');
+    assert.equal(splitKeeps(first, other, { mem, chunk: c }), '');
+    // The same new key under "new2": kept. A different new item: still lost.
+    assert.equal(splitKeeps(first, second(at(4, '1024-04-14', '07:39', 'morning'), ent('new2'), add('new2')), { mem, chunk: c }), '');
+    assert.equal(splitKeeps(first, second(at(4, '1024-04-14', '07:39', 'morning'), ent('new2', 'Iron key'), add('new2')), { mem, chunk: c }), 'changes 1');
+    // Dropping the quote of the next day still loses the confirmed time.
+    const bare = { ...morning }; delete bare.quote;
+    assert.equal(splitKeeps(first, second(bare, ent('new1'), add('new1')), { mem, chunk: c }), 'time stamps 1');
+});

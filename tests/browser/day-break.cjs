@@ -122,7 +122,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     // 8. (a2) Split, but the state change is left out: the first reply is saved.
     q0 = q.n; c0 = r.calls;
     await ev(() => { M.retryStrips = false; M.retrySplits = true; M.retryNoChanges = true; }); await add('1024-04-24', '1024-04-26'); await run(); r = await snap(); q = await recs();
-    ok(r.calls === c0 + 2 && r.st.lastIndex === 158 && q.n === q0 + 1 && r.fix.includes('상태 변경이 빠져'), '8. (a2) 나눴어도 상태 변경이 줄어든 재응답은 쓰지 않고 첫 응답 저장 (a3) 알림은 "빠져"');
+    ok(r.calls === c0 + 2 && r.st.lastIndex === 158 && q.n === q0 + 1 && r.fix.includes('상태 변경이 빠져') && /빠진 것: 상태 변경 \d+개\)$/.test(r.fix), '8. (a2) 나눴어도 상태 변경이 줄어든 재응답은 쓰지 않고 첫 응답 저장 (a3) 알림은 "빠져" (a7) 빠진 것도 적음');
 
     // 9. (a2) Split, but a place is not in English: the first reply (its place is fine) is saved, nothing is blanked.
     q0 = q.n; c0 = r.calls; const sc0 = r.scenes.length;
@@ -156,7 +156,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     q0 = q.n; c0 = r.calls; sc1 = r.scenes.length;
     await ev(() => { M.retryReword = false; M.retryNoQuote = true; __savePoint.ui.lastFix = null; }); await add('1024-05-06', '1024-05-08'); await run(); r = await snap(); q = await recs();
     let endSure = await ev(() => __savePoint.state().mem.scenes.at(-1).segs.at(-1).time?.end?.certainty);
-    ok(r.calls === c0 + 2 && r.st.lastIndex === 278 && r.scenes.length === sc1 && q.n === q0 + 1 && q.end === '1024-05-08' && endSure === 'explicit' && r.fix.includes('날짜나 상태 변경이 빠져'), '14. (a4) 날짜 값은 같아도 인용을 뺀 재응답은 쓰지 않고 첫 응답 저장(날짜 확정 그대로)');
+    ok(r.calls === c0 + 2 && r.st.lastIndex === 278 && r.scenes.length === sc1 && q.n === q0 + 1 && q.end === '1024-05-08' && endSure === 'explicit' && r.fix.includes('날짜나 상태 변경이 빠져') && /빠진 것: 시간 \d+개\)$/.test(r.fix), '14. (a4) 날짜 값은 같아도 인용을 뺀 재응답은 쓰지 않고 첫 응답 저장(날짜 확정 그대로)');
 
     // 15. (a4, P2-2) Split, the promise kept but its deadline gone: the first reply is saved, the deadline with it.
     const dueOf = () => ev(() => __savePoint.state().mem.records.at(-1)?.due?.expr || '');

@@ -749,15 +749,23 @@ export function splitKeeps(first, second, { mem = null, chunk = null } = {}) {
                     out.push([x.relation, x.date || '', x.clock || '', x.days ?? '', Number(x.msg)].join('|'));
             return out;
         };
-        const have = stamps(second);
-        const lostTime = stamps(first).filter(k => !have.includes(k));
+        // v0.7.5-a7 (real use): with the messages at hand only the times as they would be saved are compared (below), so the same
+        // time written another way ("the next day, 07:39" for "1024-04-14 07:39") is not counted as lost. The raw values are
+        // compared only when there is nothing to read them against.
+        const have = mem && chunk ? [] : stamps(second);
+        const lostTime = mem && chunk ? [] : stamps(first).filter(k => !have.includes(k));
         // v0.7.5-a4 (GPT review of a3, P2-1): the same values are not enough; a stamp that the first reply confirms at a message
         // (its quote really there) must still be confirmed there when the second one is read the way it would be saved.
         if (mem && chunk) {
             const sure = confirmedTimes(second, mem, chunk);
             for (const k of confirmedTimes(first, mem, chunk)) if (!sure.includes(k)) lostTime.push(k);
         }
-        const shape = c => ['op', 'type', 'id', 'entity', 'holder', 'aspect', 'kind', 'status'].map(f => JSON.stringify(c?.[f] ?? null)).join('|');
+        // v0.7.5-a7 (real use): a new entity is matched by its type and name, not by the ref each reply invents ("new1" / "new2").
+        const refs = d => new Map((d.entities || []).filter(e => plain(e) && typeof e.ref === 'string')
+            .map(e => [e.ref.trim(), `new:${e.type}:${String(e.name || '').toLowerCase().replace(/\s+/g, ' ').trim()}`]));
+        const named = [refs(first), refs(second)];
+        const shapeIn = (c, w) => ['op', 'type', 'id', 'entity', 'holder', 'aspect', 'kind', 'status']
+            .map(f => JSON.stringify(['entity', 'holder'].includes(f) && typeof c?.[f] === 'string' ? named[w].get(c[f].trim()) ?? c[f] : c?.[f] ?? null)).join('|');
         const text = c => String(c?.text || '').toLowerCase().replace(/\s+/g, ' ').trim();
         const msgs = c => JSON.stringify([...new Set((c?.msgs || []).map(Number))].sort((a, b) => a - b));
         // v0.7.5-a4 (GPT review of a3, P2-2): a deadline or the quoted terms the first reply gave must come back the same.
@@ -767,7 +775,7 @@ export function splitKeeps(first, second, { mem = null, chunk = null } = {}) {
         const pool = [...(second.changes || [])];
         let lostChange = 0;
         for (const c of first.changes || []) {
-            const k = pool.findIndex(x => shape(x) === shape(c) && (text(x) === text(c) || (msgs(c) !== '[]' && msgs(x) === msgs(c))) && kept(c, x));
+            const k = pool.findIndex(x => shapeIn(x, 1) === shapeIn(c, 0) && (text(x) === text(c) || (msgs(c) !== '[]' && msgs(x) === msgs(c))) && kept(c, x));
             if (k < 0) lostChange++; else pool.splice(k, 1);
         }
         return [lostTime.length ? `time stamps ${lostTime.length}` : '', lostChange ? `changes ${lostChange}` : ''].filter(Boolean).join(', ');
