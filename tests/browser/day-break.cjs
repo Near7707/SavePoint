@@ -106,11 +106,13 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => { M.retryBad = false; M.retryThrows = true; }); await add('1024-04-18', '1024-04-20'); await run(); r = await snap();
     ok(r.calls === c0 + 2 && r.st.lastIndex === 98 && !r.st.autoFail && r.st.autoLast?.status !== 'failed' && r.fix.includes('쓸 수 없어'), '5. 다시 묻는 요청이 실패해도 첫 응답을 저장');
 
-    // 6. A reply with another problem is asked again for that problem only, and its second reply is not asked a third time.
+    // 6. A reply with another problem is asked again for it, and (a10) told of the new day in the same request; requests stay at two.
+    // The second reply fixes the problem but still keeps one scene: saved as received (the first reply was not usable), said so.
     c0 = r.calls;
     await ev(() => { M.retryThrows = false; M.throwNext = null; M.badOnce = true; }); await add('1024-04-20', '1024-04-22'); await run(); r = await snap();
-    const last = await ev(() => M.calls.at(-1));
-    ok(r.calls === c0 + 2 && r.st.lastIndex === 118 && !last.includes('new story day by your own') && r.fix.includes('나뉘지 않아') === false, '6. 다른 검사 실패의 재요청에는 끼지 않고, 요청은 두 번까지만');
+    const last = await ev(() => M.calls.at(-1).split('YOUR PREVIOUS REPLY WAS REJECTED')[1] || '');
+    ok(r.calls === c0 + 2 && r.st.lastIndex === 118 && /scenes\[0\] \(#99-#118\) runs into a new story day/.test(last) && last.includes('is not one of the new messages'), '6. (a10) 다른 검사 실패로 다시 물을 때 날이 바뀐 곳도 같이 알림(요청은 두 번까지)');
+    ok(r.fix.includes('날이 바뀐 곳 1곳에서 장면을 나누지 못했어요') && !r.st.autoFail, '6. (a10) 그래도 안 나누면 저장하고 자동 보정 줄에 나누지 못했다고 남김');
 
     // 7. (a2, GPT P2-1) The second reply drops its times and its state change and is still one scene: it would pass every check, and
     // without a date nothing looks like a new day any more → the first reply is the one saved (its promise and its dates are there).
@@ -175,5 +177,13 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     await ev(() => { M.retryFlashback = true; __savePoint.ui.lastFix = null; }); await add('1024-05-12', '1024-05-14'); await run(); r = await snap(); q = await recs();
     const modeEnd = await ev(() => { const t = __savePoint.state().mem.scenes.at(-1).segs.at(-1).time; return `${t?.mode} ${t?.end?.date}`; });
     ok(r.calls === c0 + 2 && r.st.lastIndex === 338 && r.scenes.length === sc1 && modeEnd === 'present 1024-05-14' && r.fix.includes('날짜나 상태 변경이 빠져'), '17. (a5) 새날 장면을 회상으로 바꾼 재응답은 쓰지 않고 첫 응답 저장(현재 시간 그대로)');
+
+    // 18. (a10, real use: a night into the next morning stayed one scene with no notice) Another problem and a new day in the first
+    // reply: one more request for both, the second reply fixes the problem and splits → saved split, said so.
+    c0 = r.calls; sc1 = r.scenes.length;
+    await ev(() => { M.retryFlashback = false; M.badOnce = true; M.retrySplits = true; __savePoint.ui.lastFix = null; }); await add('1024-05-14', '1024-05-16'); await run(); r = await snap();
+    ok(r.calls === c0 + 2 && r.st.lastIndex === 358 && r.scenes.length === sc1 + 1 && !r.st.autoFail && r.fix.includes('장면도 나눴어요'), '18. (a10) 다른 검사 실패 + 날 바뀜: 한 번 더 물어 오류도 고치고 장면도 나눈 답을 저장');
+    await ev(() => { M.badOnce = false; M.retrySplits = false; __savePoint.ui.lastFix = null; }); await add('1024-05-16', '1024-05-16'); await run(); r = await snap();
+    ok(r.st.lastIndex === 378 && !r.fix, '18. (a10) 오류도 날 바뀜도 없으면 자동 보정 줄 없음');
     await browser.close(); srv.close(); console.log(failures ? failures + ' FAILED' : 'ALL PASS'); process.exit(failures ? 1 : 0);
 })();

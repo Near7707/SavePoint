@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.5-a9';
+const VERSION = '0.7.5-a10';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -4415,6 +4415,12 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
     // v0.7.5-a2/a3 (GPT reviews of a1 and a2): the second reply is taken only when it really is the first one split ('split': no new day
     // left inside a scene, more scenes than before, or the continued scene made new when that was all that was asked) and nothing of
     // the first one was lost on the way ('lost': see splitKeeps). Anything else saves the first reply.
+    // v0.7.5-a10 (real use: a night into the next morning stayed one scene, with no notice): a first reply that is asked again for
+    // other problems is also told where its scenes run into a new day (the same notes, first in the list), since the second request
+    // is the last one. The second reply is then taken by the usual checks only; what became of the new day is said in the notice.
+    let dayToo = 0;
+    const DAY_TOO_OK = '검사 오류를 고쳐 달라고 다시 물으면서 날이 바뀐 곳에서 장면도 나눴어요';
+    const dayLeft = n => `검사 오류로 이미 다시 물어서, 날이 바뀐 곳 ${n}곳에서 장면을 나누지 못했어요`;
     let lostNow = '';   // v0.7.5-a8 (GPT review of a7, P3): compared once, read by the verdict and the notice
     const splitWhy = d => {
         if (dayBreaks(d, { mem, chunk, expectContinue }).length || !(d.scenes.length > kept.data.scenes.length || (kept.startOnly && d.scenes[0].scene === 'new'))) return 'split';
@@ -4467,9 +4473,17 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
         // Only on the first try, and only for a reply with nothing else wrong.
         const days = attempt === 0 && data && !errors.length && !lang.length ? dayBreaks(data, { mem, chunk, expectContinue }) : [];
         if (days.length) { kept = { data, fixes, startOnly: days.every(d => d.startsWith('scenes[0] continues the OPEN SCENE')) }; errors = days; }
-        lastKind = kind || (days.length ? `날이 바뀐 장면 ${days.length}곳 · 나누기 재요청` : !parsed ? 'JSON 해석 실패' : !data ? '응답 처리 오류' : errors.length ? `검사 실패 ${errors.length}건` : lang.length ? `영어 아님 ${lang.length}곳` : dropped ? `통과 (영어 아닌 장소 ${dropped}곳 비움)` : '통과');
+        const also = attempt === 0 && data && !days.length && (errors.length || lang.length) ? dayBreaks(data, { mem, chunk, expectContinue }) : [];
+        const failed = errors.length;
+        if (also.length) { dayToo = also.length; errors = [...also, ...errors]; }
+        lastKind = kind || (also.length ? `검사 실패 ${failed}건${lang.length ? ' · 영어 아님' : ''} + 날이 바뀐 장면 ${also.length}곳 · 재요청` : days.length ? `날이 바뀐 장면 ${days.length}곳 · 나누기 재요청` : !parsed ? 'JSON 해석 실패' : !data ? '응답 처리 오류' : errors.length ? `검사 실패 ${errors.length}건` : lang.length ? `영어 아님 ${lang.length}곳` : dropped ? `통과 (영어 아닌 장소 ${dropped}곳 비움)` : '통과');
         tries.push(`${took} · ${lastKind}`);
-        if (!errors.length && !lang.length) return accept(data, fixes, dropped);
+        if (!errors.length && !lang.length) {
+            // v0.7.5-a10: after a retry for other problems, say whether the reply still keeps a scene across a new day (it cannot be
+            // asked again), or that the new day the first reply had was split as well.
+            const left = attempt === 1 ? dayBreaks(data, { mem, chunk, expectContinue }).length : 0;
+            return accept(data, fixes, dropped, left ? dayLeft(left) : dayToo ? DAY_TOO_OK : '');
+        }
     }
     const detail = [...errors, ...(lang.length ? [`Not English: ${lang.join(', ')}`] : [])];
     return Promise.reject(fail(`요약 AI 응답이 검사를 통과하지 못했어요 (#${chunk.from}–#${chunk.to}). 이 구간은 저장하지 않았어요.`, detail));
