@@ -353,3 +353,28 @@ test('splitKeeps: a quoted date stays a quoted date over a linked reference; sam
     assert.equal(splitKeeps(f2, s2('new2', 1), { mem: m2, chunk: k }), 'changes 1');
     assert.equal(splitKeeps(f2, s2('new1', 1), { mem: m2, chunk: k }), 'changes 1', 'the same ref from another message');
 });
+
+// v0.7.5-a9 (GPT review of a8): a segment id is evidence of its own ("g1" and "g2" differ), a message number is the same with or without "#".
+test('splitKeeps: segment ids as evidence are compared as they are, message numbers with or without "#"', () => {
+    let mem = emptyMem();
+    for (const [i, clock] of [[0, '10:00'], [1, '11:00'], [2, '12:00']]) {
+        const c = chunkOf(i, [msg('1024-04-13', clock)]);
+        const d = { scenes: [scene(i ? 'continue' : 'new', i, { start: at(i, '1024-04-13', clock, 'morning'), end: { relation: 'same' } })], entities: [], changes: [] };
+        normalizeResult(d, { mem, chunk: c }); assert.deepEqual(validateResult(d, { mem, chunk: c }), []);
+        mem = applyResult(mem, d, c, { room: 'room-A' }).mem;
+    }
+    const [g1, g2] = mem.scenes.at(-1).segs.map(g => g.id);
+    const k = chunkOf(3, [msg('1024-04-13', '20:00'), msg('1024-04-14', '09:00')]);
+    const make = (scenes, entities, changes) => { const d = { scenes, entities, changes }; normalizeResult(d, { mem, chunk: k }); assert.deepEqual(validateResult(d, { mem, chunk: k }), []); return d; };
+    const ent = r => [{ ref: r, type: 'item', name: 'Brass key', aliases: ['key'] }];
+    const add = (r, e) => [{ op: 'add', type: 'item', entity: r, text: 'A brass key was found.', msgs: e }];
+    const first = make([scene('continue', 3, { start: at(3, '1024-04-13', '20:00', 'night'), end: at(4, '1024-04-14', '09:00', 'morning') })], ent('new1'), add('new1', [g1]));
+    const second = (entities, changes) => make([scene('continue', 3, { start: at(3, '1024-04-13', '20:00', 'night'), end: { relation: 'same' } }, { ended: true }),
+        scene('new', 4, { start: at(4, '1024-04-14', '09:00', 'morning'), end: { relation: 'same' } }, { start: 4 })], entities, changes);
+    assert.equal(splitKeeps(first, second(ent('new2'), add('new2', [g1])), { mem, chunk: k }), '');
+    assert.equal(splitKeeps(first, second(ent('new2'), add('new2', [g2])), { mem, chunk: k }), 'changes 1', 'another segment');
+    assert.equal(splitKeeps(first, second(ent('new2'), add('new2', [g2, g1])), { mem, chunk: k }), '', 'a shared segment');
+    // Message numbers: 3 and "#3" are one.
+    const f2 = make([scene('continue', 3, { start: at(3, '1024-04-13', '20:00', 'night'), end: at(4, '1024-04-14', '09:00', 'morning') })], ent('new1'), add('new1', [3]));
+    assert.equal(splitKeeps(f2, second(ent('new2'), add('new2', ['#3'])), { mem, chunk: k }), '');
+});

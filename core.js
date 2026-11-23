@@ -767,7 +767,10 @@ export function splitKeeps(first, second, { mem = null, chunk = null } = {}) {
         const shapeIn = (c, w) => ['op', 'type', 'id', 'entity', 'holder', 'aspect', 'kind', 'status']
             .map(f => JSON.stringify(['entity', 'holder'].includes(f) && typeof c?.[f] === 'string' ? named[w].get(c[f].trim()) ?? c[f] : c?.[f] ?? null)).join('|');
         const text = c => String(c?.text || '').toLowerCase().replace(/\s+/g, ' ').trim();
-        const msgs = c => JSON.stringify([...new Set((c?.msgs || []).map(Number))].sort((a, b) => a - b));
+        // v0.7.5-a9 (GPT review of a8, P2): evidence is a message number ("3" and "#3" are one) or a segment id kept as it is
+        // ("g2" and "g3" are two); turning both into numbers made every segment id the same NaN.
+        const ev = m => { const t = String(m ?? '').trim(); return /^#?\d+$/.test(t) ? `#${Number(t.replace('#', ''))}` : t; };
+        const msgs = c => JSON.stringify([...new Set((c?.msgs || []).map(ev))].sort());
         // v0.7.5-a4 (GPT review of a3, P2-2): a deadline or the quoted terms the first reply gave must come back the same.
         const due = c => plain(c?.due) ? [normQuote(c.due.expr), Number(String(c.due.msg).replace('#', '')), c.due.days ?? '', c.due.date || ''].join('|') : '';
         const terms = c => plain(c?.terms) ? [Number(String(c.terms.msg).replace('#', '')), normQuote(c.terms.quote)].join('|') : '';
@@ -778,7 +781,7 @@ export function splitKeeps(first, second, { mem = null, chunk = null } = {}) {
             // v0.7.5-a8 (GPT review of a7, P2-2): a change about a NEW entity is matched only when the two share a supporting message, so
             // two different new things of the same type and name (a key in each wing) are not taken for one.
             const isNew = (x, w) => ['entity', 'holder'].some(f => typeof x?.[f] === 'string' && named[w].has(x[f].trim()));
-            const nums = x => new Set((x?.msgs || []).map(m => Number(String(m).replace('#', ''))));
+            const nums = x => new Set((x?.msgs || []).map(ev));
             const near = x => !(isNew(c, 0) || isNew(x, 1)) || [...nums(c)].some(m => nums(x).has(m));
             const k = pool.findIndex(x => shapeIn(x, 1) === shapeIn(c, 0) && near(x) && (text(x) === text(c) || (msgs(c) !== '[]' && msgs(x) === msgs(c))) && kept(c, x));
             if (k < 0) lostChange++; else pool.splice(k, 1);
