@@ -775,7 +775,12 @@ export function splitKeeps(first, second, { mem = null, chunk = null } = {}) {
         const pool = [...(second.changes || [])];
         let lostChange = 0;
         for (const c of first.changes || []) {
-            const k = pool.findIndex(x => shapeIn(x, 1) === shapeIn(c, 0) && (text(x) === text(c) || (msgs(c) !== '[]' && msgs(x) === msgs(c))) && kept(c, x));
+            // v0.7.5-a8 (GPT review of a7, P2-2): a change about a NEW entity is matched only when the two share a supporting message, so
+            // two different new things of the same type and name (a key in each wing) are not taken for one.
+            const isNew = (x, w) => ['entity', 'holder'].some(f => typeof x?.[f] === 'string' && named[w].has(x[f].trim()));
+            const nums = x => new Set((x?.msgs || []).map(m => Number(String(m).replace('#', ''))));
+            const near = x => !(isNew(c, 0) || isNew(x, 1)) || [...nums(c)].some(m => nums(x).has(m));
+            const k = pool.findIndex(x => shapeIn(x, 1) === shapeIn(c, 0) && near(x) && (text(x) === text(c) || (msgs(c) !== '[]' && msgs(x) === msgs(c))) && kept(c, x));
             if (k < 0) lostChange++; else pool.splice(k, 1);
         }
         return [lostTime.length ? `time stamps ${lostTime.length}` : '', lostChange ? `changes ${lostChange}` : ''].filter(Boolean).join(', ');
@@ -789,6 +794,9 @@ export function splitKeeps(first, second, { mem = null, chunk = null } = {}) {
 // v0.7.5-a6 (GPT review of a5): not by kind any more. Every stamp saved with its message's own words behind it (verified and not
 // unconfirmed: a dated or clocked "same", an "advance", an "explicit", a "jump") is compared; only a bare "same" that inherits
 // without a quote is left out. A quoted "same" that adds nothing new is counted too: dropping it saves the first reply, nothing lost.
+// v0.7.5-a8 (GPT review of a7, P2-1): the key leaves out a date the user linked to an undated reference, so a date the message
+// gives ("1024-04-15") and a day counted on that link ("the next day") are not the same: moving the link moves only the second.
+const unlinked = anchors => Object.fromEntries(Object.entries(anchors).map(([k, a]) => { const { link, ...rest } = a || {}; return [k, rest]; }));
 function confirmedTimes(data, mem, chunk) {
     const scenes = data?.scenes || [], n = v => Number(String(v).replace('#', ''));
     const starts = scenes.map((s, i) => (i === 0 ? chunk.from : n(s.start)));
@@ -803,7 +811,7 @@ function confirmedTimes(data, mem, chunk) {
         if (!time) return;
         for (const t of [time.start, ...(time.via || []), time.end])
             if (t && t.certainty !== 'unconfirmed' && t.verified && Number.isInteger(t.evidence?.msg) && tmp.timeAnchors[t.anchor])
-                out.push(`${time.mode} #${t.evidence.msg} ${formatStoryStamp({ ...t, period: '' }, tmp.timeAnchors, 'en')}`);
+                out.push(`${time.mode} #${t.evidence.msg} ${formatStoryStamp({ ...t, period: '' }, unlinked(tmp.timeAnchors), 'en')}`);
     });
     return [...new Set(out)];
 }

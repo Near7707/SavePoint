@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.5-a7';
+const VERSION = '0.7.5-a8';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -4415,9 +4415,11 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
     // v0.7.5-a2/a3 (GPT reviews of a1 and a2): the second reply is taken only when it really is the first one split ('split': no new day
     // left inside a scene, more scenes than before, or the continued scene made new when that was all that was asked) and nothing of
     // the first one was lost on the way ('lost': see splitKeeps). Anything else saves the first reply.
+    let lostNow = '';   // v0.7.5-a8 (GPT review of a7, P3): compared once, read by the verdict and the notice
     const splitWhy = d => {
         if (dayBreaks(d, { mem, chunk, expectContinue }).length || !(d.scenes.length > kept.data.scenes.length || (kept.startOnly && d.scenes[0].scene === 'new'))) return 'split';
-        return splitKeeps(kept.data, d, { mem, chunk }) ? 'lost' : '';
+        lostNow = splitKeeps(kept.data, d, { mem, chunk });
+        return lostNow ? 'lost' : '';
     };
     for (let attempt = 0; attempt < 2; attempt++) {
         let raw;
@@ -4452,10 +4454,10 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
         // range: the scene keeps the place it had (a continued scene) or has none. Any other problem still fails.
         if (attempt === 1 && kept) {
             const done = !!data && !errors.length && !lang.length, why = done ? splitWhy(data) : 'bad';
-            const said = { '': '통과 (날이 바뀐 곳에서 나눔)', split: '나뉘지 않음 — 첫 응답을 저장', lost: `나눴지만 첫 응답의 기록이 빠짐(${splitKeeps(kept.data, data, { mem, chunk })}) — 첫 응답을 저장`, bad: '쓸 수 없는 답 — 첫 응답을 저장' }[why];
+            const said = { '': '통과 (날이 바뀐 곳에서 나눔)', split: '나뉘지 않음 — 첫 응답을 저장', lost: `나눴지만 첫 응답의 기록이 빠짐(${lostNow}) — 첫 응답을 저장`, bad: '쓸 수 없는 답 — 첫 응답을 저장' }[why];
             tries.push(`${took} · ${kind || said}`);
             if (!why) return accept(data, fixes, 0);
-            return accept(kept.data, kept.fixes, 0, { split: DAY_KEPT, lost: DAY_LOST + lostWhat(splitKeeps(kept.data, data, { mem, chunk })), bad: DAY_FAIL }[why]);
+            return accept(kept.data, kept.fixes, 0, { split: DAY_KEPT, lost: DAY_LOST + lostWhat(lostNow), bad: DAY_FAIL }[why]);
         }
         let dropped = 0;
         if (attempt === 1 && !errors.length && lang.length && lang.every(w => /^scenes\[\d+\]\.where$/.test(w))) {

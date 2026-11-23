@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { emptyMem, applyResult, normalizeResult, validateResult, dayBreaks, splitKeeps } from '../core.js';
+import { linkReference, formatStoryStamp } from '../temporal.js';
 
 // v0.7.5-a1: a scene kept across a new story day by the reply's own time stamps is asked to be split. Invented text only.
 const line = (date, clock) => `📅 Date: ${date} | 🕒 Time: ${clock}`;
@@ -313,4 +314,42 @@ test('splitKeeps: the same saved time written another way and a renumbered new e
     // Dropping the quote of the next day still loses the confirmed time.
     const bare = { ...morning }; delete bare.quote;
     assert.equal(splitKeeps(first, second(bare, ent('new1'), add('new1')), { mem, chunk: c }), 'time stamps 1');
+});
+
+// v0.7.5-a8 (GPT review of a7): a date the message gives is not a day counted on a date the user linked, and two new things
+// of the same name from different messages are not one.
+test('splitKeeps: a quoted date stays a quoted date over a linked reference; same-named new things need a shared message', () => {
+    // An undated reference (clocks only) linked by the user to 1024-04-14.
+    let mem = emptyMem();
+    const c0 = chunkOf(0, ['At 10:00 the courier waited.', 'At 11:00 the courier left.']);
+    const d0 = { scenes: [scene('new', 0, { start: { relation: 'explicit', clock: '10:00', period: 'morning', msg: 0, quote: 'At 10:00' },
+        end: { relation: 'same', clock: '11:00', period: 'morning', msg: 1, quote: 'At 11:00' } })], entities: [], changes: [] };
+    normalizeResult(d0, { mem, chunk: c0 }); assert.deepEqual(validateResult(d0, { mem, chunk: c0 }), []);
+    mem = applyResult(mem, d0, c0, { room: 'room-A' }).mem;
+    const ref = Object.keys(mem.timeAnchors)[0];
+    linkReference(mem, ref, '1024-04-14', mem.timeAnchors[ref].baseDay);
+    const c = chunkOf(2, ['The courier waited by the gate at 20:00.', `The next day. ${line('1024-04-15', '10:00')}\nThe courier woke.`]);
+    const make = (m, ch, scenes, entities = [], changes = []) => { const d = { scenes, entities, changes }; normalizeResult(d, { mem: m, chunk: ch }); assert.deepEqual(validateResult(d, { mem: m, chunk: ch }), []); return d; };
+    const first = make(mem, c, [scene('continue', 2, { start: { relation: 'same' }, end: at(3, '1024-04-15', '10:00', 'morning') })]);
+    const second = late => make(mem, c, [scene('continue', 2, { start: { relation: 'same' }, end: { relation: 'same' } }, { ended: true }),
+        scene('new', 3, { start: late, end: { relation: 'same' } }, { start: 3 })]);
+    const counted = second({ relation: 'advance', days: 1, clock: '10:00', period: 'morning', msg: 3, quote: 'The next day.' });
+    assert.equal(splitKeeps(first, second(at(3, '1024-04-15', '10:00', 'morning')), { mem, chunk: c }), '');
+    assert.equal(splitKeeps(first, counted, { mem, chunk: c }), 'time stamps 1');
+    // What the check prevents: moving the link moves the counted day, not the quoted one.
+    const saved = (d, edge) => { const m = applyResult(JSON.parse(JSON.stringify(mem)), d, c, { room: 'room-A' }).mem;
+        linkReference(m, ref, '1024-04-15', m.timeAnchors[ref].baseDay); return formatStoryStamp(m.scenes.at(-1).segs.at(-1).time[edge], m.timeAnchors); };
+    assert.match(saved(first, 'end'), /^1024-04-15/);
+    assert.match(saved(counted, 'start'), /^1024-04-16/);
+    // A brass key in each wing: the second reply keeps only the west one.
+    const m2 = emptyMem();
+    const k = chunkOf(0, [`${line('1024-04-13', '20:00')}\nIn the east wing a brass key was found.`, `${line('1024-04-13', '21:00')}\nIn the west wing a brass key was found.`, msg('1024-04-14', '09:00')]);
+    const ent = r => [{ ref: r, type: 'item', name: 'Brass key', aliases: ['key'] }];
+    const add = (r, n) => [{ op: 'add', type: 'item', entity: r, text: 'A brass key was found.', msgs: [n] }];
+    const f2 = make(m2, k, [scene('new', 0, { start: at(0, '1024-04-13', '20:00', 'night'), end: at(2, '1024-04-14', '09:00', 'morning') })], ent('new1'), add('new1', 0));
+    const s2 = (r, n) => make(m2, k, [scene('new', 0, { start: at(0, '1024-04-13', '20:00', 'night'), end: { relation: 'same' } }, { ended: true }),
+        scene('new', 2, { start: at(2, '1024-04-14', '09:00', 'morning'), end: { relation: 'same' } }, { start: 2 })], ent(r), add(r, n));
+    assert.equal(splitKeeps(f2, s2('new2', 0), { mem: m2, chunk: k }), '', 'only the ref changed');
+    assert.equal(splitKeeps(f2, s2('new2', 1), { mem: m2, chunk: k }), 'changes 1');
+    assert.equal(splitKeeps(f2, s2('new1', 1), { mem: m2, chunk: k }), 'changes 1', 'the same ref from another message');
 });
