@@ -786,8 +786,11 @@ export function splitKeeps(first, second, { mem = null, chunk = null, detail = n
         // v0.7.5-a8 (GPT review of a7, P2-2): a change about a NEW entity is matched only when the two share a supporting message, so
         // two different new things of the same type and name (a key in each wing) are not taken for one.
         const isNew = (x, w) => ['entity', 'holder'].some(f => typeof x?.[f] === 'string' && named[w].has(x[f].trim()));
+        // v0.7.5-a13 (GPT review of a11, P2-2): a shared message is enough only for a change of a record that is already there (an id,
+        // or an existing entity): two different new rules over one message are not one rule. A new record keeps the a3 test.
+        const known = (x, w) => (typeof x?.id === 'string' && !!x.id.trim()) || ['entity', 'holder'].some(f => typeof x?.[f] === 'string' && !!x[f].trim() && !named[w].has(x[f].trim()));
         const pairs = (c, x) => shapeIn(x, 1) === shapeIn(c, 0) && (!(isNew(c, 0) || isNew(x, 1)) || share(c, x)) && kept(c, x)
-            && (text(x) === text(c) || (msgs(c) !== '[]' && msgs(x) === msgs(c)) || share(c, x));
+            && (text(x) === text(c) || (msgs(c) !== '[]' && msgs(x) === msgs(c)) || (known(c, 0) && known(x, 1) && share(c, x)));
         // v0.7.5-a11: as many changes as can be paired are paired (one second-reply change for each), so an early pick never takes
         // the only partner of a later one.
         const firsts = (first.changes || []), owner = new Array(pool.length).fill(-1);

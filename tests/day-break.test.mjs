@@ -399,3 +399,14 @@ test('a change written anew over an overlapping message is kept; a different mes
     // No detail list given: nothing is collected, the answer is the same.
     assert.equal(keeps([up('q1', [5], 'x')], [up('q1', [7], 'y')]), 'changes 1');
 });
+
+// v0.7.5-a13 (GPT review of a11, P2-2): a shared message pairs only changes of a record already there (an id or an existing entity).
+test('two different new rules over one shared message are not one rule; an existing record still pairs by overlap', () => {
+    const keeps = (a, b) => splitKeeps({ scenes: [], changes: a }, { scenes: [], changes: b });
+    const rule = (text, msgs) => ({ op: 'add', type: 'rule', text, msgs });
+    assert.equal(keeps([rule('The yard gate opens only after dawn.', [4, 5])], [rule('The library closes at noon.', [5, 6])]), 'changes 1');
+    assert.equal(keeps([rule('The yard gate opens only after dawn.', [4, 5])], [rule('Yard gate: after dawn only.', [4, 5])]), '');
+    assert.equal(keeps([rule('The yard gate opens only after dawn.', [4, 5])], [rule('The yard gate opens only after dawn.', [9])]), '');
+    const st = (entity, msgs, text) => ({ op: 'set', entity, aspect: 'location', text, msgs });
+    assert.equal(keeps([st('e3', [4, 5], 'Moved to the yard.')], [st('e3', [5], 'Now in the yard.')]), '');
+});

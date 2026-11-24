@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.5-a12';
+const VERSION = '0.7.5-a13';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -4419,7 +4419,11 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
     // other problems is also told where its scenes run into a new day (the same notes, first in the list), since the second request
     // is the last one. The second reply is then taken by the usual checks only; what became of the new day is said in the notice.
     let dayToo = 0;
+    // v0.7.5-a13 (GPT review of a10, P2-1): the new-day notes are kept apart from the errors and come after them (in the 25-line list
+    // and in the input limit): a request that fitted before a10 is never stopped by them, they are left out instead.
+    let dayNotes = [], dayFirst = null;
     const DAY_TOO_OK = '검사 오류를 고쳐 달라고 다시 물으면서 날이 바뀐 곳에서 장면도 나눴어요';
+    const DAY_TOO_NOT = '검사 오류를 고쳐 달라고 다시 물으면서 날이 바뀐 곳도 알렸지만, 답이 장면을 나누지 않았어요';
     const dayLeft = n => `검사 오류로 이미 다시 물어서, 날이 바뀐 곳 ${n}곳에서 장면을 나누지 못했어요`;
     let lostNow = '';   // v0.7.5-a8 (GPT review of a7, P3): compared once, read by the verdict and the notice
     const splitWhy = d => {
@@ -4434,9 +4438,12 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
         let raw;
         const start = Date.now();
         const why = attempt ? lastKind : '';
-        const requestPrompt = attempt ? prompt + retryNote(groupErrors(errors), lang) + extractionRepairNote(chunk, data) : prompt;
+        const limit = num('inputChars', 5000, 1000000);
+        const ask = notes => prompt + retryNote([...groupErrors(errors), ...notes], lang) + extractionRepairNote(chunk, data);
+        let requestPrompt = attempt ? ask(dayNotes) : prompt;
+        if (attempt && dayNotes.length && (requestPrompt.length > limit || groupErrors(errors).length >= 25)) { dayNotes = []; dayToo = 0; requestPrompt = ask([]); }
         try {
-            assertPromptFits(requestPrompt, num('inputChars', 5000, 1000000), attempt ? { ...built.parts, retry: requestPrompt.length - prompt.length } : built.parts);
+            assertPromptFits(requestPrompt, limit, attempt ? { ...built.parts, retry: requestPrompt.length - prompt.length } : built.parts);
             run.lootAttempted = lootForChunk(chunk).map(x => x.id);
             raw = await llm(requestPrompt, run, { attempt, why, parts: attempt ? { ...built.parts, retry: requestPrompt.length - prompt.length } : built.parts });
         }
@@ -4478,14 +4485,17 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
         if (days.length) { kept = { data, fixes, startOnly: days.every(d => d.startsWith('scenes[0] continues the OPEN SCENE')) }; errors = days; }
         const also = attempt === 0 && data && !days.length && (errors.length || lang.length) ? dayBreaks(data, { mem, chunk, expectContinue }) : [];
         const failed = errors.length;
-        if (also.length) { dayToo = also.length; errors = [...also, ...errors]; }
+        if (also.length) { dayToo = also.length; dayNotes = also; dayFirst = { n: data.scenes.length, startOnly: also.every(d => d.startsWith('scenes[0] continues the OPEN SCENE')) }; }
         lastKind = kind || (also.length ? `검사 실패 ${failed}건${lang.length ? ' · 영어 아님' : ''} + 날이 바뀐 장면 ${also.length}곳 · 재요청` : days.length ? `날이 바뀐 장면 ${days.length}곳 · 나누기 재요청` : !parsed ? 'JSON 해석 실패' : !data ? '응답 처리 오류' : errors.length ? `검사 실패 ${errors.length}건` : lang.length ? `영어 아님 ${lang.length}곳` : dropped ? `통과 (영어 아닌 장소 ${dropped}곳 비움)` : '통과');
         tries.push(`${took} · ${lastKind}`);
         if (!errors.length && !lang.length) {
             // v0.7.5-a10: after a retry for other problems, say whether the reply still keeps a scene across a new day (it cannot be
             // asked again), or that the new day the first reply had was split as well.
             const left = attempt === 1 ? dayBreaks(data, { mem, chunk, expectContinue }).length : 0;
-            return accept(data, fixes, dropped, left ? dayLeft(left) : dayToo ? DAY_TOO_OK : '');
+            // v0.7.5-a13 (GPT review of a10, P3): "split as well" only when the reply really has more scenes (or made the continued
+            // scene new when that was all that was asked); a reply that only dropped the new day keeps one scene and says so.
+            const split = dayFirst && (data.scenes.length > dayFirst.n || (dayFirst.startOnly && data.scenes[0]?.scene === 'new'));
+            return accept(data, fixes, dropped, left ? dayLeft(left) : dayToo ? (split ? DAY_TOO_OK : DAY_TOO_NOT) : '');
         }
     }
     const detail = [...errors, ...(lang.length ? [`Not English: ${lang.join(', ')}`] : [])];
@@ -8247,7 +8257,7 @@ function onChatChanged() {
     home = newHome();
     noteLeftDuringRun(leaving);
     clearTimeout(persistTimer); clearTimeout(chatSaveTimer); clearTimeout(sourceTimer);
-    ui.edit = null; ui.checkEdit = null; ui.lastError = null; ui.lastFix = null; ui.lastSplit = null; ui.found = null; mainGenerating = false;
+    ui.edit = null; ui.checkEdit = null; ui.lastError = null; ui.lastFix = null; ui.lastSplit = null; ui.copyText = null; ui.found = null; mainGenerating = false;
     document.querySelector?.('#sp_loot_dialog')?.close();
     hideResume(); clearTimeout(resumeTimer);
     // v0.6.58: the event only starts the check. SillyTavern can send it after a room failed to load;

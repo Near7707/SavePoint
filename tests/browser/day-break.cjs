@@ -42,7 +42,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
         // Every message carries its date; the reply's scenes take the first and last one of their messages.
         const stampOf = m => { const x = /Date: (\d{4}-\d{2}-\d{2}) \| Time: (\d{2}:\d{2})/.exec(m.text); return { relation: 'explicit', date: x[1], clock: x[2], period: 'morning', msg: m.n, quote: x[0] }; };
         const day = m => stampOf(m).date;
-        M.tweak = (data, { msgs, isRetry }) => {
+        M.tweak = (data, { msgs, isRetry, prompt }) => {
+            if (!isRetry && M.limitAt) M.settings.savePoint.inputChars = prompt.length + M.limitAt;
             M.seen = (M.seen || 0) + 1;
             if (isRetry && M.retryThrows) return;
             if (isRetry && M.retryBad) { data.scenes[0].points[0].msgs = [99999]; return; }
@@ -74,7 +75,7 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
             if (!isRetry && M.retryThrows) M.throwNext = new Error('Load failed');
             // (a11) The first reply cites the message before the promise too; the retry writes the change anew over the promise only /
             // over the message after it.
-            if (!isRetry && M.widen) data.changes.forEach(c => { c.msgs = [c.msgs[0] - 1, c.msgs[0]]; });
+            if (M.widen && (!isRetry || M.rewrite === 'same')) data.changes.forEach(c => { c.msgs = [c.msgs[0] - 1, c.msgs[0]]; });
             if (isRetry && M.rewrite) data.changes.forEach(c => { c.text = 'A promise is given, in other words.'; if (M.rewrite === 'away') c.msgs = [c.msgs[0] + 1]; });
         };
         window.addDays = (n, a, b) => M.add(n, i => `[Date: ${M.chat.length - window.__base < 10 ? a : b} | Time: 09:${String(10 + (M.chat.length % 50)).padStart(2, '0')}] The courier waited by the gate ${'and waited '.repeat(8)}.${window.__promise && M.chat.length - window.__base === 4 ? ` PROMISE${window.__due ? ' to come back tomorrow' : ''}` : ''}`);
@@ -117,6 +118,8 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     const last = await ev(() => M.calls.at(-1).split('YOUR PREVIOUS REPLY WAS REJECTED')[1] || '');
     ok(r.calls === c0 + 2 && r.st.lastIndex === 118 && /scenes\[0\] \(#99-#118\) runs into a new story day/.test(last) && last.includes('is not one of the new messages'), '6. (a10) 다른 검사 실패로 다시 물을 때 날이 바뀐 곳도 같이 알림(요청은 두 번까지)');
     ok(r.fix.includes('날이 바뀐 곳 1곳에서 장면을 나누지 못했어요') && !r.st.autoFail, '6. (a10) 그래도 안 나누면 저장하고 자동 보정 줄에 나누지 못했다고 남김');
+    const s6 = await ev(() => { const a = M.calls.at(-2), b = M.calls.at(-1); const note = (b.match(/\n- scenes\[\d+\] \(#[^\n]*runs into a new story day[^\n]*/) || [''])[0];
+        return { d: b.length - a.length, note: note.length }; });
 
     // 7. (a2, GPT P2-1) The second reply drops its times and its state change and is still one scene: it would pass every check, and
     // without a date nothing looks like a new day any more → the first reply is the one saved (its promise and its dates are there).
@@ -193,16 +196,38 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     // 19. (a11, real use: all 18 changes counted as lost) Split as asked, each change written anew over fewer messages (one shared):
     // the same changes → the second reply is saved; the copy report has no comparison lines.
     let q19 = await recs(); c0 = r.calls; sc1 = r.scenes.length;
-    await ev(() => { M.retrySplits = true; M.widen = true; M.rewrite = 'fewer'; __savePoint.ui.lastFix = null; }); await add('1024-05-16', '1024-05-18'); await run(); r = await snap(); q = await recs();
+    await ev(() => { M.retrySplits = true; M.widen = true; M.rewrite = 'same'; __savePoint.ui.lastFix = null; }); await add('1024-05-16', '1024-05-18'); await run(); r = await snap(); q = await recs();
     let rep = await ev(() => __savePoint.reportText(__savePoint.state()));
-    ok(r.calls === c0 + 2 && r.st.lastIndex === 398 && r.scenes.length === sc1 + 1 && q.n === q19.n + 1 && !r.fix && !rep.includes('날 바뀜 비교'), '19. (a11) 나눈 재응답이 변경을 새로 쓰고 근거를 줄여도(겹침 있음) 같은 변경으로 보고 저장');
+    ok(r.calls === c0 + 2 && r.st.lastIndex === 398 && r.scenes.length === sc1 + 1 && q.n === q19.n + 1 && !r.fix && !rep.includes('날 바뀜 비교'), '19. (a13) 나눈 재응답이 새 약속을 말만 바꿔 같은 근거로 쓰면 같은 변경으로 보고 저장');
+    // (a13, GPT review of a11, P2-2) A NEW promise written anew over fewer messages (one shared) is not taken for the same one any more.
+    c0 = r.calls; sc1 = r.scenes.length;
+    await ev(() => { M.rewrite = 'fewer'; __savePoint.ui.lastFix = null; }); await add('1024-05-18', '1024-05-20'); await run(); r = await snap();
+    ok(r.calls === c0 + 2 && r.scenes.length === sc1 && r.fix.includes('상태 변경 1개'), '19. (a13) 새 약속은 근거 하나 겹침만으로는 같은 변경이 아님 → 첫 응답 저장');
     // The change moved to another message: lost, the first reply is saved, and the copy report says what was not matched.
     c0 = r.calls; sc1 = r.scenes.length;
-    await ev(() => { M.rewrite = 'away'; __savePoint.ui.lastFix = null; }); await add('1024-05-18', '1024-05-20'); await run(); r = await snap();
+    await ev(() => { M.rewrite = 'away'; __savePoint.ui.lastFix = null; }); await add('1024-05-20', '1024-05-22'); await run(); r = await snap();
     rep = await ev(() => __savePoint.reportText(__savePoint.state()));
-    ok(r.calls === c0 + 2 && r.st.lastIndex === 418 && r.scenes.length === sc1 && r.fix.includes('상태 변경 1개'), '19. (a11) 다른 메시지로 옮긴 변경은 여전히 빠짐 → 첫 응답 저장');
+    ok(r.calls === c0 + 2 && r.st.lastIndex === 438 && r.scenes.length === sc1 && r.fix.includes('상태 변경 1개'), '19. (a11) 다른 메시지로 옮긴 변경은 여전히 빠짐 → 첫 응답 저장');
     ok(/\[날 바뀜 비교에서 빠진 것\] #\d+–#\d+ · changes 1/.test(rep) && rep.includes('first reply change not kept:') && rep.includes('Promise made at') && rep.includes('second reply change unmatched:') && rep.includes('in other words'), '19. (a11) 결과 복사에 안 맞은 변경 두 쪽이 나옴');
     const copyBtn = await ev(() => { __savePoint.render(true); return !!document.querySelector('#sp_overlay [data-act="copy-report"]'); });
     ok(copyBtn, '19. (a12) 비교에서 빠진 것이 있으면 결과 복사 버튼이 보임');
+
+    // 20. (a13, GPT review of a10, P2-1) The new-day note never stops a retry that fits without it: with an input limit between the
+    // two, the retry goes out with the errors only and the reply is saved, said so.
+    const limit0 = await ev(() => M.settings.savePoint.inputChars);
+    c0 = r.calls;
+    await ev(lim => { M.rewrite = false; M.widen = false; M.retrySplits = false; M.badOnce = true; M.limitAt = lim; __savePoint.ui.lastFix = null; }, s6.d - s6.note + Math.floor(s6.note / 2));
+    await add('1024-05-22', '1024-05-24'); await run(); r = await snap();
+    const last20 = await ev(() => M.calls.at(-1).split('YOUR PREVIOUS REPLY WAS REJECTED')[1] || '');
+    ok(s6.note > 100 && r.calls === c0 + 2 && r.st.lastIndex === 458 && !r.st.autoFail && last20.includes('is not one of the new messages') && !last20.includes('runs into a new story day') && r.fix.includes('나누지 못했어요'), '20. (a13) 날짜 안내를 붙이면 한도를 넘을 때는 빼고 오류 재요청만 보내 저장');
+    await ev(l => { M.limitAt = 0; M.settings.savePoint.inputChars = l; }, limit0);
+    // 21. (a13, GPT review of a10, P3) The second reply fixes the error but only drops the new day (one scene): not "split as well".
+    c0 = r.calls; sc1 = r.scenes.length;
+    await ev(() => { M.badOnce = true; M.retryNoTimes = true; __savePoint.ui.lastFix = null; }); await add('1024-05-24', '1024-05-26'); await run(); r = await snap();
+    ok(r.calls === c0 + 2 && r.st.lastIndex === 478 && r.scenes.length === sc1 && r.fix.includes('답이 장면을 나누지 않았어요') && !r.fix.includes('장면도 나눴어요'), '21. (a13) 날짜만 빼고 한 장면으로 둔 답은 "나눴어요"가 아니라 "나누지 않았어요"');
+    await ev(() => { M.badOnce = false; M.retryNoTimes = false; });
+    // 22. (a13, GPT review of a11, P3) The manual copy box is emptied with the rest when the room changes.
+    const box = await ev(async () => { __savePoint.ui.copyText = 'old report'; await M.switchChat('dbOther', [], {}); await M.opened(); return __savePoint.ui.copyText; });
+    ok(box === null, '22. (a13) 방을 바꾸면 수동 복사 칸도 비움');
     await browser.close(); srv.close(); console.log(failures ? failures + ' FAILED' : 'ALL PASS'); process.exit(failures ? 1 : 0);
 })();
