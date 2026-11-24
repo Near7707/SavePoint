@@ -105,11 +105,15 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     c0 = r.calls;
     await ev(() => { M.retryBad = true; }); await add('1024-04-16', '1024-04-18'); await run(); r = await snap();
     ok(r.calls === c0 + 2 && r.st.lastIndex === 78 && !r.st.autoFail && r.st.autoLast?.status !== 'failed' && r.fix.includes('쓸 수 없어'), '4. 다시 물은 답이 검사를 못 넘으면 첫 응답을 저장');
+    let why4 = await ev(() => { __savePoint.render(true); return { rep: __savePoint.reportText(__savePoint.state()), btn: !!document.querySelector('#sp_overlay [data-act="copy-report"]') }; });
+    ok(why4.btn && /\[날 바뀜 재요청 답을 못 씀\] #\d+–#\d+ · unusable/.test(why4.rep) && why4.rep.includes('99999'), '4. (a14) 못 쓴 이유(검사 오류)가 결과 복사에 나오고 버튼도 보임');
 
     // 5. The second request itself fails: the first reply is saved.
     c0 = r.calls;
     await ev(() => { M.retryBad = false; M.retryThrows = true; }); await add('1024-04-18', '1024-04-20'); await run(); r = await snap();
     ok(r.calls === c0 + 2 && r.st.lastIndex === 98 && !r.st.autoFail && r.st.autoLast?.status !== 'failed' && r.fix.includes('쓸 수 없어'), '5. 다시 묻는 요청이 실패해도 첫 응답을 저장');
+    why4 = await ev(() => __savePoint.reportText(__savePoint.state()));
+    ok(/\[날 바뀜 재요청 답을 못 씀\][^\n]*\n- request failed: [^\n]*Load failed/.test(why4), '5. (a14) 못 쓴 이유(요청 오류)가 결과 복사에 나옴');
 
     // 6. A reply with another problem is asked again for it, and (a10) told of the new day in the same request; requests stay at two.
     // The second reply fixes the problem but still keeps one scene: saved as received (the first reply was not usable), said so.

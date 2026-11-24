@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.5-a13';
+const VERSION = '0.7.5-a14';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -4425,6 +4425,9 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
     const DAY_TOO_OK = '검사 오류를 고쳐 달라고 다시 물으면서 날이 바뀐 곳에서 장면도 나눴어요';
     const DAY_TOO_NOT = '검사 오류를 고쳐 달라고 다시 물으면서 날이 바뀐 곳도 알렸지만, 답이 장면을 나누지 않았어요';
     const dayLeft = n => `검사 오류로 이미 다시 물어서, 날이 바뀐 곳 ${n}곳에서 장면을 나누지 못했어요`;
+    // v0.7.5-a14 (real use: "그 답을 받지 못했거나 쓸 수 없어" with no way to see why): why the second reply was not usable, for the
+    // copy-result report (same place as the comparison lines).
+    const badWhy = lines => { ui.lastSplit = { title: '날 바뀜 재요청 답을 못 씀', at: Date.now(), range: `#${chunk.from}–#${chunk.to}`, lost: 'unusable', detail: lines.slice(0, 60), more: Math.max(0, lines.length - 60) }; };
     let lostNow = '';   // v0.7.5-a8 (GPT review of a7, P3): compared once, read by the verdict and the notice
     const splitWhy = d => {
         if (dayBreaks(d, { mem, chunk, expectContinue }).length || !(d.scenes.length > kept.data.scenes.length || (kept.startOnly && d.scenes[0].scene === 'new'))) return 'split';
@@ -4449,7 +4452,7 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
         }
         catch (e) {
             if (run.cancelled || e instanceof Cancelled) throw new Cancelled('중지했어요.');
-            if (kept) { tries.push(`${fmtSec(Date.now() - start)} · 요청 실패 — 첫 응답을 저장`); return accept(kept.data, kept.fixes, 0, DAY_FAIL); }
+            if (kept) { tries.push(`${fmtSec(Date.now() - start)} · 요청 실패 — 첫 응답을 저장`); badWhy([`request failed: ${errorText(e)}`]); return accept(kept.data, kept.fixes, 0, DAY_FAIL); }
             if (e instanceof RequestTimeout) {
                 const r = ui.lastRequest;
                 tries.push(`${fmtSec(Date.now() - start)} · ${timeoutLabel(e)}${r ? ` · 수신 본문 ${r.textChars}자 / 사고 ${r.reasoningChars}자` : ''}`);
@@ -4472,6 +4475,7 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
             const done = !!data && !errors.length && !lang.length, why = done ? splitWhy(data) : 'bad';
             const said = { '': '통과 (날이 바뀐 곳에서 나눔)', split: '나뉘지 않음 — 첫 응답을 저장', lost: `나눴지만 첫 응답의 기록이 빠짐(${lostNow}) — 첫 응답을 저장`, bad: '쓸 수 없는 답 — 첫 응답을 저장' }[why];
             tries.push(`${took} · ${kind || said}`);
+            if (why === 'bad') badWhy([...(kind ? [`reply: ${kind}`] : []), ...groupErrors(errors), ...(lang.length ? [`Not English: ${lang.join(', ')}`] : [])]);
             if (!why) return accept(data, fixes, 0);
             return accept(kept.data, kept.fixes, 0, { split: DAY_KEPT, lost: DAY_LOST + lostWhat(lostNow), bad: DAY_FAIL }[why]);
         }
@@ -5227,7 +5231,7 @@ function reportText(st) {
     if (r) { const [head, ...rest] = requestLines(r); out.push('', `[마지막 요청] ${head}`, ...rest); }
     if (hasChat()) out.push(`방: ${names().char || ''} · 기록 ${st ? st.lastIndex + 1 : 0} / ${chat().length}`);
     if (ui.lastFix) out.push('', `[자동 보정] ${ui.lastFix.range} · ${ui.lastFix.text}`);
-    if (ui.lastSplit) out.push('', `[날 바뀜 비교에서 빠진 것] ${ui.lastSplit.range} · ${ui.lastSplit.lost} · ${new Date(ui.lastSplit.at).toLocaleTimeString()}`,
+    if (ui.lastSplit) out.push('', `[${ui.lastSplit.title || '날 바뀜 비교에서 빠진 것'}] ${ui.lastSplit.range} · ${ui.lastSplit.lost} · ${new Date(ui.lastSplit.at).toLocaleTimeString()}`,
         ...ui.lastSplit.detail.map(l => `- ${l}`), ...(ui.lastSplit.more ? [`- … 그 밖에 ${ui.lastSplit.more}줄`] : []));
     if (st?.autoFail) out.push('', '[체크포인트 실패 · 수집]', ...autoFailLines(st.autoFail).map(l => `- ${l}`));
     if (ui.lastError) {

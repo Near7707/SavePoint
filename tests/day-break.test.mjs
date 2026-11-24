@@ -408,5 +408,10 @@ test('two different new rules over one shared message are not one rule; an exist
     assert.equal(keeps([rule('The yard gate opens only after dawn.', [4, 5])], [rule('Yard gate: after dawn only.', [4, 5])]), '');
     assert.equal(keeps([rule('The yard gate opens only after dawn.', [4, 5])], [rule('The yard gate opens only after dawn.', [9])]), '');
     const st = (entity, msgs, text) => ({ op: 'set', entity, aspect: 'location', text, msgs });
-    assert.equal(keeps([st('e3', [4, 5], 'Moved to the yard.')], [st('e3', [5], 'Now in the yard.')]), '');
+    assert.equal(keeps([st('e3', [4, 5], 'Moved to the yard.')], [st('e3', [5], 'Now in the yard.')]), 'changes 1');
+    // v0.7.5-a14 (GPT review of a13, P2): a NEW world rule tied to an existing place is still new.
+    const w = (text, msgs) => ({ op: 'add', type: 'world', entity: 'e1', text, msgs });
+    assert.equal(keeps([w('The yard gate opens only after dawn.', [4, 5])], [w('The yard closes at noon.', [5, 6])]), 'changes 1');
+    const rm = (msgs) => ({ op: 'remove', id: 'r2', msgs });
+    assert.equal(keeps([rm([4, 5])], [rm([5])]), '');
 });
