@@ -114,3 +114,4 @@
 - **(v0.7.5-a13) `day-break.cjs` 19~22:** `M.widen` + `M.rewrite = 'same'`이면 재응답도 넓힌 근거(글만 새로). 입력 한도 사이 값은 6단계의 첫 요청·재요청 길이 차이와 날짜 안내 줄 길이(`s6`)로 구하고, `M.limitAt`을 주면 첫 요청을 받을 때 `inputChars = prompt.length + M.limitAt`(끝나면 되돌리기). 22는 `M.switchChat`으로 방을 바꿔 `ui.copyText`를 봄 — 이 묶음의 마지막이어야 함.
 - **(v0.7.5-a14) `day-break.cjs` 4·5:** `M.retryBad`(근거 `99999`)·`M.retryThrows`(`Load failed`) 뒤 `reportText`에 `[날 바뀜 재요청 답을 못 씀]` + 이유 줄. 변경 짝 Node 검사는 실제 `op`(`add`·`update`·`remove`)로 — 지어낸 `op`는 이제 새 기록처럼 다뤄짐.
 - **(v0.7.5-a15) `day-break.test.mjs` 20·22:** 같은 `id`의 변경이 여럿이면 마지막 것은 둘째 답의 그 `id` 마지막 것과만 짝 → 20의 "앞의 느슨한 짝이 뒤 변경의 유일한 짝을 뺏지 않음" 검사는 두 답 끝에 같은 셋째 변경(`last`)을 두어 순서 규칙과 따로 봄. 짝짓기(`take`의 되돌리기)를 빼면 20이 FAIL.
+- **(v0.7.5-a16) `day-break.test.mjs` 23:** 항목별 마지막 값 확인은 `text`가 없는 상태 변경(`{ op: 'update', id, status }`)으로 짜야 상태와 설명이 따로 보임(22의 `q()`처럼 `text`까지 넣으면 설명도 같이 "마지막"이 됨). 물건 `add`는 `entities`에 새 물건(`ref`)을 같이 넣어 `splitKeeps({ scenes, entities, changes }, …)`.

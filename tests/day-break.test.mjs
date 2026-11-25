@@ -438,3 +438,23 @@ test('a record changed more than once keeps its last change last; the order befo
     const rm = { op: 'remove', id: 'r1', msgs: [5] };
     assert.equal(keeps([done, rm], [rm, done]), 'changes 1');
 });
+
+// v0.7.5-a16 (GPT review of a15, two P2): what is saved is the last value of each field, and an item "add" updates that item.
+test('each field of a record or an item keeps its last change last; an item added twice is one item', () => {
+    const keeps = (a, b, ea = [], eb = []) => splitKeeps({ scenes: [], entities: ea, changes: a }, { scenes: [], entities: eb, changes: b });
+    const st = (status, m) => ({ op: 'update', id: 'r1', status, msgs: [m] });
+    const desc = { op: 'update', id: 'r1', text: 'The delivery, reworded.', msgs: [5] };
+    assert.equal(keeps([st('open', 2), st('done', 3), desc], [st('done', 3), st('open', 2), desc]), 'changes 1', 'a later description hides nothing');
+    assert.equal(keeps([st('open', 2), st('done', 3), desc], [st('open', 2), desc, st('done', 3)]), '', 'status and description each still last');
+    // An item added twice: the second add brings the first one up to date, so its holder is the last one written.
+    const key = r => [{ ref: r, type: 'item', name: 'Brass key' }];
+    const add = (r, holder, m) => ({ op: 'add', type: 'item', entity: r, holder, msgs: [m] });
+    assert.equal(keeps([add('new1', 'e1', 2), add('new1', 'e2', 3)], [add('new2', 'e1', 2), add('new2', 'e2', 3)], key('new1'), key('new2')), '');
+    assert.equal(keeps([add('new1', 'e1', 2), add('new1', 'e2', 3)], [add('new2', 'e2', 3), add('new2', 'e1', 2)], key('new1'), key('new2')), 'changes 1');
+    assert.equal(keeps([add('e5', 'e1', 2), add('e5', 'e2', 3)], [add('e5', 'e2', 3), add('e5', 'e1', 2)]), 'changes 1', 'an existing item');
+    // Two different items are not held to each other's order.
+    assert.equal(keeps([add('e5', 'e1', 2), add('e6', 'e2', 3)], [add('e6', 'e2', 3), add('e5', 'e1', 2)]), '');
+    // Other records' new adds (a rule) are new records each time: their order is not compared.
+    const rule = (text, m) => ({ op: 'add', type: 'rule', text, msgs: [m] });
+    assert.equal(keeps([rule('Gate shuts at dusk.', 2), rule('Bell rings at noon.', 3)], [rule('Bell rings at noon.', 3), rule('Gate shuts at dusk.', 2)]), '');
+});

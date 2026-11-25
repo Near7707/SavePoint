@@ -796,13 +796,19 @@ export function splitKeeps(first, second, { mem = null, chunk = null, detail = n
         // v0.7.5-a11: as many changes as can be paired are paired (one second-reply change for each), so an early pick never takes
         // the only partner of a later one.
         const firsts = (first.changes || []), owner = new Array(pool.length).fill(-1);
-        // v0.7.5-a15 (GPT review of a14, P2): changes are applied in order, so the last change of a record decides what is saved.
-        // The first reply's last change of each record pairs only with the second reply's last change of that record ("open" then
-        // "done" sent back as "done" then "open" would leave a finished quest open).
-        const idOf = x => (known(x) ? x.id.trim() : '');
-        const lastAt = list => { const m = new Map(); list.forEach((x, k) => { if (idOf(x)) m.set(idOf(x), k); }); return m; };
-        const lastFirst = lastAt(firsts), lastSecond = lastAt(pool);
-        const ok = firsts.map((c, i) => pool.map((x, j) => pairs(c, x) && (lastFirst.get(idOf(c)) !== i || lastSecond.get(idOf(c)) === j)));
+        // v0.7.5-a15 (GPT review of a14, P2): changes are applied in order, so what is saved is what was changed last.
+        // v0.7.5-a16 (GPT review of a15, two P2): by field, not by change. For each record (update or removal by id) and each item an
+        // "add" brings up to date (an existing item, or a new one by type and name), the first reply's last change of a field (status,
+        // text, holder, ...) pairs only with the second reply's last change of that field; a removal changes every field.
+        // ("open", "done", a new description sent back as "done", "open", the same description would leave a finished quest open.)
+        const FIELDS = ['text', 'status', 'holder', 'knownBy', 'terms', 'due', 'back', 'retire', 'by', 'to', 'mutual'];
+        const subj = (x, w) => known(x) ? `id:${x.id.trim()}`
+            : x?.op === 'add' && x?.type === 'item' && typeof x?.entity === 'string' && x.entity.trim() ? `item:${named[w].get(x.entity.trim()) ?? x.entity.trim()}` : '';
+        const sets = x => (x?.op === 'remove' ? FIELDS : FIELDS.filter(f => x?.[f] !== undefined));
+        const lastAt = (list, w) => { const m = new Map(); list.forEach((x, k) => { const s = subj(x, w); if (s) for (const f of sets(x)) m.set(`${s}|${f}`, k); }); return m; };
+        const lastFirst = lastAt(firsts, 0), lastSecond = lastAt(pool, 1);
+        const stays = (c, i, j) => { const s = subj(c, 0); return !s || sets(c).every(f => lastFirst.get(`${s}|${f}`) !== i || lastSecond.get(`${s}|${f}`) === j); };
+        const ok = firsts.map((c, i) => pool.map((x, j) => pairs(c, x) && stays(c, i, j)));
         const take = (i, seen) => { for (let j = 0; j < pool.length; j++) if (ok[i][j] && !seen[j]) { seen[j] = true; if (owner[j] < 0 || take(owner[j], seen)) { owner[j] = i; return true; } } return false; };
         const lostList = firsts.filter((c, i) => !take(i, new Array(pool.length).fill(false)));
         const lostChange = lostList.length;
