@@ -796,7 +796,13 @@ export function splitKeeps(first, second, { mem = null, chunk = null, detail = n
         // v0.7.5-a11: as many changes as can be paired are paired (one second-reply change for each), so an early pick never takes
         // the only partner of a later one.
         const firsts = (first.changes || []), owner = new Array(pool.length).fill(-1);
-        const ok = firsts.map(c => pool.map(x => pairs(c, x)));
+        // v0.7.5-a15 (GPT review of a14, P2): changes are applied in order, so the last change of a record decides what is saved.
+        // The first reply's last change of each record pairs only with the second reply's last change of that record ("open" then
+        // "done" sent back as "done" then "open" would leave a finished quest open).
+        const idOf = x => (known(x) ? x.id.trim() : '');
+        const lastAt = list => { const m = new Map(); list.forEach((x, k) => { if (idOf(x)) m.set(idOf(x), k); }); return m; };
+        const lastFirst = lastAt(firsts), lastSecond = lastAt(pool);
+        const ok = firsts.map((c, i) => pool.map((x, j) => pairs(c, x) && (lastFirst.get(idOf(c)) !== i || lastSecond.get(idOf(c)) === j)));
         const take = (i, seen) => { for (let j = 0; j < pool.length; j++) if (ok[i][j] && !seen[j]) { seen[j] = true; if (owner[j] < 0 || take(owner[j], seen)) { owner[j] = i; return true; } } return false; };
         const lostList = firsts.filter((c, i) => !take(i, new Array(pool.length).fill(false)));
         const lostChange = lostList.length;

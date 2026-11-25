@@ -393,9 +393,11 @@ test('a change written anew over an overlapping message is kept; a different mes
     // The same messages but another status is another change.
     assert.equal(keeps([up('q1', [5], 'Done.')], [up('q1', [5], 'Failed.', { status: 'failed' })]), 'changes 1');
     // Two changes of one shape: an early loose pick does not take the only partner of a later one.
-    const a = [up('q1', [1, 2], 'First thing.'), up('q1', [2], 'Second thing.')];
-    assert.equal(keeps(a, [up('q1', [2], 'Second thing, reworded.'), up('q1', [1], 'First thing, reworded.')]), '');
-    assert.equal(keeps(a, [up('q1', [2], 'Only one came back.')]), 'changes 1');
+    // (a15: the last change of a record must stay last, so a third one closes both lists.)
+    const last = up('q1', [9], 'Last thing.');
+    const a = [up('q1', [1, 2], 'First thing.'), up('q1', [2], 'Second thing.'), last];
+    assert.equal(keeps(a, [up('q1', [2], 'Second thing, reworded.'), up('q1', [1], 'First thing, reworded.'), last]), '');
+    assert.equal(keeps(a, [up('q1', [2], 'Only one came back.'), last]), 'changes 1');
     // No detail list given: nothing is collected, the answer is the same.
     assert.equal(keeps([up('q1', [5], 'x')], [up('q1', [7], 'y')]), 'changes 1');
 });
@@ -414,4 +416,25 @@ test('two different new rules over one shared message are not one rule; an exist
     assert.equal(keeps([w('The yard gate opens only after dawn.', [4, 5])], [w('The yard closes at noon.', [5, 6])]), 'changes 1');
     const rm = (msgs) => ({ op: 'remove', id: 'r2', msgs });
     assert.equal(keeps([rm([4, 5])], [rm([5])]), '');
+});
+
+// v0.7.5-a15 (GPT review of a14, P2): the last change of a record decides what is saved, so it must come back last.
+test('a record changed more than once keeps its last change last; the order before it is not compared', () => {
+    const keeps = (a, b, detail) => splitKeeps({ scenes: [], changes: a }, { scenes: [], changes: b }, { detail });
+    const q = (status, msgs, id = 'r1') => ({ op: 'update', id, status, text: 'The delivery.', msgs });
+    const open = q('open', [2]), done = q('done', [3]);
+    assert.equal(keeps([open, done], [open, done]), '');
+    const detail = [];
+    assert.equal(keeps([open, done], [done, open], detail), 'changes 1', 'turned around: the quest would be saved open');
+    assert.match(detail[0], /^first reply change not kept: .*"r1".*"done"/);
+    assert.equal(keeps([done], [done, open]), 'changes 1', 'one change in the first reply, undone after it in the second');
+    assert.equal(keeps([done], [open, done]), '', 'a change before it does not matter');
+    // Three changes: only the last one is held to its place.
+    const failed = q('failed', [4]);
+    assert.equal(keeps([open, failed, done], [failed, open, done]), '');
+    // Other records are not held to each other's order.
+    assert.equal(keeps([q('done', [3], 'r2'), done], [done, q('done', [3], 'r2')]), '');
+    // A removal last stays last.
+    const rm = { op: 'remove', id: 'r1', msgs: [5] };
+    assert.equal(keeps([done, rm], [rm, done]), 'changes 1');
 });
