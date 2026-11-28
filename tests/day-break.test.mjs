@@ -310,7 +310,7 @@ test('splitKeeps: the same saved time written another way and a renumbered new e
     assert.equal(splitKeeps(first, other, { mem, chunk: c }), '');
     // The same new key under "new2": kept. A different new item: still lost.
     assert.equal(splitKeeps(first, second(at(4, '1024-04-14', '07:39', 'morning'), ent('new2'), add('new2')), { mem, chunk: c }), '');
-    assert.equal(splitKeeps(first, second(at(4, '1024-04-14', '07:39', 'morning'), ent('new2', 'Iron key'), add('new2')), { mem, chunk: c }), 'changes 1');
+    assert.equal(splitKeeps(first, second(at(4, '1024-04-14', '07:39', 'morning'), ent('new2', 'Iron key'), add('new2')), { mem, chunk: c }), 'changes 1, saved states 1', 'v0.7.5-a18: the brass key is missing from the saved result too');
     // Dropping the quote of the next day still loses the confirmed time.
     const bare = { ...morning }; delete bare.quote;
     assert.equal(splitKeeps(first, second(bare, ent('new1'), add('new1')), { mem, chunk: c }), 'time stamps 1');
@@ -457,4 +457,36 @@ test('each field of a record or an item keeps its last change last; an item adde
     // Other records' new adds (a rule) are new records each time: their order is not compared.
     const rule = (text, m) => ({ op: 'add', type: 'rule', text, msgs: [m] });
     assert.equal(keeps([rule('Gate shuts at dusk.', 2), rule('Bell rings at noon.', 3)], [rule('Bell rings at noon.', 3), rule('Gate shuts at dusk.', 2)]), '');
+});
+
+// v0.7.5-a18 (GPT review of a16, three P2): the saved result of each record the first reply changes is compared, so an item changed by
+// "add" and by its record id, a list put back the other way, or two fields that move one state (back/retire, mutual/to) are caught.
+test('the saved state of every record the first reply changes must come out the same in the second', () => {
+    const c0 = chunkOf(0, [msg('1024-04-13', '10:00'), msg('1024-04-13', '11:00')]);
+    const base = applyResult(emptyMem(), { scenes: [scene('new', 0, { start: at(0, '1024-04-13', '10:00', 'morning'), end: at(1, '1024-04-13', '11:00', 'morning') })],
+        entities: [{ ref: 'a', type: 'person', name: 'Ada' }, { ref: 'b', type: 'person', name: 'Bea' }, { ref: 'k', type: 'item', name: 'Brass key' }],
+        changes: [{ op: 'add', type: 'item', entity: 'k', holder: 'a', text: 'A brass key.', msgs: [0] },
+            { op: 'add', type: 'world', kind: 'secret', knownBy: ['a'], text: 'The gate code.', msgs: [0] },
+            { op: 'add', type: 'quest', kind: 'promise', by: ['a'], text: 'Ada will bring the parcel.', msgs: [1] }] }, c0).mem;
+    const id = t => base.records.find(r => r.type === t).id, ent = n => base.entities.find(e => e.name === n).id;
+    const [key, secret, promise, ada, bea, item] = [id('item'), id('world'), id('quest'), ent('Ada'), ent('Bea'), ent('Brass key')];
+    const c = chunkOf(2, [msg('1024-04-13', '12:00'), msg('1024-04-13', '13:00')]);
+    const keeps = (a, b) => splitKeeps({ scenes: [], entities: [], changes: a }, { scenes: [], entities: [], changes: b }, { mem: base, chunk: c });
+    // 1. the item by "add" and by its record id
+    const A = { op: 'add', type: 'item', entity: item, holder: ada, text: 'Key with Ada.', msgs: [2] }, U = { op: 'update', id: key, holder: bea, msgs: [3] };
+    assert.equal(keeps([A, U], [A, U]), '');
+    assert.match(keeps([A, U], [U, A]), /saved states 1/);
+    assert.match(keeps([U], [U, { ...A, msgs: [3] }]), /saved states 1/, 'an add only in the second reply');
+    // 2. a list put back the other way
+    const K1 = { op: 'update', id: secret, knownBy: [ada], msgs: [2] }, K2 = { op: 'update', id: secret, knownBy: [ada, bea], msgs: [3] };
+    assert.equal(keeps([K1, K2], [K1, K2]), '');
+    assert.match(keeps([K1, K2], [K2, K1]), /saved states 1/);
+    // 3. two fields moving one state
+    const B = { op: 'update', id: key, back: true, msgs: [2] }, R = { op: 'update', id: key, retire: true, msgs: [3] };
+    assert.match(keeps([B, R], [R, B]), /saved states 1/);
+    const M = { op: 'update', id: promise, mutual: true, msgs: [2] }, T = { op: 'update', id: promise, to: [bea], msgs: [3] };
+    assert.match(keeps([M, T], [T, M]), /saved states 1/);
+    // Wording is not compared, and a record only the second reply changes is extra, not lost.
+    assert.equal(keeps([{ ...U, text: 'Bea took the key.' }], [{ ...U, text: 'The key went to Bea.' }]), '');
+    assert.equal(keeps([U], [U, { op: 'update', id: promise, status: 'done', msgs: [3] }]), '');
 });

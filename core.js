@@ -826,13 +826,48 @@ export function splitKeeps(first, second, { mem = null, chunk = null, detail = n
         const lostList = firsts.filter((c, i) => !take(i, new Array(pool.length).fill(false)));
         const lostChange = lostList.length;
         const unmatched = pool.filter((x, j) => owner[j] < 0);
+        // v0.7.5-a18 (GPT review of a16, three P2 after a14 and a15: one item changed by "add" and by its record id, a list such as
+        // knownBy put back the other way, two fields that move one saved state such as back and retire): the third finding of the
+        // same kind, so the rule is the saved result itself. Both replies are saved on throwaway copies, and every record the first
+        // one changes (an existing one by id, an item by what it is) must come out the same in the second; wording is left out.
+        const lostState = mem && chunk ? savedStatesLost(first, second, mem, chunk) : [];
         if (Array.isArray(detail)) {
+            for (const k of lostState) detail.push(`first reply saved state not kept: ${k}`);
             for (const k of lostTime) detail.push(`first reply time not kept: ${k}`);
             for (const c of lostList) detail.push(`first reply change not kept: ${show(c, 0)}`);
             for (const x of lostList.length ? unmatched : []) detail.push(`second reply change unmatched: ${show(x, 1)}`);
         }
-        return [lostTime.length ? `time stamps ${lostTime.length}` : '', lostChange ? `changes ${lostChange}` : ''].filter(Boolean).join(', ');
+        return [lostTime.length ? `time stamps ${lostTime.length}` : '', lostChange ? `changes ${lostChange}` : '', lostState.length ? `saved states ${lostState.length}` : ''].filter(Boolean).join(', ');
     } catch { return 'unreadable'; }
+}
+
+// v0.7.5-a18: what a reply would leave in the records, saved on a throwaway copy exactly as applyResult would. Each record that was
+// there before is kept by its id, each item record made by the reply by what it is (an existing entity, or a new one by type and
+// name); the state is every structured field (status, holder, who knows, roles, mutual, stored or gone, terms, deadline, tracking),
+// never the wording. A record the first reply changes, or names by id, must have the same state after the second reply.
+function savedStates(data, mem, chunk) {
+    const known = new Set((mem.entities || []).map(e => e.id)), had = new Set((mem.records || []).map(r => r.id));
+    const { mem: m } = applyResult(mem, structuredClone(data), chunk);
+    const ent = id => {
+        if (typeof id !== 'string' || known.has(id)) return id ?? null;
+        const e = m.entities.find(x => x.id === id);
+        return e ? `new:${e.type}:${String(e.name || '').toLowerCase().replace(/\s+/g, ' ').trim()}` : id;
+    };
+    const set = v => [...new Set((Array.isArray(v) ? v : []).map(ent))].sort();
+    const state = r => JSON.stringify([r.type, r.kind ?? null, r.status ?? null, ent(r.entity ?? null), ent(r.holder ?? null), set(r.knownBy), set(r.who), set(r.by), set(r.to),
+        !!r.mutual, r.stored ? [r.stored.by, r.stored.reason || ''] : null, !!r.gone, r.terms ? [r.terms.msg, r.terms.quote] : null, dueKey(m, r), r.track || '']);
+    const out = new Map();
+    for (const id of had) { const r = m.records.find(x => x.id === id); out.set(`id:${id}`, r ? state(r) : 'removed'); }
+    for (const r of m.records) if (!had.has(r.id) && r.type === 'item') {
+        const k = `item:${ent(r.entity ?? null)}`;
+        out.set(k, JSON.stringify([...(out.has(k) ? JSON.parse(out.get(k)) : []), state(r)].sort()));
+    }
+    return out;
+}
+function savedStatesLost(first, second, mem, chunk) {
+    const before = savedStates({ scenes: [], changes: [] }, mem, chunk), a = savedStates(first, mem, chunk), b = savedStates(second, mem, chunk);
+    const named = new Set((first.changes || []).map(c => (typeof c?.id === 'string' ? `id:${c.id.trim()}` : '')).filter(Boolean));
+    return [...a].filter(([k, v]) => (named.has(k) || v !== before.get(k)) && b.get(k) !== v).map(([k, v]) => `${k} ${v} -> ${b.get(k) ?? 'missing'}`.slice(0, 300));
 }
 
 // v0.7.5-a4: the times of a reply as they would be saved, on a throwaway copy (as in dayBreaks): each stamp confirmed from a message's

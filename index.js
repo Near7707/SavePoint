@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.5-a17';
+const VERSION = '0.7.5-a18';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -4411,8 +4411,8 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
     const DAY_KEPT = '날이 바뀐 곳에서 장면을 나누도록 다시 물었지만 나뉘지 않아, 첫 응답을 저장했어요';
     const DAY_LOST = '날이 바뀐 곳에서 장면을 나눈 답이 왔지만 첫 응답의 날짜나 상태 변경이 빠져 있어, 첫 응답을 저장했어요';
     // v0.7.5-a7: what was found missing, so a capture of the line says why (" (시간 1개 · 상태 변경 1개)").
-    const lostWhat = s => { const t = /time stamps (\d+)/.exec(s), c = /changes (\d+)/.exec(s);
-        const out = [t && `시간 ${t[1]}개`, c && `상태 변경 ${c[1]}개`, s === 'unreadable' && '비교 실패'].filter(Boolean);
+    const lostWhat = s => { const t = /time stamps (\d+)/.exec(s), c = /changes (\d+)/.exec(s), r = /saved states (\d+)/.exec(s);
+        const out = [t && `시간 ${t[1]}개`, c && `상태 변경 ${c[1]}개`, r && `저장 결과 ${r[1]}개`, s === 'unreadable' && '비교 실패'].filter(Boolean);
         return out.length ? ` (빠진 것: ${out.join(' · ')})` : ''; };
     const DAY_FAIL = '날이 바뀐 곳에서 장면을 나누도록 다시 물었지만 그 답을 받지 못했거나 쓸 수 없어, 첫 응답을 저장했어요';
     // v0.7.5-a2/a3 (GPT reviews of a1 and a2): the second reply is taken only when it really is the first one split ('split': no new day
