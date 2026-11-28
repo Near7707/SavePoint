@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.5-a16';
+const VERSION = '0.7.5-a17';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -4352,6 +4352,7 @@ function assertStill(run, upTo, base) {
     return true;
 }
 function endRun(run) {
+    if (ui.bannerOff === run) ui.bannerOff = null;
     if (ui.run === run) { ui.run = null; ui.progress = ''; ui.req = null; applyPendingSettings(); }
     render();
     if ((run.notice || run.doneText) && run.key === roomKey()) {
@@ -4399,6 +4400,8 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
         const titles = fixes.filter(f => f.startsWith('title:')).length, outlines = fixes.filter(f => f.startsWith('outline:')).length;
         if (titles) said.push(`제목 ${titles}개를 임시로 보완했어요`);
         if (outlines) said.push(`개요 ${outlines}개를 포인트로 임시 보완했어요`);
+        const places = fixes.filter(f => f.startsWith('place:')).length;
+        if (places) said.push(`장소를 물건으로 적은 기록 ${places}개를 장소 기록으로 고쳤어요`);
         if (dropped) said.push(`장소가 영어로 오지 않아 ${dropped}곳을 비워 두었어요`);
         if (extra) said.push(extra);
         if (said.length) ui.lastFix = { at: Date.now(), range: `#${chunk.from}–#${chunk.to}`, text: said.join(' · ') };
@@ -8118,8 +8121,9 @@ function saveBanner() {
         el.id = 'sp_save_banner'; el.className = 'sp-window sp-save-banner'; el.hidden = true;
         el.setAttribute('role', 'status'); el.setAttribute('aria-live', 'polite');
         el.innerHTML = '<span class="sp-sb-icon"></span><div class="sp-sb-text"><div class="sp-sb-title"></div><div class="sp-sb-sub"></div><div class="sp-sb-news" hidden></div></div><button type="button" class="sp-sb-close" aria-label="배너 닫기" title="닫기" hidden>✕</button>';
-        // v0.6.53: ✕ closes a result (not a running save, whose banner is a warning about leaving the room).
-        el.querySelector('.sp-sb-close').onclick = e => { e.stopPropagation(); clearTimeout(bannerTimer); delete el.dataset.flash; delete el.dataset.flashRoom; el.hidden = true; };
+        // v0.6.53: ✕ closes a result. v0.7.5-a17: it also tucks away a running task's banner (which can cover another
+        // window's buttons); the task goes on, the banner stays away until that task ends, and its result shows as usual.
+        el.querySelector('.sp-sb-close').onclick = e => { e.stopPropagation(); if (el.dataset.tone === 'running' && !el.dataset.flash) ui.bannerOff = ui.run; clearTimeout(bannerTimer); delete el.dataset.flash; delete el.dataset.flashRoom; el.hidden = true; };
         el.onclick = () => {
             // A failure notice opens the window with the failure details unfolded, and is then done.
             if (el.dataset.tone === 'warning') { ui.revealFailure = true; ui.savesOpen.set('hud-autofail', true); ui.savesOpen.set('hud-err', true); }
@@ -8169,10 +8173,10 @@ function updateSaveBanner() {
         else return;
     }
     const run = ui.run, text = run && BANNER[run.kind];
-    if (!text || ui.open || !settings().enabled || run.key !== roomKey()) { el.hidden = true; return; }
+    if (!text || ui.open || !settings().enabled || run.key !== roomKey() || ui.bannerOff === run) { el.hidden = true; return; }
     const m = String(ui.progress || '').match(/(\d+)\/(\d+)메시지/);
     el.dataset.tone = 'running';
-    setBanner(el, { icon: 'sp-sb-spin', title: text[0], count: m ? `${m[1]}/${m[2]}` : '', sub: text[1] });
+    setBanner(el, { icon: 'sp-sb-spin', title: text[0], count: m ? `${m[1]}/${m[2]}` : '', sub: text[1], closable: true });
 }
 // `NEW 🎒 2 · 👥 1 · ❗ …` with the NEW part styled like the badge on 💠 메인.
 function newsHtml(news) {

@@ -139,6 +139,29 @@ const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if
     ok((await banner()).shown && (await banner()).text.includes('실패'), '6. 실패 배너는 성공 표시의 3.5초보다 오래 유지');
     await ev(() => { M.memFailNth = 0; M.settings.savePoint.auto = false; });
 
+    // 7. v0.7.5-a17: a running save's banner can be tucked away with ✕ (it can cover another window's buttons); the save goes
+    // on, the banner stays away until it ends, and the result shows as usual. The next save shows its banner again.
+    await sleep(100); await page.click('#sp_save_banner .sp-sb-close').catch(() => {});
+    await ev(() => { M.add(30); M.delay = 900; });
+    const p7 = ev(() => __savePoint.handle('run'));
+    await sleep(300);
+    r = await ev(() => { const b = document.getElementById('sp_save_banner'); return { shown: !b.hidden, close: !b.querySelector('.sp-sb-close').hidden, tone: b.dataset.tone }; });
+    ok(r.shown && r.close && r.tone === 'running', `7. 저장 중 배너에도 ✕ (${JSON.stringify(r)})`);
+    await page.click('#sp_save_banner .sp-sb-close');
+    ok(!(await banner()).shown && await ev(() => !__savePoint.ui.open), '7. ✕를 누르면 배너만 숨김 (창은 안 열림)');
+    await page.waitForFunction(() => /^15\//.test(String(__savePoint.ui.progress || '').match(/(\d+\/\d+)메시지/)?.[1] || ''), null, { timeout: 15000 }).catch(() => {});
+    await sleep(200);
+    ok(!(await banner()).shown && await ev(() => !!__savePoint.ui.run), '7. 저장이 이어지는 동안 다시 뜨지 않음');
+    await p7; await sleep(100);
+    r = await banner();
+    ok(r.shown && r.text.includes('저장 완료'), `7. 끝나면 결과 배너는 평소처럼 (${r.text.trim().slice(0, 24)})`);
+    await page.click('#sp_save_banner .sp-sb-close').catch(() => {});
+    await ev(() => { M.add(4); M.delay = 600; });
+    const p7b = ev(() => __savePoint.handle('run'));
+    await sleep(200);
+    ok((await banner()).shown && (await banner()).text.includes('저장 중입니다'), '7. 다음 저장에서는 배너가 다시 뜸');
+    await p7b;
+
     await browser.close(); srv.close();
     console.log(failures ? `${failures} FAILED` : 'ALL PASS');
     process.exit(failures ? 1 : 0);

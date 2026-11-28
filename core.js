@@ -389,6 +389,19 @@ export function normalizeResult(data, { mem, chunk } = {}) {
         if (idLike) Object.defineProperty(e, 'refFromId', { value: true });
         notes.push(`ref:${i + 1}`);
     }
+    // v0.7.5-a17 (user report: a first checkpoint failed because a place, declared as one, was the "entity" of a new
+    // item record, in both replies): a new item record about a PLACE is read as a world record of kind "place" about it,
+    // with the same text and evidence, so the range is not lost over it. Only a reference that is plainly a place (declared
+    // so in this reply, or an existing place) is moved; a person or an unknown reference is still asked again.
+    const placeRefs = new Set([
+        ...(Array.isArray(data.entities) ? data.entities : []).filter(e => plain(e) && e.type === 'place' && str(e.ref)).map(e => e.ref.trim()),
+        ...(mem?.entities || []).filter(x => x.type === 'place').map(x => x.id)]);
+    for (const [i, c] of (Array.isArray(data.changes) ? data.changes : []).entries()) {
+        if (!plain(c) || c.op !== 'add' || c.type !== 'item' || typeof c.entity !== 'string' || !placeRefs.has(c.entity.trim())) continue;
+        if (c.by !== undefined || c.to !== undefined || c.status !== undefined) continue;
+        c.type = 'world'; c.kind = 'place'; delete c.holder; delete c.back; delete c.retire;
+        notes.push(`place:${i}`);
+    }
     // A later scene marked "continue" can only mean "the scene just before goes on": merge it into
     // that scene (points and notes appended, outlines joined). No boundary is invented and nothing is lost.
     // Only well-formed scenes are ever merged or repaired; anything else is left for validation to

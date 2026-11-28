@@ -469,6 +469,39 @@ test('a person in the item slot gets an actionable message naming the change (v0
     assert.ok(errors.some(x => x.includes('.holder "l" (brass lantern) is a item')));
 });
 
+test('v0.7.5-a17: a new item record about a place is read as a place record; a person or another case still fails', async () => {
+    const { normalizeResult: norm } = await import('../core.js');
+    const data = lanternResult();
+    data.entities.push({ ref: 'fp', type: 'place', name: 'Old square well' });
+    data.changes.push({ op: 'add', type: 'item', entity: 'fp', holder: 'm', text: 'The old square well stood dry at the gate.', msgs: [3] });
+    const notes = norm(data, { mem: emptyMem(), chunk: chunkOf(0, 5) });
+    assert.ok(notes.includes('place:3'), notes.join(' '));
+    const c = data.changes[3];
+    assert.equal(c.type, 'world'); assert.equal(c.kind, 'place'); assert.equal(c.entity, 'fp'); assert.equal(c.holder, undefined);
+    assert.equal(c.text, 'The old square well stood dry at the gate.'); assert.deepEqual(c.msgs, [3]);
+    assert.deepEqual(validateResult(data, { mem: emptyMem(), chunk: chunkOf(0, 5) }), []);
+    const { mem } = applyResult(emptyMem(), data, chunkOf(0, 5));
+    const rec = mem.records.find(r => r.text === 'The old square well stood dry at the gate.');
+    assert.equal(rec.type, 'world'); assert.equal(rec.kind, 'place');
+    assert.equal(mem.entities.find(e => e.id === rec.entity)?.name, 'Old square well');
+    // an existing place is moved too
+    const later = { scenes: [{ scene: 'continue', title: 'x', outline: 'y.', points: [], ended: true }],
+        changes: [{ op: 'add', type: 'item', entity: rec.entity, text: 'The well was filled again.', msgs: [7] }] };
+    assert.ok(norm(later, { mem, chunk: chunkOf(6, 8) }).includes('place:0'));
+    assert.equal(later.changes[0].type, 'world');
+    // a person, an unknown reference, an update, or a field only quests have: left as written
+    const other = lanternResult();
+    other.changes.push({ op: 'add', type: 'item', entity: 't', text: 'Theo carries it.', msgs: [5] },
+        { op: 'add', type: 'item', entity: 'zz', text: 'Something.', msgs: [5] });
+    assert.ok(!norm(other, { mem: emptyMem(), chunk: chunkOf(0, 5) }).some(n => n.startsWith('place:')));
+    assert.equal(other.changes[3].type, 'item'); assert.equal(other.changes[4].type, 'item');
+    const withStatus = lanternResult();
+    withStatus.entities.push({ ref: 'fp', type: 'place', name: 'Old square well' });
+    withStatus.changes.push({ op: 'add', type: 'item', entity: 'fp', status: 'open', text: 'Well.', msgs: [3] });
+    norm(withStatus, { mem: emptyMem(), chunk: chunkOf(0, 5) });
+    assert.equal(withStatus.changes[3].type, 'item');
+});
+
 test('retry note asks to reread the cited message instead of swapping fields', async () => {
     const { retryNote } = await import('../prompts.js');
     assert.match(retryNote(['x'], []), /reread the message it cites/);
