@@ -31,7 +31,7 @@ const KEEP_KEY = 'savepointKeep';
 // a value made for that one release. SillyTavern's own save takes it to the file; a later read that finds the same value on the same
 // message knows the file's "not hidden" is this release (not another device's), see releasedOf.
 const LIVE_KEY = 'savepointLive';
-const VERSION = '0.7.5-a18';
+const VERSION = '0.7.5-a19';
 
 const ctx = () => SillyTavern.getContext();
 const clone = v => structuredClone(v);
@@ -4435,7 +4435,7 @@ async function extractChunk(mem, chunk, run, { note = '', expectContinue } = {})
     const splitWhy = d => {
         if (dayBreaks(d, { mem, chunk, expectContinue }).length || !(d.scenes.length > kept.data.scenes.length || (kept.startOnly && d.scenes[0].scene === 'new'))) return 'split';
         const detail = [];
-        lostNow = splitKeeps(kept.data, d, { mem, chunk, detail });
+        lostNow = splitKeeps(kept.data, d, { mem, chunk, detail, save: { room: run.key, boxMode: settings().boxMode, questMode: settings().questMode } });   // v0.7.5-a19: as the real save
         // v0.7.5-a11: what did not match, for the copy-result report (this page only, until the next comparison).
         ui.lastSplit = lostNow ? { at: Date.now(), range: `#${chunk.from}–#${chunk.to}`, lost: lostNow, detail: detail.slice(0, 60), more: Math.max(0, detail.length - 60) } : null;
         return lostNow ? 'lost' : '';

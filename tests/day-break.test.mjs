@@ -490,3 +490,23 @@ test('the saved state of every record the first reply changes must come out the 
     assert.equal(keeps([{ ...U, text: 'Bea took the key.' }], [{ ...U, text: 'The key went to Bea.' }]), '');
     assert.equal(keeps([U], [U, { op: 'update', id: promise, status: 'done', msgs: [3] }]), '');
 });
+
+// v0.7.5-a19 (GPT review of a17+a18, P2): the copies are saved with the real box mode, so taking a boxed item out ("auto") or
+// raising its return notice ("notify") in the first reply is lost when the second reply leaves the item where it was.
+test('the saved result is compared with the box mode the real save uses', () => {
+    const c0 = chunkOf(0, [msg('1024-04-13', '10:00'), msg('1024-04-13', '11:00')]);
+    const base = applyResult(emptyMem(), { scenes: [scene('new', 0, { start: at(0, '1024-04-13', '10:00', 'morning'), end: at(1, '1024-04-13', '11:00', 'morning') })],
+        entities: [{ ref: 'k', type: 'item', name: 'Brass key' }], changes: [{ op: 'add', type: 'item', entity: 'k', text: 'A brass key.', msgs: [0] }] }, c0).mem;
+    const key = base.records.find(r => r.type === 'item');
+    key.stored = { by: 'user', at: 1 };
+    const c = chunkOf(2, [msg('1024-04-13', '12:00'), msg('1024-04-13', '13:00')]);
+    const reply = back => ({ scenes: [], entities: [], changes: [{ op: 'update', id: key.id, back, text: 'The key was used again.', msgs: [2] }] });
+    const keeps = (a, b, boxMode) => splitKeeps(reply(a), reply(b), { mem: base, chunk: c, save: { room: 'room-A', boxMode, questMode: 'confirm' } });
+    for (const mode of ['auto', 'notify']) {
+        assert.match(keeps(true, false, mode), /saved states 1/, mode);
+        assert.equal(keeps(true, true, mode), '', `${mode}: the same reply`);
+        assert.equal(keeps(false, false, mode), '', `${mode}: neither takes it out`);
+    }
+    // The notice time differs between the copies and is not compared.
+    assert.equal(keeps(true, true, 'notify'), '');
+});

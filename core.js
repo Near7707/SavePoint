@@ -757,7 +757,7 @@ export function dayBreaks(data, { mem, chunk, expectContinue } = {}) {
 // its reply anew, so neither the words nor the exact set of messages come back): a change of the same record shape is the same
 // change when the two share a supporting message (or have the same words). Exact pairs are taken first. `detail`, when given, gets
 // what was not matched (for the copy-result report), so a capture says what differed.
-export function splitKeeps(first, second, { mem = null, chunk = null, detail = null } = {}) {
+export function splitKeeps(first, second, { mem = null, chunk = null, detail = null, save = {} } = {}) {
     try {
         const stamps = d => {
             const out = [];
@@ -830,7 +830,7 @@ export function splitKeeps(first, second, { mem = null, chunk = null, detail = n
         // knownBy put back the other way, two fields that move one saved state such as back and retire): the third finding of the
         // same kind, so the rule is the saved result itself. Both replies are saved on throwaway copies, and every record the first
         // one changes (an existing one by id, an item by what it is) must come out the same in the second; wording is left out.
-        const lostState = mem && chunk ? savedStatesLost(first, second, mem, chunk) : [];
+        const lostState = mem && chunk ? savedStatesLost(first, second, mem, chunk, save) : [];
         if (Array.isArray(detail)) {
             for (const k of lostState) detail.push(`first reply saved state not kept: ${k}`);
             for (const k of lostTime) detail.push(`first reply time not kept: ${k}`);
@@ -845,9 +845,12 @@ export function splitKeeps(first, second, { mem = null, chunk = null, detail = n
 // there before is kept by its id, each item record made by the reply by what it is (an existing entity, or a new one by type and
 // name); the state is every structured field (status, holder, who knows, roles, mutual, stored or gone, terms, deadline, tracking),
 // never the wording. A record the first reply changes, or names by id, must have the same state after the second reply.
-function savedStates(data, mem, chunk) {
+// v0.7.5-a19 (GPT review of a17+a18, P2): the copies are saved with the options the real save uses (box mode, quest mode, room), so
+// a boxed item the first reply takes out in "auto", or raises a return notice for in "notify", is not the same as one left alone;
+// whether a return notice is raised is part of the state (never its time).
+function savedStates(data, mem, chunk, save = {}) {
     const known = new Set((mem.entities || []).map(e => e.id)), had = new Set((mem.records || []).map(r => r.id));
-    const { mem: m } = applyResult(mem, structuredClone(data), chunk);
+    const { mem: m } = applyResult(mem, structuredClone(data), chunk, { room: save.room ?? null, boxMode: save.boxMode, questMode: save.questMode });
     const ent = id => {
         if (typeof id !== 'string' || known.has(id)) return id ?? null;
         const e = m.entities.find(x => x.id === id);
@@ -855,7 +858,7 @@ function savedStates(data, mem, chunk) {
     };
     const set = v => [...new Set((Array.isArray(v) ? v : []).map(ent))].sort();
     const state = r => JSON.stringify([r.type, r.kind ?? null, r.status ?? null, ent(r.entity ?? null), ent(r.holder ?? null), set(r.knownBy), set(r.who), set(r.by), set(r.to),
-        !!r.mutual, r.stored ? [r.stored.by, r.stored.reason || ''] : null, !!r.gone, r.terms ? [r.terms.msg, r.terms.quote] : null, dueKey(m, r), r.track || '']);
+        !!r.mutual, r.stored ? [r.stored.by, r.stored.reason || ''] : null, !!r.gone, r.terms ? [r.terms.msg, r.terms.quote] : null, dueKey(m, r), r.track || '', !!r.returnNotice]);
     const out = new Map();
     for (const id of had) { const r = m.records.find(x => x.id === id); out.set(`id:${id}`, r ? state(r) : 'removed'); }
     for (const r of m.records) if (!had.has(r.id) && r.type === 'item') {
@@ -864,8 +867,8 @@ function savedStates(data, mem, chunk) {
     }
     return out;
 }
-function savedStatesLost(first, second, mem, chunk) {
-    const before = savedStates({ scenes: [], changes: [] }, mem, chunk), a = savedStates(first, mem, chunk), b = savedStates(second, mem, chunk);
+function savedStatesLost(first, second, mem, chunk, save = {}) {
+    const before = savedStates({ scenes: [], changes: [] }, mem, chunk, save), a = savedStates(first, mem, chunk, save), b = savedStates(second, mem, chunk, save);
     const named = new Set((first.changes || []).map(c => (typeof c?.id === 'string' ? `id:${c.id.trim()}` : '')).filter(Boolean));
     return [...a].filter(([k, v]) => (named.has(k) || v !== before.get(k)) && b.get(k) !== v).map(([k, v]) => `${k} ${v} -> ${b.get(k) ?? 'missing'}`.slice(0, 300));
 }
